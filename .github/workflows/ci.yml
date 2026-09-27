@@ -21,6 +21,9 @@ jobs:
       - run: pnpm check
       - run: pnpm format:check
       - run: pnpm test:smoke
+      - run: pnpm test:container
+      - run: az bicep install --version v0.47.16
+      - run: az bicep build --file infra/bicep/dev-subscription.bicep --outfile /tmp/dev-alpha.json
       - run: docker compose up -d --wait postgres azurite
       - run: pnpm db:migrate
       - run: pnpm test:integration

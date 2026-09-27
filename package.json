@@ -22,7 +22,8 @@
     "db:migrate": "prisma migrate deploy",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:public && pnpm schema:validate && pnpm build",
     "test:smoke": "node scripts/smoke.mjs",
-    "check:public": "node scripts/check-public.mjs"
+    "check:public": "node scripts/check-public.mjs",
+    "test:container": "node scripts/container-smoke.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",

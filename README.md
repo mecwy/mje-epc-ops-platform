@@ -41,3 +41,11 @@ Keep private development evidence in a separate controlled local location with a
 Public CI checks formatting, types, build, publication guards, process startup, database constraints and private Blob access using synthetic data. It does not read private source documents or execute real-source acceptance. Source hash/table-coordinate regression remains in the controlled local archive. Passing this CI is not evidence of field verification, business acceptance or production readiness.
 
 The Azure workflow is manual and previews infrastructure only. No Azure identity or deployment has been verified here. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
+
+## Owner Alpha preparation
+
+The S0 slice adds a non-root, same-origin Web/API image, source revision in health, and a tested Entra v2 delegated-token verifier. The verifier is an authentication component only; project membership, business APIs and the browser sign-in flow are not wired yet. The page remains the Phase 0 status page.
+
+Run `pnpm test:container` with Docker available to build and probe the packaged image. It checks the page, source identity, security headers, private path denial and runtime UID. It creates and removes only its uniquely named TEST container/image.
+
+`infra/bicep/dev-subscription.bicep` is a separate Dev-only passwordless foundation preview. It leaves the historical foundation template unchanged. See the infrastructure README for resource, identity and validation limits.
