@@ -1,0 +1,10 @@
+docs/requirements/originals/
+docs/requirements/history/
+*extracted.txt
+pnpm-lock.yaml
+.tools/
+node_modules/
+dist/
+artifacts/
+packages/domain/generated/
+public-code/

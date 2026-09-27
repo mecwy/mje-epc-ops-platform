@@ -1,0 +1,25 @@
+name: mje-epc-public-dev
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: mje_dev
+      POSTGRES_USER: mje_local
+      POSTGRES_PASSWORD: ${PGPASSWORD:?copy .env.example to .env}
+    ports: ['127.0.0.1:55433:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mje_local -d mje_dev']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command: azurite-blob --blobHost 0.0.0.0 --location /data --skipApiVersionCheck
+    environment:
+      AZURITE_ACCOUNTS: ${AZURITE_ACCOUNT:?copy .env.example}:${AZURITE_KEY:?copy .env.example}
+    ports: ['127.0.0.1:11001:10000']
+    volumes: ['blobdata:/data']
+volumes:
+  pgdata:
+  blobdata:

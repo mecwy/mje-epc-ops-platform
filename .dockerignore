@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+.git
+.env*
+.tools
+docs/requirements/originals
+docs/requirements/history
+artifacts

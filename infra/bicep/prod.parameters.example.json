@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "prod"
+    },
+    "location": {
+      "value": "francecentral"
+    },
+    "enableHa": {
+      "value": false
+    },
+    "postgresAdminPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "REPLACE_WITH_APPROVED_BOOTSTRAP_KEYVAULT_RESOURCE_ID"
+        },
+        "secretName": "mje-prod-postgres-bootstrap"
+      }
+    }
+  }
+}

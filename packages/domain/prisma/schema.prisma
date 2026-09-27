@@ -1,0 +1,992 @@
+// Phase 0 executable schema sketch; not a production authorization model.
+generator client {
+  provider = "prisma-client"
+  output   = "../generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PricingType {
+  UNKNOWN
+  LUMP_SUM
+  TIME_AND_MATERIAL
+  UNIT_PRICE
+  REIMBURSABLE
+}
+
+enum PlanKind {
+  QUOTE_ASSUMPTION
+  APPROVED_BASELINE
+  ROLLING_PLAN
+  CONTRACT_MINIMUM
+  RECOVERY_PLAN
+}
+
+enum VerificationScope {
+  IDENTITY
+  PRESENCE
+  LABOR
+  OUTPUT
+}
+
+enum VerificationResult {
+  NOT_CHECKED
+  CONFIRMED_AT_POINT
+  CONFIRMED_INTERVAL
+  CONTRADICTED
+  INCONCLUSIVE
+}
+
+enum TimePrecision {
+  INTERVAL
+  NET_MINUTES
+  UNKNOWN
+}
+
+enum LaborKind {
+  DIRECT
+  SUPPORT
+  REWORK
+  WAITING
+  OFFSITE
+  TRAVEL
+  BREAK
+  UNALLOCATED
+  UNKNOWN
+}
+
+enum DailyCloseState {
+  EXPECTED
+  DRAFT
+  SUBMITTED
+  RETURNED
+  REVIEWED
+  CLOSED
+}
+
+enum IssueState {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  RESOLUTION_SUBMITTED
+  VERIFIED_CLOSED
+  REOPENED
+}
+
+enum RevisionState {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+model Organization {
+  id                           String                     @id @default(uuid()) @db.Uuid
+  name                         String
+  governanceRef                String?
+  createdAt                    DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime                   @updatedAt @db.Timestamptz(6)
+  updatedBy                    String                     @db.Uuid
+  version                      Int                        @default(1)
+  companyRows                  Company[]
+  customerRows                 Customer[]
+  opportunityRows              Opportunity[]
+  projectRows                  Project[]
+  siteRows                     Site[]
+  projectSiteRows              ProjectSite[]
+  areaRows                     Area[]
+  contractScopeRows            ContractScope[]
+  workPackageRows              WorkPackage[]
+  personRows                   Person[]
+  loginAccountRows             LoginAccount[]
+  membershipRows               Membership[]
+  personAliasRows              PersonAlias[]
+  personAssignmentRows         PersonAssignment[]
+  workforcePlanRows            WorkforcePlan[]
+  sourceDocumentRows           SourceDocument[]
+  sourceAssertionRows          SourceAssertion[]
+  reportingBundleRows          ReportingBundle[]
+  attendanceClaimRows          AttendanceClaim[]
+  presenceVerificationRows     PresenceVerification[]
+  dailyTaskRows                DailyTask[]
+  laborEntryRows               LaborEntry[]
+  laborAllocationRows          LaborAllocation[]
+  dailyQuantityPlanRows        DailyQuantityPlan[]
+  quantityProgressRows         QuantityProgress[]
+  inspectionRows               Inspection[]
+  acceptanceRows               Acceptance[]
+  photoEvidenceRows            PhotoEvidence[]
+  evidenceLinkRows             EvidenceLink[]
+  issueRows                    Issue[]
+  dailyCloseRows               DailyClose[]
+  revisionRows                 Revision[]
+  revisionEventRows            RevisionEvent[]
+  dailyFactLinkRows            DailyFactLink[]
+  chargeableLaborReferenceRows ChargeableLaborReference[]
+  idempotencyRecordRows        IdempotencyRecord[]
+  outboxEventRows              OutboxEvent[]
+  auditLogRows                 AuditLog[]
+}
+
+model Company {
+  id                     String          @id @default(uuid()) @db.Uuid
+  orgId                  String          @db.Uuid
+  org                    Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt              DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
+  updatedBy              String          @db.Uuid
+  version                Int             @default(1)
+  name                   String
+  kind                   String // VENDOR / EMPLOYER / CUSTOMER / OTHER; not a legal related-party conclusion
+  Customer_companyId     Customer[]      @relation("Customer_companyId")
+  ContractScope_vendorId ContractScope[] @relation("ContractScope_vendorId")
+  Person_employerId      Person[]        @relation("Person_employerId")
+
+  @@unique([orgId, id])
+}
+
+model Customer {
+  id                     String        @id @default(uuid()) @db.Uuid
+  orgId                  String        @db.Uuid
+  org                    Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt              DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime      @updatedAt @db.Timestamptz(6)
+  updatedBy              String        @db.Uuid
+  version                Int           @default(1)
+  name                   String
+  companyId              String?       @db.Uuid
+  company                Company?      @relation("Customer_companyId", fields: [orgId, companyId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Opportunity_customerId Opportunity[] @relation("Opportunity_customerId")
+  Project_customerId     Project[]     @relation("Project_customerId")
+
+  @@unique([orgId, id])
+}
+
+model Opportunity {
+  id                             String             @id @default(uuid()) @db.Uuid
+  orgId                          String             @db.Uuid
+  org                            Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                      DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt                      DateTime           @updatedAt @db.Timestamptz(6)
+  updatedBy                      String             @db.Uuid
+  version                        Int                @default(1)
+  code                           String
+  stage                          String
+  customerId                     String?            @db.Uuid
+  customer                       Customer?          @relation("Opportunity_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Project_opportunityId          Project[]          @relation("Project_opportunityId")
+  PersonAssignment_opportunityId PersonAssignment[] @relation("PersonAssignment_opportunityId")
+  DailyTask_opportunityId        DailyTask[]        @relation("DailyTask_opportunityId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, code])
+}
+
+model Project {
+  id                                      String             @id @default(uuid()) @db.Uuid
+  orgId                                   String             @db.Uuid
+  org                                     Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                               DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt                               DateTime           @updatedAt @db.Timestamptz(6)
+  updatedBy                               String             @db.Uuid
+  version                                 Int                @default(1)
+  code                                    String
+  name                                    String
+  timezone                                String
+  status                                  String
+  customerId                              String?            @db.Uuid
+  customer                                Customer?          @relation("Project_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  opportunityId                           String?            @db.Uuid
+  opportunity                             Opportunity?       @relation("Project_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ProjectSite_projectId                   ProjectSite[]      @relation("ProjectSite_projectId")
+  ContractScope_projectId                 ContractScope[]    @relation("ContractScope_projectId")
+  WorkPackage_projectId                   WorkPackage[]      @relation("WorkPackage_projectId")
+  Membership_projectId                    Membership[]       @relation("Membership_projectId")
+  PersonAssignment_projectId              PersonAssignment[] @relation("PersonAssignment_projectId")
+  WorkforcePlan_projectId                 WorkforcePlan[]    @relation("WorkforcePlan_projectId")
+  ReportingBundle_titleProjectCandidateId ReportingBundle[]  @relation("ReportingBundle_titleProjectCandidateId")
+  DailyTask_projectId                     DailyTask[]        @relation("DailyTask_projectId")
+  Issue_projectId                         Issue[]            @relation("Issue_projectId")
+  DailyClose_projectId                    DailyClose[]       @relation("DailyClose_projectId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, code])
+}
+
+model Site {
+  id                 String        @id @default(uuid()) @db.Uuid
+  orgId              String        @db.Uuid
+  org                Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt          DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(6)
+  updatedBy          String        @db.Uuid
+  version            Int           @default(1)
+  code               String
+  name               String
+  timezone           String
+  ProjectSite_siteId ProjectSite[] @relation("ProjectSite_siteId")
+  Area_siteId        Area[]        @relation("Area_siteId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, code])
+}
+
+model ProjectSite {
+  id        String       @id @default(uuid()) @db.Uuid
+  orgId     String       @db.Uuid
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy String       @db.Uuid
+  version   Int          @default(1)
+  projectId String       @db.Uuid
+  project   Project      @relation("ProjectSite_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  siteId    String       @db.Uuid
+  site      Site         @relation("ProjectSite_siteId", fields: [orgId, siteId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, siteId])
+}
+
+model Area {
+  id                 String        @id @default(uuid()) @db.Uuid
+  orgId              String        @db.Uuid
+  org                Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt          DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(6)
+  updatedBy          String        @db.Uuid
+  version            Int           @default(1)
+  code               String
+  name               String
+  siteId             String        @db.Uuid
+  site               Site          @relation("Area_siteId", fields: [orgId, siteId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  WorkPackage_areaId WorkPackage[] @relation("WorkPackage_areaId")
+  DailyTask_areaId   DailyTask[]   @relation("DailyTask_areaId")
+  DailyClose_areaId  DailyClose[]  @relation("DailyClose_areaId")
+
+  @@unique([orgId, id])
+}
+
+model ContractScope {
+  id                                       String                     @id @default(uuid()) @db.Uuid
+  orgId                                    String                     @db.Uuid
+  org                                      Organization               @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                                DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                                DateTime                   @updatedAt @db.Timestamptz(6)
+  updatedBy                                String                     @db.Uuid
+  version                                  Int                        @default(1)
+  code                                     String
+  pricingType                              PricingType
+  currency                                 String?                    @db.Char(3)
+  amount                                   Decimal?                   @db.Decimal(20, 4)
+  policyVersion                            String?
+  projectId                                String                     @db.Uuid
+  project                                  Project                    @relation("ContractScope_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  vendorId                                 String?                    @db.Uuid
+  vendor                                   Company?                   @relation("ContractScope_vendorId", fields: [orgId, vendorId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  WorkPackage_contractScopeId              WorkPackage[]              @relation("WorkPackage_contractScopeId")
+  ChargeableLaborReference_contractScopeId ChargeableLaborReference[] @relation("ChargeableLaborReference_contractScopeId")
+
+  @@unique([orgId, id])
+}
+
+model WorkPackage {
+  id                              String              @id @default(uuid()) @db.Uuid
+  orgId                           String              @db.Uuid
+  org                             Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                       DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt                       DateTime            @updatedAt @db.Timestamptz(6)
+  updatedBy                       String              @db.Uuid
+  version                         Int                 @default(1)
+  code                            String
+  name                            String
+  uom                             String?
+  designQuantity                  Decimal?            @db.Decimal(20, 6)
+  baselineVersion                 String?
+  projectId                       String              @db.Uuid
+  project                         Project             @relation("WorkPackage_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  areaId                          String?             @db.Uuid
+  area                            Area?               @relation("WorkPackage_areaId", fields: [orgId, areaId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  contractScopeId                 String?             @db.Uuid
+  contractScope                   ContractScope?      @relation("WorkPackage_contractScopeId", fields: [orgId, contractScopeId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  WorkforcePlan_workPackageId     WorkforcePlan[]     @relation("WorkforcePlan_workPackageId")
+  DailyTask_workPackageId         DailyTask[]         @relation("DailyTask_workPackageId")
+  DailyQuantityPlan_workPackageId DailyQuantityPlan[] @relation("DailyQuantityPlan_workPackageId")
+
+  @@unique([orgId, id])
+}
+
+model Person {
+  id                                    String                 @id @default(uuid()) @db.Uuid
+  orgId                                 String                 @db.Uuid
+  org                                   Organization           @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                             DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt                             DateTime               @updatedAt @db.Timestamptz(6)
+  updatedBy                             String                 @db.Uuid
+  version                               Int                    @default(1)
+  displayName                           String
+  identityStatus                        String                 @default("PROVISIONAL")
+  // No government ID originals or face templates in this sketch.
+  employerId                            String?                @db.Uuid
+  employer                              Company?               @relation("Person_employerId", fields: [orgId, employerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  LoginAccount_personId                 LoginAccount[]         @relation("LoginAccount_personId")
+  PersonAlias_personId                  PersonAlias[]          @relation("PersonAlias_personId")
+  PersonAssignment_personId             PersonAssignment[]     @relation("PersonAssignment_personId")
+  AttendanceClaim_personId              AttendanceClaim[]      @relation("AttendanceClaim_personId")
+  PresenceVerification_reviewerPersonId PresenceVerification[] @relation("PresenceVerification_reviewerPersonId")
+  PresenceVerification_subjectPersonId  PresenceVerification[] @relation("PresenceVerification_subjectPersonId")
+  LaborEntry_personId                   LaborEntry[]           @relation("LaborEntry_personId")
+  Inspection_inspectorPersonId          Inspection[]           @relation("Inspection_inspectorPersonId")
+  Acceptance_approverPersonId           Acceptance[]           @relation("Acceptance_approverPersonId")
+  Issue_ownerPersonId                   Issue[]                @relation("Issue_ownerPersonId")
+  DailyClose_responsiblePersonId        DailyClose[]           @relation("DailyClose_responsiblePersonId")
+  DailyClose_delegatePersonId           DailyClose[]           @relation("DailyClose_delegatePersonId")
+
+  @@unique([orgId, id])
+}
+
+model LoginAccount {
+  id                   String       @id @default(uuid()) @db.Uuid
+  orgId                String       @db.Uuid
+  org                  Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt            DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy            String       @db.Uuid
+  version              Int          @default(1)
+  entraTenantId        String
+  entraObjectId        String
+  active               Boolean      @default(true)
+  personId             String?      @db.Uuid
+  person               Person?      @relation("LoginAccount_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Membership_accountId Membership[] @relation("Membership_accountId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, entraTenantId, entraObjectId])
+}
+
+model Membership {
+  id          String       @id @default(uuid()) @db.Uuid
+  orgId       String       @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy   String       @db.Uuid
+  version     Int          @default(1)
+  role        String
+  activeFrom  DateTime     @db.Timestamptz(6)
+  activeUntil DateTime?    @db.Timestamptz(6)
+  accountId   String       @db.Uuid
+  account     LoginAccount @relation("Membership_accountId", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId   String?      @db.Uuid
+  project     Project?     @relation("Membership_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model PersonAlias {
+  id                 String       @id @default(uuid()) @db.Uuid
+  orgId              String       @db.Uuid
+  org                Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt          DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy          String       @db.Uuid
+  version            Int          @default(1)
+  value              String
+  namespace          String
+  verificationStatus String       @default("UNVERIFIED")
+  personId           String       @db.Uuid
+  person             Person       @relation("PersonAlias_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model PersonAssignment {
+  id            String       @id @default(uuid()) @db.Uuid
+  orgId         String       @db.Uuid
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy     String       @db.Uuid
+  version       Int          @default(1)
+  trade         String?
+  crew          String?
+  validFrom     DateTime     @db.Timestamptz(6)
+  validUntil    DateTime?    @db.Timestamptz(6)
+  personId      String       @db.Uuid
+  person        Person       @relation("PersonAssignment_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId     String?      @db.Uuid
+  project       Project?     @relation("PersonAssignment_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  opportunityId String?      @db.Uuid
+  opportunity   Opportunity? @relation("PersonAssignment_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model WorkforcePlan {
+  id               String       @id @default(uuid()) @db.Uuid
+  orgId            String       @db.Uuid
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy        String       @db.Uuid
+  version          Int          @default(1)
+  kind             PlanKind
+  businessDate     DateTime     @db.Date
+  plannedHeadcount Int?
+  plannedMinutes   Int?
+  authorityStatus  String       @default("NOT_PROVIDED")
+  planVersion      Int
+  policyRef        String?
+  projectId        String       @db.Uuid
+  project          Project      @relation("WorkforcePlan_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  workPackageId    String?      @db.Uuid
+  workPackage      WorkPackage? @relation("WorkforcePlan_workPackageId", fields: [orgId, workPackageId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model SourceDocument {
+  id                               String            @id @default(uuid()) @db.Uuid
+  orgId                            String            @db.Uuid
+  org                              Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                        DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt                        DateTime          @updatedAt @db.Timestamptz(6)
+  updatedBy                        String            @db.Uuid
+  version                          Int               @default(1)
+  sha256                           String            @db.Char(64)
+  filename                         String
+  blobKey                          String
+  reportedDate                     DateTime?         @db.Date
+  importedAt                       DateTime          @default(now()) @db.Timestamptz(6)
+  rawPreparerName                  String?
+  sourceVersion                    String
+  // Hash proves byte identity, not the truth of the report.
+  SourceAssertion_documentId       SourceAssertion[] @relation("SourceAssertion_documentId")
+  ReportingBundle_sourceDocumentId ReportingBundle[] @relation("ReportingBundle_sourceDocumentId")
+  PhotoEvidence_sourceDocumentId   PhotoEvidence[]   @relation("PhotoEvidence_sourceDocumentId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, sha256])
+}
+
+model SourceAssertion {
+  id                         String              @id @default(uuid()) @db.Uuid
+  orgId                      String              @db.Uuid
+  org                        Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                  DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt                  DateTime            @updatedAt @db.Timestamptz(6)
+  updatedBy                  String              @db.Uuid
+  version                    Int                 @default(1)
+  locator                    String
+  rawValue                   Json
+  rawUom                     String?
+  missingReason              String?
+  sourceLayer                String
+  // JSON preserves strings, blanks, merged-cell spans and exact source context.
+  documentId                 String              @db.Uuid
+  document                   SourceDocument      @relation("SourceAssertion_documentId", fields: [orgId, documentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  AttendanceClaim_sourceId   AttendanceClaim[]   @relation("AttendanceClaim_sourceId")
+  DailyTask_sourceId         DailyTask[]         @relation("DailyTask_sourceId")
+  LaborEntry_sourceId        LaborEntry[]        @relation("LaborEntry_sourceId")
+  DailyQuantityPlan_sourceId DailyQuantityPlan[] @relation("DailyQuantityPlan_sourceId")
+  QuantityProgress_sourceId  QuantityProgress[]  @relation("QuantityProgress_sourceId")
+  Issue_sourceId             Issue[]             @relation("Issue_sourceId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, documentId, locator])
+}
+
+model ReportingBundle {
+  id                       String            @id @default(uuid()) @db.Uuid
+  orgId                    String            @db.Uuid
+  org                      Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime          @updatedAt @db.Timestamptz(6)
+  updatedBy                String            @db.Uuid
+  version                  Int               @default(1)
+  businessDate             DateTime          @db.Date
+  rawTitle                 String
+  assignmentStatus         String            @default("PENDING")
+  sourceDocumentId         String?           @db.Uuid
+  sourceDocument           SourceDocument?   @relation("ReportingBundle_sourceDocumentId", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  titleProjectCandidateId  String?           @db.Uuid
+  titleProjectCandidate    Project?          @relation("ReportingBundle_titleProjectCandidateId", fields: [orgId, titleProjectCandidateId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  AttendanceClaim_bundleId AttendanceClaim[] @relation("AttendanceClaim_bundleId")
+  DailyTask_bundleId       DailyTask[]       @relation("DailyTask_bundleId")
+
+  @@unique([orgId, id])
+}
+
+model AttendanceClaim {
+  id                           String                 @id @default(uuid()) @db.Uuid
+  orgId                        String                 @db.Uuid
+  org                          Organization           @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                    DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime               @updatedAt @db.Timestamptz(6)
+  updatedBy                    String                 @db.Uuid
+  version                      Int                    @default(1)
+  businessDate                 DateTime               @db.Date
+  reportedTotal                Int?
+  roleCounts                   Json?
+  claimedStart                 DateTime?              @db.Timestamptz(6)
+  claimedEnd                   DateTime?              @db.Timestamptz(6)
+  sourceStatus                 String                 @default("REPORTED")
+  bundleId                     String                 @db.Uuid
+  bundle                       ReportingBundle        @relation("AttendanceClaim_bundleId", fields: [orgId, bundleId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId                     String?                @db.Uuid
+  person                       Person?                @relation("AttendanceClaim_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId                     String?                @db.Uuid
+  source                       SourceAssertion?       @relation("AttendanceClaim_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  PresenceVerification_claimId PresenceVerification[] @relation("PresenceVerification_claimId")
+  LaborEntry_claimId           LaborEntry[]           @relation("LaborEntry_claimId")
+
+  @@unique([orgId, id])
+}
+
+model PresenceVerification {
+  id                          String             @id @default(uuid()) @db.Uuid
+  orgId                       String             @db.Uuid
+  org                         Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                   DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt                   DateTime           @updatedAt @db.Timestamptz(6)
+  updatedBy                   String             @db.Uuid
+  version                     Int                @default(1)
+  scope                       VerificationScope
+  result                      VerificationResult
+  observedAt                  DateTime?          @db.Timestamptz(6)
+  intervalStart               DateTime?          @db.Timestamptz(6)
+  intervalEnd                 DateTime?          @db.Timestamptz(6)
+  limitations                 String
+  method                      String
+  claimId                     String             @db.Uuid
+  claim                       AttendanceClaim    @relation("PresenceVerification_claimId", fields: [orgId, claimId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  reviewerPersonId            String             @db.Uuid
+  reviewerPerson              Person             @relation("PresenceVerification_reviewerPersonId", fields: [orgId, reviewerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  subjectPersonId             String?            @db.Uuid
+  subjectPerson               Person?            @relation("PresenceVerification_subjectPersonId", fields: [orgId, subjectPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  EvidenceLink_verificationId EvidenceLink[]     @relation("EvidenceLink_verificationId")
+
+  @@unique([orgId, id])
+}
+
+model DailyTask {
+  id                      String             @id @default(uuid()) @db.Uuid
+  orgId                   String             @db.Uuid
+  org                     Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt               DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime           @updatedAt @db.Timestamptz(6)
+  updatedBy               String             @db.Uuid
+  version                 Int                @default(1)
+  businessDate            DateTime           @db.Date
+  rawArea                 String?
+  activity                String
+  assignmentStatus        String             @default("PENDING")
+  // Pending facts may have no confirmed project.
+  bundleId                String             @db.Uuid
+  bundle                  ReportingBundle    @relation("DailyTask_bundleId", fields: [orgId, bundleId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId               String?            @db.Uuid
+  project                 Project?           @relation("DailyTask_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  opportunityId           String?            @db.Uuid
+  opportunity             Opportunity?       @relation("DailyTask_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  areaId                  String?            @db.Uuid
+  area                    Area?              @relation("DailyTask_areaId", fields: [orgId, areaId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  workPackageId           String?            @db.Uuid
+  workPackage             WorkPackage?       @relation("DailyTask_workPackageId", fields: [orgId, workPackageId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId                String?            @db.Uuid
+  source                  SourceAssertion?   @relation("DailyTask_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  LaborAllocation_taskId  LaborAllocation[]  @relation("LaborAllocation_taskId")
+  QuantityProgress_taskId QuantityProgress[] @relation("QuantityProgress_taskId")
+  EvidenceLink_taskId     EvidenceLink[]     @relation("EvidenceLink_taskId")
+  Issue_taskId            Issue[]            @relation("Issue_taskId")
+
+  @@unique([orgId, id])
+}
+
+model LaborEntry {
+  id                                    String                     @id @default(uuid()) @db.Uuid
+  orgId                                 String                     @db.Uuid
+  org                                   Organization               @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                             DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                             DateTime                   @updatedAt @db.Timestamptz(6)
+  updatedBy                             String                     @db.Uuid
+  version                               Int                        @default(1)
+  businessDate                          DateTime                   @db.Date
+  siteTimezone                          String
+  startAt                               DateTime?                  @db.Timestamptz(6)
+  endAt                                 DateTime?                  @db.Timestamptz(6)
+  netMinutes                            Int?
+  precision                             TimePrecision
+  laborKind                             LaborKind
+  payTimeKind                           String // REGULAR / OVERTIME / UNKNOWN independent of laborKind
+  acceptedLedger                        Boolean                    @default(false)
+  // Claims may overlap. Only resolved canonical interval segments enter acceptedLedger.
+  personId                              String                     @db.Uuid
+  person                                Person                     @relation("LaborEntry_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  claimId                               String?                    @db.Uuid
+  claim                                 AttendanceClaim?           @relation("LaborEntry_claimId", fields: [orgId, claimId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId                              String?                    @db.Uuid
+  source                                SourceAssertion?           @relation("LaborEntry_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  LaborAllocation_laborEntryId          LaborAllocation[]          @relation("LaborAllocation_laborEntryId")
+  ChargeableLaborReference_laborEntryId ChargeableLaborReference[] @relation("ChargeableLaborReference_laborEntryId")
+
+  @@unique([orgId, id])
+}
+
+model LaborAllocation {
+  id               String       @id @default(uuid()) @db.Uuid
+  orgId            String       @db.Uuid
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy        String       @db.Uuid
+  version          Int          @default(1)
+  allocatedMinutes Int
+  allocationStatus String       @default("PENDING")
+  laborEntryId     String       @db.Uuid
+  laborEntry       LaborEntry   @relation("LaborAllocation_laborEntryId", fields: [orgId, laborEntryId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  taskId           String       @db.Uuid
+  task             DailyTask    @relation("LaborAllocation_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model DailyQuantityPlan {
+  id                 String          @id @default(uuid()) @db.Uuid
+  orgId              String          @db.Uuid
+  org                Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt          DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime        @updatedAt @db.Timestamptz(6)
+  updatedBy          String          @db.Uuid
+  version            Int             @default(1)
+  targetBusinessDate DateTime        @db.Date
+  qty                Decimal?        @db.Decimal(20, 6)
+  uom                String
+  authorityStatus    String          @default("NOT_PROVIDED")
+  sourceVersion      String
+  workPackageId      String?         @db.Uuid
+  workPackage        WorkPackage?    @relation("DailyQuantityPlan_workPackageId", fields: [orgId, workPackageId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId           String          @db.Uuid
+  source             SourceAssertion @relation("DailyQuantityPlan_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model QuantityProgress {
+  id                    String           @id @default(uuid()) @db.Uuid
+  orgId                 String           @db.Uuid
+  org                   Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt             DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime         @updatedAt @db.Timestamptz(6)
+  updatedBy             String           @db.Uuid
+  version               Int              @default(1)
+  businessDate          DateTime         @db.Date
+  reportedToday         Decimal?         @db.Decimal(20, 6)
+  reportedCumulative    Decimal?         @db.Decimal(20, 6)
+  rawUom                String
+  reportedPercent       String?
+  denominatorQty        Decimal?         @db.Decimal(20, 6)
+  denominatorVersion    String?
+  rawScope              String
+  scopeStatus           String           @default("PENDING")
+  outputStage           String
+  roundingPolicy        String?
+  taskId                String           @db.Uuid
+  task                  DailyTask        @relation("QuantityProgress_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId              String?          @db.Uuid
+  source                SourceAssertion? @relation("QuantityProgress_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Inspection_progressId Inspection[]     @relation("Inspection_progressId")
+
+  @@unique([orgId, id])
+}
+
+model Inspection {
+  id                        String           @id @default(uuid()) @db.Uuid
+  orgId                     String           @db.Uuid
+  org                       Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                 DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime         @updatedAt @db.Timestamptz(6)
+  updatedBy                 String           @db.Uuid
+  version                   Int              @default(1)
+  inspectedAt               DateTime         @db.Timestamptz(6)
+  inspectedQty              Decimal          @db.Decimal(20, 6)
+  uom                       String
+  result                    String
+  progressId                String           @db.Uuid
+  progress                  QuantityProgress @relation("Inspection_progressId", fields: [orgId, progressId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  inspectorPersonId         String           @db.Uuid
+  inspectorPerson           Person           @relation("Inspection_inspectorPersonId", fields: [orgId, inspectorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Acceptance_inspectionId   Acceptance[]     @relation("Acceptance_inspectionId")
+  EvidenceLink_inspectionId EvidenceLink[]   @relation("EvidenceLink_inspectionId")
+
+  @@unique([orgId, id])
+}
+
+model Acceptance {
+  id               String       @id @default(uuid()) @db.Uuid
+  orgId            String       @db.Uuid
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy        String       @db.Uuid
+  version          Int          @default(1)
+  acceptedAt       DateTime     @db.Timestamptz(6)
+  acceptedQty      Decimal      @db.Decimal(20, 6)
+  uom              String
+  basisVersion     String
+  inspectionId     String       @db.Uuid
+  inspection       Inspection   @relation("Acceptance_inspectionId", fields: [orgId, inspectionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  approverPersonId String       @db.Uuid
+  approverPerson   Person       @relation("Acceptance_approverPersonId", fields: [orgId, approverPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model PhotoEvidence {
+  id                   String          @id @default(uuid()) @db.Uuid
+  orgId                String          @db.Uuid
+  org                  Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt            DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime        @updatedAt @db.Timestamptz(6)
+  updatedBy            String          @db.Uuid
+  version              Int             @default(1)
+  sha256               String          @db.Char(64)
+  blobKey              String
+  mediaType            String
+  sizeBytes            BigInt
+  deviceCapturedAt     DateTime?       @db.Timestamptz(6)
+  receivedAt           DateTime        @default(now()) @db.Timestamptz(6)
+  watermarkAssertion   Json?
+  assignmentStatus     String          @default("PENDING")
+  sourceDocumentId     String?         @db.Uuid
+  sourceDocument       SourceDocument? @relation("PhotoEvidence_sourceDocumentId", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  EvidenceLink_photoId EvidenceLink[]  @relation("EvidenceLink_photoId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, sha256])
+}
+
+model EvidenceLink {
+  id                  String                @id @default(uuid()) @db.Uuid
+  orgId               String                @db.Uuid
+  org                 Organization          @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt           DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime              @updatedAt @db.Timestamptz(6)
+  updatedBy           String                @db.Uuid
+  version             Int                   @default(1)
+  coverageDescription String
+  photoId             String                @db.Uuid
+  photo               PhotoEvidence         @relation("EvidenceLink_photoId", fields: [orgId, photoId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  taskId              String?               @db.Uuid
+  task                DailyTask?            @relation("EvidenceLink_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  verificationId      String?               @db.Uuid
+  verification        PresenceVerification? @relation("EvidenceLink_verificationId", fields: [orgId, verificationId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  inspectionId        String?               @db.Uuid
+  inspection          Inspection?           @relation("EvidenceLink_inspectionId", fields: [orgId, inspectionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model Issue {
+  id            String           @id @default(uuid()) @db.Uuid
+  orgId         String           @db.Uuid
+  org           Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt     DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
+  updatedBy     String           @db.Uuid
+  version       Int              @default(1)
+  kind          String
+  state         IssueState       @default(OPEN)
+  summary       String
+  dueAt         DateTime?        @db.Timestamptz(6)
+  resolution    String?
+  // Signals never automatically imply fraud.
+  projectId     String?          @db.Uuid
+  project       Project?         @relation("Issue_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  taskId        String?          @db.Uuid
+  task          DailyTask?       @relation("Issue_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId      String?          @db.Uuid
+  source        SourceAssertion? @relation("Issue_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ownerPersonId String?          @db.Uuid
+  ownerPerson   Person?          @relation("Issue_ownerPersonId", fields: [orgId, ownerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model DailyClose {
+  id                    String          @id @default(uuid()) @db.Uuid
+  orgId                 String          @db.Uuid
+  org                   Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt             DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime        @updatedAt @db.Timestamptz(6)
+  updatedBy             String          @db.Uuid
+  version               Int             @default(1)
+  businessDate          DateTime        @db.Date
+  siteTimezone          String
+  scopeKey              String
+  state                 DailyCloseState @default(EXPECTED)
+  expectedReason        String
+  expectedDueAt         DateTime?       @db.Timestamptz(6)
+  currentRevisionNumber Int             @default(0)
+  projectId             String          @db.Uuid
+  project               Project         @relation("DailyClose_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  areaId                String?         @db.Uuid
+  area                  Area?           @relation("DailyClose_areaId", fields: [orgId, areaId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  responsiblePersonId   String?         @db.Uuid
+  responsiblePerson     Person?         @relation("DailyClose_responsiblePersonId", fields: [orgId, responsiblePersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  delegatePersonId      String?         @db.Uuid
+  delegatePerson        Person?         @relation("DailyClose_delegatePersonId", fields: [orgId, delegatePersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Revision_dailyCloseId Revision[]      @relation("Revision_dailyCloseId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, businessDate, scopeKey])
+}
+
+model Revision {
+  id                       String          @id @default(uuid()) @db.Uuid
+  orgId                    String          @db.Uuid
+  org                      Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime        @updatedAt @db.Timestamptz(6)
+  updatedBy                String          @db.Uuid
+  version                  Int             @default(1)
+  revisionNumber           Int
+  baseRevisionNumber       Int?
+  state                    RevisionState   @default(DRAFT)
+  reason                   String
+  snapshot                 Json
+  submittedAt              DateTime?       @db.Timestamptz(6)
+  dailyCloseId             String          @db.Uuid
+  dailyClose               DailyClose      @relation("Revision_dailyCloseId", fields: [orgId, dailyCloseId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  RevisionEvent_revisionId RevisionEvent[] @relation("RevisionEvent_revisionId")
+  DailyFactLink_revisionId DailyFactLink[] @relation("DailyFactLink_revisionId")
+
+  @@unique([orgId, id])
+  @@unique([orgId, dailyCloseId, revisionNumber])
+}
+
+model RevisionEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  orgId         String       @db.Uuid
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy     String       @db.Uuid
+  version       Int          @default(1)
+  action        String
+  reason        String
+  actorPersonId String       @db.Uuid
+  revisionId    String       @db.Uuid
+  revision      Revision     @relation("RevisionEvent_revisionId", fields: [orgId, revisionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model DailyFactLink {
+  id          String       @id @default(uuid()) @db.Uuid
+  orgId       String       @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy   String       @db.Uuid
+  version     Int          @default(1)
+  factType    String
+  factId      String       @db.Uuid
+  factVersion Int
+  // Typed endpoint validation required; snapshot keeps immutable referenced payload.
+  revisionId  String       @db.Uuid
+  revision    Revision     @relation("DailyFactLink_revisionId", fields: [orgId, revisionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, revisionId, factType, factId, factVersion])
+}
+
+model ChargeableLaborReference {
+  id              String        @id @default(uuid()) @db.Uuid
+  orgId           String        @db.Uuid
+  org             Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt       DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @db.Timestamptz(6)
+  updatedBy       String        @db.Uuid
+  version         Int           @default(1)
+  sourceVersion   Int
+  quantity        Decimal?      @db.Decimal(20, 6)
+  uom             String?
+  rightStatus     String        @default("UNASSESSED")
+  rate            Decimal?      @db.Decimal(20, 4)
+  currency        String?       @db.Char(3)
+  // Skeleton only: no auto-charge, invoice, payment or EAC posting.
+  laborEntryId    String        @db.Uuid
+  laborEntry      LaborEntry    @relation("ChargeableLaborReference_laborEntryId", fields: [orgId, laborEntryId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  contractScopeId String        @db.Uuid
+  contractScope   ContractScope @relation("ChargeableLaborReference_contractScopeId", fields: [orgId, contractScopeId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+model IdempotencyRecord {
+  id             String       @id @default(uuid()) @db.Uuid
+  orgId          String       @db.Uuid
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy      String       @db.Uuid
+  version        Int          @default(1)
+  actorId        String       @db.Uuid
+  route          String
+  key            String
+  requestHash    String       @db.Char(64)
+  status         String
+  responseStatus Int?
+  responseBody   Json?
+  expiresAt      DateTime?    @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+  @@unique([orgId, actorId, route, key])
+}
+
+model OutboxEvent {
+  id               String       @id @default(uuid()) @db.Uuid
+  orgId            String       @db.Uuid
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy        String       @db.Uuid
+  version          Int          @default(1)
+  eventType        String
+  aggregateId      String       @db.Uuid
+  aggregateVersion Int
+  payload          Json
+  availableAt      DateTime     @default(now()) @db.Timestamptz(6)
+  processedAt      DateTime?    @db.Timestamptz(6)
+  attempts         Int          @default(0)
+
+  @@unique([orgId, id])
+  @@unique([orgId, eventType, aggregateId, aggregateVersion])
+}
+
+model AuditLog {
+  id             String       @id @default(uuid()) @db.Uuid
+  orgId          String       @db.Uuid
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  updatedBy      String       @db.Uuid
+  version        Int          @default(1)
+  actorAccountId String?      @db.Uuid
+  actorPersonId  String?      @db.Uuid
+  actorKind      String
+  entityType     String
+  entityId       String       @db.Uuid
+  entityVersion  Int
+  action         String
+  reason         String
+  before         Json?
+  after          Json?
+  correlationId  String
+  occurredAt     DateTime     @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+}
