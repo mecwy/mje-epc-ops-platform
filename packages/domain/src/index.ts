@@ -1,2 +1,2 @@
-// Phase 0 boundary only. No business behavior implemented.
-export {};
+// Domain services and persistence invariants; no HTTP, React or Azure SDK dependencies.
+export * from './alpha-store.js';

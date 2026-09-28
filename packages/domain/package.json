@@ -4,10 +4,20 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  },
+  "dependencies": {
+    "@mje/contracts": "workspace:*",
+    "pg": "^8.23.0"
   }
 }
