@@ -167,6 +167,16 @@ describe('Alpha manual declaration contract', () => {
         },
       ],
       milestones: [],
+      photoReferences: [
+        {
+          id: '10000000-0000-4000-8000-000000000010',
+          description: 'TEST image reference',
+          source: 'TEST device',
+          reportedTakenAt: '',
+          watermark: 'TEST unrelated scope',
+          scopeCandidate: 'TEST pending area',
+        },
+      ],
       qualityText: 'TEST inspection requested, result unknown',
       ehsText: '',
       constructionText: 'TEST work recorded',
@@ -181,6 +191,9 @@ describe('Alpha manual declaration contract', () => {
       },
     });
     expect(result.declaration.reportedSections).toEqual(sections);
+    expect(result.declaration.reportedSections?.photoReferences).toEqual(
+      sections.photoReferences,
+    );
     expect(result.declaration.reportedSections?.progress[0]?.today).toEqual({
       state: 'VALUE',
       value: '0',

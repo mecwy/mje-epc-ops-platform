@@ -60,6 +60,15 @@ export interface AlphaMilestoneRow {
   delayDays: AlphaRawCell;
   note: string;
 }
+/** Metadata only; no photo file or verified attribution is implied. */
+export interface AlphaPhotoReferenceRow {
+  id: string;
+  description: string;
+  source: string;
+  reportedTakenAt: string;
+  watermark: string;
+  scopeCandidate: string;
+}
 /** Manual report sections mirror the source layout while every attribution stays pending. */
 export interface AlphaReportedSections {
   originalRecorder: string;
@@ -72,6 +81,7 @@ export interface AlphaReportedSections {
   machines: AlphaMachineRow[];
   materials: AlphaMaterialRow[];
   milestones: AlphaMilestoneRow[];
+  photoReferences?: AlphaPhotoReferenceRow[];
   qualityText: string;
   ehsText: string;
   constructionText: string;
@@ -220,22 +230,27 @@ function reportedSections(
   action: SaveAlphaCommand['action'],
 ): AlphaReportedSections {
   const field = 'reportedSections';
-  const s = object(value, field, [
-    'originalRecorder',
-    'weather',
-    'temperature',
-    'reportedDuration',
-    'sourceNote',
-    'progress',
-    'workforce',
-    'machines',
-    'materials',
-    'milestones',
-    'qualityText',
-    'ehsText',
-    'constructionText',
-    'photoNotes',
-  ]);
+  const s = object(
+    value,
+    field,
+    [
+      'originalRecorder',
+      'weather',
+      'temperature',
+      'reportedDuration',
+      'sourceNote',
+      'progress',
+      'workforce',
+      'machines',
+      'materials',
+      'milestones',
+      'qualityText',
+      'ehsText',
+      'constructionText',
+      'photoNotes',
+    ],
+    ['photoReferences'],
+  );
   const named = (value: unknown, path: string, keys: string[]) => {
     const item = object(value, path, keys);
     return {
@@ -372,6 +387,39 @@ function reportedSections(
       };
     },
   );
+  const photoReferences = Object.hasOwn(s, 'photoReferences')
+    ? rows(s['photoReferences'], `${field}.photoReferences`, (value, path) => {
+        const { item, id, required } = named(value, path, [
+          'id',
+          'description',
+          'source',
+          'reportedTakenAt',
+          'watermark',
+          'scopeCandidate',
+        ]);
+        return {
+          id,
+          description: text(
+            item['description'],
+            `${path}.description`,
+            200,
+            required,
+          ),
+          source: text(item['source'], `${path}.source`, 300),
+          reportedTakenAt: text(
+            item['reportedTakenAt'],
+            `${path}.reportedTakenAt`,
+            100,
+          ),
+          watermark: text(item['watermark'], `${path}.watermark`, 1000),
+          scopeCandidate: text(
+            item['scopeCandidate'],
+            `${path}.scopeCandidate`,
+            300,
+          ),
+        };
+      })
+    : undefined;
   return {
     originalRecorder: text(
       s['originalRecorder'],
@@ -391,6 +439,7 @@ function reportedSections(
     machines,
     materials,
     milestones,
+    ...(photoReferences ? { photoReferences } : {}),
     qualityText: text(s['qualityText'], `${field}.qualityText`, 4000),
     ehsText: text(s['ehsText'], `${field}.ehsText`, 4000),
     constructionText: text(

@@ -250,6 +250,16 @@ try {
     machines: [],
     materials: [],
     milestones: [],
+    photoReferences: [
+      {
+        id: randomUUID(),
+        description: 'TEST reference only',
+        source: 'TEST recorder',
+        reportedTakenAt: '',
+        watermark: 'TEST other area',
+        scopeCandidate: 'TEST pending area',
+      },
+    ],
     qualityText: 'TEST check requested; no acceptance result',
     ehsText: '',
     constructionText: 'TEST site work',
