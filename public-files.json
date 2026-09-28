@@ -43,6 +43,7 @@
   "infra/bicep/README.md",
   "infra/bicep/dev-alpha.bicep",
   "infra/bicep/dev-database-admin.bicep",
+  "infra/bicep/dev-owner-app.bicep",
   "infra/bicep/dev-subscription.bicep",
   "infra/bicep/dev.parameters.example.json",
   "infra/bicep/main.bicep",
