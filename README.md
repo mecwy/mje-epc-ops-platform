@@ -1,6 +1,6 @@
 # MJE EPC operations platform
 
-Phase 0 engineering baseline. Business workflows, real authentication and offline submission are not implemented. This is not an employee-ready or production-ready application.
+Phase 0 baseline plus a locally verified owner-Alpha API candidate. Cloud sign-in, the business browser UI and offline submission are not delivered. This is not an employee-ready or production-ready application.
 
 The selected stack is TypeScript strict, React/Vite, NestJS, a Node worker, PostgreSQL/Prisma and Azure Blob, with Azure Container Apps as the intended application runtime. The first business scope is Site Daily Close. CRM, costing and payments currently have schema placeholders only.
 
@@ -44,8 +44,22 @@ The Azure workflow is manual and previews infrastructure only. No Azure identity
 
 ## Owner Alpha preparation
 
-The S0 slice adds a non-root, same-origin Web/API image, source revision in health, and a tested Entra v2 delegated-token verifier. The verifier is an authentication component only; project membership, business APIs and the browser sign-in flow are not wired yet. The page remains the Phase 0 status page.
+The S0 slice adds a non-root, same-origin Web/API image, source revision in health, and a tested Entra v2 delegated-token verifier. The later manual-declaration API slice below wires server membership and saved versions. The browser sign-in flow remains unimplemented, and the page remains the Phase 0 status page.
 
 Run `pnpm test:container` with Docker available to build and probe the packaged image. It checks the page, source identity, security headers, private path denial and runtime UID. It creates and removes only its uniquely named TEST container/image.
 
 `infra/bicep/dev-subscription.bicep` is a separate Dev-only passwordless foundation preview. It leaves the historical foundation template unchanged. See the infrastructure README for resource, identity and validation limits.
+
+## Manual declaration API (local verification)
+
+The Alpha API slice implements server-authorized project listing, draft saves, immutable saved versions, correction ancestry and record/history reads. All records remain manual declarations, with pending assignment and review; no actual labor hours, acceptance or approval is generated. Photos and independent review endpoints are not enabled. The browser still shows the baseline page until the owner agrees the separate prototype direction.
+
+`ALPHA_ENABLED=true` requires exact Entra tenant, API audience and SPA client configuration. Every request verifies its token, then resolves an active account/person and project-specific `ALPHA_OWNER` membership. Client-supplied organization, role or actor fields are rejected. The deployed process requires a managed identity database connection and rejects owner/superuser/RLS-bypass roles. `ALPHA_DATABASE_URL` is for local development only, with a separately provisioned non-owner login. No sample or fallback login exists.
+
+Writes use a stable record UUID, `Idempotency-Key` matching `clientMutationId`, `expectedVersion`, and explicit `baseRevisionNumber` (null for the first saved version). A saved-version correction needs a reason. The transaction atomically updates the draft, appends the immutable revision/audit when applicable, and records the replay response. Replay rechecks authorization first. Draft updates after an immutable version are labeled draft; the saved version remains readable. Project/business-date changes to an existing record are refused; record a separate declaration instead.
+
+The additive migration creates `AlphaDraft` referencing existing `DailyClose`; it reuses `Revision`, `RevisionEvent`, `AuditLog` and `IdempotencyRecord`. Existing immutable-source migrations are unchanged. The non-login group `mje_alpha_app` has only required table privileges and tenant policies. The migration owner retains recovery privileges and must never be the application identity. Assignment of a cloud managed identity to the SQL role and initial owner/project membership is still a controlled bootstrap step. Database commands use parameterized SQL for transaction/locking behavior; Prisma owns the schema and migration history.
+
+Run `pnpm build`, `pnpm db:migrate`, `pnpm test:integration` and `pnpm test:alpha` with local Compose available. The Alpha runner refuses non-local hosts, creates uniquely named TEST databases/login, exercises HTTP and RLS, dumps/restores to a second isolated database, and removes only those test resources. It requires Docker Compose for matching-version PostgreSQL backup tools. In CI it runs against synthetic local services only.
+
+Rollback: disable Alpha or redeploy the preceding image while retaining all added tables, versions and audits. Never reverse/drop the applied migration to roll back an app. Cloud persistence, real Entra/browser login, Blob recovery and owner UAT are still NOT RUN; passing these local checks is not online readiness or full AT/LR acceptance.

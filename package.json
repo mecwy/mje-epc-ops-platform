@@ -20,10 +20,11 @@
     "schema:validate": "prisma validate",
     "schema:format": "prisma format",
     "db:migrate": "prisma migrate deploy",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:public && pnpm schema:validate && pnpm build",
+    "check": "pnpm lint && pnpm build && pnpm typecheck && pnpm test && pnpm check:public && pnpm schema:validate",
     "test:smoke": "node scripts/smoke.mjs",
     "check:public": "node scripts/check-public.mjs",
-    "test:container": "node scripts/container-smoke.mjs"
+    "test:container": "node scripts/container-smoke.mjs",
+    "test:alpha": "node --env-file=.env scripts/alpha-integration.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",
