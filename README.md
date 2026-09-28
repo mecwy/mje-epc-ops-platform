@@ -1,6 +1,6 @@
 # MJE EPC operations platform
 
-Phase 0 baseline plus a locally verified owner-Alpha API candidate. Cloud sign-in, the business browser UI and offline submission are not delivered. This is not an employee-ready or production-ready application.
+Phase 0 baseline plus a locally verified owner-Alpha API and browser UI candidate. Cloud sign-in and offline submission have not been verified. This is not an employee-ready or production-ready application.
 
 The selected stack is TypeScript strict, React/Vite, NestJS, a Node worker, PostgreSQL/Prisma and Azure Blob, with Azure Container Apps as the intended application runtime. The first business scope is Site Daily Close. CRM, costing and payments currently have schema placeholders only.
 
@@ -16,7 +16,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-Web: http://127.0.0.1:5178. API: http://127.0.0.1:3300/health/live. The worker boots and exits without processing jobs. Local dependency ports are 55433 (PostgreSQL) and 11001 (Azurite), bound to loopback. Example credentials are for these local emulators only.
+Web: http://localhost:5178. API: http://127.0.0.1:3300/health/live. The worker boots and exits without processing jobs. Local dependency ports are 55433 (PostgreSQL) and 11001 (Azurite), bound to loopback. Example credentials are for these local emulators only.
 
 ```sh
 pnpm check
@@ -40,11 +40,11 @@ Keep private development evidence in a separate controlled local location with a
 
 Public CI checks formatting, types, build, publication guards, process startup, database constraints and private Blob access using synthetic data. It does not read private source documents or execute real-source acceptance. Source hash/table-coordinate regression remains in the controlled local archive. Passing this CI is not evidence of field verification, business acceptance or production readiness.
 
-The Azure workflow is manual and previews infrastructure only. No Azure identity or deployment has been verified here. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
+The Azure workflow is manual and previews infrastructure only. Its Dev-scoped OIDC login and what-if have been exercised; no paid foundation or application has been deployed. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
 
 ## Owner Alpha preparation
 
-The S0 slice adds a non-root, same-origin Web/API image, source revision in health, and a tested Entra v2 delegated-token verifier. The later manual-declaration API slice below wires server membership and saved versions. The browser sign-in flow remains unimplemented, and the page remains the Phase 0 status page.
+The S0 slice adds a non-root, same-origin Web/API image, source revision in health, and a tested Entra v2 delegated-token verifier. The later manual-declaration API slice below wires server membership and saved versions. The browser UI uses MSAL with the server-provided Dev configuration; it cannot save without a real login and project membership. The complete browser login and cloud persistence path remain unverified.
 
 Run `pnpm test:container` with Docker available to build and probe the packaged image. It checks the page, source identity, security headers, private path denial and runtime UID. It creates and removes only its uniquely named TEST container/image.
 
@@ -52,7 +52,7 @@ Run `pnpm test:container` with Docker available to build and probe the packaged 
 
 ## Manual declaration API (local verification)
 
-The Alpha API slice implements server-authorized project listing, draft saves, immutable saved versions, correction ancestry and record/history reads. All records remain manual declarations, with pending assignment and review; no actual labor hours, acceptance or approval is generated. Photos and independent review endpoints are not enabled. The browser still shows the baseline page until the owner agrees the separate prototype direction.
+The Alpha API slice implements server-authorized project listing, draft saves, immutable saved versions, correction ancestry and record/history reads. All records remain manual declarations, with pending assignment and review; no actual labor hours, acceptance or approval is generated. Photo source metadata can be declared, but photo upload and independent review endpoints are not enabled. The browser follows the source-shaped daily-report sections: progress, workforce, machinery, material, milestones, narratives and photo references. It keeps an ambiguous save request for same-key retry and never shows a simulated login as a real session.
 
 `ALPHA_ENABLED=true` requires exact Entra tenant, API audience and SPA client configuration. Every request verifies its token, then resolves an active account/person and project-specific `ALPHA_OWNER` membership. Client-supplied organization, role or actor fields are rejected. The deployed process requires a managed identity database connection and rejects owner/superuser/RLS-bypass roles. `ALPHA_DATABASE_URL` is for local development only, with a separately provisioned non-owner login. No sample or fallback login exists.
 
