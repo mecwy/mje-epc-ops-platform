@@ -25,6 +25,7 @@ jobs:
       - run: az bicep install --version v0.47.16
       - run: az bicep build --file infra/bicep/dev-subscription.bicep --outfile /tmp/dev-alpha.json
       - run: az bicep build --file infra/bicep/dev-owner-app.bicep --outfile /tmp/dev-owner-app.json
+      - run: az bicep build --file infra/bicep/dev-migration-job.bicep --outfile /tmp/dev-migration-job.json
       - run: docker compose up -d --wait postgres azurite
       - run: pnpm db:migrate
       - run: pnpm test:integration
