@@ -104,4 +104,115 @@ describe('Alpha manual declaration contract', () => {
     input.action = 'SAVE_VERSION';
     expect(() => parseSaveAlphaCommand(input)).toThrow();
   });
+  it('keeps TEST Word-shaped report cells, units, percentages and count conflicts as declarations', () => {
+    const input = command();
+    input.declaration.workItems = [];
+    const blank = { state: 'BLANK', value: null };
+    const unknown = { state: 'UNKNOWN', value: null };
+    const sections = {
+      originalRecorder: '',
+      weather: 'TEST mixed',
+      temperature: '',
+      reportedDuration: '',
+      sourceNote: 'TEST manual report',
+      progress: [
+        {
+          id: '10000000-0000-4000-8000-000000000005',
+          item: 'TEST bracket',
+          scopeCandidate: 'TEST roof candidate',
+          unit: '套',
+          today: { state: 'VALUE', value: '0' },
+          cumulative: blank,
+          designTotal: unknown,
+          reportedPercent: { state: 'VALUE', value: '17.3%' },
+          nextPlan: { state: 'VALUE', value: '7' },
+        },
+      ],
+      workforce: [
+        {
+          id: '10000000-0000-4000-8000-000000000006',
+          category: 'TEST',
+          role: 'A',
+          count: { state: 'VALUE', value: '1' },
+          scopeCandidate: '',
+        },
+        {
+          id: '10000000-0000-4000-8000-000000000007',
+          category: 'TEST',
+          role: 'B',
+          count: { state: 'VALUE', value: '2' },
+          scopeCandidate: '',
+        },
+      ],
+      machines: [
+        {
+          id: '10000000-0000-4000-8000-000000000008',
+          equipment: 'TEST lift',
+          location: '',
+          count: blank,
+          note: '',
+        },
+      ],
+      materials: [
+        {
+          id: '10000000-0000-4000-8000-000000000009',
+          item: 'TEST rail',
+          unit: '米',
+          today: { state: 'VALUE', value: '0' },
+          cumulative: blank,
+          designTotal: unknown,
+          reportedPercent: blank,
+          note: '',
+          scopeCandidate: '',
+        },
+      ],
+      milestones: [],
+      qualityText: 'TEST inspection requested, result unknown',
+      ehsText: '',
+      constructionText: 'TEST work recorded',
+      photoNotes: '',
+    };
+    const result = parseSaveAlphaCommand({
+      ...input,
+      declaration: {
+        ...input.declaration,
+        reportedHeadcount: { state: 'VALUE', value: '2' },
+        reportedSections: sections,
+      },
+    });
+    expect(result.declaration.reportedSections).toEqual(sections);
+    expect(result.declaration.reportedSections?.progress[0]?.today).toEqual({
+      state: 'VALUE',
+      value: '0',
+    });
+    expect(
+      result.declaration.reportedSections?.progress[0]?.cumulative,
+    ).toEqual(blank);
+    expect(result.declaration.reportedSections?.machines[0]?.count).toEqual(
+      blank,
+    );
+    expect(result.declaration.reportedHeadcount).toEqual({
+      state: 'VALUE',
+      value: '2',
+    });
+    expect(result.declaration).not.toHaveProperty('actualHours');
+    const forged = structuredClone(sections) as typeof sections & {
+      verified?: boolean;
+    };
+    forged.verified = true;
+    expect(() =>
+      parseSaveAlphaCommand({
+        ...input,
+        declaration: { ...input.declaration, reportedSections: forged },
+      }),
+    ).toThrow();
+    const invalid = structuredClone(sections);
+    invalid.progress[0]!.today = { state: 'BLANK', value: '0' };
+    expect(() =>
+      parseSaveAlphaCommand({
+        ...input,
+        declaration: { ...input.declaration, reportedSections: invalid },
+      }),
+    ).toThrow();
+  });
 });
