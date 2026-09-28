@@ -15,7 +15,7 @@
     "lint": "eslint apps packages scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test scripts/publication-policy.test.mjs && vitest run --passWithNoTests",
+    "test": "node --test scripts/publication-policy.test.mjs scripts/cloud-migrate.test.mjs && vitest run --passWithNoTests",
     "test:integration": "node --env-file=.env scripts/integration.mjs",
     "schema:validate": "prisma validate",
     "schema:format": "prisma format",
