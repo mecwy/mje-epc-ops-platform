@@ -1,43 +1,45 @@
-name: azure-foundation-what-if
+name: azure-dev-what-if
 on:
   workflow_dispatch:
-    inputs:
-      environment:
-        type: choice
-        options: [dev, uat]
-        default: dev
-        required: true
 permissions:
   contents: read
   id-token: write
 jobs:
   preview:
-    environment: ${{ inputs.environment }}
+    environment: dev
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Require approved environment configuration
+      - name: Require exact Dev target
         env:
           CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          BOOTSTRAP_VAULT_ID: ${{ vars.BOOTSTRAP_VAULT_ID }}
         run: |
-          test -n "$CLIENT_ID" && test -n "$TENANT_ID" && test -n "$SUBSCRIPTION_ID"
-          test -n "$RESOURCE_GROUP" && test -n "$BOOTSTRAP_VAULT_ID"
+          test -n "$CLIENT_ID"
+          test -n "$TENANT_ID"
+          test -n "$SUBSCRIPTION_ID"
+          test "$RESOURCE_GROUP" = mjeepc-dev
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Preview only, never deploy
+      - name: Compile and preview passwordless Dev foundation
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
+          SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          BOOTSTRAP_VAULT_ID: ${{ vars.BOOTSTRAP_VAULT_ID }}
         run: |
-          jq --arg vault "$BOOTSTRAP_VAULT_ID" '.parameters.postgresAdminPassword.reference.keyVault.id = $vault' "infra/bicep/$ENVIRONMENT.parameters.example.json" > "$RUNNER_TEMP/mje.parameters.json"
-          az bicep build --file infra/bicep/main.bicep
-          az deployment group what-if --resource-group "$RESOURCE_GROUP" --template-file infra/bicep/main.bicep --parameters "@$RUNNER_TEMP/mje.parameters.json"
+          az bicep build --file infra/bicep/dev-alpha.bicep --stdout > "$RUNNER_TEMP/dev-alpha.json"
+          az deployment group what-if \
+            --subscription "$SUBSCRIPTION_ID" \
+            --resource-group "$RESOURCE_GROUP" \
+            --name alpha-dev-preview \
+            --template-file "$RUNNER_TEMP/dev-alpha.json" \
+            --parameters location=francecentral \
+            --validation-level ProviderNoRbac \
+            --result-format ResourceIdOnly \
+            --output none
+          echo 'Dev-only ARM what-if completed.'
