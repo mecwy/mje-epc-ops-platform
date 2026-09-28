@@ -11,6 +11,73 @@ export interface AlphaWorkItem {
   unit: string;
 }
 
+/** Exact source text for a reported cell; it is not a normalized quantity. */
+export type AlphaRawCell =
+  | { state: 'VALUE'; value: string }
+  | { state: 'BLANK' | 'UNKNOWN' | 'NOT_APPLICABLE'; value: null };
+
+export interface AlphaProgressRow {
+  id: string;
+  item: string;
+  scopeCandidate: string;
+  unit: string;
+  today: AlphaRawCell;
+  cumulative: AlphaRawCell;
+  designTotal: AlphaRawCell;
+  reportedPercent: AlphaRawCell;
+  nextPlan: AlphaRawCell;
+}
+export interface AlphaWorkforceRow {
+  id: string;
+  category: string;
+  role: string;
+  count: AlphaRawCell;
+  scopeCandidate: string;
+}
+export interface AlphaMachineRow {
+  id: string;
+  equipment: string;
+  location: string;
+  count: AlphaRawCell;
+  note: string;
+}
+export interface AlphaMaterialRow {
+  id: string;
+  item: string;
+  unit: string;
+  today: AlphaRawCell;
+  cumulative: AlphaRawCell;
+  designTotal: AlphaRawCell;
+  reportedPercent: AlphaRawCell;
+  note: string;
+  scopeCandidate: string;
+}
+export interface AlphaMilestoneRow {
+  id: string;
+  name: string;
+  plannedDate: string;
+  actualDate: string;
+  delayDays: AlphaRawCell;
+  note: string;
+}
+/** Manual report sections mirror the source layout while every attribution stays pending. */
+export interface AlphaReportedSections {
+  originalRecorder: string;
+  weather: string;
+  temperature: string;
+  reportedDuration: string;
+  sourceNote: string;
+  progress: AlphaProgressRow[];
+  workforce: AlphaWorkforceRow[];
+  machines: AlphaMachineRow[];
+  materials: AlphaMaterialRow[];
+  milestones: AlphaMilestoneRow[];
+  qualityText: string;
+  ehsText: string;
+  constructionText: string;
+  photoNotes: string;
+}
+
 export interface AlphaDeclaration {
   businessDate: string;
   deviceRecordedAt: string | null;
@@ -19,6 +86,7 @@ export interface AlphaDeclaration {
   headcountNote: string;
   issues: string;
   tomorrow: { targetBusinessDate: string; text: string };
+  reportedSections?: AlphaReportedSections;
 }
 
 export interface SaveAlphaCommand {
@@ -43,12 +111,15 @@ function object(
   value: unknown,
   field: string,
   keys: string[],
+  optional: string[] = [],
 ): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new InvalidAlphaInput(field);
   const result = value as Record<string, unknown>;
   if (
-    Object.keys(result).some((key) => !keys.includes(key)) ||
+    Object.keys(result).some(
+      (key) => !keys.includes(key) && !optional.includes(key),
+    ) ||
     keys.some((key) => !Object.hasOwn(result, key))
   )
     throw new InvalidAlphaInput(field);
@@ -116,6 +187,220 @@ function reported(
   }
   throw new InvalidAlphaInput(field);
 }
+function rawCell(value: unknown, field: string): AlphaRawCell {
+  const input = object(value, field, ['state', 'value']);
+  if (input['state'] === 'VALUE') {
+    const raw = text(input['value'], `${field}.value`, 100);
+    if (raw.length === 0) throw new InvalidAlphaInput(field);
+    return { state: 'VALUE', value: raw };
+  }
+  if (
+    (input['state'] === 'BLANK' ||
+      input['state'] === 'UNKNOWN' ||
+      input['state'] === 'NOT_APPLICABLE') &&
+    input['value'] === null
+  )
+    return { state: input['state'], value: null };
+  throw new InvalidAlphaInput(field);
+}
+function rows<T extends { id: string }>(
+  value: unknown,
+  field: string,
+  parse: (item: unknown, path: string) => T,
+): T[] {
+  if (!Array.isArray(value) || value.length > 50)
+    throw new InvalidAlphaInput(field);
+  const result = value.map((item, index) => parse(item, `${field}.${index}`));
+  if (new Set(result.map((item) => item.id)).size !== result.length)
+    throw new InvalidAlphaInput(`${field}.id`);
+  return result;
+}
+function reportedSections(
+  value: unknown,
+  action: SaveAlphaCommand['action'],
+): AlphaReportedSections {
+  const field = 'reportedSections';
+  const s = object(value, field, [
+    'originalRecorder',
+    'weather',
+    'temperature',
+    'reportedDuration',
+    'sourceNote',
+    'progress',
+    'workforce',
+    'machines',
+    'materials',
+    'milestones',
+    'qualityText',
+    'ehsText',
+    'constructionText',
+    'photoNotes',
+  ]);
+  const named = (value: unknown, path: string, keys: string[]) => {
+    const item = object(value, path, keys);
+    return {
+      item,
+      id: identifier(item['id'], `${path}.id`),
+      required: action === 'SAVE_VERSION',
+    };
+  };
+  const progress = rows(s['progress'], `${field}.progress`, (value, path) => {
+    const { item, id, required } = named(value, path, [
+      'id',
+      'item',
+      'scopeCandidate',
+      'unit',
+      'today',
+      'cumulative',
+      'designTotal',
+      'reportedPercent',
+      'nextPlan',
+    ]);
+    return {
+      id,
+      item: text(item['item'], `${path}.item`, 200, required),
+      scopeCandidate: text(
+        item['scopeCandidate'],
+        `${path}.scopeCandidate`,
+        300,
+      ),
+      unit: text(item['unit'], `${path}.unit`, 100),
+      today: rawCell(item['today'], `${path}.today`),
+      cumulative: rawCell(item['cumulative'], `${path}.cumulative`),
+      designTotal: rawCell(item['designTotal'], `${path}.designTotal`),
+      reportedPercent: rawCell(
+        item['reportedPercent'],
+        `${path}.reportedPercent`,
+      ),
+      nextPlan: rawCell(item['nextPlan'], `${path}.nextPlan`),
+    };
+  });
+  const workforce = rows(
+    s['workforce'],
+    `${field}.workforce`,
+    (value, path) => {
+      const { item, id, required } = named(value, path, [
+        'id',
+        'category',
+        'role',
+        'count',
+        'scopeCandidate',
+      ]);
+      return {
+        id,
+        category: text(item['category'], `${path}.category`, 200),
+        role: text(item['role'], `${path}.role`, 200, required),
+        count: rawCell(item['count'], `${path}.count`),
+        scopeCandidate: text(
+          item['scopeCandidate'],
+          `${path}.scopeCandidate`,
+          300,
+        ),
+      };
+    },
+  );
+  const machines = rows(s['machines'], `${field}.machines`, (value, path) => {
+    const { item, id, required } = named(value, path, [
+      'id',
+      'equipment',
+      'location',
+      'count',
+      'note',
+    ]);
+    return {
+      id,
+      equipment: text(item['equipment'], `${path}.equipment`, 200, required),
+      location: text(item['location'], `${path}.location`, 300),
+      count: rawCell(item['count'], `${path}.count`),
+      note: text(item['note'], `${path}.note`, 1000),
+    };
+  });
+  const materials = rows(
+    s['materials'],
+    `${field}.materials`,
+    (value, path) => {
+      const { item, id, required } = named(value, path, [
+        'id',
+        'item',
+        'unit',
+        'today',
+        'cumulative',
+        'designTotal',
+        'reportedPercent',
+        'note',
+        'scopeCandidate',
+      ]);
+      return {
+        id,
+        item: text(item['item'], `${path}.item`, 200, required),
+        unit: text(item['unit'], `${path}.unit`, 100),
+        today: rawCell(item['today'], `${path}.today`),
+        cumulative: rawCell(item['cumulative'], `${path}.cumulative`),
+        designTotal: rawCell(item['designTotal'], `${path}.designTotal`),
+        reportedPercent: rawCell(
+          item['reportedPercent'],
+          `${path}.reportedPercent`,
+        ),
+        note: text(item['note'], `${path}.note`, 1000),
+        scopeCandidate: text(
+          item['scopeCandidate'],
+          `${path}.scopeCandidate`,
+          300,
+        ),
+      };
+    },
+  );
+  const milestones = rows(
+    s['milestones'],
+    `${field}.milestones`,
+    (value, path) => {
+      const { item, id, required } = named(value, path, [
+        'id',
+        'name',
+        'plannedDate',
+        'actualDate',
+        'delayDays',
+        'note',
+      ]);
+      return {
+        id,
+        name: text(item['name'], `${path}.name`, 200, required),
+        plannedDate: text(item['plannedDate'], `${path}.plannedDate`, 100),
+        actualDate: text(item['actualDate'], `${path}.actualDate`, 100),
+        delayDays: rawCell(item['delayDays'], `${path}.delayDays`),
+        note: text(item['note'], `${path}.note`, 1000),
+      };
+    },
+  );
+  return {
+    originalRecorder: text(
+      s['originalRecorder'],
+      `${field}.originalRecorder`,
+      200,
+    ),
+    weather: text(s['weather'], `${field}.weather`, 200),
+    temperature: text(s['temperature'], `${field}.temperature`, 100),
+    reportedDuration: text(
+      s['reportedDuration'],
+      `${field}.reportedDuration`,
+      200,
+    ),
+    sourceNote: text(s['sourceNote'], `${field}.sourceNote`, 1000),
+    progress,
+    workforce,
+    machines,
+    materials,
+    milestones,
+    qualityText: text(s['qualityText'], `${field}.qualityText`, 4000),
+    ehsText: text(s['ehsText'], `${field}.ehsText`, 4000),
+    constructionText: text(
+      s['constructionText'],
+      `${field}.constructionText`,
+      4000,
+    ),
+    photoNotes: text(s['photoNotes'], `${field}.photoNotes`, 2000),
+  };
+}
 export function parseSaveAlphaCommand(value: unknown): SaveAlphaCommand {
   const input = object(value, 'command', [
     'recordId',
@@ -143,15 +428,20 @@ export function parseSaveAlphaCommand(value: unknown): SaveAlphaCommand {
       (base as number) > 2147483646)
   )
     throw new InvalidAlphaInput('baseRevisionNumber');
-  const declaration = object(input['declaration'], 'declaration', [
-    'businessDate',
-    'deviceRecordedAt',
-    'workItems',
-    'reportedHeadcount',
-    'headcountNote',
-    'issues',
-    'tomorrow',
-  ]);
+  const declaration = object(
+    input['declaration'],
+    'declaration',
+    [
+      'businessDate',
+      'deviceRecordedAt',
+      'workItems',
+      'reportedHeadcount',
+      'headcountNote',
+      'issues',
+      'tomorrow',
+    ],
+    ['reportedSections'],
+  );
   const businessDate = parseBusinessDate(declaration['businessDate']);
   const recorded = declaration['deviceRecordedAt'];
   if (recorded !== null) {
@@ -166,10 +456,26 @@ export function parseSaveAlphaCommand(value: unknown): SaveAlphaCommand {
     parseBusinessDate(recorded.slice(0, 10), 'deviceRecordedAt');
   }
   const works = declaration['workItems'];
+  const sections = Object.hasOwn(declaration, 'reportedSections')
+    ? reportedSections(
+        declaration['reportedSections'],
+        input['action'] as SaveAlphaCommand['action'],
+      )
+    : undefined;
   if (
     !Array.isArray(works) ||
     works.length > 50 ||
-    (input['action'] === 'SAVE_VERSION' && works.length === 0)
+    (input['action'] === 'SAVE_VERSION' &&
+      works.length === 0 &&
+      (!sections ||
+        (sections.progress.length === 0 &&
+          sections.workforce.length === 0 &&
+          sections.machines.length === 0 &&
+          sections.materials.length === 0 &&
+          sections.milestones.length === 0 &&
+          !sections.qualityText.trim() &&
+          !sections.ehsText.trim() &&
+          !sections.constructionText.trim())))
   )
     throw new InvalidAlphaInput('workItems');
   const workItems: AlphaWorkItem[] = works.map((value, index) => {
@@ -236,6 +542,7 @@ export function parseSaveAlphaCommand(value: unknown): SaveAlphaCommand {
         targetBusinessDate: tomorrow['targetBusinessDate'] as string,
         text: text(tomorrow['text'], 'tomorrow.text', 4000),
       },
+      ...(sections ? { reportedSections: sections } : {}),
     },
   };
 }

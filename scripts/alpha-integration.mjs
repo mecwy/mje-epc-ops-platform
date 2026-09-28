@@ -227,6 +227,34 @@ try {
     'HTTP project and organization isolation; forged authority fields rejected',
   );
   const original = command();
+  original.declaration.reportedSections = {
+    originalRecorder: '',
+    weather: 'TEST mixed',
+    temperature: '',
+    reportedDuration: '',
+    sourceNote: 'TEST manual declaration',
+    progress: [
+      {
+        id: randomUUID(),
+        item: 'TEST rail',
+        scopeCandidate: 'TEST area candidate',
+        unit: '套',
+        today: { state: 'VALUE', value: '0' },
+        cumulative: { state: 'BLANK', value: null },
+        designTotal: { state: 'UNKNOWN', value: null },
+        reportedPercent: { state: 'VALUE', value: '17.3%' },
+        nextPlan: { state: 'NOT_APPLICABLE', value: null },
+      },
+    ],
+    workforce: [],
+    machines: [],
+    materials: [],
+    milestones: [],
+    qualityText: 'TEST check requested; no acceptance result',
+    ehsText: '',
+    constructionText: 'TEST site work',
+    photoNotes: '',
+  };
   const responses = await Promise.all(
     Array.from({ length: 10 }, () =>
       call('/api/site-days/save', bearerA, original),
@@ -268,6 +296,10 @@ try {
   );
   assert.equal(detail.content.declaration.reportedHeadcount.value, null);
   assert.equal(detail.content.declaration.issues, '');
+  assert.deepEqual(
+    detail.content.declaration.reportedSections,
+    original.declaration.reportedSections,
+  );
   assert.equal(detail.content.siteTimezone, 'Europe/Belgrade');
   pass(
     'readback keeps business date, raw zero, unknown count and blank issues',
@@ -292,6 +324,10 @@ try {
   assert.equal(
     revised.revisions[0].snapshot.declaration.workItems[0].description,
     'TEST initial work',
+  );
+  assert.deepEqual(
+    revised.revisions[0].snapshot.declaration.reportedSections,
+    original.declaration.reportedSections,
   );
   assert.equal(
     revised.revisions[1].snapshot.declaration.workItems[0].description,
