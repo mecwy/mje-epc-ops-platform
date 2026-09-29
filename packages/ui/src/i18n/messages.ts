@@ -688,6 +688,12 @@ export const MESSAGES = {
   roster: ['名单', 'Roster', 'Spisak', 'Lista'],
   safety: ['安全', 'Safety', 'Bezbednost', 'Seguridad'],
   save: ['保存', 'Save', 'Sačuvaj', 'Guardar'],
+  savedStale: [
+    '已保存，但未能重新载入问题列表，请重试载入',
+    'Saved, but the issue list could not be reloaded; retry to reload',
+    'Sačuvano, ali lista problema nije ponovo učitana; pokušajte ponovo',
+    'Guardado, pero no se pudo recargar la lista de problemas; reintente',
+  ],
   saveFail: [
     '保存失败',
     'Save failed',

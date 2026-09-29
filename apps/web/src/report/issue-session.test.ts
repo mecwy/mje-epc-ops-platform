@@ -220,13 +220,14 @@ describe('issue session', () => {
       reads.at(-1)!.resolve();
     }
     expect(await pending).toBe('ok');
-    expect(s.error).toBe('STALE');
+    expect(s.error).toBe('SAVED_STALE');
     const next = s.reopen('i1');
     for (let i = 0; i < 3; i++) {
       await tick();
       reads.at(-1)!.resolve();
     }
     expect(await next).toBe('failed');
+    expect(s.error).toBe('STALE'); // this one was not sent
     expect(f.writes).toHaveLength(2);
     expect(s.needsRetry).toBe(true);
     failReads = false;

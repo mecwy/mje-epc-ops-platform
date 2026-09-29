@@ -31,6 +31,8 @@ export function issueErrorKey(code: string | null): MessageKey | null {
       return 'conflictStale';
     case 'STALE':
       return 'issuesStale';
+    case 'SAVED_STALE':
+      return 'savedStale';
     case 'READ_ONLY':
     case 'FORBIDDEN':
       return 'forbidden';
@@ -43,7 +45,14 @@ export function issueErrorKey(code: string | null): MessageKey | null {
  * Unsent command or failed reload: say which, and offer Retry (the same command, same key).
  * Otherwise the last definite rejection, if any.
  */
-export function IssueBanner({ handle }: { handle: IssuesHandle }) {
+export function IssueBanner({
+  handle,
+  onSent,
+}: {
+  handle: IssuesHandle;
+  /** Called when Retry resent the unsent command and it succeeded. */
+  onSent?: () => void;
+}) {
   const { t } = useI18n();
   if (handle.needsRetry) {
     const key = handle.pending ? 'saveFail' : issueErrorKey(handle.error);
@@ -54,7 +63,10 @@ export function IssueBanner({ handle }: { handle: IssuesHandle }) {
           type="button"
           className="pill"
           disabled={handle.busy}
-          onClick={() => void handle.retry()}
+          onClick={async () => {
+            const resend = handle.pending;
+            if ((await handle.retry()) === 'ok' && resend) onSent?.();
+          }}
         >
           {t('retry')}
         </button>
@@ -596,7 +608,9 @@ export function ReplySheet({
   const [text, setText] = useState('');
   return (
     <Sheet title={t('reply')} onClose={onClose}>
-      <IssueBanner handle={handle} />
+      {/* The only command an executive can leave unsent is a reply: once Retry delivers it,
+          this composer is finished and cannot send the same text again. */}
+      <IssueBanner handle={handle} onSent={onClose} />
       <label className="field">
         <span>{t('reply')}</span>
         <textarea

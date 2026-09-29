@@ -71,9 +71,9 @@ export class IssueSession {
   lag: string[] = [];
   busy = false;
   /**
-   * Last definite rejection code; 'NETWORK' while a command awaits retry; 'STALE' when the
-   * list could not be reloaded after a write (actions wait for a reload); 'CONFLICT_STALE'
-   * for a version conflict whose reload failed.
+   * Last definite rejection code; 'NETWORK' while a command awaits retry; 'SAVED_STALE' when
+   * a write was saved but the list could not be reloaded; 'STALE' when an action was not
+   * sent because no reload landed; 'CONFLICT_STALE' for a conflict whose reload failed.
    */
   error: string | null = null;
   pending: Pending | null = null;
@@ -129,7 +129,11 @@ export class IssueSession {
     return this.enqueue(async () => {
       if (this.pending) return this.send(this.pending);
       if (!(await this.fresh())) return 'failed';
-      if (this.error === 'STALE' || this.error === 'CONFLICT_STALE')
+      if (
+        this.error === 'STALE' ||
+        this.error === 'SAVED_STALE' ||
+        this.error === 'CONFLICT_STALE'
+      )
         this.error = null;
       this.notify();
       return 'ok';
@@ -141,6 +145,7 @@ export class IssueSession {
     return (
       this.pending !== null ||
       this.error === 'STALE' ||
+      this.error === 'SAVED_STALE' ||
       this.error === 'CONFLICT_STALE'
     );
   }
@@ -154,7 +159,8 @@ export class IssueSession {
       this.pending = null;
       this.error = null;
       this.writtenAt = this.reads;
-      if (!(await this.fresh())) this.error = 'STALE';
+      // Saved; only the reload failed (the next action still waits for one to land).
+      if (!(await this.fresh())) this.error = 'SAVED_STALE';
       return 'ok';
     } catch (e) {
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
