@@ -68,8 +68,17 @@ export interface IssueNoteView {
   authorPersonId: string;
   at: string;
 }
+export type IssueTransitionKind = 'close' | 'reopen';
+export interface IssueTransitionView {
+  kind: IssueTransitionKind;
+  onDate: string;
+  actorPersonId: string;
+  at: string;
+}
 export interface IssueView extends IssueRecord {
   notes: IssueNoteView[];
+  /** Effective-dated close/reopen history, oldest first. */
+  transitions: IssueTransitionView[];
 }
 /** What a day shows (and a submission freezes) of one issue, as of that business day. */
 export interface IssueAsOf {
@@ -91,8 +100,10 @@ const ISSUE_COLUMNS = `i.id, i."projectId", i.summary AS title, COALESCE(i.categ
   i."closedOn"::text AS "closedOn", i."closedBy", i.state::text AS state, i.version`;
 
 /**
- * Issues shown on a business day: raised on or before it and not closed before it. Status and
- * the last note are as of that day, so a view of an earlier day is not rewritten by later notes.
+ * Issues shown on a business day: raised on or before it and, as of that day, either open or
+ * closed on that very day. "As of" is the last close/reopen transition dated on or before the
+ * day (ties: the one applied last, by sequence: database clocks can step backwards), so a later reopen never rewrites an earlier day. The last
+ * note is also as of that day.
  */
 export async function issuesAsOf(
   client: PoolClient,
@@ -104,28 +115,36 @@ export async function issuesAsOf(
     asOf(i, businessDate),
   );
 }
+interface ShownRow extends IssueRecord {
+  last: IssueAsOf['last'];
+  /** Last transition on or before the day; null = never closed by then. */
+  asOfKind: IssueTransitionKind | null;
+  asOfOn: string | null;
+}
 async function shownOn(
   client: PoolClient,
   orgId: string,
   projectId: string,
   businessDate: string,
-) {
-  const r = await client.query<IssueRecord & { last: IssueAsOf['last'] }>(
-    `SELECT ${ISSUE_COLUMNS},
+): Promise<ShownRow[]> {
+  const r = await client.query<ShownRow>(
+    `SELECT ${ISSUE_COLUMNS}, t.kind AS "asOfKind", t."onDate"::text AS "asOfOn",
       (SELECT json_build_object('kind', n.kind, 'text', n.text, 'onDate', n."onDate"::text) FROM "IssueNote" n
         WHERE n."orgId"=i."orgId" AND n."issueId"=i.id AND n."onDate"<=$3::date
-        ORDER BY n."createdAt" DESC, n.id DESC LIMIT 1) AS last
-    FROM "Issue" i WHERE i."orgId"=$1 AND i."projectId"=$2 AND i.kind=$4
-      AND i."createdOn"<=$3::date AND (i."closedOn" IS NULL OR i."closedOn">=$3::date)
-    ORDER BY i."createdOn", i."createdAt", i.id`,
+        ORDER BY n.seq DESC LIMIT 1) AS last
+    FROM "Issue" i
+    LEFT JOIN LATERAL (SELECT tr.kind, tr."onDate" FROM "IssueTransition" tr
+      WHERE tr."orgId"=i."orgId" AND tr."issueId"=i.id AND tr."onDate"<=$3::date
+      ORDER BY tr."onDate" DESC, tr.seq DESC LIMIT 1) t ON true
+    WHERE i."orgId"=$1 AND i."projectId"=$2 AND i.kind=$4 AND i."createdOn"<=$3::date
+      AND (t.kind IS DISTINCT FROM 'close' OR t."onDate"=$3::date)
+    ORDER BY i."createdOn", i.seq`,
     [orgId, projectId, businessDate, ISSUE_KIND],
   );
   return r.rows;
 }
-function asOf(
-  i: IssueRecord & { last: IssueAsOf['last'] },
-  businessDate: string,
-): IssueAsOf {
+function asOf(i: ShownRow, businessDate: string): IssueAsOf {
+  const closed = i.asOfKind === 'close';
   return {
     id: i.id,
     title: i.title,
@@ -135,9 +154,8 @@ function asOf(
     ownerPersonId: i.ownerPersonId,
     dueOn: i.dueOn,
     workItemKey: i.workItemKey,
-    status:
-      i.closedOn !== null && i.closedOn <= businessDate ? 'closed' : 'open',
-    closedToday: i.closedOn === businessDate,
+    status: closed ? 'closed' : 'open',
+    closedToday: closed && i.asOfOn === businessDate,
     last: i.last,
   };
 }
@@ -172,10 +190,24 @@ export class IssueStore {
   ): Promise<IssueNoteView[]> {
     const r = await client.query<Omit<IssueNoteView, 'at'> & { at: Date }>(
       `SELECT id, kind, text, "onDate"::text AS "onDate", "authorPersonId", "createdAt" AS at FROM "IssueNote"
-      WHERE "orgId"=$1 AND "issueId"=$2 AND ($3::date IS NULL OR "onDate"<=$3::date) ORDER BY "createdAt", id`,
+      WHERE "orgId"=$1 AND "issueId"=$2 AND ($3::date IS NULL OR "onDate"<=$3::date) ORDER BY seq`,
       [orgId, issueId, upTo],
     );
     return r.rows.map((n) => ({ ...n, at: n.at.toISOString() }));
+  }
+  private async transitions(
+    client: PoolClient,
+    orgId: string,
+    issueId: string,
+  ): Promise<IssueTransitionView[]> {
+    const r = await client.query<
+      Omit<IssueTransitionView, 'at'> & { at: Date }
+    >(
+      `SELECT kind, "onDate"::text AS "onDate", "actorPersonId", "createdAt" AS at FROM "IssueTransition"
+      WHERE "orgId"=$1 AND "issueId"=$2 ORDER BY "onDate", seq`,
+      [orgId, issueId],
+    );
+    return r.rows.map((t) => ({ ...t, at: t.at.toISOString() }));
   }
   private async view(
     client: PoolClient,
@@ -183,7 +215,41 @@ export class IssueStore {
     issueId: string,
   ): Promise<IssueView> {
     const issue = await this.row(client, orgId, issueId);
-    return { ...issue, notes: await this.notes(client, orgId, issueId) };
+    return {
+      ...issue,
+      notes: await this.notes(client, orgId, issueId),
+      transitions: await this.transitions(client, orgId, issueId),
+    };
+  }
+  /** Transitions are effective-dated and must stay in business-date order. */
+  private async lastTransition(
+    client: PoolClient,
+    orgId: string,
+    issueId: string,
+  ) {
+    const all = await this.transitions(client, orgId, issueId);
+    return all.at(-1) ?? null;
+  }
+  private async addTransition(
+    client: PoolClient,
+    actor: Actor,
+    issueId: string,
+    kind: IssueTransitionKind,
+    onDate: string,
+  ) {
+    await client.query(
+      `INSERT INTO "IssueTransition"(id,"orgId","issueId",kind,"onDate","actorAccountId","actorPersonId")
+      VALUES($1,$2,$3,$4,$5::date,$6,$7)`,
+      [
+        randomUUID(),
+        actor.orgId,
+        issueId,
+        kind,
+        onDate,
+        actor.accountId,
+        actor.personId,
+      ],
+    );
   }
   /** The issue's project decides access; an issue outside the caller's org is simply not found. */
   private async forWrite(client: PoolClient, actor: Actor, issueId: string) {
@@ -295,6 +361,8 @@ export class IssueStore {
       ))
         issues.push({
           ...asOf(row, businessDate),
+          // status/closedToday are as of the day; state, closedOn and version are current
+          // (the version is what the next edit must send).
           createdOn: row.createdOn,
           closedOn: row.closedOn,
           state: row.state,
@@ -568,6 +636,20 @@ export class IssueStore {
           if (!canCloseByPm(before)) throw new ReportError('NEEDS_EXPERT');
           if (command.businessDate < before.createdOn)
             throw new ReportError('DATE_BEFORE_CREATED');
+          const last = await this.lastTransition(
+            client,
+            actor.orgId,
+            before.id,
+          );
+          if (last && command.businessDate < last.onDate)
+            throw new ReportError('DATE_BEFORE_REOPEN');
+          await this.addTransition(
+            client,
+            actor,
+            before.id,
+            'close',
+            command.businessDate,
+          );
           return this.update(
             client,
             actor,
@@ -602,6 +684,20 @@ export class IssueStore {
           // Only a project-manager close can be reopened here; a verified close is not ours to undo.
           if (before.state !== 'CLOSED')
             throw new ReportError('ISSUE_NOT_CLOSED');
+          const last = await this.lastTransition(
+            client,
+            actor.orgId,
+            before.id,
+          );
+          if (last && command.businessDate < last.onDate)
+            throw new ReportError('DATE_BEFORE_CLOSE');
+          await this.addTransition(
+            client,
+            actor,
+            before.id,
+            'reopen',
+            command.businessDate,
+          );
           return this.update(
             client,
             actor,

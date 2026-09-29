@@ -39,7 +39,9 @@ export class ReportError extends Error {
       | 'OWNER_NOT_FOUND'
       | 'ISSUE_CLOSED'
       | 'ISSUE_NOT_CLOSED'
-      | 'DATE_BEFORE_CREATED',
+      | 'DATE_BEFORE_CREATED'
+      | 'DATE_BEFORE_CLOSE'
+      | 'DATE_BEFORE_REOPEN',
   ) {
     super(code);
   }

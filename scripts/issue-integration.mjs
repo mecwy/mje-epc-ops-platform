@@ -131,9 +131,11 @@ try {
       'INSERT INTO "LoginAccount"(id,"orgId","updatedAt","updatedBy","entraTenantId","entraObjectId","personId") VALUES($1,$2,now(),$3,$4,$5,$6)',
       [id, orgId, seedActor, tenantId, objectId, personId],
     );
+  // activeFrom lies in the past: a database clock stepping back (NTP) right after seeding
+  // must not make a fresh membership "not yet active".
   const membership = (orgId, accountId, role, projectId) =>
     owner.query(
-      'INSERT INTO "Membership"(id,"orgId","updatedAt","updatedBy",role,"activeFrom","accountId","projectId") VALUES($1,$2,now(),$3,$4,now(),$5,$6)',
+      'INSERT INTO "Membership"(id,"orgId","updatedAt","updatedBy",role,"activeFrom","accountId","projectId") VALUES($1,$2,now(),$3,$4,now()-interval \'1 hour\',$5,$6)',
       [randomUUID(), orgId, seedActor, role, accountId, projectId],
     );
   await membership(orgA, accountPm, 'PROJECT_MANAGER', projectA);
@@ -211,7 +213,8 @@ try {
     D2 = '2026-10-06',
     D3 = '2026-10-07',
     D4 = '2026-10-08',
-    D5 = '2026-10-09';
+    D5 = '2026-10-09',
+    D8 = '2026-10-12';
   const key = () => randomUUID();
   const create = (over = {}) => ({
     projectId: projectA,
@@ -680,8 +683,13 @@ try {
     ['open', false, 'CLOSED'],
   );
   assert.ok(d1I1.notes.every((n) => n.onDate <= D1));
+  const find = (body, id) => body.issues.find((i) => i.id === id);
   let d2 = await expectStatus(list(D2), 200);
   assert.ok(ids(d2).includes(i1.id) && ids(d2).includes(i3.id));
+  assert.deepEqual(
+    [find(d2, i1.id).status, find(d2, i1.id).closedToday],
+    ['closed', true],
+  );
   let d3 = await expectStatus(list(D3), 200);
   assert.ok(!ids(d3).includes(i1.id)); // closed on D2
   assert.ok(ids(d3).includes(i3.id));
@@ -695,32 +703,151 @@ try {
     409,
     'DATE_BEFORE_CREATED',
   );
-  const reopened = await expectStatus(
-    call('/issues/reopen', pm, {
-      issueId: i1.id,
-      businessDate: D3,
-      expectedVersion: 6,
+  pass(
+    'a day lists issues raised on or before it and open as of it, or closed on it (closedToday); closing before the raise date 409',
+  );
+
+  // ---------- reopen keeps the history of earlier days ----------
+  // D8 is submitted while i1 is closed; the reopen comes later and is dated D4.
+  await expectStatus(
+    call('/submit', pm, {
+      projectId: projectA,
+      businessDate: D8,
+      expectedVersion: 0,
       clientMutationId: key(),
     }),
     200,
   );
-  assert.deepEqual(
-    [reopened.state, reopened.closedOn, reopened.closedBy],
-    ['REOPENED', null, null],
+  const d8Path = `/revision?projectId=${projectA}&businessDate=${D8}&n=1`;
+  const d8Rev = await expectStatus(call(d8Path, pm), 200);
+  assert.ok(!d8Rev.snapshot.issues.some((i) => i.id === i1.id));
+  const reopen = (over = {}) => ({
+    issueId: i1.id,
+    businessDate: D4,
+    expectedVersion: 6,
+    clientMutationId: key(),
+    ...over,
+  });
+  await expectStatus(
+    call('/issues/reopen', pm, reopen({ businessDate: D1 })),
+    409,
+    'DATE_BEFORE_CLOSE',
   );
+  const reopened = await expectStatus(
+    call('/issues/reopen', pm, reopen()),
+    200,
+  );
+  assert.deepEqual(
+    [reopened.state, reopened.closedOn, reopened.closedBy, reopened.version],
+    ['REOPENED', null, null, 7],
+  );
+  assert.deepEqual(
+    reopened.transitions.map((t) => [t.kind, t.onDate, t.actorPersonId]),
+    [
+      ['close', D2, personPm],
+      ['reopen', D4, personPm],
+    ],
+  );
+  d1 = await expectStatus(list(D1), 200);
+  assert.deepEqual(
+    [find(d1, i1.id).status, find(d1, i1.id).closedToday],
+    ['open', false],
+  );
+  d2 = await expectStatus(list(D2), 200);
+  assert.deepEqual(
+    [find(d2, i1.id).status, find(d2, i1.id).closedToday],
+    ['closed', true],
+  ); // the close day still shows the close after the reopen
   d3 = await expectStatus(list(D3), 200);
-  const d3I1 = d3.issues.find((i) => i.id === i1.id);
-  assert.deepEqual([d3I1.status, d3I1.state], ['open', 'REOPENED']);
+  assert.ok(!ids(d3).includes(i1.id)); // still closed on the day in between
+  const d4 = await expectStatus(list(D4), 200);
+  assert.deepEqual(
+    [
+      find(d4, i1.id).status,
+      find(d4, i1.id).closedToday,
+      find(d4, i1.id).state,
+    ],
+    ['open', false, 'REOPENED'],
+  );
+  await expectStatus(
+    call('/issues/close', pm, {
+      issueId: i1.id,
+      businessDate: D3,
+      expectedVersion: 7,
+      clientMutationId: key(),
+    }),
+    409,
+    'DATE_BEFORE_REOPEN',
+  );
+  assert.deepEqual(
+    (await expectStatus(call(d8Path, pm), 200)).snapshot,
+    d8Rev.snapshot,
+  );
+  const d8Live = await expectStatus(
+    call(`/day?projectId=${projectA}&businessDate=${D8}`, pm),
+    200,
+  );
+  assert.equal(find(d8Live, i1.id).status, 'open'); // live view follows the reopen
+  // A correction of D2 made after the reopen freezes D2 as it was: i1 closed that day.
+  await expectStatus(
+    call('/correction/start', pm, {
+      projectId: projectA,
+      businessDate: D2,
+      expectedVersion: 1,
+      clientMutationId: key(),
+      reason: 'TEST resubmit after reopen',
+    }),
+    200,
+  );
+  const d2Rev2 = await expectStatus(
+    call('/submit', pm, {
+      projectId: projectA,
+      businessDate: D2,
+      expectedVersion: 2,
+      clientMutationId: key(),
+    }),
+    200,
+  );
+  assert.equal(d2Rev2.revisionNumber, 2);
+  const rev2 = await expectStatus(
+    call(`/revision?projectId=${projectA}&businessDate=${D2}&n=2`, pm),
+    200,
+  );
+  const rev2I1 = rev2.snapshot.issues.find((i) => i.id === i1.id);
+  assert.deepEqual([rev2I1.status, rev2I1.closedToday], ['closed', true]);
+  assert.deepEqual(
+    (await expectStatus(call(revisionPath, pm), 200)).snapshot,
+    rev1.snapshot,
+  );
+  // Database clocks can step backwards (NTP); order must not depend on stored timestamps.
+  const orderOf = (body) =>
+    body.issues.map((i) => [i.id, i.last?.text ?? null, i.status]);
+  const beforeSkew = orderOf(await expectStatus(list(D2), 200));
+  // The newest issue of the day and the newest note of i1 get the oldest timestamps.
+  await owner.query(`UPDATE "Issue" SET "createdAt"='2000-01-01' WHERE id=$1`, [
+    d2.issues.at(-1).id,
+  ]);
+  await owner.query(
+    `UPDATE "IssueNote" SET "createdAt"='2000-01-01' WHERE id=(SELECT id FROM "IssueNote" WHERE "issueId"=$1 ORDER BY seq DESC LIMIT 1)`,
+    [i1.id],
+  );
+  await owner.query(
+    `UPDATE "IssueTransition" SET "createdAt"='2000-01-01' WHERE "issueId"=$1 AND kind='reopen'`,
+    [i1.id],
+  );
+  assert.deepEqual(orderOf(await expectStatus(list(D2), 200)), beforeSkew);
+  assert.equal(find(await expectStatus(list(D4), 200), i1.id).status, 'open');
   const one = await expectStatus(call(`/issues/${i1.id}`, exec), 200);
   assert.equal(one.access, 'read');
   assert.equal(one.issue.notes.length, 5); // first note, two replies, two notes
+  assert.equal(one.issue.transitions.length, 2);
   assert.equal(
     (await expectStatus(call(`/issues/${i1.id}`, execA), 200)).issue.id,
     i1.id,
   );
   await expectStatus(call('/issues/not-an-id', pm), 400, 'INVALID_INPUT');
   pass(
-    'a day lists issues raised on or before it and not closed before it, with status as of that day; closing before the raise date 409; reopen clears the close; GET one returns every note',
+    'close D2 then reopen dated D4: D2 still shows closed + closedToday, D3 excludes it, D4 shows it open; reopen before the close and close before the reopen 409; a revision submitted before the reopen is unchanged; a later correction of D2 freezes the close; GET one returns every note and transition',
   );
 
   // ---------- lag reminder: 3 consecutive submitted days under 80 % ----------
@@ -866,11 +993,60 @@ try {
   );
 
   // ---------- database-level protections ----------
+  // A dedicated issue with no notes or transitions, so a tenant transfer that also moves the
+  // project is valid for every foreign key: only RLS can refuse it.
+  const probe = randomUUID();
+  await owner.query(
+    'INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,summary,"projectId","createdOn") VALUES($1,$2,now(),$3,\'SITE_REPORT\',\'TEST probe\',$4,$5::date)',
+    [probe, orgA, seedActor, projectA, D1],
+  );
+  const transfer =
+    'UPDATE "Issue" SET "orgId"=$1, "projectId"=$2, "ownerPersonId"=NULL, "closedBy"=NULL, "taskId"=NULL, "sourceId"=NULL WHERE id=$3';
+  const transferParams = [orgB, projectB, probe];
+  {
+    // The same payload succeeds for the owner (no RLS), proving it is FK-valid.
+    const ownerClient = await owner.connect();
+    try {
+      await ownerClient.query('BEGIN');
+      assert.equal(
+        (await ownerClient.query(transfer, transferParams)).rowCount,
+        1,
+      );
+      await ownerClient.query('ROLLBACK');
+    } finally {
+      ownerClient.release();
+    }
+  }
+  const rejectsWith = async (client, statement, params, check) => {
+    await client.query('SAVEPOINT probe');
+    let error;
+    try {
+      await client.query(statement, params);
+    } catch (e) {
+      error = e;
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe');
+    assert.ok(error, `accepted: ${statement}`);
+    check(error);
+  };
+  const rls = (e) => {
+    assert.equal(e.code, '42501', e.message);
+    assert.match(e.message, /row-level security policy for table "Issue"/);
+  };
+  const constraint = (name) => (e) => {
+    assert.equal(e.code, '23514', e.message);
+    assert.equal(e.constraint, name);
+  };
   const client = await appPool.connect();
   try {
     await client.query('BEGIN');
     await client.query("SELECT set_config('app.org_id', $1, true)", [orgB]);
-    for (const table of ['Issue', 'IssueNote', 'LagDismissal'])
+    for (const table of [
+      'Issue',
+      'IssueNote',
+      'IssueTransition',
+      'LagDismissal',
+    ])
       assert.equal(
         (await client.query(`SELECT count(*)::int AS n FROM "${table}"`))
           .rows[0].n,
@@ -883,31 +1059,44 @@ try {
         .n,
       await count('SELECT count(*)::int AS n FROM "IssueNote"'),
     );
-    for (const [statement, params] of [
-      [
-        'INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,summary,"projectId","createdOn") VALUES($1,$2,now(),$3,\'SITE_REPORT\',\'TEST\',$4,\'2026-10-05\')',
-        [randomUUID(), orgB, accountB, projectB],
-      ],
-      ['UPDATE "Issue" SET "orgId"=$1', [orgB]],
-      [
-        'INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,summary,"projectId",escalate) VALUES($1,$2,now(),$3,\'SITE_REPORT\',\'TEST\',$4,true)',
-        [randomUUID(), orgA, accountPm, projectA],
-      ],
-    ]) {
-      await client.query('SAVEPOINT rls');
-      await assert.rejects(
-        client.query(statement, params),
-        /row-level security|violates|foreign key/,
-        statement,
-      );
-      await client.query('ROLLBACK TO SAVEPOINT rls');
-    }
+    assert.equal(
+      (
+        await client.query(
+          'SELECT count(*)::int AS n FROM "Issue" WHERE id=$1',
+          [probe],
+        )
+      ).rows[0].n,
+      1,
+    );
+    await rejectsWith(client, transfer, transferParams, rls);
+    await rejectsWith(
+      client,
+      'INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,summary,"projectId","createdOn") VALUES($1,$2,now(),$3,\'SITE_REPORT\',\'TEST\',$4,\'2026-10-05\')',
+      [randomUUID(), orgB, accountB, projectB],
+      rls,
+    );
+    const insertA =
+      'INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,summary,"projectId","createdOn",category,escalate) VALUES($1,$2,now(),$3,\'SITE_REPORT\',\'TEST\',$4,\'2026-10-05\',$5,$6)';
+    await rejectsWith(
+      client,
+      insertA,
+      [randomUUID(), orgA, accountPm, projectA, 'fraud', false],
+      constraint('Issue_category_check'),
+    );
+    await rejectsWith(
+      client,
+      insertA,
+      [randomUUID(), orgA, accountPm, projectA, null, true],
+      constraint('Issue_escalate_category_check'),
+    );
     for (const statement of [
       'UPDATE "IssueNote" SET text=\'tamper\'',
       'DELETE FROM "IssueNote"',
       'DELETE FROM "Issue"',
       'UPDATE "LagDismissal" SET "workItemKey"=\'rail\'',
       'DELETE FROM "LagDismissal"',
+      'UPDATE "IssueTransition" SET "onDate"=\'2026-01-01\'',
+      'DELETE FROM "IssueTransition"',
     ]) {
       await client.query('SAVEPOINT guard');
       await assert.rejects(
@@ -954,7 +1143,7 @@ try {
   );
   assert.deepEqual(closeAudit.rows, [{ b: 'OPEN', a: 'CLOSED', on: D2 }]);
   pass(
-    'RLS hides issues, notes and dismissals from another org and refuses writes into it; escalate without a category is refused by the database too; the app role cannot update or delete notes or dismissals nor delete issues; every write is audited once with before/after JSON',
+    'RLS hides issues, notes, transitions and dismissals from another org; an FK-valid tenant transfer and a cross-org insert are refused by RLS (42501); category and escalate-without-category are refused by their CHECK constraints (23514); the app role cannot update or delete notes, transitions or dismissals nor delete issues; every write is audited once with before/after JSON',
   );
 
   console.log(
