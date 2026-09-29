@@ -336,6 +336,69 @@ export function coverage(input: CoverageInput): Coverage {
   return { missing, invalid };
 }
 
+// ---------- carry-over between submitted days ----------
+/** A carried cumulative: the last declared value and the business day it was declared. */
+export interface CarriedCumulative {
+  value: Reported;
+  asOf: string;
+}
+/** A material running total. `complete` is false once any contributing day was not a number. */
+export interface MaterialCumulative {
+  value: string | null;
+  complete: boolean;
+}
+/**
+ * Rule 3/4: the cumulative a day hands to the next one. A declared cumulative wins. Without
+ * one, the previous value stands only when nothing was declared as done today (no work, blank,
+ * explicit zero or n/a); if work was declared but no cumulative, the stale base is dropped so
+ * that no wrong suggestion follows.
+ */
+export function carryCumulative(
+  businessDate: string,
+  facts: DayFacts,
+  previous: Record<string, CarriedCumulative>,
+): Record<string, CarriedCumulative> {
+  const out: Record<string, CarriedCumulative> = {};
+  const keys = new Set([
+    ...Object.keys(previous),
+    ...Object.keys(facts.cumulative),
+  ]);
+  for (const key of keys) {
+    const declared = facts.cumulative[key] ?? '';
+    if (declared !== '') {
+      out[key] = { value: declared, asOf: businessDate };
+      continue;
+    }
+    const q = facts.qty[key] ?? '';
+    const nothingDone =
+      facts.noWork !== null || q === '' || q === 'na' || dec(q) === 0n;
+    if (nothingDone && previous[key]) out[key] = previous[key];
+  }
+  return out;
+}
+/**
+ * Material running totals. A number (zero included) is added; 'na', or a blank on a no-work
+ * day, leaves the total unchanged; a blank on a work day or 'unknown' keeps the known subtotal
+ * but marks it incomplete. A total outside Decimal(20,6) becomes unknown.
+ */
+export function carryMaterial(
+  base: MaterialCumulative,
+  receipt: Reported | undefined,
+  noWork: boolean,
+): MaterialCumulative {
+  if (base.value === null) return { value: null, complete: false };
+  const r = receipt ?? '';
+  const q = dec(r);
+  if (q !== null) {
+    const sum = (dec(base.value) ?? 0n) + q;
+    return inRange(sum)
+      ? { value: decText(sum), complete: base.complete }
+      : { value: null, complete: false };
+  }
+  if (r === 'na' || (r === '' && noWork)) return base;
+  return { value: base.value, complete: false };
+}
+
 // ---------- people ----------
 /** Sum of the numeric role counts; null when nothing numeric or the sum leaves Decimal(20,6). */
 export function peopleTotal(people: Record<string, Reported>): string | null {

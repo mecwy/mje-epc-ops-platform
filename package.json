@@ -25,7 +25,8 @@
     "check:public": "node scripts/check-public.mjs",
     "test:container": "node scripts/container-smoke.mjs",
     "test:alpha": "node --env-file=.env scripts/alpha-integration.mjs",
-    "check:i18n": "node scripts/check-i18n.mjs"
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test:report": "node --env-file=.env scripts/report-integration.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",

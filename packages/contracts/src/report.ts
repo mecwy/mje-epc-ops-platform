@@ -72,6 +72,7 @@ export interface SubmitReportCommand {
 export interface StartCorrectionCommand {
   projectId: string;
   businessDate: string;
+  expectedVersion: number;
   clientMutationId: string;
   reason: string;
 }
@@ -82,6 +83,30 @@ export interface NoWorkCommand {
   clientMutationId: string;
   reason: NoWorkReason;
   note: string;
+}
+export interface CancelCorrectionCommand {
+  projectId: string;
+  businessDate: string;
+  expectedVersion: number;
+  clientMutationId: string;
+}
+export const REPORT_ITEM_KINDS = ['work', 'machinery', 'material'] as const;
+export type ReportItemKind = (typeof REPORT_ITEM_KINDS)[number];
+/** Project master row: a work item, a machine or a material. Quantities are reported text. */
+export interface ReportItemDto {
+  kind: ReportItemKind;
+  key: string;
+  label: string;
+  unit: string;
+  designQty: Reported;
+  openingCumulative: Reported;
+  sortOrder: number;
+  active: boolean;
+}
+export interface SaveItemsCommand {
+  projectId: string;
+  clientMutationId: string;
+  items: ReportItemDto[];
 }
 
 /** `field` is a bounded, printable path: rejected client keys are never echoed verbatim. */
@@ -314,6 +339,7 @@ export function parseStartCorrectionCommand(
   return {
     projectId: id(o['projectId'], 'projectId'),
     businessDate: date(o['businessDate'], 'businessDate'),
+    expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
     reason,
   };
@@ -327,5 +353,61 @@ export function parseNoWorkCommand(v: unknown): NoWorkCommand {
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
     reason: oneOf(o['reason'], NO_WORK_REASONS, 'reason'),
     note: str(o['note'] ?? '', 'note', 500),
+  };
+}
+export function parseCancelCorrectionCommand(
+  v: unknown,
+): CancelCorrectionCommand {
+  const o = obj(v, 'command');
+  return {
+    projectId: id(o['projectId'], 'projectId'),
+    businessDate: date(o['businessDate'], 'businessDate'),
+    expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
+    clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
+  };
+}
+export function parseSaveItemsCommand(v: unknown): SaveItemsCommand {
+  const o = obj(v, 'command');
+  const items = o['items'];
+  if (!Array.isArray(items) || !items.length || items.length > 200)
+    throw new InvalidReportInput('items');
+  const seen = new Set<string>();
+  return {
+    projectId: id(o['projectId'], 'projectId'),
+    clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
+    items: items.map((r, i) => {
+      const row = obj(r, `items.${i}`);
+      const kind = oneOf(row['kind'], REPORT_ITEM_KINDS, `items.${i}.kind`);
+      const key = str(row['key'], `items.${i}.key`, 64);
+      if (!KEY.test(key) || seen.has(`${kind}:${key}`))
+        throw new InvalidReportInput(`items.${i}.key`);
+      seen.add(`${kind}:${key}`);
+      const label = str(row['label'], `items.${i}.label`, 200).trim();
+      if (!label) throw new InvalidReportInput(`items.${i}.label`);
+      const sortOrder = row['sortOrder'] ?? i;
+      if (
+        typeof sortOrder !== 'number' ||
+        !Number.isInteger(sortOrder) ||
+        sortOrder < 0 ||
+        sortOrder > 10_000
+      )
+        throw new InvalidReportInput(`items.${i}.sortOrder`);
+      const active = row['active'] ?? true;
+      if (typeof active !== 'boolean')
+        throw new InvalidReportInput(`items.${i}.active`);
+      return {
+        kind,
+        key,
+        label,
+        unit: str(row['unit'] ?? '', `items.${i}.unit`, 20),
+        designQty: reported(row['designQty'] ?? '', `items.${i}.designQty`),
+        openingCumulative: reported(
+          row['openingCumulative'] ?? '',
+          `items.${i}.openingCumulative`,
+        ),
+        sortOrder,
+        active,
+      };
+    }),
   };
 }

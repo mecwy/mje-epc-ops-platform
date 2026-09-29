@@ -4,6 +4,8 @@ import {
   blankFacts,
   canCloseByPm,
   canEscalate,
+  carryCumulative,
+  carryMaterial,
   checkinDecision,
   confirmPlan,
   coverage,
@@ -383,3 +385,77 @@ describe('photos and check-in', () => {
 function never(): never {
   throw new Error('unreachable');
 }
+
+describe('carry-over between submitted days', () => {
+  const f = (over: Partial<ReturnType<typeof blankFacts>> = {}) => ({
+    ...blankFacts(),
+    ...over,
+  });
+  const prev = { support: { value: '1210', asOf: '2026-10-05' } };
+  it('a declared cumulative wins; nothing done keeps the last value with its date', () => {
+    expect(
+      carryCumulative(
+        '2026-10-06',
+        f({ cumulative: { support: '1300' } }),
+        prev,
+      ),
+    ).toEqual({ support: { value: '1300', asOf: '2026-10-06' } });
+    for (const qty of [{}, { support: '0' }, { support: 'na' }])
+      expect(carryCumulative('2026-10-06', f({ qty }), prev)).toEqual(prev);
+  });
+  it('a no-work day hands the cumulative on unchanged (D1 → no work → D3)', () => {
+    const d2 = carryCumulative(
+      '2026-10-06',
+      f({ noWork: { reason: 'weather', note: '' } }),
+      prev,
+    );
+    expect(d2).toEqual(prev);
+    expect(carryCumulative('2026-10-07', f(), d2)).toEqual(prev);
+  });
+  it('work declared without a cumulative drops the stale base', () => {
+    for (const q of ['90', 'unknown'])
+      expect(
+        carryCumulative('2026-10-06', f({ qty: { support: q } }), prev),
+      ).toEqual({});
+  });
+  it('material totals: numbers add, n/a and no-work blanks keep, blanks and unknown mark incomplete', () => {
+    const base = { value: '100', complete: true };
+    expect(carryMaterial(base, '5', false)).toEqual({
+      value: '105',
+      complete: true,
+    });
+    expect(carryMaterial(base, '0', false)).toEqual(base);
+    expect(carryMaterial(base, 'na', false)).toEqual(base);
+    expect(carryMaterial(base, '', true)).toEqual(base);
+    expect(carryMaterial(base, '', false)).toEqual({
+      value: '100',
+      complete: false,
+    });
+    expect(carryMaterial(base, 'unknown', false)).toEqual({
+      value: '100',
+      complete: false,
+    });
+    // once incomplete, later receipts add but the total stays marked
+    expect(
+      carryMaterial({ value: '100', complete: false }, '5', false),
+    ).toEqual({
+      value: '105',
+      complete: false,
+    });
+    expect(carryMaterial({ value: null, complete: false }, '5', false)).toEqual(
+      {
+        value: null,
+        complete: false,
+      },
+    );
+  });
+  it('a material total outside Decimal(20,6) becomes unknown instead of an invalid number', () => {
+    expect(
+      carryMaterial(
+        { value: '99999999999999.999999', complete: true },
+        '1',
+        false,
+      ),
+    ).toEqual({ value: null, complete: false });
+  });
+});
