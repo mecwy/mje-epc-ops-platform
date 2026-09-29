@@ -78,9 +78,20 @@ const connect = async (database) => {
 const ident = (name) => `"${name.replaceAll('"', '""')}"`;
 const lower = (row) =>
   Object.fromEntries(Object.entries(row).map(([k, v]) => [k.toLowerCase(), v]));
+class BootstrapStop extends Error {}
 const fail = (message) => {
-  throw new Error(`Cloud bootstrap stopped: ${message}`);
+  throw new BootstrapStop(`Cloud bootstrap stopped: ${message}`);
 };
+// Database and SDK errors can carry identifiers in detail fields; the job log gets only our
+// own stop messages or a bare error code.
+process.on('uncaughtException', (error) => {
+  if (error instanceof BootstrapStop) console.error(error.message);
+  else
+    console.error(
+      `Cloud bootstrap failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
+    );
+  process.exit(1);
+});
 
 // 1. Application login, verified against the managed identity it must map to.
 const system = await connect('postgres');
@@ -102,21 +113,21 @@ try {
     )
   ).rows
     .map(lower)
-    .filter((r) => r.rolname === appPrincipal);
+    // Documented result: rolename, principalType, objectId, tenantId, isMfa, isAdmin (0/1).
+    .filter((r) => r.rolename === appPrincipal);
   const principal = mapped[0];
+  const off = (v) => v === 0 || v === '0' || v === false || v === 'f';
   if (mapped.length !== 1 || !principal)
     fail('the application login has no single Entra mapping');
-  if (String(principal.objectid).toLowerCase() !== appObjectId)
+  if (String(principal.objectid ?? '').toLowerCase() !== appObjectId)
     fail('the login maps to another Entra object');
-  if (String(principal.principaltype).toLowerCase() !== 'service')
+  if (String(principal.principaltype ?? '').toLowerCase() !== 'service')
     fail('the login is not a service principal');
-  if (principal.isadmin === true || principal.isadmin === 't')
-    fail('the login is an Entra admin');
-  if (
-    'tenantid' in principal &&
-    String(principal.tenantid).toLowerCase() !== tenantId
-  )
+  if (String(principal.tenantid ?? '').toLowerCase() !== tenantId)
     fail('the login belongs to another tenant');
+  if (!off(principal.isadmin)) fail('the login is an Entra admin');
+  if (!off(principal.ismfa))
+    fail('the login is marked MFA; a service login cannot be');
   const canLogin = await system.query(
     'SELECT rolcanlogin FROM pg_catalog.pg_roles WHERE rolname=$1',
     [appPrincipal],
@@ -135,6 +146,8 @@ try {
   // 2. Grant the application role and prove, in the same transaction, that nothing unsafe is
   //    reachable: no superuser/BYPASSRLS/role-creating role through any membership (including
   //    SET ROLE), no ownership of any public relation, and effective use of the app role.
+  //    'MEMBER' is deliberately conservative: it follows every membership whatever its
+  //    INHERIT/SET options, so it may also reject harmless memberships of this dedicated login.
   await db.query('BEGIN');
   await db.query(`GRANT mje_alpha_app TO ${ident(appPrincipal)}`);
   const check = (
@@ -279,21 +292,34 @@ try {
       ],
     );
 
-  // Readiness is the same test the report API applies when the owner signs in.
-  const ready = await one(
-    `SELECT count(*)::int AS n FROM public."LoginAccount" a
-    JOIN public."Membership" m ON m."orgId"=a."orgId" AND m."accountId"=a.id
-    WHERE a.active AND a."entraTenantId"=$1 AND a."entraObjectId"=$2 AND a."personId" IS NOT NULL
-      AND m.role='PROJECT_MANAGER' AND m."projectId"=$3
-      AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now())`,
-    [tenantId, ownerObjectId, project],
+  // Readiness mirrors the report API (store-kit inTransaction): the identity must resolve to
+  // exactly one active, person-linked account with a current report role; it must be the
+  // seeded account; and that account must currently manage the TEST project.
+  const eligible = (
+    await db.query(
+      `SELECT a.id FROM public."LoginAccount" a
+      WHERE a.active AND a."entraTenantId"=$1 AND a."entraObjectId"=$2 AND a."personId" IS NOT NULL
+        AND EXISTS (SELECT 1 FROM public."Membership" m WHERE m."orgId"=a."orgId" AND m."accountId"=a.id
+          AND m.role = ANY($3::text[]) AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now()))`,
+      [tenantId, ownerObjectId, ['PROJECT_MANAGER', 'EXECUTIVE_READER']],
+    )
+  ).rows;
+  if (eligible.length !== 1)
+    fail('the owner identity does not resolve to exactly one eligible account');
+  if (eligible[0].id !== account.id)
+    fail('the owner identity resolves to another account');
+  const manager = await one(
+    `SELECT EXISTS (SELECT 1 FROM public."Membership" m WHERE m."orgId"=$1 AND m."accountId"=$2
+      AND m."projectId"=$3 AND m.role='PROJECT_MANAGER'
+      AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now())) AS ok`,
+    [org, account.id, project],
   );
+  if (!manager?.ok)
+    fail('the owner is not a current project manager of the TEST project');
   const work = await one(
     `SELECT count(*)::int AS n FROM public."ReportItem" WHERE "projectId"=$1 AND kind='work' AND active`,
     [project],
   );
-  if (ready?.n !== 1)
-    fail('the owner would not be authorised for the TEST project');
   if ((work?.n ?? 0) < 1) fail('the TEST project has no active work items');
   await db.query('COMMIT');
   console.log(
