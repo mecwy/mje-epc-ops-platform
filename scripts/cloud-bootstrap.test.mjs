@@ -35,6 +35,8 @@ test('bootstrap refuses a wrong server, user, principal or a pre-supplied URL', 
     { APP_PRINCIPAL_NAME: 'azure_pg_admin' },
     { DATABASE_URL: 'postgresql://TEST_invalid' },
     { NODE_ENV: 'development' },
+    { PGOPTIONS: '-c search_path=shadow,public' },
+    { PGSERVICE: 'prod' },
   ]) {
     const result = run({ ...good, ...override });
     assert.equal(result.status, 1, JSON.stringify(override));
