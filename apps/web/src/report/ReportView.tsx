@@ -103,6 +103,7 @@ function Resources({ c }: { c: ReportContent }) {
   const { t, label, locale } = useI18n();
   const f = c.facts;
   const numeric = ROLE_KEYS.filter((r) => dec(f.people[r]) !== null);
+  const roles = ROLE_KEYS.map((r) => (f.people[r] ?? '').trim());
   // A total is complete only when every role is a number or n/a; otherwise say it is partial.
   const partial = ROLE_KEYS.some(
     (r) => dec(f.people[r]) === null && f.people[r] !== 'na',
@@ -133,8 +134,16 @@ function Resources({ c }: { c: ReportContent }) {
             {t('installN', { n: decText(sum(['worker'])) })}
             {partial && <span className="miss"> · {t('incomplete')}</span>}
           </>
-        ) : (
+        ) : roles.every((r) => r === '') ? (
           <span className="miss">{t('notFilled')}</span>
+        ) : roles.every((r) => r === 'na') ? (
+          t('na')
+        ) : (
+          <span className="miss">
+            {t('unknown')}
+            {roles.some((r) => r === '') &&
+              ` · ${t('nBlank', { n: roles.filter((r) => r === '').length })}`}
+          </span>
         )}
       </Kv>
       {machinery.length > 0 && (

@@ -7,7 +7,8 @@ import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
 import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
 import { liveCoverage, byKind } from './report/model.js';
-import { PlanEditor } from './report/PlanEditor.js';
+import { PlanEditor, planListeners } from './report/PlanEditor.js';
+import { PlanSession } from './report/plan-session.js';
 import { ReportView } from './report/ReportView.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
@@ -94,8 +95,25 @@ function Workspace({
     null,
   );
   const [focus, setFocus] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [actionBusy, setBusy] = useState(false);
+  // One PlanSession per target date for the life of the workspace (pending saves survive).
+  const plans = useRef(new Map<string, PlanSession>());
+  const planFor = (target: string) => {
+    let session = plans.current.get(target);
+    if (!session) {
+      const created: PlanSession = new PlanSession(
+        api,
+        project.id,
+        target,
+        () => planListeners(created).forEach((fn) => fn()),
+      );
+      session = created;
+      plans.current.set(target, session);
+    }
+    return session;
+  };
   const h = useDay(api, project.id, date, () => say(t('conflictReloaded')));
+  const busy = actionBusy || h.busy;
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
@@ -225,11 +243,12 @@ function Workspace({
         <WorkRows h={h} day={day} locked={locked} compact />
       </section>
     );
+    const target = shift(date, 1);
     const plan = (
       <PlanEditor
-        api={api}
+        key={target}
+        session={planFor(target)}
         day={day}
-        target={shift(date, 1)}
         canWrite={canWrite}
         onChanged={() => void h.reload()}
       />

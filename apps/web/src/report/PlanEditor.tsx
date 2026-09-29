@@ -1,142 +1,62 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer } from 'react';
 import type { PlanRowDto } from '@mje/contracts';
 import { dec } from '@mje/domain/rules';
-import {
-  ApiError,
-  type DayView,
-  type PlanView,
-  type ReportApi,
-} from '../api.js';
+import type { DayView } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
 import { Chip, NumInput } from '../ui.js';
 import { byKind } from './model.js';
 import { fmtDay, fmtNum } from './format.js';
+import type { PlanSession } from './plan-session.js';
 
 /**
- * Tomorrow's plan. Edits save as the day's draft; "confirm" turns the draft into a numbered
- * version, which becomes tomorrow's baseline. A draft is never a baseline.
+ * Tomorrow's plan. Edits save as the target day's draft; "confirm" turns the draft into a
+ * numbered version, which becomes that day's baseline. A draft is never a baseline. The
+ * PlanSession (one per project and target date) owns all writes; this is only its view.
  */
 export function PlanEditor({
-  api,
+  session,
   day,
-  target,
   canWrite,
   onChanged,
 }: {
-  api: ReportApi;
+  session: PlanSession;
   day: DayView;
-  target: string;
   canWrite: boolean;
   onChanged: () => void;
 }) {
   const { t, label, locale } = useI18n();
-  const [plan, setPlan] = useState<PlanView | null>(null);
-  const [rows, setRows] = useState<PlanRowDto[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Plan writes run strictly one after another; each sends the rows current when it runs,
-  // so an older request can never land after a newer one or after the confirmation.
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const latest = useRef<PlanRowDto[] | null>(null);
-  const saved = useRef<PlanRowDto[] | null>(null);
-  const enqueue = useCallback(<T,>(job: () => Promise<T>): Promise<T> => {
-    const next = queue.current.then(job, job);
-    queue.current = next.catch(() => undefined);
-    return next;
-  }, []);
-  const load = useCallback(async () => {
-    const p = await api.plan(day.projectId, target);
-    setPlan(p);
-    setRows(p.rows);
-    latest.current = p.rows;
-    saved.current = p.rows;
-  }, [api, day.projectId, target]);
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
-    void load();
-  }, [load]);
+    const listeners = planListeners(session);
+    listeners.add(rerender);
+    void session.load();
+    return () => {
+      listeners.delete(rerender);
+      // Leaving the editor writes what was typed; the session keeps a failure for return.
+      if (session.dirty) session.save().catch(() => undefined);
+    };
+  }, [session]);
+
+  const { plan, rows, confirming, error } = session;
+  if (!plan) return <p className="muted">{error ?? t('loading')}</p>;
+  const editable = canWrite && !confirming;
   const valid = rows.every((r) => r.target === '' || dec(r.target) !== null);
-  const writeDraft = useCallback(
-    () =>
-      enqueue(async () => {
-        const next = latest.current;
-        if (!next || next === saved.current) return;
-        if (!next.every((r) => r.target === '' || dec(r.target) !== null))
-          return;
-        const r = await api.savePlanDraft({
-          projectId: day.projectId,
-          targetBusinessDate: target,
-          clientMutationId: crypto.randomUUID(),
-          rows: next,
-        });
-        saved.current = next;
-        setPlan((p) => (p ? { ...p, status: r.status, draft: next } : p));
-        setError(null);
-      }),
-    [api, day.projectId, target, enqueue],
-  );
-  // Leaving the editor saves what was typed instead of dropping it with the timer.
-  useEffect(
-    () => () => {
-      if (timer.current) {
-        clearTimeout(timer.current);
-        writeDraft().catch(() => undefined);
-      }
-    },
-    [writeDraft],
-  );
-  const change = (next: PlanRowDto[]) => {
-    setRows(next);
-    latest.current = next;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      timer.current = null;
-      writeDraft().catch((e) =>
-        setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
-      );
-    }, 600);
-  };
-  const confirm = async () => {
-    if (timer.current) {
-      clearTimeout(timer.current);
-      timer.current = null;
-    }
-    setBusy(true);
-    try {
-      await writeDraft();
-      await enqueue(() =>
-        api.confirmPlan({
-          projectId: day.projectId,
-          targetBusinessDate: target,
-          clientMutationId: crypto.randomUUID(),
-        }),
-      );
-      await load();
-      onChanged();
-      setError(null);
-    } catch (e) {
-      const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
-      setError(
-        code === 'PLAN_EMPTY'
-          ? t('emptyPlan')
-          : code === 'NUMBER_INVALID'
-            ? t('numberInvalid')
-            : code,
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (!plan) return <p className="muted">{t('loading')}</p>;
+  const change = (next: PlanRowDto[]) => session.edit(next);
   const work = byKind(day.items, 'work');
   const inPlan = new Set(rows.map((r) => r.item));
   const addable = work.filter((i) => !inPlan.has(i.key));
   const status = plan.status;
+  const message =
+    error === 'PLAN_EMPTY'
+      ? t('emptyPlan')
+      : error === 'NUMBER_INVALID'
+        ? t('numberInvalid')
+        : error;
   return (
     <>
       <div className="plan-h">
-        <b>{fmtDay(target, locale)}</b>
+        <b>{fmtDay(session.target, locale)}</b>
         {status.status === 'confirmed' && (
           <Chip tone="ok">{t('confirmedN', { n: status.n ?? 0 })}</Chip>
         )}
@@ -164,7 +84,7 @@ export function PlanEditor({
               <NumInput
                 id={`plan-${r.item}`}
                 value={r.target}
-                disabled={!canWrite || busy}
+                disabled={!editable}
                 onChange={(v) =>
                   change(
                     rows.map((x, j) =>
@@ -186,6 +106,7 @@ export function PlanEditor({
                   type="button"
                   className="icon sm"
                   aria-label={t('remove')}
+                  disabled={!editable}
                   onClick={() => change(rows.filter((_, j) => j !== i))}
                 >
                   <Icon.close />
@@ -199,6 +120,7 @@ export function PlanEditor({
             <span>{t('addWork')}</span>
             <select
               value=""
+              disabled={!editable}
               onChange={(e) =>
                 e.target.value &&
                 change([...rows, { item: e.target.value, target: '' }])
@@ -214,18 +136,31 @@ export function PlanEditor({
           </label>
         )}
         {!valid && <div className="banner err">{t('numberInvalid')}</div>}
-        {error && <div className="banner err">{error}</div>}
+        {message && <div className="banner err">{message}</div>}
       </section>
       {canWrite && status.status !== 'confirmed' && (
         <button
           type="button"
           className="primary wide"
-          disabled={busy || !valid}
-          onClick={() => void confirm()}
+          disabled={confirming || !valid}
+          onClick={() =>
+            session
+              .confirm()
+              .then(onChanged)
+              .catch(() => undefined)
+          }
         >
           {t('confirmPlan')}
         </button>
       )}
     </>
   );
+}
+
+/** Components listening to a PlanSession while mounted (the session calls them on change). */
+const listeners = new WeakMap<PlanSession, Set<() => void>>();
+export function planListeners(session: PlanSession): Set<() => void> {
+  let set = listeners.get(session);
+  if (!set) listeners.set(session, (set = new Set()));
+  return set;
 }

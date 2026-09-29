@@ -34,6 +34,8 @@ export class DraftSession {
   private running: Promise<FlushOutcome> | null = null;
   private blocked = false;
   private generation = 0;
+  /** True while an action (submit, correction, no-work) runs: edits are refused. */
+  locked = false;
 
   constructor(
     readonly projectId: string,
@@ -51,11 +53,31 @@ export class DraftSession {
   get dirty(): boolean {
     return this.facts !== this.acked || this.pending !== null;
   }
-  edit(facts: DayFactsDto) {
+  get editGeneration(): number {
+    return this.generation;
+  }
+  /** Returns false (and changes nothing) while an action holds the session. */
+  edit(facts: DayFactsDto): boolean {
+    if (this.locked) return false;
     this.facts = facts;
     this.generation++;
     this.blocked = false;
     this.set(savable(facts) ? this.state : 'invalid');
+    return true;
+  }
+  /**
+   * Take a server read only if it is current: nothing was typed since the read started,
+   * nothing is unsaved, and it is not older than what this session already acknowledged.
+   */
+  adopt(
+    read: { version: number; facts: DayFactsDto },
+    startedAtGeneration: number,
+  ): boolean {
+    if (read.version < this.version) return false;
+    if (this.dirty || this.generation !== startedAtGeneration || this.running)
+      return false;
+    this.reset(read.version, read.facts);
+    return true;
   }
   /** Adopt server state (after load or a conflict); drops local edits. */
   reset(version: number, facts: DayFactsDto) {

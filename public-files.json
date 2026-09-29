@@ -43,6 +43,8 @@
   "apps/web/src/report/format.ts",
   "apps/web/src/report/model.test.ts",
   "apps/web/src/report/model.ts",
+  "apps/web/src/report/plan-session.test.ts",
+  "apps/web/src/report/plan-session.ts",
   "apps/web/src/report/useDay.ts",
   "apps/web/src/style.css",
   "apps/web/src/ui.tsx",

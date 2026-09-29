@@ -326,7 +326,10 @@ export function CheckList({
       {cov.invalid.length > 0 && (
         <div className="banner err">{t('numberInvalid')}</div>
       )}
-      {rows}
+      {/* While an action runs every fix is disabled; the hook also refuses edits then. */}
+      <fieldset className="bare" disabled={busy}>
+        {rows}
+      </fieldset>
       {panel && (
         <button
           type="button"

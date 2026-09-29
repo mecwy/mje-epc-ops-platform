@@ -154,3 +154,42 @@ describe('draft session', () => {
     expect(s.facts.qty['support']).toBe('99');
   });
 });
+
+describe('draft session: reads and locks', () => {
+  it('an older read never replaces newer acknowledged facts', async () => {
+    const srv = server();
+    const s = session('d', srv);
+    const startedAt = s.editGeneration; // a read of version 1 / qty 1 starts here
+    s.edit(withQty('2'));
+    const f = s.flush();
+    await tick();
+    srv.ok(0, 2);
+    await f;
+    expect(s.adopt({ version: 1, facts: withQty('1') }, startedAt)).toBe(false);
+    expect(s.facts.qty['support']).toBe('2');
+    expect(s.version).toBe(2);
+  });
+  it('a read that started before an edit is not adopted, even at the same version', () => {
+    const srv = server();
+    const s = session('d', srv, 3);
+    const startedAt = s.editGeneration;
+    s.edit(withQty('5'));
+    expect(s.adopt({ version: 3, facts: withQty('1') }, startedAt)).toBe(false);
+    expect(s.facts.qty['support']).toBe('5');
+  });
+  it('a current read with nothing unsaved is adopted', () => {
+    const srv = server();
+    const s = session('d', srv, 3);
+    expect(s.adopt({ version: 4, facts: withQty('9') }, s.editGeneration)).toBe(
+      true,
+    );
+    expect(s.version).toBe(4);
+  });
+  it('edits are refused while an action holds the session', () => {
+    const srv = server();
+    const s = session('d', srv);
+    s.locked = true;
+    expect(s.edit(withQty('7'))).toBe(false);
+    expect(s.dirty).toBe(false);
+  });
+});

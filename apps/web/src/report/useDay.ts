@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 import type { NoWorkReason } from '@mje/contracts';
 import {
   ApiError,
@@ -18,10 +18,22 @@ export class ActionAborted extends Error {
   }
 }
 
+/** Everything known about one project day; entries outlive navigation. */
+interface Entry {
+  session: DraftSession;
+  day: DayView | null;
+  frozen: ReportContent | null;
+  error: string | null;
+  /** Only the newest read of a day may be applied. */
+  reads: number;
+  busy: boolean;
+}
+
 /**
- * One project day for the screens. Each day owns its DraftSession, so a save in flight for
- * one day can never touch another. Reloads keep unsaved local edits; only an explicit
- * conflict replaces them with the server state. Submitted days read the frozen revision.
+ * Project days for the screens. Each day keeps its own DraftSession for the life of the
+ * workspace, so leaving a day never abandons its unsaved or failed edits: they are retried
+ * on return. Reads are fenced: an older response never replaces newer acknowledged facts.
+ * While an action runs the day refuses edits, so the action's result is what the user saw.
  */
 export function useDay(
   api: ReportApi,
@@ -30,104 +42,114 @@ export function useDay(
   onConflict: () => void,
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [day, setDay] = useState<DayView | null>(null);
-  const [frozen, setFrozen] = useState<ReportContent | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const session = useRef<DraftSession | null>(null);
+  const entries = useRef(new Map<string, Entry>());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const conflict = useRef(onConflict);
   conflict.current = onConflict;
+  const key = `${projectId}:${businessDate}`;
 
-  /** Server view of the day. Local edits survive unless `replace` (after a conflict). */
-  const refresh = useCallback(
-    async (s: DraftSession, replace: boolean) => {
-      const d = await api.day(s.projectId, s.businessDate);
-      if (session.current !== s) return;
-      const content =
-        d.state === 'submitted' && d.currentRevisionNumber > 0
-          ? (
-              await api.revision(
-                s.projectId,
-                s.businessDate,
-                d.currentRevisionNumber,
-              )
-            ).snapshot
-          : null;
-      if (session.current !== s) return;
-      if (replace || !s.dirty) s.reset(d.version, d.facts);
-      setDay(d);
-      setFrozen(content);
+  const entryFor = useCallback(
+    (pid: string, date: string): Entry => {
+      const k = `${pid}:${date}`;
+      let e = entries.current.get(k);
+      if (!e) {
+        const session: DraftSession = new DraftSession(
+          pid,
+          date,
+          0,
+          emptyFacts(),
+          (c) => api.saveFacts(c),
+          rerender,
+        );
+        e = {
+          session,
+          day: null,
+          frozen: null,
+          error: null,
+          reads: 0,
+          busy: false,
+        };
+        entries.current.set(k, e);
+      }
+      return e;
     },
     [api],
   );
 
-  useEffect(() => {
-    const previous = session.current;
-    // Unsaved edits of the day being left are saved to that day, not dropped.
-    if (previous?.dirty) void previous.flush();
-    if (timer.current) clearTimeout(timer.current);
-    const s = new DraftSession(
-      projectId,
-      businessDate,
-      0,
-      emptyFacts(),
-      (c) => api.saveFacts(c),
-      rerender,
-    );
-    session.current = s;
-    setDay(null);
-    setFrozen(null);
-    setError(null);
-    api
-      .day(projectId, businessDate)
-      .then(async (d) => {
-        if (session.current !== s) return;
-        s.reset(d.version, d.facts);
+  /** Read the day from the server; `replace` only after a conflict or a finished action. */
+  const read = useCallback(
+    async (e: Entry, replace: boolean) => {
+      const s = e.session;
+      const ticket = ++e.reads;
+      const startedAt = s.editGeneration;
+      try {
+        const d = await api.day(s.projectId, s.businessDate);
         const content =
           d.state === 'submitted' && d.currentRevisionNumber > 0
             ? (
                 await api.revision(
-                  projectId,
-                  businessDate,
+                  s.projectId,
+                  s.businessDate,
                   d.currentRevisionNumber,
                 )
               ).snapshot
             : null;
-        if (session.current !== s) return;
-        setDay(d);
-        setFrozen(content);
-      })
-      .catch(
-        (e) =>
-          session.current === s &&
-          setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
-      );
-    // `api` is stable for a signed-in session; a language change does not reload the day.
-  }, [api, projectId, businessDate]);
-
-  const afterFlush = useCallback(
-    async (s: DraftSession, outcome: FlushOutcome) => {
-      if (outcome === 'conflict') {
-        conflict.current();
-        await refresh(s, true);
-      } else if (outcome === 'ok' && !s.dirty) await refresh(s, false);
+        if (ticket !== e.reads) return;
+        if (!replace && d.version < s.version) return; // older than what we already saved
+        if (replace) s.reset(d.version, d.facts);
+        else s.adopt(d, startedAt);
+        e.day = d;
+        e.frozen = content;
+        e.error = null;
+      } catch (err) {
+        if (ticket === e.reads)
+          e.error = err instanceof ApiError ? err.code : 'REQUEST_FAILED';
+      }
+      rerender();
     },
-    [refresh],
+    [api],
   );
 
-  const flush = useCallback(async (): Promise<FlushOutcome> => {
-    const s = session.current;
-    if (!s) return 'ok';
+  const settleAfter = useCallback(
+    async (e: Entry, outcome: FlushOutcome) => {
+      if (outcome === 'conflict') {
+        conflict.current();
+        await read(e, true);
+      } else if (outcome === 'ok' && !e.session.dirty) await read(e, false);
+    },
+    [read],
+  );
+
+  useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
-    const outcome = await s.flush();
-    await afterFlush(s, outcome);
+    const e = entryFor(projectId, businessDate);
+    // Returning to a day with unsaved or failed edits retries them; otherwise re-read it.
+    if (e.session.dirty) void e.session.flush().then((o) => settleAfter(e, o));
+    else void read(e, false);
+    rerender();
+    return () => {
+      // Leaving: send what was typed to its own day; the entry keeps any failure for return.
+      if (e.session.dirty)
+        void e.session.flush().then(async (o) => {
+          if (o === 'conflict') await read(e, true);
+        });
+    };
+  }, [entryFor, read, settleAfter, projectId, businessDate]);
+
+  const flush = useCallback(async (): Promise<FlushOutcome> => {
+    const e = entries.current.get(key);
+    if (!e) return 'ok';
+    if (timer.current) clearTimeout(timer.current);
+    const outcome = await e.session.flush();
+    await settleAfter(e, outcome);
     return outcome;
-  }, [afterFlush]);
+  }, [key, settleAfter]);
 
   const edit = useCallback(
     (path: string, value: string | null) => {
-      const s = session.current;
-      if (!s) return;
+      const e = entries.current.get(key);
+      if (!e || e.busy) return;
+      const s = e.session;
       let next =
         path === 'noWork'
           ? { ...s.facts, noWork: null }
@@ -138,43 +160,56 @@ export function useDay(
           `updated.${path.slice(4)}`,
           new Date().toISOString(),
         );
-      s.edit(next);
+      if (!s.edit(next)) return;
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => void flush(), AUTOSAVE_MS);
     },
-    [flush],
+    [key, flush],
   );
 
-  /** Run an action only on exactly what the user sees, fully saved; otherwise abort. */
+  /** Run an action only on exactly what the user sees, fully saved, with edits frozen. */
   const act = useCallback(
     async (fn: (version: number) => Promise<unknown>) => {
-      const s = session.current;
-      if (!s) throw new ActionAborted('failed');
+      const e = entries.current.get(key);
+      if (!e) throw new ActionAborted('failed');
+      const s = e.session;
       if (timer.current) clearTimeout(timer.current);
-      const outcome = await s.settle();
-      if (outcome !== 'ok') {
-        await afterFlush(s, outcome);
-        throw new ActionAborted(outcome);
-      }
+      e.busy = true;
+      rerender();
       try {
-        await fn(s.version);
-      } catch (e) {
-        if (
-          e instanceof ApiError &&
-          (e.code === 'VERSION_CONFLICT' || e.code === 'LOCKED')
-        ) {
-          conflict.current();
-          await refresh(s, true);
+        const outcome = await s.settle();
+        if (outcome !== 'ok') {
+          await settleAfter(e, outcome);
+          throw new ActionAborted(outcome);
         }
-        throw e;
+        s.locked = true;
+        try {
+          await fn(s.version);
+        } catch (err) {
+          if (
+            err instanceof ApiError &&
+            (err.code === 'VERSION_CONFLICT' || err.code === 'LOCKED')
+          ) {
+            conflict.current();
+            await read(e, true);
+          }
+          throw err;
+        }
+        await read(e, true);
+      } finally {
+        s.locked = false;
+        e.busy = false;
+        rerender();
       }
-      await refresh(s, true);
     },
-    [afterFlush, refresh],
+    [key, read, settleAfter],
   );
 
-  const s = session.current;
-  const ready = day !== null && s !== null;
+  const e = entries.current.get(key);
+  const s = e?.session;
+  // Only a day read for this very date is shown; never another day's content.
+  const day = e?.day && e.day.businessDate === businessDate ? e.day : null;
+  const ready = day !== null && s !== undefined;
   const base = () => ({
     projectId,
     businessDate,
@@ -183,13 +218,14 @@ export function useDay(
   return {
     day,
     /** Submitted days: the frozen revision. Otherwise: the live view with the local facts. */
-    read: ready ? (frozen ?? { ...day, facts: s.facts }) : null,
+    read: ready ? (e!.frozen ?? { ...day, facts: s.facts }) : null,
     facts: ready ? s.facts : null,
     save: s?.state ?? 'idle',
-    error,
+    busy: e?.busy ?? false,
+    error: e?.error ?? null,
     edit,
     flush,
-    reload: () => (s ? refresh(s, false) : Promise.resolve()),
+    reload: () => (e ? read(e, false) : Promise.resolve()),
     submit: () => act((v) => api.submit({ ...base(), expectedVersion: v })),
     noWork: (reason: NoWorkReason, note: string) =>
       act((v) => api.noWork({ ...base(), expectedVersion: v, reason, note })),

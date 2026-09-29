@@ -1353,3 +1353,9 @@ dialog.sheet::backdrop {
     top: 50%;
   }
 }
+fieldset.bare {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
