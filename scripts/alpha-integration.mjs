@@ -23,6 +23,13 @@ const database = `mje_alpha_test_${suffix}`;
 const username = `mje_test_${suffix}`;
 const password = randomBytes(24).toString('hex');
 const admin = new Pool({ connectionString: source.toString() });
+// pool.end() resolves before idle sockets finish closing; DROP DATABASE ... WITH (FORCE) can
+// then terminate one (57P01) and the pool would re-emit it as an unhandled 'error'. Only that
+// shutdown termination is ignored; any other pool error still fails the run.
+const tolerateShutdown = (pool) =>
+  pool.on('error', (error) => {
+    if (error?.code !== '57P01') throw error;
+  });
 const isolated = new URL(source);
 isolated.pathname = `/${database}`;
 let owner, appPool, app;
@@ -41,7 +48,7 @@ try {
     env: { ...process.env, DATABASE_URL: isolated.toString() },
     stdio: 'pipe',
   });
-  owner = new Pool({ connectionString: isolated.toString() });
+  owner = tolerateShutdown(new Pool({ connectionString: isolated.toString() }));
   await admin.query(
     `CREATE ROLE "${username}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${password}'`,
   );
@@ -50,7 +57,9 @@ try {
   const appUrl = new URL(isolated);
   appUrl.username = username;
   appUrl.password = password;
-  appPool = new Pool({ connectionString: appUrl.toString(), max: 4 });
+  appPool = tolerateShutdown(
+    new Pool({ connectionString: appUrl.toString(), max: 4 }),
+  );
   const tenantId = randomUUID(),
     audience = randomUUID(),
     clientId = randomUUID();
@@ -510,7 +519,9 @@ try {
   );
   const restoredUrl = new URL(isolated);
   restoredUrl.pathname = `/${database}_restore`;
-  const restored = new Pool({ connectionString: restoredUrl.toString() });
+  const restored = tolerateShutdown(
+    new Pool({ connectionString: restoredUrl.toString() }),
+  );
   try {
     assert.equal(
       (await restored.query('SELECT count(*)::int AS n FROM "Revision"'))
