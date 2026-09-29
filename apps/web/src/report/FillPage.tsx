@@ -7,7 +7,13 @@ import { Icon } from '../icons.js';
 import { NumInput, TokenChips } from '../ui.js';
 import type { MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
-import { activeWork, byKind, cumulativeSuggestion, target } from './model.js';
+import {
+  activeWork,
+  byKind,
+  cumulativeChecks,
+  cumulativeSuggestion,
+  target,
+} from './model.js';
 import type { DayHandle, SaveState } from './useDay.js';
 import { FillIssues } from './Issues.js';
 import type { IssuesHandle } from './useIssues.js';
@@ -106,6 +112,9 @@ function QtyRow({
               </span>
             )}
           </label>
+          {dec(q) !== null && dec(cur) !== null && dec(cur)! < dec(q)! && (
+            <p className="warn-t small">{t('cumBelowToday')}</p>
+          )}
           {sug && cur !== sug.sum && (
             <div className="calc">
               <span className="grow">
@@ -340,11 +349,53 @@ export function CheckList({
       </div>
     );
   });
+  // Cumulatives that disagree with today's quantity: reminders, never a block.
+  const checks = cumulativeChecks(
+    { items, facts: h.facts! },
+    day.cumulativeBase,
+  );
+  const checkRows = checks.map((c) => (
+    <div className="crow" key={`check:${c.item}`}>
+      <span className="grow">
+        {name(c.item)} ·{' '}
+        {c.kind === 'belowToday'
+          ? t('cumBelowToday')
+          : t('cumNotSuggested', { n: fmtNum(c.sum, locale) })}
+      </span>
+      <span className="chips">
+        {c.kind === 'notSuggested' ? (
+          <button
+            type="button"
+            className="pill"
+            onClick={() => h.edit(`cumulative.${c.item}`, c.sum)}
+          >
+            {t('adoptN', { n: fmtNum(c.sum, locale) })}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="ghost small"
+            onClick={() => onFocus(`c-${c.item}`)}
+          >
+            {t('fill')}
+          </button>
+        )}
+      </span>
+    </div>
+  ));
   return (
     <section className="card">
       <h2 className={`blk${rows.length ? ' warn-t' : ''}`}>
         {rows.length ? t('missingN', { n: rows.length }) : t('allFilled')}
       </h2>
+      {checkRows.length > 0 && (
+        <>
+          <h3 className="warn-t">{t('reviewN', { n: checkRows.length })}</h3>
+          <fieldset className="bare" disabled={busy}>
+            {checkRows}
+          </fieldset>
+        </>
+      )}
       {cov.invalid.length > 0 && (
         <div className="banner err">{t('numberInvalid')}</div>
       )}

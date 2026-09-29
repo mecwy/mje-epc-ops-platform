@@ -121,6 +121,7 @@ export function MenuSheet({
   timeZone,
   onCorrect,
   onCancel,
+  onView,
   onSignOut,
 }: {
   onClose: () => void;
@@ -130,6 +131,8 @@ export function MenuSheet({
   timeZone: string;
   onCorrect: () => void;
   onCancel: () => void;
+  /** Open a submitted version read-only. */
+  onView: (n: number) => void;
   onSignOut: (() => void) | null;
 }) {
   const { t, lang, setLang, locale } = useI18n();
@@ -149,10 +152,15 @@ export function MenuSheet({
         <>
           <h3>{t('history')}</h3>
           {revisions.map((r) => (
-            <p key={r.n} className="small">
+            <button
+              key={r.n}
+              type="button"
+              className="mitem small"
+              onClick={() => onView(r.n)}
+            >
               {t('versionN', { n: r.n })} · {fmtTime(r.at, locale, timeZone)}
               {r.reason ? ` · ${r.reason}` : ''}
-            </p>
+            </button>
           ))}
         </>
       )}
