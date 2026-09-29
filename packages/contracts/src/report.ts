@@ -2,6 +2,20 @@
  * Site Daily Close boundary DTOs (U2.1). Values are declarations; nothing here is verified.
  * Numbers travel as decimal strings; '' = not filled; 'unknown' | 'na' are explicit states.
  */
+import {
+  InvalidReportInput,
+  KEY,
+  UUID,
+  date,
+  id,
+  isRealDate,
+  obj,
+  oneOf,
+  str,
+  version,
+} from './parse.js';
+
+export { InvalidReportInput, isRealDate };
 export type Reported = string;
 export const REPORT_TOKENS = ['unknown', 'na'] as const;
 export const ESCALATION_CATEGORIES = [
@@ -109,30 +123,11 @@ export interface SaveItemsCommand {
   items: ReportItemDto[];
 }
 
-/** `field` is a bounded, printable path: rejected client keys are never echoed verbatim. */
-export class InvalidReportInput extends Error {
-  public readonly field: string;
-  constructor(field: string) {
-    const safe = field.replace(/[^\x20-\x7e]/g, '?').slice(0, 80);
-    super(`Invalid field: ${safe}`);
-    this.field = safe;
-  }
-}
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** Numbers, timestamps and maps are report-specific; the generic parsers live in parse.ts. */
 const DECIMAL = /^\d{1,14}(\.\d{1,6})?$/;
 const ISO =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
-const KEY = /^[A-Za-z][\w-]{0,63}$/;
-const TEXT_MAX = 4000;
 
-/** Calendar-valid YYYY-MM-DD only; `Date.parse` would roll 2026-02-30 over to March. */
-export function isRealDate(s: string): boolean {
-  if (!DATE.test(s)) return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
-}
 /** ISO-8601 instant with a real date, real time (leap seconds excluded) and an offset within ±14:00. */
 export function isRealTimestamp(s: string): boolean {
   const m = ISO.exec(s);
@@ -145,31 +140,6 @@ export function isRealTimestamp(s: string): boolean {
     if (oh! > 14 || om! > 59 || (oh === 14 && om! > 0)) return false;
   }
   return !Number.isNaN(Date.parse(s));
-}
-function obj(v: unknown, field: string): Record<string, unknown> {
-  if (!v || typeof v !== 'object' || Array.isArray(v))
-    throw new InvalidReportInput(field);
-  return v as Record<string, unknown>;
-}
-function str(v: unknown, field: string, max = TEXT_MAX): string {
-  if (typeof v !== 'string' || v.length > max)
-    throw new InvalidReportInput(field);
-  return v;
-}
-function id(v: unknown, field: string): string {
-  const s = str(v, field, 36);
-  if (!UUID.test(s)) throw new InvalidReportInput(field);
-  return s.toLowerCase();
-}
-function date(v: unknown, field: string): string {
-  const s = str(v, field, 10);
-  if (!isRealDate(s)) throw new InvalidReportInput(field);
-  return s;
-}
-function version(v: unknown, field: string): number {
-  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 1_000_000)
-    throw new InvalidReportInput(field);
-  return v;
 }
 /** '' | 'unknown' | 'na' | decimal; commas are accepted as a decimal separator and normalized. */
 export function reported(v: unknown, field: string): Reported {
@@ -198,16 +168,6 @@ function reportedMap(v: unknown, field: string): Record<string, Reported> {
     out[k] = reported(val, `${field}.${k}`);
   return out;
 }
-function oneOf<T extends readonly string[]>(
-  v: unknown,
-  list: T,
-  field: string,
-): T[number] {
-  if (typeof v !== 'string' || !(list as readonly string[]).includes(v))
-    throw new InvalidReportInput(field);
-  return v as T[number];
-}
-
 export function parseFacts(v: unknown): DayFactsDto {
   const o = obj(v, 'facts');
   const narrative = obj(o['narrative'] ?? {}, 'facts.narrative');
