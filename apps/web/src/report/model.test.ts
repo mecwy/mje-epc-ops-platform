@@ -3,6 +3,7 @@ import type { DayFactsDto, ReportItemDto } from '@mje/contracts';
 import { blankFacts as blankRuleFacts } from '@mje/domain/rules';
 import {
   activeWork,
+  cumulativeChecks,
   cumulativeSuggestion,
   liveCoverage,
   savable,
@@ -66,5 +67,34 @@ describe('report view model', () => {
     expect(savable(setFact(blankFacts(), 'qty.support', 'unknown'))).toBe(true);
     expect(savable(setFact(blankFacts(), 'qty.support', '12a'))).toBe(false);
     expect(savable(setFact(blankFacts(), 'people.manager', '1,5'))).toBe(true);
+  });
+
+  it('flags a cumulative below today and one that differs from last + today; skips unknown', () => {
+    let f = setFact(blankFacts(), 'qty.support', '110');
+    f = setFact(f, 'cumulative.support', '100');
+    // first day (no earlier cumulative): 100 declared after today was corrected to 110
+    expect(cumulativeChecks({ items, facts: f }, {})).toEqual([
+      { item: 'support', kind: 'belowToday' },
+    ]);
+    const base = { support: { value: '500', asOf: '2026-09-28' } };
+    f = setFact(f, 'cumulative.support', '600');
+    expect(cumulativeChecks({ items, facts: f }, base)).toEqual([
+      { item: 'support', kind: 'notSuggested', sum: '610' },
+    ]);
+    expect(
+      cumulativeChecks(
+        { items, facts: setFact(f, 'cumulative.support', '610') },
+        base,
+      ),
+    ).toEqual([]);
+    expect(
+      cumulativeChecks(
+        { items, facts: setFact(f, 'cumulative.support', 'unknown') },
+        base,
+      ),
+    ).toEqual([]);
+    expect(
+      cumulativeChecks({ items, facts: setFact(f, 'qty.support', '') }, base),
+    ).toEqual([]);
   });
 });

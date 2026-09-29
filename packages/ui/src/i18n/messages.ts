@@ -41,6 +41,12 @@ export const MESSAGES = {
     'Requiere su atención {n}',
   ],
   back: ['返回', 'Back', 'Nazad', 'Atrás'],
+  backToCurrent: [
+    '返回当前版本',
+    'Back to the current version',
+    'Nazad na trenutnu verziju',
+    'Volver a la versión actual',
+  ],
   baselineN: ['基准 {n}', 'baseline {n}', 'plan {n}', 'plan {n}'],
   cancelCorrect: [
     '取消更正',
@@ -222,6 +228,18 @@ export const MESSAGES = {
     'Razlog ispravke',
     'Motivo de la corrección',
   ],
+  cumBelowToday: [
+    '累计小于今日数量，请核对',
+    "Cumulative is below today's quantity; please check",
+    'Kumulativ je manji od današnje količine; proverite',
+    'El acumulado es menor que la cantidad de hoy; revíselo',
+  ],
+  cumNotSuggested: [
+    '累计与“上次累计 + 今日” = {n} 不一致',
+    'Cumulative differs from last cumulative + today = {n}',
+    'Kumulativ se razlikuje od prethodni kumulativ + danas = {n}',
+    'El acumulado difiere de acumulado anterior + hoy = {n}',
+  ],
   cumulative: ['累计', 'Cumulative', 'Ukupno', 'Acumulado'],
   date: ['日期', 'Date', 'Datum', 'Fecha'],
   dateOrder: [
@@ -352,6 +370,12 @@ export const MESSAGES = {
   language: ['语言', 'Language', 'Jezik', 'Idioma'],
   latest: ['最新进展', 'Latest update', 'Najnovije', 'Última novedad'],
   linkTo: ['关联到', 'Linked to', 'Povezano sa', 'Vinculada a'],
+  loadFail: [
+    '加载失败，请重试',
+    'Could not load; try again',
+    'Učitavanje nije uspelo; pokušajte ponovo',
+    'No se pudo cargar; inténtelo de nuevo',
+  ],
   loading: ['加载中…', 'Loading…', 'Učitavanje…', 'Cargando…'],
   located: [
     '已定位 ±{m} 米',
@@ -655,6 +679,7 @@ export const MESSAGES = {
     'Veza je prekinuta, ponovni pokušaj…',
     'Sin conexión, reintentando…',
   ],
+  reviewN: ['请核对 {n} 项', 'Please check {n}', 'Proverite {n}', 'Revise {n}'],
   role_installer: [
     '安装队伍',
     'Installation crew',
@@ -791,6 +816,18 @@ export const MESSAGES = {
   update: ['更新', 'Update', 'Ažuriraj', 'Actualizar'],
   updatedAt: ['{t} 更新', 'updated {t}', 'ažurirano {t}', 'actualizado {t}'],
   versionN: ['第 {n} 版', 'Version {n}', 'Verzija {n}', 'Versión {n}'],
+  viewingCurrentVersion: [
+    '正在查看第 {n} 版（当前版本，只读）',
+    'Viewing version {n} (current version, read-only)',
+    'Pregled verzije {n} (trenutna verzija, samo čitanje)',
+    'Viendo la versión {n} (versión actual, solo lectura)',
+  ],
+  viewingVersion: [
+    '正在查看第 {n} 版（只读，不是当前版本）',
+    'Viewing version {n} (read-only, not the current version)',
+    'Pregled verzije {n} (samo čitanje, nije trenutna verzija)',
+    'Viendo la versión {n} (solo lectura, no es la versión actual)',
+  ],
   weather: ['天气', 'Weather', 'Vreme', 'Clima'],
   whoAreYou: [
     '选择你的名字',
