@@ -33,6 +33,7 @@ export const MESSAGES = {
     'Danas {n} isporuka',
     '{n} entregas hoy',
   ],
+  asOf: ['截至 {d}', 'as of {d}', 'do {d}', 'al {d}'],
   attention: [
     '需要您关注 {n}',
     'Needs your attention {n}',
@@ -170,6 +171,12 @@ export const MESSAGES = {
     'Potvrđeno v{n}',
     'Confirmado v{n}',
   ],
+  conflictReloaded: [
+    '已在其他设备更新，已重新载入',
+    'Changed on another device; reloaded',
+    'Izmenjeno na drugom uređaju; ponovo učitano',
+    'Cambiado en otro dispositivo; recargado',
+  ],
   construction: [
     '施工情况',
     'Work done',
@@ -250,6 +257,7 @@ export const MESSAGES = {
   ],
   escalated: ['已上报', 'Escalated', 'Prijavljeno', 'Escalado'],
   fill: ['填写', 'Fill in', 'Unesi', 'Rellenar'],
+  forbidden: ['没有权限', 'Not permitted', 'Nije dozvoljeno', 'No permitido'],
   foremanN: ['工头报 {n}', 'foreman {n}', 'poslovođa {n}', 'encargado {n}'],
   fromAlbum: ['从相册', 'From album', 'Iz galerije', 'De la galería'],
   grp_gc: [
@@ -263,6 +271,12 @@ export const MESSAGES = {
   history: ['历史版本', 'Versions', 'Verzije', 'Versiones'],
   ignore: ['忽略', 'Dismiss', 'Zanemari', 'Descartar'],
   inSite: ['在工地范围内', 'On site', 'Na gradilištu', 'En la obra'],
+  incomplete: [
+    '含未知',
+    'incl. unknown',
+    'uklj. nepoznato',
+    'incl. desconocido',
+  ],
   installN: ['安装 {n}', 'installers {n}', 'montaža {n}', 'montaje {n}'],
   issues: ['问题', 'Issues', 'Problemi', 'Incidencias'],
   itAcCable: ['交流电缆', 'AC cable', 'AC kabl', 'Cable CA'],
@@ -317,8 +331,10 @@ export const MESSAGES = {
     '{item} 3 dana ispod 80% plana',
     '{item} 3 días bajo el 80 % del plan',
   ],
+  language: ['语言', 'Language', 'Jezik', 'Idioma'],
   latest: ['最新进展', 'Latest update', 'Najnovije', 'Última novedad'],
   linkTo: ['关联到', 'Linked to', 'Povezano sa', 'Vinculada a'],
+  loading: ['加载中…', 'Loading…', 'Učitavanje…', 'Cargando…'],
   located: [
     '已定位 ±{m} 米',
     'Located ±{m} m',
@@ -439,6 +455,12 @@ export const MESSAGES = {
     'Provereno, bez problema',
     'Revisado, sin incidencias',
   ],
+  noItems: [
+    '项目还没有工作项',
+    'No work items set up yet',
+    'Još nema stavki rada',
+    'Aún no hay partidas de trabajo',
+  ],
   noLoc: ['未取得位置', 'No location', 'Nema lokacije', 'Sin ubicación'],
   noLocation: [
     '无拍摄位置',
@@ -451,6 +473,12 @@ export const MESSAGES = {
     'No location; photo not saved. Enable location and retake',
     'Nema lokacije; fotografija nije sačuvana. Uključite lokaciju i ponovite',
     'Sin ubicación; foto no guardada. Activa la ubicación y repite',
+  ],
+  noProject: [
+    '没有可访问的项目',
+    'No project available',
+    'Nema dostupnog projekta',
+    'No hay proyectos disponibles',
   ],
   noRecord: [
     '今天还没有记录',
@@ -564,6 +592,7 @@ export const MESSAGES = {
     'Solo el encargado puede fichar por otros',
   ],
   quality: ['质量', 'Quality', 'Kvalitet', 'Calidad'],
+  readOnly: ['只读', 'Read only', 'Samo za čitanje', 'Solo lectura'],
   reasonRequired: [
     '请填写更正原因',
     'Enter a reason',
@@ -596,6 +625,12 @@ export const MESSAGES = {
   ],
   resources: ['资源', 'Resources', 'Resursi', 'Recursos'],
   retry: ['重试', 'Retry', 'Ponovi', 'Reintentar'],
+  retrying: [
+    '网络中断，正在重试…',
+    'Connection lost, retrying…',
+    'Veza je prekinuta, ponovni pokušaj…',
+    'Sin conexión, reintentando…',
+  ],
   role_installer: [
     '安装队伍',
     'Installation crew',
@@ -636,6 +671,7 @@ export const MESSAGES = {
     'Error al guardar',
   ],
   saved: ['已保存', 'Saved', 'Sačuvano', 'Guardado'],
+  saving: ['保存中…', 'Saving…', 'Čuvanje…', 'Guardando…'],
   selfie: ['拍自拍', 'Take selfie', 'Snimi selfi', 'Hacer selfi'],
   send: ['发送', 'Send', 'Pošalji', 'Enviar'],
   setSite: [
@@ -644,6 +680,14 @@ export const MESSAGES = {
     'Postavi kao gradilište (TEST)',
     'Fijar como obra (TEST)',
   ],
+  signIn: ['登录', 'Sign in', 'Prijava', 'Iniciar sesión'],
+  signInFailed: [
+    '登录失败，请重试',
+    'Sign-in failed, try again',
+    'Prijava nije uspela, pokušajte ponovo',
+    'Error al iniciar sesión, inténtalo de nuevo',
+  ],
+  signOut: ['退出登录', 'Sign out', 'Odjava', 'Cerrar sesión'],
   srcAlbum: ['相册上传', 'From album', 'Iz galerije', 'De la galería'],
   srcCamera: [
     '系统内拍摄',
@@ -716,6 +760,7 @@ export const MESSAGES = {
   unused: ['未用', 'not used', 'nije korišćen', 'sin uso'],
   update: ['更新', 'Update', 'Ažuriraj', 'Actualizar'],
   updatedAt: ['{t} 更新', 'updated {t}', 'ažurirano {t}', 'actualizado {t}'],
+  versionN: ['第 {n} 版', 'Version {n}', 'Verzija {n}', 'Versión {n}'],
   weather: ['天气', 'Weather', 'Vreme', 'Clima'],
   whoAreYou: [
     '选择你的名字',

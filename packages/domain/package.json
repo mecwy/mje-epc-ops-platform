@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./rules": {
+      "types": "./dist/report-rules.d.ts",
+      "default": "./dist/report-rules.js"
     }
   },
   "scripts": {

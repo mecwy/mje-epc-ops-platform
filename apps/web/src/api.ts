@@ -1,0 +1,192 @@
+import type {
+  CancelCorrectionCommand,
+  ConfirmPlanCommand,
+  DayFactsDto,
+  NoWorkCommand,
+  PlanRowDto,
+  ReportItemDto,
+  SaveFactsCommand,
+  SavePlanDraftCommand,
+  StartCorrectionCommand,
+  SubmitReportCommand,
+} from '@mje/contracts';
+import type { Coverage } from '@mje/domain/rules';
+
+export interface AuthConfig {
+  enabled: boolean;
+  tenantId?: string;
+  clientId?: string;
+  scope?: string;
+}
+export type Access = 'write' | 'read';
+export interface Project {
+  id: string;
+  name: string;
+  code: string;
+  timezone: string;
+  access: Access;
+}
+export interface ProjectsResponse {
+  accountId: string;
+  personId: string;
+  projects: Project[];
+}
+export type DayState = 'empty' | 'draft' | 'submitted' | 'correcting';
+export interface PlanStatusDto {
+  status: 'confirmed' | 'draft' | 'none';
+  n: number | null;
+}
+export interface Carried {
+  value: string;
+  asOf: string;
+}
+export interface MaterialTotal {
+  value: string | null;
+  complete: boolean;
+}
+/** What the report screens render: a live day or a frozen revision snapshot. */
+export interface ReportContent {
+  businessDate: string;
+  facts: DayFactsDto;
+  items: ReportItemDto[];
+  baseline: { n: number; rows: PlanRowDto[] } | null;
+  nextPlan: {
+    status: PlanStatusDto['status'];
+    n: number | null;
+    rows: PlanRowDto[];
+  };
+  previousSubmittedDate: string | null;
+  cumulativeBase: Record<string, Carried>;
+  materialsCumulative: Record<string, MaterialTotal>;
+  coverage: Coverage;
+}
+export interface RevisionMeta {
+  n: number;
+  at: string;
+  by: string;
+  reason: string;
+}
+export interface DayView extends ReportContent {
+  access: Access;
+  projectId: string;
+  siteTimezone: string;
+  state: DayState;
+  version: number;
+  currentRevisionNumber: number;
+  correctionReason: string | null;
+  planStatus: PlanStatusDto;
+  revisions: RevisionMeta[];
+}
+export interface RevisionView extends RevisionMeta {
+  snapshot: ReportContent & { correctionReason: string };
+}
+export interface PlanView {
+  targetBusinessDate: string;
+  status: PlanStatusDto;
+  rows: PlanRowDto[];
+  draft: PlanRowDto[] | null;
+  versions: Array<{ n: number; rows: PlanRowDto[]; at: string; by: string }>;
+}
+export interface WriteResult {
+  businessDate: string;
+  version: number;
+  state: DayState;
+  revisionNumber?: number;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public readonly code: string,
+    public readonly status: number,
+  ) {
+    super(code);
+  }
+}
+type Command = { clientMutationId: string };
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One request. Writes carry Idempotency-Key = clientMutationId, so a write lost to the network
+ * is resent with the same key and the server returns the original result instead of a duplicate.
+ */
+async function request<T>(
+  path: string,
+  token: string,
+  command?: Command,
+  onRetry?: () => void,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    let response: Response;
+    try {
+      response = await fetch(path, {
+        method: command ? 'POST' : 'GET',
+        cache: 'no-store',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(command
+            ? {
+                'Content-Type': 'application/json',
+                'Idempotency-Key': command.clientMutationId,
+              }
+            : {}),
+        },
+        ...(command ? { body: JSON.stringify(command) } : {}),
+      });
+    } catch (error) {
+      if (attempt >= 3) throw new ApiError('NETWORK', 0);
+      onRetry?.();
+      await wait(800 * 2 ** attempt);
+      void error;
+      continue;
+    }
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as {
+        code?: string;
+      };
+      throw new ApiError(body.code ?? 'REQUEST_FAILED', response.status);
+    }
+    return (await response.json()) as T;
+  }
+}
+
+const qs = (params: Record<string, string | number>) =>
+  new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)]),
+  ).toString();
+
+export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
+  const get = async <T>(
+    path: string,
+    params: Record<string, string | number>,
+  ) => request<T>(`/api/report/${path}?${qs(params)}`, await token());
+  const post = async <T>(path: string, command: Command) =>
+    request<T>(`/api/report/${path}`, await token(), command, onRetry);
+  return {
+    projects: async () =>
+      request<ProjectsResponse>('/api/report/projects', await token()),
+    day: (projectId: string, businessDate: string) =>
+      get<DayView>('day', { projectId, businessDate }),
+    revision: (projectId: string, businessDate: string, n: number) =>
+      get<RevisionView>('revision', { projectId, businessDate, n }),
+    plan: (projectId: string, targetBusinessDate: string) =>
+      get<PlanView>('plan', { projectId, targetBusinessDate }),
+    saveFacts: (c: SaveFactsCommand) => post<WriteResult>('facts', c),
+    submit: (c: SubmitReportCommand) => post<WriteResult>('submit', c),
+    noWork: (c: NoWorkCommand) => post<WriteResult>('no-work', c),
+    startCorrection: (c: StartCorrectionCommand) =>
+      post<WriteResult>('correction/start', c),
+    cancelCorrection: (c: CancelCorrectionCommand) =>
+      post<WriteResult>('correction/cancel', c),
+    savePlanDraft: (c: SavePlanDraftCommand) =>
+      post<{ targetBusinessDate: string; status: PlanStatusDto }>(
+        'plan/draft',
+        c,
+      ),
+    confirmPlan: (c: ConfirmPlanCommand) =>
+      post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
+        'plan/confirm',
+        c,
+      ),
+  };
+}
+export type ReportApi = ReturnType<typeof reportApi>;
