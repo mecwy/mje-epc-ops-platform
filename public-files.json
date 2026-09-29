@@ -82,6 +82,7 @@
   "packages/domain/prisma/migrations/202609270002_activity_scope/migration.sql",
   "packages/domain/prisma/migrations/202609280001_alpha_draft/migration.sql",
   "packages/domain/prisma/migrations/202609290001_report_core/migration.sql",
+  "packages/domain/prisma/migrations/202609290002_issues/migration.sql",
   "packages/domain/prisma/migrations/migration_lock.toml",
   "packages/domain/prisma/schema.prisma",
   "packages/domain/src/alpha-store.ts",
