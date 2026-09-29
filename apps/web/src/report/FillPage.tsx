@@ -17,6 +17,8 @@ import {
 import type { DayHandle, SaveState } from './useDay.js';
 import { FillIssues } from './Issues.js';
 import type { IssuesHandle } from './useIssues.js';
+import { PhotoLine, PhotosCard, UnlinkedReminder } from './Photos.js';
+import type { PhotosHandle } from './usePhotos.js';
 
 const ROLE_LABEL = {
   manager: 'role_manager',
@@ -135,6 +137,12 @@ function QtyRow({
             </div>
           )}
         </>
+      )}
+      {!compact && (
+        <PhotoLine
+          link={{ type: 'item', id: it.key }}
+          buttonId={`ph-${it.key}`}
+        />
       )}
     </div>
   );
@@ -263,6 +271,18 @@ export function CheckList({
       ];
     } else if (m.key === 'construction')
       [text, actions] = [t('construction'), go('f-construction')];
+    else if (m.key === 'photo')
+      // A reminder only (rule 5): it never blocks, and nothing marks it done but a photo.
+      [text, actions] = [
+        `${name(m.item)} · ${t('photos')}`,
+        <button
+          type="button"
+          className="ghost small"
+          onClick={() => onFocus(`ph-${m.item}`)}
+        >
+          {t('takePhoto')}
+        </button>,
+      ];
     else if (m.key === 'quality' || m.key === 'safety')
       [text, actions] = [
         t(m.key),
@@ -383,6 +403,7 @@ export function CheckList({
       <fieldset className="bare" disabled={busy}>
         {rows}
       </fieldset>
+      <UnlinkedReminder />
       {panel && (
         <button
           type="button"
@@ -657,6 +678,7 @@ export function FillPage({
                   {narrative('quality')}
                   {narrative('safety')}
                 </section>
+                <PhotosCard />
               </div>
             </div>
           </div>
@@ -690,6 +712,7 @@ export function CheckPage({
   onFocus,
   onSubmit,
   busy,
+  photos,
 }: {
   h: DayHandle;
   day: DayView;
@@ -698,6 +721,7 @@ export function CheckPage({
   onFocus: (id: string) => void;
   onSubmit: () => void;
   busy: boolean;
+  photos: PhotosHandle;
 }) {
   const { t, locale } = useI18n();
   const f = h.facts!;
@@ -735,6 +759,18 @@ export function CheckPage({
             <span className="grow">{t('progress')}</span>
             <span className="muted">{t('itemsWithQty', { n: withQty })}</span>
           </div>
+          {photos.photos && (
+            <div className="crow">
+              <Icon.camera />
+              <span className="grow">{t('photos')}</span>
+              <span className="muted">
+                {photos.photos.length}
+                {photos.unlinked
+                  ? ` · ${t('unlinkedN', { n: photos.unlinked })}`
+                  : ''}
+              </span>
+            </div>
+          )}
         </section>
       </main>
       <div className="foot row2">

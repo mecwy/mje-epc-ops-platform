@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { fmtNum, shift, shown, siteToday } from './format.js';
+import {
+  fmtFileLocal,
+  fmtNum,
+  fmtStamp,
+  shift,
+  shown,
+  siteToday,
+} from './format.js';
 
 describe('report formatting', () => {
   it('groups decimals without float conversion and keeps the text exact', () => {
@@ -27,5 +34,13 @@ describe('report formatting', () => {
     expect(siteToday('Europe/Belgrade', late)).toBe('2026-09-30');
     expect(siteToday('UTC', late)).toBe('2026-09-29');
     expect(shift('2026-12-31', 1)).toBe('2027-01-01');
+  });
+  it('shows a file clock as written and device instants on the site clock', () => {
+    // A file time has no zone: it is shown as the file states it, never shifted.
+    expect(fmtFileLocal('2026-09-29T23:59:58')).toBe('2026-09-29 23:59');
+    // An instant is shown in the site timezone, whatever the device's zone is.
+    expect(
+      fmtStamp('2026-09-29T23:30:00.000Z', 'en-GB', 'Europe/Belgrade'),
+    ).toBe('30/09, 01:30');
   });
 });

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   ESCALATION_CATEGORIES,
   type EscalationCategory,
+  type PhotoAsOfDto,
   type ReportItemDto,
 } from '@mje/contracts';
 import type { MessageKey } from '@mje/ui';
@@ -11,6 +12,7 @@ import { Icon } from '../icons.js';
 import { Chip, Sheet } from '../ui.js';
 import { fmtShort } from './format.js';
 import type { IssuesHandle, NewIssue } from './useIssues.js';
+import { PhotoLine, ReportPhotos, usePhotosAvailable } from './Photos.js';
 
 /** A specific, actionable message for each rejection the issue API can give. */
 export function issueErrorKey(code: string | null): MessageKey | null {
@@ -152,7 +154,16 @@ export function Attention({
 }
 
 /** Open issues of the day in the report (as they stood then, for a submitted day). */
-export function IssueList({ issues }: { issues: IssueAsOf[] }) {
+export function IssueList({
+  issues,
+  photos,
+  withPhotos = [],
+}: {
+  issues: IssueAsOf[];
+  photos: PhotoAsOfDto[];
+  /** Issues not open on the day that have photos: listed for their photos. */
+  withPhotos?: IssueAsOf[];
+}) {
   const { t, locale } = useI18n();
   const open = issues.filter((i) => i.status === 'open');
   const closedToday = issues.filter((i) => i.closedToday).length;
@@ -176,6 +187,16 @@ export function IssueList({ issues }: { issues: IssueAsOf[] }) {
             <CategoryChip category={i.category} />
             {i.controlled && <Chip tone="warn">{t('needsExpert')}</Chip>}
           </div>
+          <ReportPhotos photos={photos} type="issue" id={i.id} />
+        </div>
+      ))}
+      {withPhotos.map((i) => (
+        <div className="issue" key={i.id}>
+          <strong>{i.title}</strong>
+          <div className="chips">
+            <Chip>{t('closedTab')}</Chip>
+          </div>
+          <ReportPhotos photos={photos} type="issue" id={i.id} />
         </div>
       ))}
     </>
@@ -501,6 +522,7 @@ function IssueSheet({
     issue.category,
   );
   const disabled = !canWrite || busy || handle.pending;
+  const withPhotos = usePhotosAvailable();
   return (
     <Sheet title={issue.title} onClose={onClose}>
       <div className="chips">
@@ -518,6 +540,7 @@ function IssueSheet({
           </p>
         ))}
       </div>
+      {withPhotos && <PhotoLine link={{ type: 'issue', id: issue.id }} />}
       {canWrite && (
         <>
           <label className="field">

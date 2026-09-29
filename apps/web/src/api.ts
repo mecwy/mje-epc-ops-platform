@@ -16,6 +16,13 @@ import type {
   SavePlanDraftCommand,
   StartCorrectionCommand,
   SubmitReportCommand,
+  CaptureFixDto,
+  LinkPhotoCommand,
+  PhotoAsOfDto,
+  PhotoDto,
+  PhotoLinkDto,
+  PhotoSourceDto,
+  UnlinkPhotoCommand,
 } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
@@ -110,6 +117,11 @@ export interface ReportContent {
   coverage: Coverage;
   /** Absent only in revisions submitted before issues existed. */
   issues?: IssueAsOf[];
+  /**
+   * The photos a submission froze, with the link each had then (absent in revisions submitted
+   * before photos existed). Live content carries the linked photos as they are now.
+   */
+  photos?: PhotoAsOfDto[];
 }
 export interface RevisionMeta {
   n: number;
@@ -117,8 +129,12 @@ export interface RevisionMeta {
   by: string;
   reason: string;
 }
-export interface DayView extends ReportContent {
+export interface DayView extends Omit<ReportContent, 'photos'> {
   access: Access;
+  /** The day's photos as they are now, linked or not. */
+  photos: PhotoDto[];
+  /** Photos a submission would leave out (no valid current link). */
+  unlinkedPhotos: number;
   projectId: string;
   siteTimezone: string;
   state: DayState;
@@ -145,6 +161,31 @@ export interface WriteResult {
   revisionNumber?: number;
 }
 
+export interface PhotoList {
+  access: Access;
+  projectId: string;
+  businessDate: string;
+  photos: PhotoDto[];
+  /** Photos a submission would leave out (no valid current link). */
+  unlinkedPhotos: number;
+}
+/** One upload as sent: the same key, bytes, fix and link on every retry. */
+export interface PhotoUpload {
+  projectId: string;
+  businessDate: string;
+  clientMutationId: string;
+  source: PhotoSourceDto;
+  photo: Blob;
+  mediaType: string;
+  thumbnail: Blob | null;
+  /** camera only: the device fix; album never sends the uploader's position. */
+  fix: CaptureFixDto | null;
+  /** camera only: device clock when the picture was received. */
+  takenAt: string | null;
+  link: PhotoLinkDto | null;
+}
+export type PhotoUploadResult = PhotoDto & { deduplicated: boolean };
+
 export class ApiError extends Error {
   constructor(
     public readonly code: string,
@@ -154,6 +195,25 @@ export class ApiError extends Error {
   }
 }
 type Command = { clientMutationId: string };
+
+const CODE = /^[A-Z][A-Z0-9_]{0,39}$/;
+/**
+ * The error code of a failed response, and nothing else: only a well-formed code from a JSON
+ * body is kept (never raw text, markup or a proxy's error page), so the screen can only show
+ * a message chosen for a known code.
+ */
+export function responseCode(status: number, body: string): string {
+  let code: unknown;
+  try {
+    code = (JSON.parse(body) as { code?: unknown } | null)?.code;
+  } catch {
+    code = undefined;
+  }
+  if (typeof code === 'string' && CODE.test(code)) return code;
+  // A gateway in front of the API can refuse a large body without the API's JSON.
+  if (status === 413) return 'PHOTO_TOO_LARGE';
+  return 'REQUEST_FAILED';
+}
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -190,12 +250,11 @@ async function request<T>(
       void error;
       continue;
     }
-    if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as {
-        code?: string;
-      };
-      throw new ApiError(body.code ?? 'REQUEST_FAILED', response.status);
-    }
+    if (!response.ok)
+      throw new ApiError(
+        responseCode(response.status, await response.text().catch(() => '')),
+        response.status,
+      );
     return (await response.json()) as T;
   }
 }
@@ -204,6 +263,90 @@ const qs = (params: Record<string, string | number>) =>
   new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)]),
   ).toString();
+
+/** Multipart fields of an upload; empty parts are left out (the server counts every field). */
+export function uploadForm(u: PhotoUpload): FormData {
+  const form = new FormData();
+  const fields: [string, string | null][] = [
+    ['projectId', u.projectId],
+    ['businessDate', u.businessDate],
+    ['clientMutationId', u.clientMutationId],
+    ['source', u.source],
+    ['lat', u.fix?.lat ?? null],
+    ['lon', u.fix?.lon ?? null],
+    ['accuracyM', u.fix?.accuracyM ?? null],
+    ['fixAt', u.fix?.fixAt ?? null],
+    ['takenAt', u.takenAt],
+    ['workItemKey', u.link?.type === 'item' ? u.link.id : null],
+    ['issueId', u.link?.type === 'issue' ? u.link.id : null],
+  ];
+  for (const [k, v] of fields) if (v !== null) form.append(k, v);
+  // Generic file names: the device's own file name is not needed and not sent.
+  form.append('photo', new Blob([u.photo], { type: u.mediaType }), 'photo');
+  if (u.thumbnail) form.append('thumbnail', u.thumbnail, 'thumbnail');
+  return form;
+}
+
+/**
+ * Upload with progress (fetch has none). Idempotency-Key = clientMutationId, so a retry of the
+ * same upload returns the stored photo instead of a second one. Never retried here: the caller
+ * keeps the upload and resends it unchanged when the user asks.
+ */
+function sendUpload(
+  u: PhotoUpload,
+  token: string,
+  onProgress: (percent: number) => void,
+): Promise<PhotoUploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/report/photos');
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.setRequestHeader('Idempotency-Key', u.clientMutationId);
+    xhr.responseType = 'text';
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0)
+        onProgress(Math.min(100, Math.floor((e.loaded * 100) / e.total)));
+    };
+    const lost = () => reject(new ApiError('NETWORK', 0));
+    xhr.onerror = lost;
+    xhr.onabort = lost;
+    xhr.ontimeout = lost;
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as PhotoUploadResult);
+        } catch {
+          // Stored or not is unknown: keep the upload for an unchanged retry.
+          reject(new ApiError('NETWORK', xhr.status));
+        }
+        return;
+      }
+      reject(
+        new ApiError(responseCode(xhr.status, xhr.responseText), xhr.status),
+      );
+    };
+    xhr.send(uploadForm(u));
+  });
+}
+
+/** Image bytes through the API with the bearer token (never a token or blob URL in a link). */
+async function imageBytes(path: string, token: string): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new ApiError('NETWORK', 0);
+  }
+  if (!response.ok)
+    throw new ApiError(
+      responseCode(response.status, await response.text().catch(() => '')),
+      response.status,
+    );
+  return response.blob();
+}
 
 export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
   const get = async <T>(
@@ -246,6 +389,19 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
     replyIssue: (c: ReplyIssueCommand) => post<unknown>('issues/reply', c),
     dismissLag: (c: DismissLagCommand) =>
       post<unknown>('issues/lag/dismiss', c),
+    photos: (projectId: string, businessDate: string) =>
+      get<PhotoList>('photos', { projectId, businessDate }),
+    uploadPhoto: async (
+      u: PhotoUpload,
+      onProgress: (percent: number) => void,
+    ) => sendUpload(u, await token(), onProgress),
+    linkPhoto: (c: LinkPhotoCommand) => post<PhotoDto>('photos/link', c),
+    unlinkPhoto: (c: UnlinkPhotoCommand) => post<PhotoDto>('photos/unlink', c),
+    photoImage: async (photoId: string, which: 'photo' | 'thumbnail') =>
+      imageBytes(
+        `/api/report/photos/${encodeURIComponent(photoId)}${which === 'thumbnail' ? '/thumbnail' : ''}`,
+        await token(),
+      ),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',

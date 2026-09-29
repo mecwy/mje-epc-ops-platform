@@ -13,7 +13,7 @@ import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
 import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
-import { liveCoverage, byKind } from './report/model.js';
+import { liveCoverage, byKind, reportPhotos } from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
@@ -22,6 +22,8 @@ import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
 import { useIssues } from './report/useIssues.js';
 import { FillIssues, ReplySheet } from './report/Issues.js';
+import { usePhotos } from './report/usePhotos.js';
+import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { Sheet } from './ui.js';
 
 type Session = { token: () => Promise<string>; signOut: (() => void) | null };
@@ -129,13 +131,9 @@ function Workspace({
   };
   const h = useDay(api, project.id, date, () => say(t('conflictReloaded')));
   const reloadDay = useCallback(() => void h.reload(), [h.reload]);
-  const issues = useIssues(
-    api,
-    project.id,
-    date,
-    reloadDay,
-    `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`,
-  );
+  const dayStamp = `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`;
+  const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
+  const photos = usePhotos(api, project.id, date, dayStamp);
   const busy = actionBusy || h.busy;
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
@@ -163,7 +161,22 @@ function Workspace({
 
   const day = h.day;
   const liveContent = day && h.facts ? { ...day, facts: h.facts } : null;
-  const cov = liveContent ? liveCoverage(liveContent) : null;
+  const cov = liveContent
+    ? liveCoverage(liveContent, photos.session.photographed())
+    : null;
+  const photoEnv: PhotoEnv = {
+    handle: photos,
+    items: day ? byKind(day.items, 'work') : [],
+    issues: (issues.issues ?? []).map((i) => ({
+      id: i.id,
+      title: i.title,
+      status: i.status,
+    })),
+    canWrite,
+    // Uploads follow the day lock; links may change on any day (rule 1).
+    canUpload: canWrite && day !== null && day.state !== 'submitted' && !busy,
+    timeZone: project.timezone,
+  };
   const tomorrowText = day
     ? day.nextPlan.status === 'none'
       ? t('notPlanned')
@@ -324,6 +337,7 @@ function Workspace({
             c={viewing.rev.snapshot}
             version={meta ?? viewing.rev}
             timeZone={project.timezone}
+            photos={viewing.rev.snapshot.photos ?? []}
           />
         ) : (
           <p className="muted">{t('loading')}</p>
@@ -348,6 +362,7 @@ function Workspace({
         onFill={() => setTask('fill')}
         onNoWork={() => setSheet('noWork')}
         onReply={canWrite ? null : (id) => setReplyTo(id)}
+        photos={reportPhotos(day.state, h.read, photos.photos)}
       />
     );
   else {
@@ -404,7 +419,7 @@ function Workspace({
 
   if (task && day && h.facts && cov)
     return (
-      <>
+      <PhotoHost env={photoEnv}>
         {nav}
         <div className="content">
           {task === 'fill' ? (
@@ -443,15 +458,25 @@ function Workspace({
               onBack={() => setTask('fill')}
               onFocus={goFill}
               onSubmit={() => void submit()}
+              photos={photos}
             />
           )}
         </div>
         <Toast text={toast} />
-      </>
+      </PhotoHost>
     );
 
+  // The current photos, to link them; the report itself shows what the day froze.
+  const photosRow =
+    view === 'report' &&
+    !task &&
+    canWrite &&
+    day &&
+    (day.state !== 'empty' || (photos.photos?.length ?? 0) > 0) ? (
+      <PhotosRow />
+    ) : null;
   return (
-    <>
+    <PhotoHost env={photoEnv}>
       {nav}
       <div className="content">
         <header className="bar">
@@ -498,6 +523,7 @@ function Workspace({
         <main className={`page view-${view}`}>
           {body}
           {correctEntry}
+          {photosRow && !viewing ? photosRow : null}
           {manageIssues && !viewing ? manageIssues : null}
         </main>
       </div>
@@ -546,7 +572,7 @@ function Workspace({
         />
       )}
       <Toast text={toast} />
-    </>
+    </PhotoHost>
   );
 }
 

@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import type { DayFactsDto, ReportItemDto } from '@mje/contracts';
+import type {
+  DayFactsDto,
+  PhotoAsOfDto,
+  PhotoDto,
+  ReportItemDto,
+} from '@mje/contracts';
 import { blankFacts as blankRuleFacts } from '@mje/domain/rules';
 import {
   activeWork,
   cumulativeChecks,
   cumulativeSuggestion,
   liveCoverage,
+  photoPlacement,
+  reportPhotos,
   savable,
   setFact,
 } from './model.js';
@@ -55,18 +62,134 @@ describe('report view model', () => {
       cumulativeSuggestion({ value: 'unknown', asOf: '2026-09-29' }, '280'),
     ).toBeNull();
   });
-  it('coverage lists missing items but hides photo reminders until photos exist', () => {
+  it('coverage reminds of a photo where a quantity has none, only once photos are known', () => {
     const facts = setFact(blankFacts(), 'qty.support', '260');
-    const cov = liveCoverage({ items, baseline, facts });
-    expect(cov.missing.some((m) => m.key === 'photo')).toBe(false);
+    const photo = (c: ReturnType<typeof liveCoverage>) =>
+      c.missing.filter((m) => m.key === 'photo').map((m) => m.item);
+    // Photos not loaded yet: unknown, so neither reminded nor treated as covered.
+    const unknown = liveCoverage({ items, baseline, facts }, null);
+    expect(photo(unknown)).toEqual([]);
     expect(
-      cov.missing.some((m) => m.key === 'cumulative' && m.item === 'support'),
+      unknown.missing.some(
+        (m) => m.key === 'cumulative' && m.item === 'support',
+      ),
     ).toBe(true);
+    expect(photo(liveCoverage({ items, baseline, facts }, new Set()))).toEqual([
+      'support',
+    ]);
+    expect(
+      photo(liveCoverage({ items, baseline, facts }, new Set(['support']))),
+    ).toEqual([]);
+    // A reminder never blocks: it is not an invalid entry.
+    expect(liveCoverage({ items, baseline, facts }, new Set()).invalid).toEqual(
+      [],
+    );
   });
   it('invalid numbers keep the draft local; tokens and blanks are savable', () => {
     expect(savable(setFact(blankFacts(), 'qty.support', 'unknown'))).toBe(true);
     expect(savable(setFact(blankFacts(), 'qty.support', '12a'))).toBe(false);
     expect(savable(setFact(blankFacts(), 'people.manager', '1,5'))).toBe(true);
+  });
+  it('a submitted day shows the photo links its revision froze, not later changes', () => {
+    const frozen: PhotoAsOfDto = {
+      id: 'ph1',
+      source: 'camera',
+      location: 'device',
+      accuracyM: '12.00',
+      deviceCapturedAt: '2026-10-01T08:00:00.000Z',
+      fileTakenAt: null,
+      fileTakenLocal: null,
+      link: { type: 'item', id: 'support' },
+    };
+    // Relinked after submission (allowed): the photo now backs an issue.
+    const now: PhotoDto = {
+      id: 'ph1',
+      projectId: 'p',
+      businessDate: '2026-10-01',
+      source: 'camera',
+      mediaType: 'image/jpeg',
+      sizeBytes: 10,
+      sha256: 'TEST',
+      capture: {
+        lat: '1.000000',
+        lon: '2.000000',
+        accuracyM: '12.00',
+        fixAt: '2026-10-01T07:59:59.000Z',
+      },
+      deviceCapturedAt: '2026-10-01T08:00:00.000Z',
+      file: { takenLocal: null, takenAt: null, gps: null },
+      location: 'device',
+      hasThumbnail: true,
+      receivedAt: '2026-10-01T08:00:01.000Z',
+      uploadedByPersonId: 'TEST',
+      link: { type: 'issue', id: 'i1' },
+      linkVersion: 3,
+    };
+    const unlinked = { ...now, id: 'ph2', link: null };
+    expect(reportPhotos('submitted', { photos: [frozen] }, [now])).toEqual([
+      frozen,
+    ]);
+    // A revision from before photos existed has none, whatever is linked now.
+    expect(reportPhotos('submitted', {}, [now])).toEqual([]);
+    // Not submitted: the linked photos as they are now, without coordinates.
+    const live = reportPhotos('correcting', { photos: [frozen] }, [
+      now,
+      unlinked,
+    ]);
+    expect(live).toEqual([{ ...frozen, link: { type: 'issue', id: 'i1' } }]);
+    expect(JSON.stringify(live)).not.toContain('lat');
+  });
+  it('gives every frozen photo a place in the report, including closed issues and photo-only items', () => {
+    const shot = (id: string, link: PhotoAsOfDto['link']): PhotoAsOfDto => ({
+      id,
+      source: 'album',
+      location: 'none',
+      accuracyM: null,
+      deviceCapturedAt: null,
+      fileTakenAt: null,
+      fileTakenLocal: null,
+      link,
+    });
+    const issue = (id: string, status: 'open' | 'closed') => ({
+      id,
+      title: `TEST ${id}`,
+      category: '' as const,
+      escalate: false,
+      controlled: false,
+      ownerPersonId: null,
+      dueOn: null,
+      workItemKey: null,
+      status,
+      closedToday: status === 'closed',
+      last: null,
+    });
+    const photos = [
+      shot('p1', { type: 'item', id: 'support' }), // planned: its own row
+      shot('p2', { type: 'item', id: 'rail' }), // no plan, no quantity
+      shot('p3', { type: 'issue', id: 'open1' }),
+      shot('p4', { type: 'issue', id: 'closed1' }), // closed that day
+      shot('p5', { type: 'issue', id: 'elsewhere' }), // not in this report
+    ];
+    const c = {
+      items,
+      baseline,
+      facts: blankFacts(),
+      issues: [issue('open1', 'open'), issue('closed1', 'closed')],
+    };
+    const placed = photoPlacement(c, photos);
+    expect(placed.photoOnlyItems.map((i) => i.key)).toEqual(['rail']);
+    expect(placed.otherIssues.map((i) => i.id)).toEqual(['closed1']);
+    expect(placed.unplaced.map((p) => p.id)).toEqual(['p5']);
+    // A no-work day shows no progress rows: its item photos still have a place.
+    const noWork = photoPlacement(
+      {
+        ...c,
+        facts: { ...blankFacts(), noWork: { reason: 'rest', note: '' } },
+      },
+      photos,
+    );
+    expect(noWork.photoOnlyItems).toEqual([]);
+    expect(noWork.unplaced.map((p) => p.id)).toEqual(['p1', 'p2', 'p5']);
   });
 
   it('flags a cumulative below today and one that differs from last + today; skips unknown', () => {
