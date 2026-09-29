@@ -12,10 +12,17 @@ import { NestFactory } from '@nestjs/core';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { AlphaError, AlphaStore, ReportError, ReportStore } from '@mje/domain';
+import {
+  AlphaError,
+  AlphaStore,
+  IssueStore,
+  ReportError,
+  ReportStore,
+} from '@mje/domain';
 import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
 import { AlphaController } from './alpha.controller.js';
 import { ReportController } from './report.controller.js';
+import { IssueController } from './issue.controller.js';
 import {
   TokenVerifier,
   type TokenConfiguration,
@@ -84,6 +91,8 @@ export interface AlphaRuntime {
   store: AlphaStore;
   /** Site Daily Close (U2.1); absent until the report slice is enabled. */
   reportStore?: ReportStore;
+  /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
+  issueStore?: IssueStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
@@ -107,6 +116,7 @@ export async function createApp(alpha?: AlphaRuntime) {
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
+      ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
     ],
     providers: alpha
       ? [
@@ -114,6 +124,9 @@ export async function createApp(alpha?: AlphaRuntime) {
           { provide: TokenVerifier, useValue: alpha.verifier },
           ...(alpha.reportStore
             ? [{ provide: ReportStore, useValue: alpha.reportStore }]
+            : []),
+          ...(alpha.reportStore && alpha.issueStore
+            ? [{ provide: IssueStore, useValue: alpha.issueStore }]
             : []),
         ]
       : [],
