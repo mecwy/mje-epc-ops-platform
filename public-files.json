@@ -45,6 +45,8 @@
   "apps/web/src/report/draft.ts",
   "apps/web/src/report/format.test.ts",
   "apps/web/src/report/format.ts",
+  "apps/web/src/report/history-view.test.ts",
+  "apps/web/src/report/history-view.ts",
   "apps/web/src/report/issue-session.test.ts",
   "apps/web/src/report/issue-session.ts",
   "apps/web/src/report/model.test.ts",

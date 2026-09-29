@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AccountInfo } from '@azure/msal-browser';
 import {
-  ApiError,
-  reportApi,
-  type AuthConfig,
-  type Project,
-  type RevisionView,
-} from './api.js';
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
+import type { AccountInfo } from '@azure/msal-browser';
+import { ApiError, reportApi, type AuthConfig, type Project } from './api.js';
 import { EntraAuth, devToken } from './auth.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
@@ -16,6 +17,7 @@ import { liveCoverage, byKind } from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
+import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
 import { useIssues } from './report/useIssues.js';
@@ -105,13 +107,8 @@ function Workspace({
     null | 'menu' | 'noWork' | 'correct' | 'issues'
   >(null);
   const [focus, setFocus] = useState<string | null>(null);
-  // A submitted version opened from the history, read-only; the fence drops a late answer
-  // for another day or version.
-  const [viewing, setViewing] = useState<{
-    n: number;
-    rev: RevisionView | null;
-    failed: boolean;
-  } | null>(null);
+  // A submitted version opened from the history, read-only (see history-view.ts).
+  const [viewing, dispatchView] = useReducer(historyReducer, null);
   const viewTicket = useRef(0);
   const [actionBusy, setBusy] = useState(false);
   // One PlanSession per target date for the life of the workspace (pending saves survive).
@@ -143,20 +140,21 @@ function Workspace({
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
+  // Another day, or starting a task, closes the version being viewed.
+  useEffect(() => dispatchView({ type: 'close' }), [date]);
   useEffect(() => {
-    viewTicket.current++;
-    setViewing(null);
-  }, [date, task]);
+    if (task !== null) dispatchView({ type: 'close' });
+  }, [task]);
   const openVersion = (n: number) => {
     const ticket = ++viewTicket.current;
     setSheet(null);
-    setViewing({ n, rev: null, failed: false });
+    // Versions are shown on the report tab, never over the field page or an open task.
+    setTask(null);
+    setView('report');
+    dispatchView({ type: 'open', n, ticket });
     api.revision(project.id, date, n).then(
-      (rev) =>
-        ticket === viewTicket.current && setViewing({ n, rev, failed: false }),
-      () =>
-        ticket === viewTicket.current &&
-        setViewing({ n, rev: null, failed: true }),
+      (rev) => dispatchView({ type: 'loaded', ticket, rev }),
+      () => dispatchView({ type: 'failed', ticket }),
     );
   };
   useEffect(() => {
@@ -308,14 +306,13 @@ function Workspace({
     body = (
       <>
         <div className="banner warn">
-          {t('viewingVersion', { n: viewing.n })}{' '}
+          {viewing.n === day?.currentRevisionNumber
+            ? t('viewingCurrentVersion', { n: viewing.n })
+            : t('viewingVersion', { n: viewing.n })}{' '}
           <button
             type="button"
             className="pill"
-            onClick={() => {
-              viewTicket.current++;
-              setViewing(null);
-            }}
+            onClick={() => dispatchView({ type: 'close' })}
           >
             {t('backToCurrent')}
           </button>

@@ -816,6 +816,12 @@ export const MESSAGES = {
   update: ['更新', 'Update', 'Ažuriraj', 'Actualizar'],
   updatedAt: ['{t} 更新', 'updated {t}', 'ažurirano {t}', 'actualizado {t}'],
   versionN: ['第 {n} 版', 'Version {n}', 'Verzija {n}', 'Versión {n}'],
+  viewingCurrentVersion: [
+    '正在查看第 {n} 版（当前版本，只读）',
+    'Viewing version {n} (current version, read-only)',
+    'Pregled verzije {n} (trenutna verzija, samo čitanje)',
+    'Viendo la versión {n} (versión actual, solo lectura)',
+  ],
   viewingVersion: [
     '正在查看第 {n} 版（只读，不是当前版本）',
     'Viewing version {n} (read-only, not the current version)',
