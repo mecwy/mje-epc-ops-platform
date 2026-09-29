@@ -79,6 +79,8 @@
   "packages/ui/src/i18n/index.test.ts",
   "packages/ui/src/i18n/index.ts",
   "packages/ui/src/i18n/messages.ts",
+  "packages/ui/src/i18n/scan.test.ts",
+  "packages/ui/src/i18n/scan.ts",
   "packages/ui/src/index.ts",
   "packages/ui/tsconfig.json",
   "pnpm-lock.yaml",

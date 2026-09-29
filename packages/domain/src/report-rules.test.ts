@@ -216,6 +216,11 @@ describe('coverage', () => {
     expect(c.missing).toEqual([]);
     expect(c.invalid).toEqual([{ key: 'qty', item: 'rail' }]);
   });
+  it('people total outside Decimal(20,6) is null', () => {
+    expect(
+      peopleTotal({ manager: '99999999999999.999999', installer: '0.000001' }),
+    ).toBeNull();
+  });
   it('people total ignores tokens and blanks', () => {
     expect(
       peopleTotal({ manager: '1', installer: '6', supervisor: 'unknown' }),
@@ -295,6 +300,9 @@ describe('photos and check-in', () => {
       { ...fix, accuracyM: Number.POSITIVE_INFINITY },
       { ...fix, fixAt: null },
       { ...fix, fixAt: '' },
+      { ...fix, fixAt: 'yesterday' },
+      { ...fix, fixAt: '   ' },
+      { ...fix, fixAt: '2026-02-30T12:00:00Z' },
     ]) {
       expect(isDeviceFix(bad), JSON.stringify(bad)).toBe(false);
       expect(photoAcceptable('camera', bad)).toBe(false);

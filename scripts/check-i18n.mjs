@@ -32,16 +32,17 @@ try {
 } catch {
   /* no web sources yet */
 }
-// Literal keys in t('k'), t("k"), t(`k`) and translate(lang, 'k'); a template with ${} is dynamic
-// and must go through a typed MessageKey mapping instead, which the compiler checks.
-const CALL =
-  /\b(?:t|translate\s*\(\s*[^,()]+,)\s*\(?\s*(['"`])([A-Za-z][\w.]*)\1/g;
+// Keys come from a bracket- and string-aware scan of t(...) / translate(...) calls; a template
+// key with ${} cannot be checked here and fails the guard. Identifier keys are typed MessageKey,
+// which the compiler checks.
+const { scanTranslationCalls } =
+  await import('../packages/ui/dist/i18n/scan.js');
 const used = new Set();
 for (const f of files) {
-  const text = readFileSync(f, 'utf8');
-  for (const m of text.matchAll(CALL)) used.add(m[2]);
-  for (const m of text.matchAll(/\bt\(\s*`[^`]*\$\{/g))
-    failures.push(`${f}: dynamic template key near offset ${m.index}`);
+  const { keys, dynamic } = scanTranslationCalls(readFileSync(f, 'utf8'));
+  for (const k of keys) used.add(k);
+  for (const offset of dynamic)
+    failures.push(`${f}: dynamic template key at offset ${offset}`);
 }
 for (const key of used)
   if (!Object.hasOwn(MESSAGES, key))

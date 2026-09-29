@@ -21,7 +21,7 @@ export function isLang(v: unknown): v is Lang {
  */
 export function translate(
   lang: Lang,
-  key: MessageKey | string,
+  key: MessageKey,
   vars: Record<string, string | number> = {},
 ): string {
   const row = Object.hasOwn(MESSAGES, key)
@@ -36,8 +36,7 @@ export function translate(
 }
 
 export const makeT =
-  (lang: Lang) =>
-  (key: MessageKey | string, vars?: Record<string, string | number>) =>
+  (lang: Lang) => (key: MessageKey, vars?: Record<string, string | number>) =>
     translate(lang, key, vars);
 
 /** Initial language: saved preference, else a browser-language suggestion, else zh. */

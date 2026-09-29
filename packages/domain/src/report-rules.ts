@@ -3,6 +3,7 @@
  * Inputs are plain values; the store and the browser both call these so that
  * server-side enforcement and client-side previews cannot drift.
  */
+import { isRealTimestamp } from '@mje/contracts';
 
 export const TOKENS = ['unknown', 'na'] as const;
 export type Token = (typeof TOKENS)[number];
@@ -336,11 +337,12 @@ export function coverage(input: CoverageInput): Coverage {
 }
 
 // ---------- people ----------
+/** Sum of the numeric role counts; null when nothing numeric or the sum leaves Decimal(20,6). */
 export function peopleTotal(people: Record<string, Reported>): string | null {
   const any = ROLE_KEYS.some((r) => dec(people[r]) !== null);
-  return any
-    ? decText(ROLE_KEYS.reduce((a, r) => a + (dec(people[r]) ?? 0n), 0n))
-    : null;
+  if (!any) return null;
+  const total = ROLE_KEYS.reduce((a, r) => a + (dec(people[r]) ?? 0n), 0n);
+  return inRange(total) ? decText(total) : null;
 }
 
 // ---------- escalation reminder (a suggestion only; the PM decides) ----------
@@ -422,7 +424,7 @@ export function isDeviceFix(loc: PhotoLocation | null): loc is PhotoLocation {
     Number.isFinite(loc.accuracyM) &&
     loc.accuracyM >= 0 &&
     typeof loc.fixAt === 'string' &&
-    loc.fixAt !== ''
+    isRealTimestamp(loc.fixAt)
   );
 }
 /** In-app capture is evidence: it must carry a device fix. Album uploads may not. */

@@ -53,12 +53,20 @@ describe('report contracts', () => {
     ).toThrow('facts.updated.support');
   });
   it('presence accepts Person UUID keys (normalized) and prototype keys; bad keys are reported by position, not echoed', () => {
-    const uuid = '10000000-0000-4000-8000-000000000001';
+    const uuid = 'a0000000-abcd-4000-8000-00000000000f';
     const f = parseFacts({
       ...facts(),
       presence: { [uuid.toUpperCase()]: 'present', W1: 'absent' },
     });
     expect(f.presence).toEqual({ [uuid]: 'present', W1: 'absent' });
+    // two spellings of one person are contradictory declarations, whichever comes first
+    for (const presence of [
+      { [uuid]: 'present', [uuid.toUpperCase()]: 'absent' },
+      { [uuid.toUpperCase()]: 'absent', [uuid]: 'present' },
+    ])
+      expect(() => parseFacts({ ...facts(), presence })).toThrow(
+        'facts.presence[1]',
+      );
     const hostile = `x\n${'k'.repeat(5000)}`;
     try {
       parseFacts({ ...facts(), qty: { [hostile]: '1' } });

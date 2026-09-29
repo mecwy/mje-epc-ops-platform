@@ -103,13 +103,13 @@ const KEY = /^[A-Za-z][\w-]{0,63}$/;
 const TEXT_MAX = 4000;
 
 /** Calendar-valid YYYY-MM-DD only; `Date.parse` would roll 2026-02-30 over to March. */
-function isRealDate(s: string): boolean {
+export function isRealDate(s: string): boolean {
   if (!DATE.test(s)) return false;
   const d = new Date(`${s}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 /** ISO-8601 instant with a real date, real time (leap seconds excluded) and an offset within ±14:00. */
-function isRealTimestamp(s: string): boolean {
+export function isRealTimestamp(s: string): boolean {
   const m = ISO.exec(s);
   if (!m || !isRealDate(s.slice(0, 10))) return false;
   const [hh, mm, ss] = s.slice(11, 19).split(':').map(Number);
@@ -188,13 +188,21 @@ export function parseFacts(v: unknown): DayFactsDto {
   const narrative = obj(o['narrative'] ?? {}, 'facts.narrative');
   // Presence is keyed by Person id (a UUID, normalized to lower case); prototype-style keys stay valid.
   const presence: DayFactsDto['presence'] = {};
-  for (const [k, val] of mapEntries(
+  mapEntries(
     o['presence'],
     'facts.presence',
     (k) => KEY.test(k) || UUID.test(k),
-  ))
-    presence[k.toLowerCase() === k ? k : UUID.test(k) ? k.toLowerCase() : k] =
-      oneOf(val, ['present', 'absent', ''] as const, `facts.presence.${k}`);
+  ).forEach(([k, val], i) => {
+    const key = UUID.test(k) ? k.toLowerCase() : k;
+    // Two spellings of one person are two declarations; never let one silently win.
+    if (Object.hasOwn(presence, key))
+      throw new InvalidReportInput(`facts.presence[${i}]`);
+    presence[key] = oneOf(
+      val,
+      ['present', 'absent', ''] as const,
+      `facts.presence[${i}]`,
+    );
+  });
   const milestones: DayFactsDto['milestones'] = {};
   for (const [k, val] of mapEntries(o['milestones'], 'facts.milestones')) {
     const m = obj(val, `facts.milestones.${k}`);

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { LANGS, MESSAGES, initialLang, translate } from './index.js';
+import {
+  LANGS,
+  MESSAGES,
+  initialLang,
+  translate,
+  type MessageKey,
+} from './index.js';
 
 describe('i18n resources', () => {
   it('every key has four non-empty entries and consistent placeholders', () => {
@@ -20,9 +26,10 @@ describe('i18n resources', () => {
   it('translates with variables and falls back visibly', () => {
     expect(translate('en', 'tonightDue', { n: 3 })).toBe('3 items to fill');
     expect(translate('sr', 'nav_report')).toBe('Izveštaj');
-    expect(translate('es', 'no.such.key')).toBe('no.such.key');
+    // a key the compiler would reject still degrades visibly at runtime
+    expect(translate('es', 'no.such.key' as MessageKey)).toBe('no.such.key');
     // inherited object names are not message keys
-    expect(translate('en', 'constructor')).toBe('constructor');
+    expect(translate('en', 'constructor' as MessageKey)).toBe('constructor');
   });
   it('inserts values literally: no replacement patterns, no re-scanning of inserted text', () => {
     expect(translate('en', 'tonightDue', { n: '$&' })).toBe('$& items to fill');
@@ -31,6 +38,10 @@ describe('i18n resources', () => {
     );
     // an unknown placeholder stays visible instead of vanishing
     expect(translate('en', 'tonightDue', {})).toBe('{n} items to fill');
+    // an inserted value that looks like another placeholder is not expanded
+    expect(translate('en', 'correctingBanner', { a: '{b}', b: 2 })).toBe(
+      'Correcting v{b} → v2',
+    );
   });
   it('picks the saved language first, then the browser suggestion, then zh', () => {
     expect(initialLang('sr', ['en-US'])).toBe('sr');
