@@ -73,6 +73,8 @@ enum IssueState {
   RESOLUTION_SUBMITTED
   VERIFIED_CLOSED
   REOPENED
+  /// Closed by the project manager; not a verification.
+  CLOSED
 }
 
 enum RevisionState {
@@ -96,6 +98,9 @@ model Organization {
   planVersions                 PlanVersion[]
   planDrafts                   PlanDraft[]
   reportItems                  ReportItem[]
+  issueNotes                   IssueNote[]
+  issueTransitions             IssueTransition[]
+  lagDismissals                LagDismissal[]
   companyRows                  Company[]
   customerRows                 Customer[]
   opportunityRows              Opportunity[]
@@ -219,6 +224,7 @@ model Project {
   PlanVersion_project                     PlanVersion[]      @relation("PlanVersion_project")
   PlanDraft_project                       PlanDraft[]        @relation("PlanDraft_project")
   ReportItem_project                      ReportItem[]       @relation("ReportItem_project")
+  LagDismissal_project                    LagDismissal[]     @relation("LagDismissal_project")
 
   @@unique([orgId, id])
   @@unique([orgId, code])
@@ -350,6 +356,8 @@ model Person {
   Inspection_inspectorPersonId          Inspection[]           @relation("Inspection_inspectorPersonId")
   Acceptance_approverPersonId           Acceptance[]           @relation("Acceptance_approverPersonId")
   Issue_ownerPersonId                   Issue[]                @relation("Issue_ownerPersonId")
+  IssueNote_authorPersonId              IssueNote[]            @relation("IssueNote_person")
+  IssueTransition_actorPersonId         IssueTransition[]      @relation("IssueTransition_person")
   DailyClose_responsiblePersonId        DailyClose[]           @relation("DailyClose_responsiblePersonId")
   DailyClose_delegatePersonId           DailyClose[]           @relation("DailyClose_delegatePersonId")
 
@@ -373,6 +381,10 @@ model LoginAccount {
   reportDraftUpdates   DailyReportDraft[] @relation("DailyReportDraft_actor")
   planVersionConfirms  PlanVersion[]      @relation("PlanVersion_actor")
   planDraftUpdates     PlanDraft[]        @relation("PlanDraft_actor")
+  issueCloses          Issue[]            @relation("Issue_closedBy")
+  issueNotes           IssueNote[]        @relation("IssueNote_account")
+  issueTransitions     IssueTransition[]  @relation("IssueTransition_account")
+  lagDismissals        LagDismissal[]     @relation("LagDismissal_actor")
   Membership_accountId Membership[]       @relation("Membership_accountId")
 
   @@unique([orgId, id])
@@ -802,29 +814,109 @@ model EvidenceLink {
 }
 
 model Issue {
-  id            String           @id @default(uuid()) @db.Uuid
-  orgId         String           @db.Uuid
-  org           Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt     DateTime         @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
-  updatedBy     String           @db.Uuid
-  version       Int              @default(1)
+  id            String            @id @default(uuid()) @db.Uuid
+  orgId         String            @db.Uuid
+  org           Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt     DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime          @updatedAt @db.Timestamptz(6)
+  updatedBy     String            @db.Uuid
+  version       Int               @default(1)
   kind          String
-  state         IssueState       @default(OPEN)
+  state         IssueState        @default(OPEN)
   summary       String
-  dueAt         DateTime?        @db.Timestamptz(6)
+  dueAt         DateTime?         @db.Timestamptz(6)
   resolution    String?
   // Signals never automatically imply fraud.
-  projectId     String?          @db.Uuid
-  project       Project?         @relation("Issue_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  taskId        String?          @db.Uuid
-  task          DailyTask?       @relation("Issue_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  sourceId      String?          @db.Uuid
-  source        SourceAssertion? @relation("Issue_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  ownerPersonId String?          @db.Uuid
-  ownerPerson   Person?          @relation("Issue_ownerPersonId", fields: [orgId, ownerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId     String?           @db.Uuid
+  project       Project?          @relation("Issue_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  taskId        String?           @db.Uuid
+  task          DailyTask?        @relation("Issue_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId      String?           @db.Uuid
+  source        SourceAssertion?  @relation("Issue_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ownerPersonId String?           @db.Uuid
+  ownerPerson   Person?           @relation("Issue_ownerPersonId", fields: [orgId, ownerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// One of the 8 escalation categories (CHECK constraint in SQL); escalate requires it.
+  category      String?
+  escalate      Boolean           @default(false)
+  /// Needs expert confirmation; the project manager cannot close it.
+  controlled    Boolean           @default(false)
+  workItemKey   String?
+  /// Site business dates.
+  createdOn     DateTime?         @db.Date
+  dueOn         DateTime?         @db.Date
+  closedOn      DateTime?         @db.Date
+  closedBy      String?           @db.Uuid
+  closer        LoginAccount?     @relation("Issue_closedBy", fields: [orgId, closedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// Creation order (identity); never the clock.
+  seq           BigInt            @default(autoincrement())
+  notes         IssueNote[]       @relation("IssueNote_issue")
+  transitions   IssueTransition[] @relation("IssueTransition_issue")
 
   @@unique([orgId, id])
+  @@index([orgId, projectId, createdOn, seq], map: "Issue_project_createdOn_idx")
+}
+
+/// Append-only notes (project manager) and replies (executive reader) on an issue.
+model IssueNote {
+  id              String       @id @db.Uuid
+  orgId           String       @db.Uuid
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  issueId         String       @db.Uuid
+  issue           Issue        @relation("IssueNote_issue", fields: [orgId, issueId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// 'note' | 'reply' (CHECK constraint in SQL)
+  kind            String
+  text            String
+  onDate          DateTime     @db.Date
+  authorAccountId String       @db.Uuid
+  authorAccount   LoginAccount @relation("IssueNote_account", fields: [orgId, authorAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  authorPersonId  String       @db.Uuid
+  authorPerson    Person       @relation("IssueNote_person", fields: [orgId, authorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdAt       DateTime     @default(now()) @db.Timestamptz(6)
+
+  /// Append order (identity); never the clock.
+  seq BigInt @default(autoincrement())
+
+  @@unique([orgId, id])
+  @@index([orgId, issueId, seq], map: "IssueNote_issue_idx")
+}
+
+/// Append-only, effective-dated close/reopen history of an issue.
+model IssueTransition {
+  id             String       @id @db.Uuid
+  orgId          String       @db.Uuid
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  issueId        String       @db.Uuid
+  issue          Issue        @relation("IssueTransition_issue", fields: [orgId, issueId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// 'close' | 'reopen' (CHECK constraint in SQL)
+  kind           String
+  onDate         DateTime     @db.Date
+  actorAccountId String       @db.Uuid
+  actorAccount   LoginAccount @relation("IssueTransition_account", fields: [orgId, actorAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actorPersonId  String       @db.Uuid
+  actorPerson    Person       @relation("IssueTransition_person", fields: [orgId, actorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  /// Application order (identity); never the clock.
+  seq            BigInt       @default(autoincrement())
+
+  @@unique([orgId, id])
+  @@index([orgId, issueId, onDate, seq], map: "IssueTransition_issue_idx")
+}
+
+/// A lag reminder the project manager dismissed for one business day and work item.
+model LagDismissal {
+  id           String       @id @db.Uuid
+  orgId        String       @db.Uuid
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId    String       @db.Uuid
+  project      Project      @relation("LagDismissal_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  businessDate DateTime     @db.Date
+  workItemKey  String
+  dismissedBy  String       @db.Uuid
+  actor        LoginAccount @relation("LagDismissal_actor", fields: [orgId, dismissedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  dismissedAt  DateTime     @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, businessDate, workItemKey], map: "LagDismissal_item_key")
 }
 
 model DailyClose {

@@ -27,7 +27,8 @@
     "test:alpha": "node --env-file=.env scripts/alpha-integration.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
     "test:report": "node --env-file=.env scripts/report-integration.mjs",
-    "check:web-bundle": "node scripts/check-web-bundle.mjs"
+    "check:web-bundle": "node scripts/check-web-bundle.mjs",
+    "test:issues": "node --env-file=.env scripts/issue-integration.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",
