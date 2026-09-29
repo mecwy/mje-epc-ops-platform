@@ -21,6 +21,8 @@ export class PlanSession {
   private queue: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private reads = 0;
+  /** Bumped by every edit, acknowledged write and confirmation. */
+  private generation = 0;
 
   constructor(
     private readonly api: PlanApi,
@@ -35,12 +37,16 @@ export class PlanSession {
     return this.saved !== null && this.rows !== this.saved;
   }
 
-  /** Load from the server; unsaved local rows are kept. Only the newest read applies. */
+  /**
+   * Load from the server. Only the newest read applies, and only if nothing was edited,
+   * written or confirmed since it started: an older read never replaces newer rows.
+   */
   async load() {
     const ticket = ++this.reads;
+    const startedAt = this.generation;
     try {
       const p = await this.api.plan(this.projectId, this.target);
-      if (ticket !== this.reads) return;
+      if (ticket !== this.reads || startedAt !== this.generation) return;
       this.plan = p;
       if (!this.dirty) {
         this.rows = p.rows;
@@ -57,6 +63,7 @@ export class PlanSession {
   edit(rows: PlanRowDto[]): boolean {
     if (this.confirming) return false;
     this.rows = rows;
+    this.generation++;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -83,6 +90,7 @@ export class PlanSession {
           rows,
         });
         this.saved = rows;
+        this.generation++;
         if (this.plan)
           this.plan = { ...this.plan, status: r.status, draft: rows };
         this.error = null;
@@ -109,6 +117,7 @@ export class PlanSession {
         }),
       );
       this.saved = null;
+      this.generation++;
       await this.load();
     } catch (e) {
       this.error = e instanceof ApiError ? e.code : 'REQUEST_FAILED';

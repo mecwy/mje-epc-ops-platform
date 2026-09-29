@@ -124,3 +124,53 @@ describe('plan session', () => {
     expect(sc.rows).toEqual(row('900'));
   });
 });
+
+describe('plan session: fenced reads', () => {
+  it('a read started before an edit and save never replaces the saved rows', async () => {
+    let releaseRead: (v: PlanView) => void = () => undefined;
+    const saves: PlanRowDto[][] = [];
+    const confirms: PlanRowDto[][] = [];
+    let server = row('100');
+    const api = {
+      plan: () => new Promise<PlanView>((r) => (releaseRead = r)),
+      savePlanDraft: async (c: { rows: PlanRowDto[] }) => {
+        saves.push(c.rows);
+        server = c.rows;
+        return {
+          targetBusinessDate: 'T',
+          status: { status: 'draft' as const, n: null },
+        };
+      },
+      confirmPlan: async () => {
+        confirms.push(server);
+        return { targetBusinessDate: 'T', n: 1, rows: server };
+      },
+    };
+    const s = new PlanSession(
+      api as never,
+      'p',
+      'T',
+      () => undefined,
+      0,
+      () => 'k',
+    );
+    // first load completes normally
+    const first = s.load();
+    releaseRead(view(row('100')));
+    await first;
+    // a second (remount) read is held while the user edits and the edit is saved
+    const stale = s.load();
+    s.edit(row('200'));
+    await s.save();
+    releaseRead(view(row('100')));
+    await stale;
+    expect(s.rows).toEqual(row('200'));
+    // confirming covers exactly what is displayed
+    const confirming = s.confirm();
+    await tick();
+    releaseRead(view(row('200')));
+    await confirming;
+    expect(confirms).toEqual([row('200')]);
+    expect(saves).toEqual([row('200')]);
+  });
+});
