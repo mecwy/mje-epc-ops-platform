@@ -837,6 +837,94 @@ try {
   );
   assert.deepEqual(orderOf(await expectStatus(list(D2), 200)), beforeSkew);
   assert.equal(find(await expectStatus(list(D4), 200), i1.id).status, 'open');
+  // Several issues share createdOn D1: reverse their stored timestamps (first newest, last
+  // oldest); the list must still follow creation order (seq).
+  const d1Before = await expectStatus(list(D1), 200);
+  assert.ok(d1Before.issues.length >= 3);
+  const d1Ids = ids(d1Before);
+  for (const [n, id] of d1Ids.entries())
+    await owner.query(`UPDATE "Issue" SET "createdAt"=$1 WHERE id=$2`, [
+      `${2100 - n}-01-01`,
+      id,
+    ]);
+  assert.deepEqual(ids(await expectStatus(list(D1), 200)), d1Ids);
+
+  // Same-day transitions on the creation day, with timestamps reversed afterwards: only the
+  // application order (seq) may decide which one is last.
+  const transition = async (issue, path, expectedVersion) =>
+    expectStatus(
+      call(`/issues/${path}`, pm, {
+        issueId: issue.id,
+        businessDate: D3,
+        expectedVersion,
+        clientMutationId: key(),
+      }),
+      200,
+    );
+  const reverseTransitionClock = (issueId) =>
+    owner.query(
+      `UPDATE "IssueTransition" t SET "createdAt"=timestamptz '2100-01-01' - make_interval(secs => r.n)
+      FROM (SELECT id, row_number() OVER (ORDER BY seq) AS n FROM "IssueTransition" WHERE "issueId"=$1) r
+      WHERE t.id=r.id`,
+      [issueId],
+    );
+  const flip = await expectStatus(
+    call(
+      '/issues',
+      pm,
+      create({ businessDate: D3, title: 'TEST combiner box label' }),
+    ),
+    200,
+  );
+  await transition(flip, 'close', 1);
+  await transition(flip, 'reopen', 2);
+  await transition(flip, 'close', 3);
+  const back = await expectStatus(
+    call(
+      '/issues',
+      pm,
+      create({ businessDate: D3, title: 'TEST fence gate hinge' }),
+    ),
+    200,
+  );
+  await transition(back, 'close', 1);
+  await transition(back, 'reopen', 2);
+  for (const id of [flip.id, back.id]) await reverseTransitionClock(id);
+  assert.equal(
+    await count(
+      `SELECT count(*)::int AS n FROM "IssueTransition" a JOIN "IssueTransition" b ON a."issueId"=b."issueId" AND a.seq<b.seq AND a."createdAt"<=b."createdAt" WHERE a."issueId" = ANY($1::uuid[])`,
+      [[flip.id, back.id]],
+    ),
+    0,
+  ); // every later transition now carries an earlier timestamp
+  const onD3 = await expectStatus(list(D3), 200);
+  assert.deepEqual(
+    [find(onD3, flip.id).status, find(onD3, flip.id).closedToday],
+    ['closed', true],
+  );
+  assert.deepEqual(
+    [find(onD3, back.id).status, find(onD3, back.id).closedToday],
+    ['open', false],
+  );
+  const onD4 = await expectStatus(list(D4), 200);
+  assert.ok(!ids(onD4).includes(flip.id)); // closed on D3
+  assert.equal(find(onD4, back.id).status, 'open');
+  assert.deepEqual(
+    (
+      await expectStatus(call(`/issues/${flip.id}`, pm), 200)
+    ).issue.transitions.map((t) => [t.kind, t.onDate]),
+    [
+      ['close', D3],
+      ['reopen', D3],
+      ['close', D3],
+    ],
+  );
+  assert.deepEqual(
+    (
+      await expectStatus(call(`/issues/${back.id}`, pm), 200)
+    ).issue.transitions.map((t) => t.kind),
+    ['close', 'reopen'],
+  );
   const one = await expectStatus(call(`/issues/${i1.id}`, exec), 200);
   assert.equal(one.access, 'read');
   assert.equal(one.issue.notes.length, 5); // first note, two replies, two notes
@@ -847,7 +935,7 @@ try {
   );
   await expectStatus(call('/issues/not-an-id', pm), 400, 'INVALID_INPUT');
   pass(
-    'close D2 then reopen dated D4: D2 still shows closed + closedToday, D3 excludes it, D4 shows it open; reopen before the close and close before the reopen 409; a revision submitted before the reopen is unchanged; a later correction of D2 freezes the close; GET one returns every note and transition',
+    'close D2 then reopen dated D4: D2 still shows closed + closedToday, D3 excludes it, D4 shows it open; reopen before the close and close before the reopen 409; a revision submitted before the reopen is unchanged; a later correction of D2 freezes the close; with stored timestamps reversed, issues of one creation day, the last note and same-day close/reopen/close on the creation day still follow application order; GET one returns every note and transition',
   );
 
   // ---------- lag reminder: 3 consecutive submitted days under 80 % ----------
@@ -1116,16 +1204,17 @@ try {
   assert.deepEqual(
     Object.fromEntries(audits.rows.map((r) => [r.action, r.n])),
     {
-      // i1, owner/rail issue, controlled, i3, progress-lag issue
-      ISSUE_CREATE: 5,
-      // i1 close, progress-lag close
-      ISSUE_CLOSE: 2,
+      // i1, owner/rail issue, controlled, i3, two same-day issues, progress-lag issue
+      ISSUE_CREATE: 7,
+      // i1, same-day close/reopen/close (2) and close/reopen (1), progress-lag issue
+      ISSUE_CLOSE: 5,
       // i1 on, i1 off, i3 on
       ISSUE_ESCALATE: 3,
       ISSUE_LAG_DISMISS: 1,
       // i1 once (replayed), race winner, i3
       ISSUE_NOTE: 3,
-      ISSUE_REOPEN: 1,
+      // i1, one per same-day issue
+      ISSUE_REOPEN: 3,
       // exec (replayed), project executive, exec on i3
       ISSUE_REPLY: 3,
     },
