@@ -1,2 +1,2 @@
-// Phase 0 boundary only. No business behavior implemented.
-export {};
+// Shared test tools. Synthetic TEST data only.
+export * from './images.js';
