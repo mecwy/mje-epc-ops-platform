@@ -1,6 +1,6 @@
 # A6 design: field devices, worker check-in and foreman quantities
 
-Status: design r3 for review. It answers Codex rounds 1 (12 findings) and 2 (6 findings) and records the user decisions of 2026-09-29. It contains no application code, migration or contract. All examples are synthetic TEST data; coordinates are `0.000000, 0.000000`-style placeholders.
+Status: design r4 for review. It answers Codex rounds 1–3 and records the user decisions of 2026-09-29. It contains no application code, migration or contract. All examples are synthetic TEST data; coordinates are `0.000000, 0.000000`-style placeholders.
 
 Scope: U2.1 rules 1, 9, 11, 12, 13 and 14, the foreman quantity report and the PM "adopt" step.
 
@@ -216,30 +216,47 @@ Only `COMPLETE` can be adopted; the PM may still type any value. `foremanTotals`
 
 1. Set `app.device_token_hash`, then do a **non-locking** SELECT through the lookup policy, which is SELECT-only and returns `orgId, id, personId`.
 2. Set `app.org_id` (transaction-local).
-3. Lifecycle routes take the person locks of the actor and the subject, sorted, before any device row lock.
-4. Do a locked re-read through `alpha_org` (`FOR SHARE`; `FOR UPDATE` for rotate or release). Revalidate the hash, state, expiry and current membership.
+3. Take the idempotency key lock (level I below; routes with a key only).
+4. Lifecycle routes take the person locks of the actor and the subject, sorted, before any device row lock.
+5. Do a locked re-read through `alpha_org` in the route's **final** mode: `FOR UPDATE` for revoke, release and rotate, otherwise `FOR SHARE`. Revalidate the hash, state, expiry, `memberUntil` and current membership.
+6. Look up the idempotency record (§3 order of processing). A replay returns here, after authorization.
+
+**No lock upgrades.** A request never upgrades its device lock from `FOR SHARE` to `FOR UPDATE`. Device housekeeping that a `FOR SHARE` request would otherwise write runs in a separate short transaction **after** the request's transaction has ended. It uses `FOR UPDATE SKIP LOCKED` and holds no other lock. Housekeeping covers `lastSeenAt` (at most once an hour), persisting `EXPIRED` once it is observed, and clearing `prevTokenHash` on first use of a new token. A skipped update is harmless: authentication derives expiry from `expiresAt`, `memberUntil` and `lastSeenAt` itself, and `prevTokenHash` works only for the exact rotation replay.
 
 Transaction-local settings end at commit or rollback. A pooled-connection test checks that no context leaks.
 
 **Global lock order.** Every transaction takes locks in this order, skipping levels it does not need:
 
-0. Project roster advisory lock: exclusive for roster writes, shared for adopt and day submit.
-1. Person advisory locks `(org, project, person)`, sorted.
-2. `FieldDevice` rows, sorted by id.
-3. `DailyClose` row `FOR UPDATE`.
-4. `lockReportDay(org, project, date)`.
-5. Slot or crew-report advisory locks.
-6. Target rows (`ForemanReport`, `WorkerCheckIn`).
-7. The `FieldDay` counter row.
+- **T. Throttle counters.** These are updated in their own transaction **before** the business transaction starts, so a refused request still counts. That transaction holds no other lock.
+- **I. Idempotency key lock** (`idempotent()` in store-kit: advisory lock on `(org, actor, route, key)`). For bind, the equivalent lock is an advisory lock on `sha256(token)`. Only duplicates of the same request contend on it, and they then take the same locks in the same order.
+- **0. Project roster advisory lock:** exclusive for roster writes, shared for adopt, day submit, no-work submit and reads that compute the expected crew set.
+- **1. Person advisory locks** `(org, project, person)`, sorted.
+- **2. `FieldDevice` rows**, sorted by id. New rows count here too: bind's `FieldTokenHash` and `FieldDevice` inserts.
+- **2c. Confirmation rows:** `FieldConfirmChallenge` rows of the person, then the `FieldPersonConfirm` counter row.
+- **3. `DailyClose` row** `FOR UPDATE` (`dayForWrite()`).
+- **4. `lockReportDay(org, project, date)`.**
+- **5. Slot or crew-report advisory locks.**
+- **6. Target rows:** `ForemanReport`, `WorkerCheckIn`, `FieldSelfie`, `ForemanAdoption`, `CrewAssignment`, `ProjectRoster`.
+- **7. The `FieldDay` counter row.**
 
-| Operation                                            | Locks taken                                             |
-| ---------------------------------------------------- | ------------------------------------------------------- |
-| Self or foreman check-in                             | 2 (actor share) → 4 → 5 → 7                             |
-| PM proxy, void                                       | 4 → 5/6 → 7                                             |
-| Foreman report                                       | 2 → 4 → 6 → 7                                           |
-| Adopt, day submit                                    | 0 (shared) → 3 → 4 → 7 (submit reads; adopt increments) |
-| Confirm, reject, revoke, release, rotate             | 1 → 2                                                   |
-| Roster write (assign, transfer, handover, terminate) | 0 (exclusive) → 1 → 2                                   |
+| Operation                                             | Locks taken                                                                          |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Entry (roster read)                                   | T → reads only                                                                       |
+| Bind                                                  | T → I (token hash) → 1 (subject: at most 3 PENDING) → 2 (inserts)                    |
+| Challenge                                             | T → 1 → 2 (own row, share) → 2c                                                      |
+| Confirm, reject                                       | T → I → 1 (actor and subject, sorted) → 2 (sorted) → 2c                              |
+| Revoke, release, rotate                               | I → 1 → 2 (`FOR UPDATE`)                                                             |
+| Selfie upload                                         | T → I → 2 (share) → 6 (`FieldSelfie` insert)                                         |
+| Self or foreman check-in, with optional selfie attach | T → I → 2 (share) → 4 → 5 → 6 (`WorkerCheckIn` insert, `FieldSelfie FOR UPDATE`) → 7 |
+| PM proxy, void                                        | I → 4 → 5/6 → 7                                                                      |
+| Foreman report                                        | T → I → 2 (share) → 4 → 6 → 7                                                        |
+| Adopt, submit, no-work submit                         | I → 0 (shared) → 3 → 4 → 6 → 7 (submit reads; adopt increments)                      |
+| Roster write (assign, transfer, handover, terminate)  | I → 0 (exclusive) → 1 → 2 (`FOR UPDATE`, affected persons) → 6                       |
+| Selfie cleanup (worker)                               | 6 only (`FOR UPDATE SKIP LOCKED`); commit before the external delete                 |
+| Device housekeeping                                   | 2 only (`FOR UPDATE SKIP LOCKED`), after the request's transaction                   |
+| Writer reads that compute the expected crew set       | 0 (shared), then plain reads                                                         |
+
+**Integration note (report-store).** In both `submit()` and `noWork()`, take the shared roster lock inside the `idempotent()` callback **before** `dayForWrite()`. Do not take it inside `submitRevision()` or `snapshot()`: at that point the `DailyClose` row (level 3) is already locked, and taking level 0 afterwards reverses the order. Existing photo upload takes the day lock and only reads `DailyClose`, which stays compatible.
 
 **Submission boundary.** Each field write for a day increments `FieldDay.lastSeq` under the day lock and stores `daySeq` on its row. Those writes are check-in, void (`voidSeq`), foreman revision and adoption. Submit records `fieldSeqBoundary = lastSeq` under the same lock. A revision contains exactly the rows with `daySeq ≤ boundary`, minus voids with `voidSeq ≤ boundary`. Rows above the boundary are `afterSubmission`; they enter only through a correction. Receipt timestamps are never used for this. The snapshot also freezes the `rosterVersion` read under the shared roster lock and the expected crew set derived from it. A roster change after submission never alters the revision; the writer view compares the live expected set with the frozen one and marks differences.
 
@@ -319,7 +336,9 @@ E adopt:    PM GET day (writer) → item COMPLETE 120, basis {crews [B,C], revs 
 F submit:   check-in waiting on the day lock while submit holds it → gets seq > boundary → afterSubmission
 G roster:   PM transfers W from crew B to C at T (one tx: roster lock → close B at T, open C at T → memberUntil unchanged)
             PM adopt holding the shared roster lock → the transfer waits; or the transfer commits first → adopt sees a new rosterVersion → FOREMAN_TOTAL_CHANGED
-H selfie:   attach and cleanup both lock the FieldSelfie row at the 1 h boundary → exactly one wins (ATTACHED, or DELETING → SELFIE_EXPIRED)
+H selfie:   expiresAt = E. At E ≤ t < E+5 min: attach → SELFIE_EXPIRED, cleanup does not claim (grace)
+            t ≥ E+5 min, row STAGED: cleanup claims (DELETING, commit) → then attach → SELFIE_EXPIRED
+            attach before E holding the row lock while cleanup's claim waits → ATTACHED; the claim re-checks and skips
 ```
 
 ## 9. Required negative tests (integration, isolated TEST DB, `mje_alpha_app`, via HTTP where a route exists)
@@ -336,7 +355,7 @@ H selfie:   attach and cleanup both lock the FieldSelfie row at the 1 h boundary
 | Authority               | Cross-crew proxy; a proxy from a worker device. A foreman replaced at noon: A is refused at 12:01, B is allowed. Overlapping assignment inserts, concurrently. A backdated assignment is refused. A report for two days ago by a foreman → refused. Continuous transfer in one transaction keeps the device; a transfer split over two transactions ends it. A scheduled end at E: the device works before E and fails after E with no request in between, and stays failed after a later reassignment. Immediate termination revokes at once. A scheduled transfer added before E keeps the device.                                                                                                                                                                                                                                                            |
 | PM proxy                | 7-day window. An off-site fix → `REMOTE_PROXY`. No fix → `PROXY_LOCATION_UNAVAILABLE`. A coarse fix. The actor fix is never stored as the worker's location. `DAY` proxy for a person who left mid-day, for one who has since left the project (allowed, historical membership), and for one with no interval that day (`PERSON_NOT_ROSTERED`). `DAY` proxy for a person transferred mid-day → `crewAttribution=UNKNOWN`.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Ordering                | A check-in, void, foreman revision or adoption interleaved with submit, under controlled lock timing: each row is either ≤ boundary and in the revision, or > boundary and `afterSubmission`. Assignment vs adopt, and assignment vs submit, under controlled lock timing: the roster write either commits before (adopt → `FOREMAN_TOTAL_CHANGED`; the snapshot has the new `rosterVersion`) or waits until after (the frozen snapshot is unchanged).                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Selfie                  | Someone else's staged selfie, an expired one, one already attached, attaching after the check-in, feature off. Expiry-boundary interleaving: attach vs cleanup claim at the 1 h boundary under controlled lock timing → exactly one outcome. Blob delete failure → the row stays `DELETING`, is not attachable or readable, and is retried. Retention deletion keeps `hasSelfie`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Selfie                  | Someone else's staged selfie, an expired one, one already attached, attaching after the check-in, feature off. **Grace interval**, tested separately: at `E ≤ t < E + 5 min` attach is refused (`SELFIE_EXPIRED`) and cleanup does not claim the row; at `t ≥ E + 5 min` cleanup claims it. **Serialization**, under controlled lock timing (cleanup takes its cutoff time as a parameter, so a test can make the row eligible while attach holds its lock): (a) attach holds the row lock before `E`, and a cleanup claim that would otherwise be eligible waits, re-checks and skips an `ATTACHED` row; (b) a committed claim → a later attach sees `DELETING` → refused. A failed blob delete → the row stays `DELETING`, is not attachable or readable, and is retried. Retention deletion keeps `hasSelfie`.                                               |
 | Executive reader (A6.0) | `GET day`/`days`/`revision` over HTTP before submit, after submit and during a correction: no live facts, foreman data or check-ins.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ## 10. Open questions
