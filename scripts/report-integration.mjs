@@ -45,21 +45,35 @@ const tolerateShutdown = (pool) => {
 // Resolves once `count` sessions are waiting on the advisory lock for `key` (as taken by
 // hashtextextended(key, 0)); fails after a timeout instead of guessing with a sleep.
 const waitForLockWaiters = async (key, count, timeoutMs = 15000) => {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const { n } = (
-      await owner.query(
-        `SELECT count(*)::int AS n FROM pg_catalog.pg_locks
-        WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
-          AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())
-          AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
-        [key],
-      )
-    ).rows[0];
-    if (n >= count) return;
-    if (Date.now() > deadline)
-      throw new Error(`timed out: ${n} of ${count} lock waiters for ${key}`);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+  let timer;
+  let stopped = false;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out waiting for ${count} lock waiters`)),
+      timeoutMs,
+    );
+  });
+  const poll = async () => {
+    while (!stopped) {
+      const { n } = (
+        await owner.query(
+          `SELECT count(*)::int AS n FROM pg_catalog.pg_locks
+          WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+            AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())
+            AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+          [key],
+        )
+      ).rows[0];
+      if (n >= count) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  };
+  // A hard bound: a stalled connection or query cannot outlast the timeout either.
+  try {
+    await Promise.race([poll(), expired]);
+  } finally {
+    stopped = true;
+    clearTimeout(timer);
   }
 };
 const isolated = new URL(source);
@@ -1022,7 +1036,9 @@ try {
     await expectStatus(call('/plan/draft', pm, overwrite), 200); // replay
     assert.equal((await draftAudits()).length, before.length);
   } finally {
-    holder.release();
+    // Destroy the connection rather than return it: a failure before the unlock would
+    // otherwise hand a session that still holds the advisory lock back to the pool.
+    holder.release(true);
   }
   pass(
     'concurrent draft save and confirm never lose a saved draft; both wait for the plan lock; two confirms create one version; draft audits record before/after and replays add none',
