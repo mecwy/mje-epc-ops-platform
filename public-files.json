@@ -116,6 +116,8 @@
   "packages/domain/src/photo-file.test.ts",
   "packages/domain/src/photo-file.ts",
   "packages/domain/src/photo-store.ts",
+  "packages/domain/src/reader-view.test.ts",
+  "packages/domain/src/reader-view.ts",
   "packages/domain/src/report-rules.test.ts",
   "packages/domain/src/report-rules.ts",
   "packages/domain/src/report-store.ts",

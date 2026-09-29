@@ -1113,6 +1113,241 @@ try {
   );
   pass('executive sees the submitted day and its revisions, and cannot submit');
 
+  // ---------- OD18: a reader only ever gets submitted content from the server ----------
+  const D10 = '2026-10-14';
+  const dayOf = (date, bearer) =>
+    expectStatus(
+      call(`/day?projectId=${projectA}&businessDate=${date}`, bearer),
+      200,
+    );
+  const planOf = (date, bearer) =>
+    expectStatus(
+      call(`/plan?projectId=${projectA}&targetBusinessDate=${date}`, bearer),
+      200,
+    );
+  const blank = {
+    weather: '',
+    temperature: '',
+    qty: {},
+    cumulative: {},
+    narrative: { construction: '', quality: '', safety: '' },
+    people: {},
+    presence: {},
+    machinery: {},
+    materials: {},
+    milestones: {},
+    noWork: null,
+    updated: {},
+  };
+  const nothing = (r) => {
+    assert.equal(r.access, 'read');
+    assert.equal(r.state, 'empty');
+    assert.equal(r.version, 0);
+    assert.equal(r.currentRevisionNumber, 0);
+    assert.equal(r.correctionReason, null);
+    assert.deepEqual(r.facts, blank);
+    assert.equal(r.baseline, null);
+    assert.deepEqual(r.planStatus, { status: 'none', n: null });
+    assert.deepEqual(r.nextPlan, { status: 'none', n: null, rows: [] });
+    assert.equal(r.previousSubmittedDate, null);
+    assert.deepEqual(r.cumulativeBase, {});
+    assert.deepEqual(r.materialsCumulative, {});
+    assert.deepEqual(r.issues, []);
+    assert.deepEqual(r.photos, []);
+    assert.equal(r.unlinkedPhotos, 0);
+    assert.deepEqual(r.revisions, []);
+  };
+  // The day list as sent, byte for byte, before any of the unsubmitted work below.
+  const daysText = async (bearer) => {
+    const response = await fetch(
+      `${base}/api/report/days?projectId=${projectA}&from=${D1}&to=${D10}`,
+      { headers: { Authorization: `Bearer ${bearer}` } },
+    );
+    assert.equal(response.status, 200);
+    return response.text();
+  };
+  const readerDaysBefore = await daysText(exec);
+  const writerDaysBefore = await daysText(pm);
+  // Unsubmitted work: a plan draft for D10 (the day after the empty D9), a D10 draft day,
+  // and an open correction on D1 with an edit and a newer confirmed plan for D1.
+  await expectStatus(
+    call('/plan/draft', pm, {
+      projectId: projectA,
+      targetBusinessDate: D10,
+      clientMutationId: randomUUID(),
+      rows: [{ item: 'support', target: '7771' }],
+    }),
+    200,
+  );
+  await expectStatus(
+    call(
+      '/facts',
+      pm,
+      cmd({
+        businessDate: D10,
+        facts: facts({ weather: 'TEST unsubmitted draft' }),
+      }),
+    ),
+    200,
+  );
+  const openCorrection = await expectStatus(
+    correction('start', pm, {
+      expectedVersion: await dayVersion(D1),
+      reason: 'TEST reader must not see this',
+    }),
+    200,
+  );
+  const correctionEdit = await expectStatus(
+    call(
+      '/facts',
+      pm,
+      cmd({
+        expectedVersion: openCorrection.version,
+        facts: {
+          ...rev2.snapshot.facts,
+          weather: 'TEST correction in progress',
+        },
+      }),
+    ),
+    200,
+  );
+  await expectStatus(
+    call('/plan/draft', pm, {
+      ...planTarget,
+      clientMutationId: randomUUID(),
+      rows: [{ item: 'support', target: '400' }],
+    }),
+    200,
+  );
+  await expectStatus(
+    call('/plan/confirm', pm, {
+      ...planTarget,
+      clientMutationId: randomUUID(),
+    }),
+    200,
+  );
+
+  // empty day (no row): nothing of the day, not even a next-day plan built from a draft
+  nothing(await dayOf(D9, exec));
+  const pmD9 = await dayOf(D9, pm);
+  assert.equal(pmD9.nextPlan.status, 'draft'); // the writer's live view is unchanged
+  // draft day: "not submitted yet", none of the draft facts
+  const readerD10 = await dayOf(D10, exec);
+  nothing(readerD10);
+  assert.ok(!JSON.stringify(readerD10).includes('TEST unsubmitted draft'));
+  const pmD10 = await dayOf(D10, pm);
+  assert.equal(pmD10.state, 'draft');
+  assert.equal(pmD10.facts.weather, 'TEST unsubmitted draft');
+  // correcting day: revision 2 as submitted, not the correction draft, its reason or new plan
+  const readerD1 = await dayOf(D1, exec);
+  assert.equal(readerD1.state, 'submitted');
+  assert.equal(readerD1.version, 0);
+  assert.equal(readerD1.currentRevisionNumber, 2);
+  assert.equal(readerD1.correctionReason, null);
+  assert.deepEqual(readerD1.facts, rev2.snapshot.facts);
+  assert.deepEqual(readerD1.items, rev2.snapshot.items);
+  assert.deepEqual(readerD1.baseline, rev2.snapshot.baseline);
+  assert.deepEqual(readerD1.nextPlan, rev2.snapshot.nextPlan);
+  assert.deepEqual(readerD1.cumulativeBase, rev2.snapshot.cumulativeBase);
+  assert.deepEqual(
+    readerD1.materialsCumulative,
+    rev2.snapshot.materialsCumulative,
+  );
+  assert.deepEqual(readerD1.issues, rev2.snapshot.issues);
+  assert.deepEqual(readerD1.coverage, rev2.snapshot.coverage);
+  assert.deepEqual(readerD1.photos, []);
+  assert.equal(readerD1.unlinkedPhotos, 0);
+  assert.deepEqual(
+    readerD1.revisions.map((r) => [r.n, r.reason]),
+    [
+      [1, ''],
+      [2, 'TEST 支架数量填错'],
+    ],
+  );
+  assert.ok(!JSON.stringify(readerD1).includes('TEST correction in progress'));
+  assert.ok(
+    !JSON.stringify(readerD1).includes('TEST reader must not see this'),
+  );
+  const pmD1 = await dayOf(D1, pm);
+  assert.equal(pmD1.state, 'correcting');
+  assert.equal(pmD1.version, correctionEdit.version);
+  assert.equal(pmD1.facts.weather, 'TEST correction in progress');
+  assert.equal(pmD1.correctionReason, 'TEST reader must not see this');
+  assert.equal(pmD1.baseline.n, 3);
+  // submitted no-work day: the frozen revision, read-only version 0
+  const readerD4 = await dayOf(D4, exec);
+  assert.equal(readerD4.state, 'submitted');
+  assert.equal(readerD4.version, 0);
+  assert.equal(readerD4.currentRevisionNumber, 1);
+  assert.deepEqual(readerD4.facts, d4.snapshot.facts);
+  assert.deepEqual(readerD4.facts.noWork, {
+    reason: 'weather',
+    note: 'TEST 大雨',
+  });
+  assert.deepEqual(
+    readerD4.revisions.map((r) => r.n),
+    [1],
+  );
+  assert.equal((await dayOf(D4, pm)).version, 1);
+  // days: only submitted days; a draft day is not listed, a correction in progress is the
+  // submitted day. The reader's response is byte-identical to the one before the draft was
+  // started and the correction opened; the writer's changed.
+  const readerDaysAfter = await daysText(exec);
+  const writerDaysAfter = await daysText(pm);
+  assert.equal(readerDaysAfter, readerDaysBefore);
+  assert.notEqual(writerDaysAfter, writerDaysBefore);
+  const writerDays = JSON.parse(writerDaysAfter);
+  const readerDays = JSON.parse(readerDaysAfter);
+  assert.deepEqual(
+    writerDays.find((d) => d.businessDate === D10),
+    { businessDate: D10, state: 'draft', revision: 0 },
+  );
+  assert.deepEqual(
+    writerDays.find((d) => d.businessDate === D1),
+    { businessDate: D1, state: 'correcting', revision: 2 },
+  );
+  assert.deepEqual(
+    readerDays,
+    writerDays
+      .filter((d) => ['submitted', 'correcting'].includes(d.state))
+      .map((d) => ({ ...d, state: 'submitted' })),
+  );
+  assert.deepEqual(
+    readerDays.find((d) => d.businessDate === D1),
+    { businessDate: D1, state: 'submitted', revision: 2 },
+  );
+  assert.ok(!readerDays.some((d) => d.businessDate === D10));
+  // plans: the draft is hidden; confirmed versions stay visible
+  const readerPlanD10 = await planOf(D10, exec);
+  assert.equal(readerPlanD10.draft, null);
+  assert.deepEqual(readerPlanD10.status, { status: 'none', n: null });
+  assert.ok(!JSON.stringify(readerPlanD10).includes('7771'));
+  const writerPlanD10 = await planOf(D10, pm);
+  assert.deepEqual(writerPlanD10.draft, [{ item: 'support', target: '7771' }]);
+  assert.deepEqual(writerPlanD10.status, { status: 'draft', n: null });
+  const readerPlanD9 = await planOf(D9, exec);
+  const writerPlanD9 = await planOf(D9, pm);
+  assert.deepEqual(writerPlanD9.draft, [{ item: 'support', target: '654' }]);
+  assert.equal(readerPlanD9.draft, null);
+  assert.deepEqual(readerPlanD9.versions, writerPlanD9.versions);
+  assert.notEqual(readerPlanD9.status.status, 'draft');
+  assert.ok(!JSON.stringify(readerPlanD9).includes('654'));
+  assert.deepEqual(
+    (await planOf(D1, exec)).versions.map((x) => x.n),
+    [1, 2, 3],
+  );
+  // after the correction is cancelled: the same submitted revision 2
+  await expectStatus(
+    correction('cancel', pm, { expectedVersion: correctionEdit.version }),
+    200,
+  );
+  const readerD1After = await dayOf(D1, exec);
+  assert.deepEqual(readerD1After, readerD1);
+  assert.notEqual((await dayOf(D1, pm)).version, 0);
+  pass(
+    'OD18: a reader gets nothing of an empty or draft day, only revision 2 of a correcting day (not the correction, its reason or a newer plan), the frozen no-work revision, version 0; days list submitted days only (correcting→submitted, drafts left out) and are byte-identical before and after a draft and a correction are started; plan drafts are hidden while confirmed versions stay; the writer view is unchanged',
+  );
+
   // ---------- database-level protections: RLS and no updates on revisions ----------
   const client = await appPool.connect();
   try {
@@ -1181,16 +1416,16 @@ try {
   assert.deepEqual(
     Object.fromEntries(audits.rows.map((r) => [r.action, r.n])),
     {
-      // cancel A + cancel B; start A, reopen, start B
-      REPORT_CORRECTION_CANCEL: 2,
-      REPORT_CORRECTION_START: 3,
+      // cancel A + cancel B + OD18 cancel; start A, reopen, start B, OD18 start
+      REPORT_CORRECTION_CANCEL: 3,
+      REPORT_CORRECTION_START: 4,
       REPORT_NO_WORK: 1,
-      // D1 v1, v2; D6 five race rounds + one of two concurrent confirms; D9 if it confirmed
-      REPORT_PLAN_CONFIRM: 8 + (d9Confirmed ? 1 : 0),
-      // D1, D2, D1 again; D6 2 × 5 rounds + '999'; D9 save + overwrite
-      REPORT_PLAN_DRAFT: 16,
-      // D1, race winner, three correction edits, D7, D8 (+ D8 late save if it won)
-      REPORT_SAVE_FACTS: saveVsSubmit[0].status === 200 ? 8 : 7,
+      // D1 v1, v2, v3 (OD18); D6 five race rounds + one of two concurrent confirms; D9 if it confirmed
+      REPORT_PLAN_CONFIRM: 9 + (d9Confirmed ? 1 : 0),
+      // D1, D2, D1 again; D6 2 × 5 rounds + '999'; D9 save + overwrite; OD18: D10, D1
+      REPORT_PLAN_DRAFT: 18,
+      // D1, race winner, three correction edits, D7, D8 (+ D8 late save if it won); OD18: D10, D1 edit
+      REPORT_SAVE_FACTS: saveVsSubmit[0].status === 200 ? 10 : 9,
       REPORT_SAVE_ITEMS: 2,
       // D1, D1 resubmit, D7 once (same key twice), D8 if submit won
       REPORT_SUBMIT: saveVsSubmit[1].status === 200 ? 4 : 3,

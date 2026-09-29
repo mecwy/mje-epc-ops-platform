@@ -124,10 +124,12 @@ try {
   const accountPm = randomUUID(),
     accountTwin = randomUUID(),
     accountExec = randomUUID(),
+    accountExecA = randomUUID(),
     accountB = randomUUID();
   const objectPm = randomUUID(),
     objectTwin = randomUUID(),
     objectExec = randomUUID(),
+    objectExecA = randomUUID(),
     objectB = randomUUID();
   const seedActor = randomUUID();
   for (const [orgId, name] of [
@@ -160,6 +162,7 @@ try {
     [accountPm, orgA, personPm, objectPm],
     [accountTwin, orgA, personPm, objectTwin],
     [accountExec, orgA, personExec, objectExec],
+    [accountExecA, orgA, personExec, objectExecA],
     [accountB, orgB, personB, objectB],
   ])
     await owner.query(
@@ -174,6 +177,8 @@ try {
   await membership(orgA, accountPm, 'PROJECT_MANAGER', projectA);
   await membership(orgA, accountTwin, 'PROJECT_MANAGER', projectA2);
   await membership(orgA, accountExec, 'EXECUTIVE_READER', null);
+  // The same executive's second account reads project A only.
+  await membership(orgA, accountExecA, 'EXECUTIVE_READER', projectA);
   await membership(orgB, accountB, 'PROJECT_MANAGER', projectB);
 
   const keys = await generateKeyPair('RS256');
@@ -215,6 +220,7 @@ try {
   const pm = await token(objectPm),
     twin = await token(objectTwin),
     exec = await token(objectExec),
+    execA = await token(objectExecA),
     pmB = await token(objectB);
   const responses = [];
   async function call(path, bearer, body, idempotencyKey) {
@@ -781,18 +787,18 @@ try {
       clientMutationId: key(),
       expectedVersion: 1,
     }),
-    403,
-    'READ_ONLY',
-  );
+    404,
+    'NOT_FOUND',
+  ); // not frozen in a submission: a reader cannot tell it exists (OD18)
   await expectStatus(
     call('/photos/link', twin, {
       ...linkCmd,
       clientMutationId: key(),
       expectedVersion: 1,
     }),
-    403,
-    'FORBIDDEN',
-  );
+    404,
+    'NOT_FOUND',
+  ); // another project's photo is not found, as a missing id
   await expectStatus(
     call('/photos/link', pmB, {
       ...linkCmd,
@@ -879,21 +885,36 @@ try {
     1,
   );
   pass(
-    'links need an active work item or a site issue of the same project (409 otherwise); link/unlink are exactly once and versioned (stale 409, racing changes: one wins); executive 403 READ_ONLY, another project 403, another org 404; unlinking nothing 409; history is append-only (superseded rows kept, one current link)',
+    'links need an active work item or a site issue of the same project (409 otherwise); link/unlink are exactly once and versioned (stale 409, racing changes: one wins); executive on an unsubmitted photo, another project and another org 404 NOT_FOUND; unlinking nothing 409; history is append-only (superseded rows kept, one current link)',
   );
 
   // ---------- read access: the project's readers; nobody else ----------
+  // OD18: before a submission a reader gets none of the day's photos; each is not found.
   const execList = await expectStatus(list(D1, exec), 200);
   assert.equal(execList.access, 'read');
-  assert.equal(execList.photos.length, 6);
+  assert.deepEqual(execList.photos, []);
+  assert.equal(execList.unlinkedPhotos, 0);
+  const notFoundForReader = async (id) => {
+    for (const suffix of ['', '/thumbnail', '/meta']) {
+      const r = await raw(`/${id}${suffix}`, exec);
+      assert.equal(r.status, 404, `${id}${suffix}`);
+      assert.equal(r.json.code, 'NOT_FOUND');
+    }
+  };
+  await notFoundForReader(p1.id);
+  assert.deepEqual((await expectStatus(day(D1, exec), 200)).photos, []);
+  // The project manager's reads are unchanged.
+  const pmList = await expectStatus(list(D1), 200);
+  assert.equal(pmList.access, 'write');
+  assert.equal(pmList.photos.length, 6);
   // heif, webp and cameraWithFileGps have no link yet.
-  assert.equal(execList.unlinkedPhotos, 3);
-  assert.equal((await raw(`/${p1.id}`, exec)).status, 200);
-  assert.equal((await raw(`/${p1.id}/thumbnail`, exec)).status, 200);
+  assert.equal(pmList.unlinkedPhotos, 3);
+  assert.equal((await raw(`/${p1.id}`, pm)).status, 200);
+  assert.equal((await raw(`/${p1.id}/thumbnail`, pm)).status, 200);
   await expectStatus(list(D1, twin), 403, 'FORBIDDEN');
   await expectStatus(list(D1, pmB), 403, 'FORBIDDEN');
   for (const [bearer, status] of [
-    [twin, 403],
+    [twin, 404],
     [pmB, 404],
     [null, 401],
   ]) {
@@ -912,7 +933,7 @@ try {
     'FORBIDDEN',
   );
   pass(
-    "executive reads the list, photo and thumbnail bytes; writes by the executive (READ_ONLY), the same person's other-project account, another org's PM or into another org's project are refused; other project 403, other org 404, anonymous 401; missing thumbnail or photo 404",
+    "before any submission the executive gets an empty list and 404 NOT_FOUND for photo, thumbnail and metadata (OD18) while the PM reads them; writes by the executive (READ_ONLY), the same person's other-project account, another org's PM or into another org's project are refused; another project's or org's photo 404, anonymous 401; missing thumbnail or photo 404",
   );
 
   // ---------- coverage and the frozen snapshot (rules 1, 5) ----------
@@ -1044,6 +1065,108 @@ try {
     view.photos.find((p) => p.id === cameraWithFileGps.id).link,
     { type: 'issue', id: issue.id },
   );
+  // OD18: a reader gets the 4 frozen photos with the link each had at submission.
+  const ids = (photos) => photos.map((p) => p.id);
+  const execFrozen = await expectStatus(list(D1, exec), 200);
+  assert.deepEqual(ids(execFrozen.photos), ids(rev1.snapshot.photos));
+  assert.equal(execFrozen.unlinkedPhotos, 0);
+  assert.deepEqual(
+    execFrozen.photos.find((p) => p.id === cameraWithFileGps.id).link,
+    { type: 'item', id: 'rail' },
+  );
+  assert.ok(execFrozen.photos.every((p) => p.linkVersion === 0));
+  const execDay = await expectStatus(day(D1, exec), 200);
+  assert.equal(execDay.version, 0);
+  assert.deepEqual(execDay.photos, execFrozen.photos);
+  assert.equal(execDay.unlinkedPhotos, 0);
+  assert.equal((await raw(`/${p1.id}`, exec)).status, 200);
+  assert.equal((await raw(`/${p1.id}/thumbnail`, exec)).status, 200);
+  const execMeta = await expectStatus(
+    call(`/photos/${cameraWithFileGps.id}/meta`, exec),
+    200,
+  );
+  assert.deepEqual(execMeta.photo.link, { type: 'item', id: 'rail' });
+  // heif was linked only after the submission, webp never: not found for the reader.
+  await notFoundForReader(heif.id);
+  await notFoundForReader(webp.id);
+  assert.equal((await raw(`/${heif.id}`, pm)).status, 200);
+  assert.equal(
+    (await expectStatus(call(`/photos/${heif.id}/meta`, pm), 200)).photo.id,
+    heif.id,
+  );
+  pass(
+    'OD18: after submission a reader lists, reads and fetches only the photos frozen in the revision, with their frozen link and version 0; a photo linked after submission or never frozen is 404 for the reader and still readable by the PM',
+  );
+
+  // ---------- no existence oracle: an id the caller may not see answers like a missing id ----------
+  const a2Photo = await expectStatus(
+    upload(twin, album({ projectId: projectA2 }), jpeg('project-a2')),
+    200,
+  );
+  const safeBody = (body) =>
+    body && typeof body === 'object'
+      ? { ...body, correlationId: undefined }
+      : body;
+  /** Every photo route for one id, as status and body (bytes reduced to a marker). */
+  const probe = async (bearer, id, withWrites = true) => {
+    const out = [];
+    for (const suffix of ['', '/thumbnail', '/meta']) {
+      const r = await raw(`/${id}${suffix}`, bearer);
+      out.push([suffix, r.status, r.json ? safeBody(r.json) : 'bytes']);
+    }
+    if (withWrites)
+      for (const path of ['/photos/link', '/photos/unlink']) {
+        const r = await call(path, bearer, {
+          photoId: id,
+          clientMutationId: key(),
+          expectedVersion: 0,
+          ...(path === '/photos/link'
+            ? { link: { type: 'item', id: 'support' } }
+            : {}),
+        });
+        out.push([path, r.status, safeBody(r.body)]);
+      }
+    return out;
+  };
+  const notFound = [
+    ['', 404, { code: 'NOT_FOUND', correlationId: undefined }],
+    ['/thumbnail', 404, { code: 'NOT_FOUND', correlationId: undefined }],
+    ['/meta', 404, { code: 'NOT_FOUND', correlationId: undefined }],
+    ['/photos/link', 404, { code: 'NOT_FOUND', correlationId: undefined }],
+    ['/photos/unlink', 404, { code: 'NOT_FOUND', correlationId: undefined }],
+  ];
+  const missingId = randomUUID();
+  // A reader of project A only: missing, another project's, and its own unfrozen photo are
+  // indistinguishable; its own frozen photo is readable (and read-only).
+  assert.deepEqual(await probe(execA, missingId), notFound);
+  assert.deepEqual(await probe(execA, a2Photo.id), notFound);
+  assert.deepEqual(await probe(execA, webp.id), notFound);
+  assert.deepEqual(
+    (await probe(execA, p1.id)).map(([route, status]) => [route, status]),
+    [
+      ['', 200],
+      ['/thumbnail', 200],
+      ['/meta', 200],
+      ['/photos/link', 403],
+      ['/photos/unlink', 403],
+    ],
+  );
+  // A PM of project A only: another project's photo answers like a missing id; its own reads.
+  assert.deepEqual(await probe(pm, missingId), notFound);
+  assert.deepEqual(await probe(pm, a2Photo.id), notFound);
+  assert.deepEqual(
+    (await probe(pm, webp.id, false)).map(([route, status]) => [route, status]),
+    [
+      ['', 200],
+      ['/thumbnail', 404], // webp was uploaded without a thumbnail
+      ['/meta', 200],
+    ],
+  );
+  // The PM of project A2 reads its own photo.
+  assert.equal((await raw(`/${a2Photo.id}`, twin)).status, 200);
+  pass(
+    "a photo id the caller may not see answers exactly like a missing id (404 NOT_FOUND on photo, thumbnail, metadata, link and unlink): for a project-scoped reader, another project's photo and its own unfrozen photo; for a project-scoped PM, another project's photo; a frozen photo stays readable and read-only for the reader",
+  );
   pass(
     'coverage asks for a photo only where a work item has quantity and no currently linked photo; linking clears it; the day reports its unlinked photos; the submitted revision freezes only the linked photos (source, position kind, accuracy, times, link) without coordinates; a relink, or linking a photo left out, after submission is allowed and leaves the revision unchanged',
   );
@@ -1066,6 +1189,14 @@ try {
     upload(pm, camera({ workItemKey: 'rail' }), jpeg('late-rail')),
     200,
   );
+  // OD18: during the correction the reader still gets revision 1; the new photo is not found.
+  const execDuring = await expectStatus(list(D1, exec), 200);
+  assert.deepEqual(ids(execDuring.photos), ids(rev1.snapshot.photos));
+  const execDayDuring = await expectStatus(day(D1, exec), 200);
+  assert.equal(execDayDuring.state, 'submitted');
+  assert.equal(execDayDuring.currentRevisionNumber, 1);
+  assert.deepEqual(execDayDuring.photos, execFrozen.photos);
+  await notFoundForReader(late.id);
   const second = await expectStatus(
     call('/submit', pm, {
       projectId: projectA,
@@ -1087,10 +1218,24 @@ try {
   });
   assert.deepEqual(await expectStatus(rev(1), 200), rev1);
   await expectStatus(upload(pm, album(), jpeg('after-2')), 409, 'LOCKED');
-  // Another day stays open.
-  await expectStatus(upload(pm, album({ businessDate: D3 }), jpeg('d3')), 200);
+  // OD18: after the resubmission the reader gets revision 2's photos, heif and the late one too.
+  const execRev2 = await expectStatus(list(D1, exec), 200);
+  assert.deepEqual(ids(execRev2.photos), ids(rev2.snapshot.photos));
+  for (const id of [late.id, heif.id])
+    assert.equal((await raw(`/${id}`, exec)).status, 200);
+  await notFoundForReader(webp.id);
+  // Another day stays open; its photo is not the reader's until that day is submitted.
+  const d3Photo = await expectStatus(
+    upload(pm, album({ businessDate: D3 }), jpeg('d3')),
+    200,
+  );
+  await notFoundForReader(d3Photo.id);
+  assert.deepEqual((await expectStatus(list(D3, exec), 200)).photos, []);
+  assert.ok(
+    ids((await expectStatus(list(D3), 200)).photos).includes(d3Photo.id),
+  );
   pass(
-    'a submitted day refuses uploads (409 LOCKED) but replays still answer; during a correction a photo is accepted and the next revision includes it; revision 1 unchanged; other days unaffected',
+    'a submitted day refuses uploads (409 LOCKED) but replays still answer; during a correction a photo is accepted and the next revision includes it (a reader sees revision 1 until then, OD18); revision 1 unchanged; other days unaffected',
   );
 
   // ---------- concurrency: the same new file uploaded twice at once ----------

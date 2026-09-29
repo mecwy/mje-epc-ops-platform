@@ -12,6 +12,7 @@ import type {
 } from '@mje/contracts';
 import type { Identity } from './alpha-store.js';
 import { photoAcceptable, type PhotoLocation } from './report-rules.js';
+import { frozenPhotoViews } from './reader-view.js';
 import {
   PHOTO_MAX_BYTES,
   PHOTO_MEDIA_TYPES,
@@ -30,6 +31,7 @@ import {
   lockReportDay,
   projectAccess,
   projectWriter,
+  type Access,
   type Actor,
 } from './store-kit.js';
 
@@ -48,6 +50,9 @@ import {
  *   row; an object left by a rolled-back upload can only hold the bytes its key names (the store
  *   verifies an existing object) and is reused by a retry. Bytes are only served through the API
  *   after the same project access check, and re-hashed before they are.
+ * - A read-only account (OD18) only ever sees photos frozen in a submitted revision of the
+ *   project, with the link they had there. A photo id the caller may not see (missing, another
+ *   project, or unfrozen for a reader) is NOT_FOUND on every photo route, never FORBIDDEN.
  * - A photo backs one work item or one issue. Link changes are append-only (supersede + insert),
  *   so the history stays and a submitted revision keeps the link it froze. An unlinked photo is
  *   staging only: a submission freezes just the photos with a valid current link.
@@ -191,6 +196,71 @@ export async function photosOfDay(
   );
   return r.rows.map(toDto);
 }
+/**
+ * The photos a submitted revision froze, as a reader sees them (OD18): the stored photo with the
+ * link it had in that revision, in the revision's order.
+ */
+export async function frozenPhotos(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  frozen: PhotoAsOfDto[],
+): Promise<PhotoDto[]> {
+  if (!frozen.length) return [];
+  const r = await client.query<PhotoRow>(
+    `${PHOTO_SELECT} WHERE p."orgId"=$1 AND p."projectId"=$2 AND p.id = ANY($3::uuid[]) AND p."businessDate" IS NOT NULL`,
+    [orgId, projectId, frozen.map((f) => f.id)],
+  );
+  return frozenPhotoViews(frozen, r.rows.map(toDto));
+}
+/** The photos frozen in the latest submitted revision of a report day; none before a submission. */
+async function latestFrozen(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  businessDate: string,
+): Promise<PhotoAsOfDto[]> {
+  const r = await client.query<{ photos: PhotoAsOfDto[] | null }>(
+    `SELECT r.snapshot->'photos' AS photos FROM "DailyClose" d
+    JOIN "Revision" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
+    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."businessDate"=$3::date AND d."scopeKey"=$4`,
+    [orgId, projectId, businessDate, REPORT_SCOPE],
+  );
+  return r.rows[0]?.photos ?? [];
+}
+/** Whether a photo is frozen in any submitted revision of a report day of the project (OD18). */
+async function isFrozen(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  photoId: string,
+): Promise<boolean> {
+  const r = await client.query<{ frozen: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM "Revision" r JOIN "DailyClose" d ON d."orgId"=r."orgId" AND d.id=r."dailyCloseId"
+      WHERE r."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
+        AND r.snapshot->'photos' @> jsonb_build_array(jsonb_build_object('id', $4::text))) AS frozen`,
+    [orgId, projectId, REPORT_SCOPE, photoId],
+  );
+  return r.rows[0]!.frozen;
+}
+/** The photo as the latest submitted revision that froze it has it; null if none did. */
+async function latestFrozenAs(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  photoId: string,
+): Promise<PhotoAsOfDto | null> {
+  const r = await client.query<{ photo: PhotoAsOfDto }>(
+    `SELECT e AS photo FROM "Revision" r JOIN "DailyClose" d ON d."orgId"=r."orgId" AND d.id=r."dailyCloseId"
+      CROSS JOIN LATERAL jsonb_array_elements(r.snapshot->'photos') e
+      WHERE r."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
+        AND r.snapshot->'photos' @> jsonb_build_array(jsonb_build_object('id', $4::text))
+        AND e->>'id'=$4::text
+      ORDER BY d."businessDate" DESC, r."revisionNumber" DESC LIMIT 1`,
+    [orgId, projectId, REPORT_SCOPE, photoId],
+  );
+  return r.rows[0]?.photo ?? null;
+}
 /** What a submission freezes of a photo: source, position kind, times and the current link. */
 export function photoAsOf(p: PhotoDto): PhotoAsOfDto {
   return {
@@ -276,6 +346,32 @@ export class PhotoStore {
     if (!r.rows[0]) throw new ReportError('NOT_FOUND');
     return r.rows[0];
   }
+  /**
+   * A photo the caller may see, else NOT_FOUND. A photo in a project the caller cannot access
+   * is not found either (403 would confirm the id exists), for writers and readers alike; a
+   * reader also only sees photos frozen in a submitted revision (OD18).
+   */
+  private async visible(
+    client: PoolClient,
+    actor: Actor,
+    photoId: string,
+  ): Promise<{ row: PhotoRow; access: Access }> {
+    const row = await this.row(client, actor.orgId, photoId);
+    let access: Access;
+    try {
+      ({ access } = await projectAccess(client, actor, row.projectId));
+    } catch (error) {
+      if (error instanceof ReportError && error.code === 'FORBIDDEN')
+        throw new ReportError('NOT_FOUND');
+      throw error;
+    }
+    if (
+      access === 'read' &&
+      !(await isFrozen(client, actor.orgId, row.projectId, row.id))
+    )
+      throw new ReportError('NOT_FOUND');
+    return { row, access };
+  }
   private async view(client: PoolClient, orgId: string, photoId: string) {
     return toDto(await this.row(client, orgId, photoId));
   }
@@ -352,6 +448,20 @@ export class PhotoStore {
   async list(identity: Identity, projectId: string, businessDate: string) {
     return inTransaction(this.pool, identity, async (client, actor) => {
       const { access } = await projectAccess(client, actor, projectId);
+      // OD18: a reader gets only the photos of the latest submission, as it froze them.
+      if (access === 'read')
+        return {
+          access,
+          projectId,
+          businessDate,
+          photos: await frozenPhotos(
+            client,
+            actor.orgId,
+            projectId,
+            await latestFrozen(client, actor.orgId, projectId, businessDate),
+          ),
+          unlinkedPhotos: 0,
+        };
       const photos = await photosOfDay(
         client,
         actor.orgId,
@@ -374,12 +484,26 @@ export class PhotoStore {
   }
   async get(identity: Identity, photoId: string) {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      const photo = await this.view(client, actor.orgId, photoId);
-      const { access } = await projectAccess(client, actor, photo.projectId);
+      const { row, access } = await this.visible(client, actor, photoId);
+      const photo = toDto(row);
+      if (access === 'read') {
+        // OD18: the reader sees the link the latest submission that froze it had.
+        const frozen = await latestFrozenAs(
+          client,
+          actor.orgId,
+          photo.projectId,
+          photo.id,
+        );
+        if (!frozen) throw new ReportError('NOT_FOUND');
+        return { access, photo: frozenPhotoViews([frozen], [photo])[0]! };
+      }
       return { access, photo };
     });
   }
-  /** Photo or thumbnail bytes, after the project read check; both are re-hashed before serving. */
+  /**
+   * Photo or thumbnail bytes of a photo the caller may see (see `visible`); both are re-hashed
+   * before serving.
+   */
   async content(
     identity: Identity,
     photoId: string,
@@ -389,8 +513,7 @@ export class PhotoStore {
       this.pool,
       identity,
       async (client, actor) => {
-        const row = await this.row(client, actor.orgId, photoId);
-        await projectAccess(client, actor, row.projectId);
+        const { row } = await this.visible(client, actor, photoId);
         if (which === 'photo')
           return {
             key: row.blobKey,
@@ -584,8 +707,12 @@ export class PhotoStore {
 
   async link(identity: Identity, command: LinkPhotoCommand): Promise<PhotoDto> {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      const photo = await this.row(client, actor.orgId, command.photoId);
-      await projectWriter(client, actor, photo.projectId);
+      const { row: photo, access } = await this.visible(
+        client,
+        actor,
+        command.photoId,
+      );
+      if (access !== 'write') throw new ReportError('READ_ONLY');
       return idempotent(
         client,
         actor,
@@ -639,8 +766,12 @@ export class PhotoStore {
     command: UnlinkPhotoCommand,
   ): Promise<PhotoDto> {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      const photo = await this.row(client, actor.orgId, command.photoId);
-      await projectWriter(client, actor, photo.projectId);
+      const { row: photo, access } = await this.visible(
+        client,
+        actor,
+        command.photoId,
+      );
+      if (access !== 'write') throw new ReportError('READ_ONLY');
       return idempotent(
         client,
         actor,

@@ -42,6 +42,7 @@ const planLock = (orgId: string, projectId: string, target: string) =>
  * a Revision snapshot; a correction is a new revision with a reason and the earlier one stays.
  * Plans are confirmed versions per target day; the baseline of a day is its latest version.
  * Everything here is a declaration by the reporter, not a verified site fact.
+ * A read-only account only ever gets submitted revisions and confirmed plans (OD18, reader-view).
  */
 import type { Identity } from './alpha-store.js';
 import {
@@ -61,11 +62,13 @@ import {
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
 import {
+  frozenPhotos,
   photoAsOf,
   photographedItems,
   photosOfDay,
   submittedPhotos,
 } from './photo-store.js';
+import { readerContent, readerDayState, readerPlan } from './reader-view.js';
 
 export {
   READ_ROLES,
@@ -456,7 +459,7 @@ export class ReportStore {
   /** Day rows in a date range (at most 62 days). Reading never creates a row (rule 3). */
   async days(identity: Identity, projectId: string, from: string, to: string) {
     return this.transaction(identity, async (client, actor) => {
-      await this.access(client, actor, projectId);
+      const { access } = await this.access(client, actor, projectId);
       const result = await client.query<{
         businessDate: string;
         state: string;
@@ -472,18 +475,28 @@ export class ReportStore {
         ORDER BY d."businessDate"`,
         [actor.orgId, projectId, REPORT_SCOPE, from, to],
       );
-      return result.rows.map((r) => ({
-        businessDate: r.businessDate,
-        state:
+      const rows = result.rows.map((r) => {
+        const state: DayState =
           r.state === 'SUBMITTED'
             ? r.correcting
               ? 'correcting'
               : 'submitted'
             : r.hasFacts
               ? 'draft'
-              : 'empty',
-        revision: r.currentRevisionNumber,
-      }));
+              : 'empty';
+        return {
+          businessDate: r.businessDate,
+          state,
+          revision: r.currentRevisionNumber,
+        };
+      });
+      if (access === 'write') return rows;
+      // OD18: a reader gets submitted days only; a draft day is not listed at all, so the
+      // response does not change when one is started or edited.
+      return rows.flatMap((r) => {
+        const state = readerDayState(r.state);
+        return state ? [{ ...r, state }] : [];
+      });
     });
   }
 
@@ -491,6 +504,8 @@ export class ReportStore {
     return this.transaction(identity, async (client, actor) => {
       const { project, access } = await this.access(client, actor, projectId);
       const day = await this.day(client, actor.orgId, projectId, businessDate);
+      if (access === 'read')
+        return this.readerDay(client, actor, project, businessDate, day);
       const facts = day ? await this.facts(client, actor.orgId, day.id) : null;
       const items = await this.items(client, actor.orgId, projectId);
       const revisions = day
@@ -547,6 +562,67 @@ export class ReportStore {
     });
   }
 
+  /**
+   * OD18: a reader's day is the latest submitted revision, built from its snapshot only (also
+   * while a correction is open); before any submission, nothing of the day. Never the draft
+   * facts, a plan draft, live issues or photos that were not frozen. Read-only, so version 0.
+   */
+  private async readerDay(
+    client: PoolClient,
+    actor: Actor,
+    project: ProjectRow,
+    businessDate: string,
+    day: DayRow | null,
+  ) {
+    const revisions = day
+      ? await this.revisions(client, actor.orgId, day.id)
+      : [];
+    const latest =
+      revisions.find((r) => r.revisionNumber === day?.currentRevisionNumber) ??
+      null;
+    const content = readerContent(
+      latest?.snapshot ?? null,
+      latest
+        ? []
+        : (await this.items(client, actor.orgId, project.id)).map(publicItem),
+    );
+    return {
+      access: 'read' as Access,
+      projectId: project.id,
+      businessDate,
+      siteTimezone: project.timezone,
+      state: content.state as DayState,
+      version: 0,
+      currentRevisionNumber: latest ? latest.revisionNumber : 0,
+      correctionReason: null,
+      facts: content.facts,
+      items: content.items,
+      planStatus: content.planStatus,
+      baseline: content.baseline,
+      nextPlan: content.nextPlan,
+      previousSubmittedDate: content.previousSubmittedDate,
+      cumulativeBase: content.cumulativeBase,
+      materialsCumulative: content.materialsCumulative,
+      issues: content.issues,
+      photos: await frozenPhotos(
+        client,
+        actor.orgId,
+        project.id,
+        content.frozenPhotos,
+      ),
+      unlinkedPhotos: 0,
+      coverage: content.coverage,
+      revisions: latest
+        ? revisions.map((r) => ({
+            n: r.revisionNumber,
+            at: r.submittedAt.toISOString(),
+            by: r.updatedBy,
+            reason: r.reason,
+          }))
+        : [],
+    };
+  }
+
   async getRevision(
     identity: Identity,
     projectId: string,
@@ -573,7 +649,7 @@ export class ReportStore {
 
   async getPlan(identity: Identity, projectId: string, target: string) {
     return this.transaction(identity, async (client, actor) => {
-      await this.access(client, actor, projectId);
+      const { access } = await this.access(client, actor, projectId);
       const plan = await this.planState(client, actor.orgId, projectId, target);
       const previous = await this.planState(
         client,
@@ -581,11 +657,13 @@ export class ReportStore {
         projectId,
         shiftDate(target, -1),
       );
+      // OD18: a reader sees confirmed versions only; the draft does not exist for it.
+      const shown = (s: PlanState) => (access === 'read' ? readerPlan(s) : s);
       return {
         targetBusinessDate: target,
-        status: planStatus(plan.state),
-        rows: planRows(plan.state, previous.state),
-        draft: plan.state.draft,
+        status: planStatus(shown(plan.state)),
+        rows: planRows(shown(plan.state), shown(previous.state)),
+        draft: shown(plan.state).draft,
         versions: plan.versions.map((v) => ({
           n: v.number,
           rows: v.rows,
