@@ -1,13 +1,41 @@
 import { Pool } from 'pg';
 import { ManagedIdentityCredential } from '@azure/identity';
-import { AlphaStore, IssueStore, ReportStore } from '@mje/domain';
+import { AlphaStore, IssueStore, PhotoStore, ReportStore } from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
+import { AzurePhotoBlobStore } from './photo-blobs.js';
 import { TokenVerifier } from './auth/token-verifier.js';
 
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`Missing configuration: ${name}`);
   return value;
+}
+/**
+ * Photo bytes: in Azure the app's managed identity on BLOB_ACCOUNT_URL (container "evidence",
+ * created by infrastructure, role Storage Blob Data Contributor on it); locally the Azurite
+ * connection string. Without either, the photo routes are not served.
+ */
+async function photoBlobs(): Promise<AzurePhotoBlobStore | undefined> {
+  const container = process.env['BLOB_EVIDENCE_CONTAINER'] || undefined;
+  if (process.env['AZURE_CLIENT_ID'] && process.env['BLOB_ACCOUNT_URL'])
+    return AzurePhotoBlobStore.fromAccountUrl(
+      process.env['BLOB_ACCOUNT_URL'],
+      new ManagedIdentityCredential({
+        clientId: process.env['AZURE_CLIENT_ID'],
+      }),
+      container,
+    );
+  if (process.env['BLOB_CONNECTION_STRING']) {
+    if (process.env['NODE_ENV'] === 'production')
+      throw new Error('Managed identity is required for deployed blob access');
+    const local = AzurePhotoBlobStore.fromConnectionString(
+      process.env['BLOB_CONNECTION_STRING'],
+      container,
+    );
+    await local.ensureContainer();
+    return local;
+  }
+  return undefined;
 }
 let runtime: AlphaRuntime | undefined;
 let pool: Pool | undefined;
@@ -51,7 +79,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
   const roles = await pool.query<{
     unsafe: boolean;
   }>(`SELECT (r.rolsuper OR r.rolbypassrls OR EXISTS
-    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
+    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
     FROM pg_roles r WHERE r.rolname=current_user`);
   if (roles.rows[0]?.unsafe !== false)
     throw new Error(
@@ -64,6 +92,8 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     reportStore: new ReportStore(pool),
     issueStore: new IssueStore(pool),
   };
+  const blobs = await photoBlobs();
+  if (blobs) runtime.photoStore = new PhotoStore(pool, blobs);
 }
 const app = await createApp(runtime);
 await app.listen(
