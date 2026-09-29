@@ -32,5 +32,6 @@ jobs:
       - run: pnpm test:alpha
       - run: pnpm test:report
       - run: pnpm test:issues
+      - run: pnpm test:photos
       - if: always()
         run: docker compose down
