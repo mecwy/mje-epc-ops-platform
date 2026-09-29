@@ -459,4 +459,97 @@ describe('photo session', () => {
     expect(s.photos?.map((p) => p.id)).toEqual(['maybe']);
     expect(s.unlinked).toBe(1);
   });
+
+  it('an idempotent replay of an old upload response never undoes a newer link, even if the refresh fails', async () => {
+    const f = fake();
+    const s = session(f.api);
+    await s.load();
+    await s.addAlbum([file()], { type: 'item', id: 'a' });
+    await settle();
+    // Stored, but the response was lost.
+    f.uploads[0]!.settle(new ApiError('NETWORK', 0));
+    await settle();
+    // Meanwhile the photo was relinked (elsewhere) and that newer state was read.
+    f.set([photo('x', 3, { type: 'issue', id: 'i1' })]);
+    await s.load();
+    expect(s.find('x')).toMatchObject({ linkVersion: 3 });
+    // Retry: the server replays the original response (version 1, item a) ...
+    f.manualReads(true);
+    s.retryUpload(s.jobs[0]!.key);
+    await settle();
+    f.uploads[1]!.settle({
+      ...photo('x', 1, { type: 'item', id: 'a' }),
+      deduplicated: false,
+    });
+    await settle();
+    // ... and every refresh fails.
+    for (let i = 1; i <= 3; i++) {
+      f.reads[i - 1]?.settle(new ApiError('NETWORK', 0));
+      await settle();
+    }
+    expect(f.reads).toHaveLength(3);
+    expect(s.find('x')).toMatchObject({
+      linkVersion: 3,
+      link: { type: 'issue', id: 'i1' },
+    });
+    expect(s.jobs).toEqual([]);
+    expect(s.error).toBe('SAVED_STALE');
+    // The list is not current after the write: counts are unknown, not the old ones.
+    expect(s.unlinked).toBeNull();
+    expect(s.photographed()).toBeNull();
+  });
+
+  it('an upload acknowledged before the first list lands stays shown; the older empty list is not applied', async () => {
+    const f = fake();
+    f.manualReads(true);
+    const s = session(f.api);
+    const first = s.load(); // started before the upload: answers "no photos"
+    await s.addAlbum([file()], { type: 'item', id: 'a' });
+    await settle();
+    f.set([photo('u', 1, { type: 'item', id: 'a' })]);
+    f.uploads[0]!.settle(stored(f.uploads[0]!.upload, 'u'));
+    await settle();
+    expect(s.photos?.map((p) => p.id)).toEqual(['u']);
+    f.reads[0]!.settle();
+    await first;
+    expect(s.photos?.map((p) => p.id)).toEqual(['u']);
+    // The refreshes after the upload fail: still shown, counts still unknown.
+    for (let i = 1; i <= 3; i++) {
+      f.reads[i]?.settle(new ApiError('NETWORK', 0));
+      await settle();
+    }
+    expect(s.photos?.map((p) => p.id)).toEqual(['u']);
+    expect(s.unlinked).toBeNull();
+    expect(s.photographed()).toBeNull();
+    expect(s.needsRetry).toBe(true);
+    // Retry reads again; the complete list confirms it and counts become known.
+    const again = s.retry();
+    await settle();
+    f.reads.at(-1)!.settle();
+    expect(await again).toBe('ok');
+    expect(s.photos?.map((p) => p.id)).toEqual(['u']);
+    expect(s.unlinked).toBe(0);
+    expect(s.photographed()).toEqual(new Set(['a']));
+  });
+
+  it('a failed list load is reported with a retry that reads again; counts stay unknown', async () => {
+    const f = fake([photo('x', 0)]);
+    f.manualReads(true);
+    const s = session(f.api);
+    const first = s.load();
+    f.reads[0]!.settle(new ApiError('NETWORK', 0));
+    await first;
+    expect(s.photos).toBeNull();
+    expect(s.unlinked).toBeNull();
+    expect(s.needsRetry).toBe(true);
+    expect(s.retryReason).toBe('LOAD_FAILED');
+    const again = s.retry();
+    await settle();
+    expect(f.reads).toHaveLength(2);
+    f.reads[1]!.settle();
+    expect(await again).toBe('ok');
+    expect(s.photos?.map((p) => p.id)).toEqual(['x']);
+    expect(s.unlinked).toBe(1);
+    expect(s.needsRetry).toBe(false);
+  });
 });

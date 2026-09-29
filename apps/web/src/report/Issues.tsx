@@ -157,9 +157,12 @@ export function Attention({
 export function IssueList({
   issues,
   photos,
+  withPhotos = [],
 }: {
   issues: IssueAsOf[];
   photos: PhotoAsOfDto[];
+  /** Issues not open on the day that have photos: listed for their photos. */
+  withPhotos?: IssueAsOf[];
 }) {
   const { t, locale } = useI18n();
   const open = issues.filter((i) => i.status === 'open');
@@ -183,6 +186,15 @@ export function IssueList({
           <div className="chips">
             <CategoryChip category={i.category} />
             {i.controlled && <Chip tone="warn">{t('needsExpert')}</Chip>}
+          </div>
+          <ReportPhotos photos={photos} type="issue" id={i.id} />
+        </div>
+      ))}
+      {withPhotos.map((i) => (
+        <div className="issue" key={i.id}>
+          <strong>{i.title}</strong>
+          <div className="chips">
+            <Chip>{t('closedTab')}</Chip>
           </div>
           <ReportPhotos photos={photos} type="issue" id={i.id} />
         </div>

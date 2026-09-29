@@ -94,23 +94,32 @@ const sameLink = (a: PhotoLinkDto | null, b: PhotoLinkDto | null) =>
 /**
  * The photos of one project day, kept for the life of the workspace (never shared with another
  * day), in the IssueSession pattern:
- * - reads are ticketed; a read that started before the last write never replaces what that
- *   write produced, and a link command is only built from a read that landed after it;
+ * - reads are ticketed; a read that started before the last write is never applied, and a link
+ *   command is only built from a read that landed after it;
+ * - a photo a write returned is kept on its own until a complete list read after that write
+ *   includes it, and never replaces a newer state of that photo (higher linkVersion), so an
+ *   idempotent replay of an old response cannot undo a later link;
+ * - counts (unlinked, photographed items) are known only from a complete list read after the
+ *   last write; otherwise they are unknown (null), never guessed from partial knowledge;
  * - link/unlink run one at a time with the photo's current linkVersion; a command whose
  *   outcome is unknown keeps its key and is resent unchanged by retry();
  * - uploads run one at a time in their own queue (they do not depend on link versions); an
  *   upload whose outcome is unknown keeps its key and bytes for retryUpload().
  */
 export class PhotoSession {
-  photos: PhotoDto[] | null = null;
-  /** Photos a submission would leave out; null until a read has landed (unknown, not 0). */
-  unlinked: number | null = null;
   access: Access | null = null;
   jobs: UploadJob[] = [];
   busy = false;
   /** As IssueSession: last definite rejection, 'NETWORK', 'STALE', 'SAVED_STALE', 'CONFLICT_STALE'. */
   error: string | null = null;
   pending: Pending | null = null;
+  /** The newest list read failed (nothing newer landed since). */
+  loadFailed = false;
+  /** The last complete list applied, and its unlinked count. */
+  private list: PhotoDto[] | null = null;
+  private listUnlinked = 0;
+  /** Photos returned by writes, until a list read after the write includes them. */
+  private acked = new Map<string, PhotoDto>();
   private reads = 0;
   private applied = 0;
   private writtenAt = 0;
@@ -129,16 +138,23 @@ export class PhotoSession {
     const ticket = ++this.reads;
     try {
       const list = await this.api.photos(this.projectId, this.businessDate);
-      if (ticket <= this.applied) return false;
-      // Started before the last write settled: it may predate that write. Only the first
-      // read of the day is taken that way (there is nothing newer to protect yet).
-      if (ticket <= this.writtenAt && this.photos !== null) return false;
+      // Older than what is shown, or started before the last write settled (it may predate
+      // that write): not applied, whatever is or is not shown yet.
+      if (ticket <= this.applied || ticket <= this.writtenAt) return false;
       this.applied = ticket;
-      this.photos = list.photos;
-      this.unlinked = list.unlinkedPhotos;
+      this.loadFailed = false;
+      this.list = list.photos;
+      this.listUnlinked = list.unlinkedPhotos;
       this.access = list.access;
+      // Confirmed by the list (same or newer state): no longer kept separately.
+      for (const [id, p] of this.acked) {
+        const listed = list.photos.find((x) => x.id === id);
+        if (listed && listed.linkVersion >= p.linkVersion)
+          this.acked.delete(id);
+      }
       return true;
     } catch {
+      if (ticket > this.applied) this.loadFailed = true;
       return false;
     } finally {
       this.notify();
@@ -154,17 +170,34 @@ export class PhotoSession {
   private wrote() {
     this.writtenAt = this.reads;
   }
+  /** A complete list read after the last write is shown: counts are known. */
+  private get current() {
+    return this.list !== null && this.applied > this.writtenAt;
+  }
   /**
-   * Show what a write returned at once (the stored photo as it now is). A read that started
-   * before the write can no longer replace it (see load); the next fresh read confirms it.
+   * Keep what a write returned (the stored photo as it then was). A response older than the
+   * state already held for that photo, such as an idempotent replay, is not applied.
    */
-  private upsert(p: PhotoDto) {
-    if (!this.photos) return;
-    const at = this.photos.findIndex((x) => x.id === p.id);
-    this.photos =
-      at < 0
-        ? [...this.photos, p]
-        : this.photos.map((x, i) => (i === at ? p : x));
+  private ack(p: PhotoDto) {
+    const held = this.find(p.id);
+    if (held && held.linkVersion > p.linkVersion) return;
+    this.acked.set(p.id, p);
+  }
+
+  /** Every photo known: the last list plus acknowledged writes, newest state of each. */
+  get photos(): PhotoDto[] | null {
+    if (this.list === null && this.acked.size === 0) return null;
+    const out = [...(this.list ?? [])];
+    for (const p of this.acked.values()) {
+      const at = out.findIndex((x) => x.id === p.id);
+      if (at < 0) out.push(p);
+      else if (p.linkVersion > out[at]!.linkVersion) out[at] = p;
+    }
+    return out;
+  }
+  /** Photos a submission would leave out; null while unknown (not 0). */
+  get unlinked(): number | null {
+    return this.current ? this.listUnlinked : null;
   }
 
   find(id: string) {
@@ -178,28 +211,40 @@ export class PhotoSession {
   }
   /** Work items that currently have a linked photo; null while unknown. */
   photographed(): Set<string> | null {
-    if (!this.photos) return null;
+    const photos = this.current ? this.photos : null;
+    if (!photos) return null;
     return new Set(
-      this.photos.flatMap((p) => (p.link?.type === 'item' ? [p.link.id] : [])),
+      photos.flatMap((p) => (p.link?.type === 'item' ? [p.link.id] : [])),
     );
   }
 
-  get needsRetry() {
-    return (
-      this.pending !== null ||
+  /** What the user can retry: an unsent command, a stale list after a write, a failed load. */
+  get retryReason(): string | null {
+    if (this.pending) return 'PENDING';
+    if (
       this.error === 'STALE' ||
       this.error === 'SAVED_STALE' ||
       this.error === 'CONFLICT_STALE'
-    );
+    )
+      return this.error;
+    return this.loadFailed ? 'LOAD_FAILED' : null;
+  }
+  get needsRetry() {
+    return this.retryReason !== null;
   }
 
   // ---------- link / unlink ----------
 
-  /** Resend an unresolved link command unchanged (same key), or reload a stale list. */
+  /** Resend an unresolved link command unchanged (same key), or reload a stale or failed list. */
   retry(): Promise<PhotoOutcome> {
     return this.enqueue(async () => {
       if (this.pending) return this.send(this.pending);
-      if (!(await this.fresh())) return 'failed';
+      // A failed load is read again even when an older list is shown.
+      if (this.loadFailed) await this.load();
+      if (!(await this.fresh()) || this.loadFailed) {
+        this.notify();
+        return 'failed';
+      }
       if (this.needsRetry) this.error = null;
       this.notify();
       return 'ok';
@@ -251,7 +296,7 @@ export class PhotoSession {
       this.pending = null;
       this.error = null;
       this.wrote();
-      this.upsert(result);
+      this.ack(result);
       if (!(await this.fresh())) this.error = 'SAVED_STALE';
       return 'ok';
     } catch (e) {
@@ -415,7 +460,7 @@ export class PhotoSession {
       void _;
       this.jobs = this.jobs.filter((j) => j !== job);
       this.wrote();
-      this.upsert(photo);
+      this.ack(photo);
       if (!(await this.fresh())) this.error = 'SAVED_STALE';
     } catch (e) {
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';

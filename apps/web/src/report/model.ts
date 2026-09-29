@@ -120,3 +120,38 @@ export function savable(facts: DayFactsDto): boolean {
   ];
   return maps.every((m) => Object.values(m).every((v) => isReported(v)));
 }
+
+/**
+ * Where the report shows each photo, so that every photo it was given has a place (a reader
+ * has no other way to see a submitted photo): under the work items shown (and, for a work item
+ * with photos but no plan or quantity, a row of its own), under open issues and under any other
+ * issue that has photos; whatever is left (a no-work day, a target not in this report) goes to
+ * a separate photo card.
+ */
+export function photoPlacement(
+  c: Pick<ReportContent, 'items' | 'baseline' | 'facts' | 'issues'>,
+  photos: PhotoAsOfDto[],
+) {
+  const has = (type: 'item' | 'issue', id: string) =>
+    photos.some((p) => p.link?.type === type && p.link.id === id);
+  const noWork = c.facts.noWork !== null;
+  const { active, others } = activeWork(c);
+  const photoOnlyItems = noWork ? [] : others.filter((i) => has('item', i.key));
+  const issues = c.issues ?? [];
+  const otherIssues = issues.filter(
+    (i) => i.status !== 'open' && has('issue', i.id),
+  );
+  const items = new Set(
+    noWork ? [] : [...active, ...photoOnlyItems].map((i) => i.key),
+  );
+  const shownIssues = new Set(
+    [...issues.filter((i) => i.status === 'open'), ...otherIssues].map(
+      (i) => i.id,
+    ),
+  );
+  const unplaced = photos.filter(
+    (p) =>
+      !p.link || !(p.link.type === 'item' ? items : shownIssues).has(p.link.id),
+  );
+  return { photoOnlyItems, otherIssues, unplaced };
+}

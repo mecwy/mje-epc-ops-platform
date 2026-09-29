@@ -10,6 +10,7 @@ import {
   activeWork,
   cumulativeSuggestion,
   liveCoverage,
+  photoPlacement,
   reportPhotos,
   savable,
   setFact,
@@ -136,5 +137,57 @@ describe('report view model', () => {
     ]);
     expect(live).toEqual([{ ...frozen, link: { type: 'issue', id: 'i1' } }]);
     expect(JSON.stringify(live)).not.toContain('lat');
+  });
+  it('gives every frozen photo a place in the report, including closed issues and photo-only items', () => {
+    const shot = (id: string, link: PhotoAsOfDto['link']): PhotoAsOfDto => ({
+      id,
+      source: 'album',
+      location: 'none',
+      accuracyM: null,
+      deviceCapturedAt: null,
+      fileTakenAt: null,
+      fileTakenLocal: null,
+      link,
+    });
+    const issue = (id: string, status: 'open' | 'closed') => ({
+      id,
+      title: `TEST ${id}`,
+      category: '' as const,
+      escalate: false,
+      controlled: false,
+      ownerPersonId: null,
+      dueOn: null,
+      workItemKey: null,
+      status,
+      closedToday: status === 'closed',
+      last: null,
+    });
+    const photos = [
+      shot('p1', { type: 'item', id: 'support' }), // planned: its own row
+      shot('p2', { type: 'item', id: 'rail' }), // no plan, no quantity
+      shot('p3', { type: 'issue', id: 'open1' }),
+      shot('p4', { type: 'issue', id: 'closed1' }), // closed that day
+      shot('p5', { type: 'issue', id: 'elsewhere' }), // not in this report
+    ];
+    const c = {
+      items,
+      baseline,
+      facts: blankFacts(),
+      issues: [issue('open1', 'open'), issue('closed1', 'closed')],
+    };
+    const placed = photoPlacement(c, photos);
+    expect(placed.photoOnlyItems.map((i) => i.key)).toEqual(['rail']);
+    expect(placed.otherIssues.map((i) => i.id)).toEqual(['closed1']);
+    expect(placed.unplaced.map((p) => p.id)).toEqual(['p5']);
+    // A no-work day shows no progress rows: its item photos still have a place.
+    const noWork = photoPlacement(
+      {
+        ...c,
+        facts: { ...blankFacts(), noWork: { reason: 'rest', note: '' } },
+      },
+      photos,
+    );
+    expect(noWork.photoOnlyItems).toEqual([]);
+    expect(noWork.unplaced.map((p) => p.id)).toEqual(['p1', 'p2', 'p5']);
   });
 });

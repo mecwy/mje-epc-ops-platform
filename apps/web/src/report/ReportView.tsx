@@ -1,14 +1,19 @@
 import { useState } from 'react';
 import type { PhotoAsOfDto, ReportItemDto } from '@mje/contracts';
 import { ROLE_GROUP, ROLE_KEYS, dec, decText, pct } from '@mje/domain/rules';
-import type { DayView, ReportContent, RevisionMeta } from '../api.js';
+import type {
+  DayView,
+  IssueAsOf,
+  ReportContent,
+  RevisionMeta,
+} from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
 import { Chip, Kv } from '../ui.js';
 import { fmtNum, fmtTime, shown } from './format.js';
-import { activeWork, byKind, target } from './model.js';
+import { activeWork, byKind, photoPlacement, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
-import { ReportPhotos } from './Photos.js';
+import { PhotoStrip, ReportPhotos } from './Photos.js';
 
 function Val({ raw }: { raw: string | undefined }) {
   const { t, locale } = useI18n();
@@ -21,7 +26,16 @@ function Val({ raw }: { raw: string | undefined }) {
 const unitOf = (label: (s: string) => string, it?: ReportItemDto) =>
   it?.unit ? label(`u_${it.unit}`).replace(/^u_/, '') : '';
 
-function Progress({ c, photos }: { c: ReportContent; photos: PhotoAsOfDto[] }) {
+function Progress({
+  c,
+  photos,
+  photoOnly,
+}: {
+  c: ReportContent;
+  photos: PhotoAsOfDto[];
+  /** Work items with photos but no plan or quantity: shown for their photos. */
+  photoOnly: ReportItemDto[];
+}) {
   const { t, label, locale } = useI18n();
   const f = c.facts;
   const { active } = activeWork(c);
@@ -75,6 +89,14 @@ function Progress({ c, photos }: { c: ReportContent; photos: PhotoAsOfDto[] }) {
           </div>
         );
       })}
+      {photoOnly.map((it) => (
+        <div key={it.key} className="prog">
+          <div className="prog-top">
+            <span className="prog-name">{label(it.label)}</span>
+          </div>
+          <ReportPhotos photos={photos} type="item" id={it.key} />
+        </div>
+      ))}
       <p className="para">
         {f.narrative.construction.trim() || (
           <span className="miss">
@@ -198,7 +220,15 @@ function Resources({ c }: { c: ReportContent }) {
   );
 }
 
-function Issues({ c, photos }: { c: ReportContent; photos: PhotoAsOfDto[] }) {
+function Issues({
+  c,
+  photos,
+  otherIssues,
+}: {
+  c: ReportContent;
+  photos: PhotoAsOfDto[];
+  otherIssues: IssueAsOf[];
+}) {
   const { t } = useI18n();
   const n = c.facts.narrative;
   return (
@@ -206,7 +236,11 @@ function Issues({ c, photos }: { c: ReportContent; photos: PhotoAsOfDto[] }) {
       <div className="blk-row">
         <h2 className="blk">{t('issues')}</h2>
       </div>
-      <IssueList issues={c.issues ?? []} photos={photos} />
+      <IssueList
+        issues={c.issues ?? []}
+        photos={photos}
+        withPhotos={otherIssues}
+      />
       <Kv label={t('quality')}>
         {n.quality.trim() || <span className="miss">{t('notFilled')}</span>}
       </Kv>
@@ -319,6 +353,7 @@ export function ReportBody({
   const { t, locale, label } = useI18n();
   const f = c.facts;
   const weather = [f.weather, f.temperature].filter(Boolean).join(' · ');
+  const placed = photoPlacement(c, photos);
   return (
     <>
       {(version || weather) && (
@@ -347,12 +382,18 @@ export function ReportBody({
               </p>
             </section>
           ) : (
-            <Progress c={c} photos={photos} />
+            <Progress c={c} photos={photos} photoOnly={placed.photoOnlyItems} />
           )}
         </div>
         <div className="rcol">
           {!f.noWork && <Resources c={c} />}
-          <Issues c={c} photos={photos} />
+          <Issues c={c} photos={photos} otherIssues={placed.otherIssues} />
+          {placed.unplaced.length > 0 && (
+            <section className="card">
+              <h2 className="blk">{t('photos')}</h2>
+              <PhotoStrip photos={placed.unplaced} />
+            </section>
+          )}
         </div>
       </div>
       <Details c={c} />

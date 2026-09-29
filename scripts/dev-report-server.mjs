@@ -10,7 +10,12 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
-import { assertLocalDatabase } from './local-db.mjs';
+import { pathToFileURL } from 'node:url';
+import {
+  assertLocalBlob,
+  assertLocalDatabase,
+  assertLocalUrl,
+} from './local-db.mjs';
 import {
   AlphaStore,
   IssueStore,
@@ -30,12 +35,7 @@ const { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } = await import(
 const source = assertLocalDatabase(process.env.DATABASE_URL);
 // Only the local emulator on loopback; never a cloud storage account.
 const blobConnection = process.env.BLOB_CONNECTION_STRING ?? '';
-const localBlob =
-  /(^|;)BlobEndpoint=http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(
-    blobConnection,
-  );
-if (blobConnection && !localBlob)
-  throw new Error('dev server only accepts the local blob emulator');
+if (blobConnection) assertLocalBlob(blobConnection);
 const instance = process.env.DEV_INSTANCE ?? '';
 if (!/^[a-z0-9]{0,12}$/.test(instance))
   throw new Error('DEV_INSTANCE: up to 12 lowercase letters or digits');
@@ -211,11 +211,17 @@ const key = { ...(await exportJWK(keys.publicKey)), alg: 'RS256', kid: 'DEV' };
 const auth = { tenantId, audience, clientId, scope: 'access_as_user' };
 const verifier = new TokenVerifier(auth, createLocalJWKSet({ keys: [key] }));
 let photoStore;
-if (localBlob) {
-  const blobs = AzurePhotoBlobStore.fromConnectionString(
-    blobConnection,
-    `evidence-dev${instance ? `-${instance}` : ''}`,
+if (blobConnection) {
+  // The same SDK copy the API uses; its client decides where requests go, so that URL is
+  // checked (loopback only) before any storage call.
+  const { BlobServiceClient } = await import(
+    pathToFileURL(requireApi.resolve('@azure/storage-blob')).href
   );
+  const container = BlobServiceClient.fromConnectionString(
+    blobConnection,
+  ).getContainerClient(`evidence-dev${instance ? `-${instance}` : ''}`);
+  assertLocalUrl(container.url);
+  const blobs = new AzurePhotoBlobStore(container);
   await blobs.ensureContainer();
   photoStore = new PhotoStore(pool, blobs);
 }

@@ -46,6 +46,14 @@ export function usePhotos(
   useEffect(() => {
     void current.load();
   }, [current, dayStamp]);
+  // A list that failed to load is read again when the connection comes back.
+  useEffect(() => {
+    const again = () => {
+      if (current.loadFailed) void current.load();
+    };
+    window.addEventListener('online', again);
+    return () => window.removeEventListener('online', again);
+  }, [current]);
 
   // The input only reports a file; the target (session and link) is fixed when it is opened,
   // so a picture always goes to the day and item it was taken for.
@@ -70,6 +78,8 @@ export function usePhotos(
     error: current.error,
     pending: current.pending !== null,
     needsRetry: current.needsRetry,
+    retryReason: current.retryReason,
+    loadFailed: current.loadFailed,
     reload: () => current.load(),
     retry: () => current.retry(),
     link: (photoId: string, target: PhotoLinkDto | null) =>

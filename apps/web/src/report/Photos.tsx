@@ -56,6 +56,10 @@ export function photoErrorKey(code: string | null): MessageKey | null {
       return 'photosStale';
     case 'SAVED_STALE':
       return 'photosSavedStale';
+    case 'LOAD_FAILED':
+      return 'loadFail';
+    case 'PENDING':
+      return 'saveFail';
     default:
       return 'saveFail';
   }
@@ -273,8 +277,8 @@ function JobRow({ job }: { job: UploadJob }) {
 function PhotoBanner() {
   const { t } = useI18n();
   const { handle } = usePhotoEnv();
-  if (handle.needsRetry) {
-    const key = handle.pending ? 'saveFail' : photoErrorKey(handle.error);
+  if (handle.retryReason) {
+    const key = photoErrorKey(handle.retryReason);
     return (
       <div className="banner err">
         {key ? t(key) : null}{' '}
@@ -370,6 +374,17 @@ export function ReportPhotos({
   );
 }
 
+/** Photos in a row, whatever they back (the report's photos without a place of their own). */
+export function PhotoStrip({ photos }: { photos: PhotoAsOfDto[] }) {
+  return (
+    <div className="qphotos">
+      {photos.map((p, i) => (
+        <Tile key={p.id} photo={p} n={i + 1} small live={false} />
+      ))}
+    </div>
+  );
+}
+
 /** The form's photo card: add without a link, unlinked photos and the way to link them. */
 export function PhotosCard() {
   const { t } = useI18n();
@@ -391,7 +406,9 @@ export function PhotosCard() {
         )}
       </div>
       <PhotoBanner />
-      {photos === null && <p className="muted small">{t('loading')}</p>}
+      {photos === null && !env.handle.loadFailed && (
+        <p className="muted small">{t('loading')}</p>
+      )}
       {unlinked.length > 0 && (
         <>
           <span className="muted small">
@@ -424,7 +441,13 @@ export function PhotosRow() {
   const { t } = useI18n();
   const env = usePhotoEnv();
   const { photos, unlinked } = env.handle;
-  if (!photos) return null;
+  // The list could not be read: say so with a retry rather than hide the photos.
+  if (!photos)
+    return env.handle.loadFailed ? (
+      <section className="card">
+        <PhotoBanner />
+      </section>
+    ) : null;
   return (
     <button type="button" className="card rowbtn" onClick={env.gallery}>
       <span className="grow">
@@ -625,11 +648,9 @@ function GallerySheet({ onClose }: { onClose: () => void }) {
       {env.handle.jobs.map((j) => (
         <JobRow key={j.key} job={j} />
       ))}
-      {env.handle.photos === null ? (
-        <p className="muted">{t('loading')}</p>
-      ) : (
-        photos.length === 0 && <p className="muted">{t('none')}</p>
-      )}
+      {env.handle.photos === null
+        ? !env.handle.loadFailed && <p className="muted">{t('loading')}</p>
+        : photos.length === 0 && <p className="muted">{t('none')}</p>}
       <div className="grid2">
         {photos.map((p, i) => (
           <figure key={p.id}>
