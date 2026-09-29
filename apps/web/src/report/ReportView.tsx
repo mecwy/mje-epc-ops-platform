@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ReportItemDto } from '@mje/contracts';
+import type { PhotoAsOfDto, ReportItemDto } from '@mje/contracts';
 import { ROLE_GROUP, ROLE_KEYS, dec, decText, pct } from '@mje/domain/rules';
 import type { DayView, ReportContent, RevisionMeta } from '../api.js';
 import { useI18n } from '../i18n.js';
@@ -8,6 +8,7 @@ import { Chip, Kv } from '../ui.js';
 import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
+import { ReportPhotos } from './Photos.js';
 
 function Val({ raw }: { raw: string | undefined }) {
   const { t, locale } = useI18n();
@@ -20,7 +21,7 @@ function Val({ raw }: { raw: string | undefined }) {
 const unitOf = (label: (s: string) => string, it?: ReportItemDto) =>
   it?.unit ? label(`u_${it.unit}`).replace(/^u_/, '') : '';
 
-function Progress({ c }: { c: ReportContent }) {
+function Progress({ c, photos }: { c: ReportContent; photos: PhotoAsOfDto[] }) {
   const { t, label, locale } = useI18n();
   const f = c.facts;
   const { active } = activeWork(c);
@@ -70,6 +71,7 @@ function Progress({ c }: { c: ReportContent }) {
                 {cp ? ` · ${cp}%` : ''}
               </div>
             )}
+            <ReportPhotos photos={photos} type="item" id={it.key} />
           </div>
         );
       })}
@@ -196,7 +198,7 @@ function Resources({ c }: { c: ReportContent }) {
   );
 }
 
-function Issues({ c }: { c: ReportContent }) {
+function Issues({ c, photos }: { c: ReportContent; photos: PhotoAsOfDto[] }) {
   const { t } = useI18n();
   const n = c.facts.narrative;
   return (
@@ -204,7 +206,7 @@ function Issues({ c }: { c: ReportContent }) {
       <div className="blk-row">
         <h2 className="blk">{t('issues')}</h2>
       </div>
-      <IssueList issues={c.issues ?? []} />
+      <IssueList issues={c.issues ?? []} photos={photos} />
       <Kv label={t('quality')}>
         {n.quality.trim() || <span className="miss">{t('notFilled')}</span>}
       </Kv>
@@ -305,11 +307,14 @@ export function ReportBody({
   version,
   timeZone,
   onReply,
+  photos,
 }: {
   c: ReportContent;
   version: RevisionMeta | null;
   timeZone: string;
   onReply?: ((issueId: string) => void) | null;
+  /** Shown under their work items and issues (a submitted day: as frozen). */
+  photos: PhotoAsOfDto[];
 }) {
   const { t, locale, label } = useI18n();
   const f = c.facts;
@@ -342,12 +347,12 @@ export function ReportBody({
               </p>
             </section>
           ) : (
-            <Progress c={c} />
+            <Progress c={c} photos={photos} />
           )}
         </div>
         <div className="rcol">
           {!f.noWork && <Resources c={c} />}
-          <Issues c={c} />
+          <Issues c={c} photos={photos} />
         </div>
       </div>
       <Details c={c} />
@@ -364,6 +369,7 @@ export function ReportView({
   onFill,
   onNoWork,
   onReply,
+  photos,
 }: {
   day: DayView;
   read: ReportContent;
@@ -372,6 +378,7 @@ export function ReportView({
   onFill: () => void;
   onNoWork: () => void;
   onReply: ((issueId: string) => void) | null;
+  photos: PhotoAsOfDto[];
 }) {
   const { t } = useI18n();
   if (day.state === 'submitted')
@@ -381,6 +388,7 @@ export function ReportView({
         version={day.revisions.at(-1) ?? null}
         onReply={onReply}
         timeZone={day.siteTimezone}
+        photos={photos}
       />
     );
   // Readers see a day once it is submitted; a draft being written is not a report yet.
@@ -437,7 +445,12 @@ export function ReportView({
           )}
         </section>
       )}
-      <ReportBody c={read} version={null} timeZone={day.siteTimezone} />
+      <ReportBody
+        c={read}
+        version={null}
+        timeZone={day.siteTimezone}
+        photos={photos}
+      />
     </>
   );
 }

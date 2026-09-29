@@ -60,3 +60,24 @@ export function fmtTime(iso: string, locale: string, timeZone: string): string {
     timeZone,
   }).format(new Date(iso));
 }
+/** Date and time of an instant on the site clock (not the device's). */
+export function fmtStamp(
+  iso: string,
+  locale: string,
+  timeZone: string,
+): string {
+  return new Intl.DateTimeFormat(locale, {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone,
+  }).format(new Date(iso));
+}
+/**
+ * A file's own clock reading ("YYYY-MM-DDTHH:MM:SS", no zone) shown as written: it is a claim
+ * of the file and is never converted to an instant.
+ */
+export function fmtFileLocal(local: string): string {
+  return local.slice(0, 16).replace('T', ' ');
+}

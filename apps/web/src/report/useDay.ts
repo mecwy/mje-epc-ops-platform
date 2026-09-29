@@ -7,7 +7,7 @@ import {
   type ReportContent,
 } from '../api.js';
 import { DraftSession, type FlushOutcome } from './draft.js';
-import { setFact } from './model.js';
+import { photoAsOf, setFact } from './model.js';
 
 export type { SaveState } from './draft.js';
 const AUTOSAVE_MS = 700;
@@ -218,7 +218,13 @@ export function useDay(
   return {
     day,
     /** Submitted days: the frozen revision. Otherwise: the live view with the local facts. */
-    read: ready ? (e!.frozen ?? { ...day, facts: s.facts }) : null,
+    read: ready
+      ? (e!.frozen ?? {
+          ...day,
+          facts: s.facts,
+          photos: day.photos.filter((p) => p.link).map(photoAsOf),
+        })
+      : null,
     facts: ready ? s.facts : null,
     save: s?.state ?? 'idle',
     busy: e?.busy ?? false,

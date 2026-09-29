@@ -2,6 +2,10 @@
 // signed token, so the web app can be exercised without Entra. Refuses any non-local database.
 // Usage: pnpm build && node --env-file=.env scripts/dev-report-server.mjs [--reset]
 // Then open the printed http://localhost:5178/#dev-token=… link while `pnpm --filter @mje/web dev` runs.
+// A second copy can run beside the first (another worktree) with DEV_INSTANCE=<name>: its own
+// database, login role and blob container; DEV_API_PORT / DEV_WEB_PORT move its ports.
+// Photos use the local blob emulator (Azurite, BLOB_CONNECTION_STRING) in its own private
+// container; without a local emulator connection the photo routes are simply not served.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -10,9 +14,11 @@ import { assertLocalDatabase } from './local-db.mjs';
 import {
   AlphaStore,
   IssueStore,
+  PhotoStore,
   ReportStore,
 } from '../packages/domain/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
+import { AzurePhotoBlobStore } from '../apps/api/dist/photo-blobs.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 
 const requireApi = createRequire(
@@ -22,8 +28,28 @@ const { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } = await import(
   requireApi.resolve('jose')
 );
 const source = assertLocalDatabase(process.env.DATABASE_URL);
-const database = 'mje_report_dev';
-const role = 'mje_dev_app';
+// Only the local emulator on loopback; never a cloud storage account.
+const blobConnection = process.env.BLOB_CONNECTION_STRING ?? '';
+const localBlob =
+  /(^|;)BlobEndpoint=http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(
+    blobConnection,
+  );
+if (blobConnection && !localBlob)
+  throw new Error('dev server only accepts the local blob emulator');
+const instance = process.env.DEV_INSTANCE ?? '';
+if (!/^[a-z0-9]{0,12}$/.test(instance))
+  throw new Error('DEV_INSTANCE: up to 12 lowercase letters or digits');
+const suffix = instance ? `_${instance}` : '';
+const port = (name, fallback) => {
+  const v = Number(process.env[name] ?? fallback);
+  if (!Number.isInteger(v) || v < 1024 || v > 65535)
+    throw new Error(`${name}: a port number`);
+  return v;
+};
+const apiPort = port('DEV_API_PORT', 3300);
+const webPort = port('DEV_WEB_PORT', 5178);
+const database = `mje_report_dev${suffix}`;
+const role = `mje_dev_app${suffix}`;
 // Stable TEST identifiers so a restarted server keeps the same seeded rows.
 const id = (name) => {
   const h = createHash('sha256').update(`mje-dev:${name}`).digest('hex');
@@ -184,14 +210,24 @@ const keys = await generateKeyPair('RS256');
 const key = { ...(await exportJWK(keys.publicKey)), alg: 'RS256', kid: 'DEV' };
 const auth = { tenantId, audience, clientId, scope: 'access_as_user' };
 const verifier = new TokenVerifier(auth, createLocalJWKSet({ keys: [key] }));
+let photoStore;
+if (localBlob) {
+  const blobs = AzurePhotoBlobStore.fromConnectionString(
+    blobConnection,
+    `evidence-dev${instance ? `-${instance}` : ''}`,
+  );
+  await blobs.ensureContainer();
+  photoStore = new PhotoStore(pool, blobs);
+}
 const app = await createApp({
   auth,
   verifier,
   store: new AlphaStore(pool),
   reportStore,
   issueStore: new IssueStore(pool),
+  ...(photoStore ? { photoStore } : {}),
 });
-await app.listen(3300, '127.0.0.1');
+await app.listen(apiPort, '127.0.0.1');
 const token = async (oid) => {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({
@@ -210,12 +246,14 @@ const token = async (oid) => {
     .setProtectedHeader({ alg: 'RS256', kid: 'DEV' })
     .sign(keys.privateKey);
 };
-console.log('TEST dev API on http://127.0.0.1:3300 (local database only)');
 console.log(
-  `project manager: http://localhost:5178/#dev-token=${await token(pmObject)}`,
+  `TEST dev API on http://127.0.0.1:${apiPort} (local database only; photos ${photoStore ? 'on local blob emulator' : 'off'})`,
 );
 console.log(
-  `executive:       http://localhost:5178/#dev-token=${await token(execObject)}`,
+  `project manager: http://localhost:${webPort}/#dev-token=${await token(pmObject)}`,
+);
+console.log(
+  `executive:       http://localhost:${webPort}/#dev-token=${await token(execObject)}`,
 );
 const stop = async () => {
   await app.close();
