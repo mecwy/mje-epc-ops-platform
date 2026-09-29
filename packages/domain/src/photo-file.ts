@@ -6,9 +6,10 @@
  * - `sniffImage`: the container family from the magic bytes (the declared type is not trusted).
  * - `readFileClaims`: EXIF DateTimeOriginal (+ OffsetTimeOriginal) and the GPS position, from
  *   JPEG (APP1), PNG (eXIf), WebP (EXIF chunk) and HEIF (Exif item via iinf/iloc). A minimal
- *   reader instead of a library: four tags are needed, every offset is bounds-checked, values
- *   are kept as written (no Date revival in the server's timezone) and any malformed structure
- *   simply yields no claim.
+ *   reader instead of a library: four tags are needed, every offset is bounds-checked against
+ *   its containing structure, all loops share a fixed step budget (PARSE_STEPS), values are kept
+ *   as written (no Date revival in the server's timezone) and any malformed structure simply
+ *   yields no claim.
  */
 import { isRealDate, isRealTimestamp } from '@mje/contracts';
 
@@ -101,13 +102,27 @@ export interface FileClaims {
 const NONE: FileClaims = { takenLocal: null, takenAt: null, gps: null };
 
 // ---------- locating the TIFF block ----------
+/**
+ * Every loop below spends from one budget per file, so no structure (declared counts, zero-size
+ * entries, many tiny boxes) can make the reader work longer than a fixed number of steps. A file
+ * that needs more gets no claim. Real camera files use well under a thousand steps.
+ */
+export const PARSE_STEPS = 10_000;
+class Exhausted extends Error {}
+class Budget {
+  private left = PARSE_STEPS;
+  step() {
+    if (--this.left < 0) throw new Exhausted();
+  }
+}
 interface Span {
   start: number;
   end: number;
 }
-function jpegTiff(b: Uint8Array): Span | null {
+function jpegTiff(b: Uint8Array, budget: Budget): Span | null {
   let o = 2;
   while (o + 4 <= b.length) {
+    budget.step();
     if (b[o] !== 0xff) return null;
     const marker = b[o + 1]!;
     if (marker === 0xff) {
@@ -131,9 +146,10 @@ function jpegTiff(b: Uint8Array): Span | null {
   }
   return null;
 }
-function pngTiff(b: Uint8Array): Span | null {
+function pngTiff(b: Uint8Array, budget: Budget): Span | null {
   let o = 8;
   while (o + 12 <= b.length) {
+    budget.step();
     const len = be32(b, o);
     const type = ascii(b, o + 4, 4);
     if (o + 12 + len > b.length) return null;
@@ -143,10 +159,11 @@ function pngTiff(b: Uint8Array): Span | null {
   }
   return null;
 }
-function webpTiff(b: Uint8Array): Span | null {
+function webpTiff(b: Uint8Array, budget: Budget): Span | null {
   const end = Math.min(b.length, 8 + le32(b, 4));
   let o = 12;
   while (o + 8 <= end) {
+    budget.step();
     const len = le32(b, o + 4);
     if (o + 8 + len > end) return null;
     if (ascii(b, o, 4) === 'EXIF') {
@@ -162,10 +179,12 @@ interface Box {
   body: number;
   end: number;
 }
-function boxes(b: Uint8Array, from: number, to: number): Box[] {
+/** The boxes directly inside [from, to); each one lies entirely within it. */
+function boxes(b: Uint8Array, from: number, to: number, budget: Budget): Box[] {
   const out: Box[] = [];
   let o = from;
-  while (o + 8 <= to && out.length < 256) {
+  while (o + 8 <= to) {
+    budget.step();
     let size = be32(b, o);
     let header = 8;
     if (size === 1) {
@@ -179,80 +198,102 @@ function boxes(b: Uint8Array, from: number, to: number): Box[] {
   }
   return out;
 }
-function uint(b: Uint8Array, o: number, size: number): number | null {
+/** Big-endian unsigned field of 0, 2, 4 or 8 bytes that must lie before `end`; else null. */
+function uint(
+  b: Uint8Array,
+  o: number,
+  size: number,
+  end: number,
+): number | null {
+  if (o + size > end) return null;
   if (size === 0) return 0;
-  if (o + size > b.length) return null;
   if (size === 2) return be16(b, o);
   if (size === 4) return be32(b, o);
   if (size === 8) return be32(b, o) === 0 ? be32(b, o + 4) : null;
   return null;
 }
-function heifTiff(b: Uint8Array): Span | null {
-  const meta = boxes(b, 0, b.length).find((x) => x.type === 'meta');
-  if (!meta) return null;
-  const inner = boxes(b, meta.body + 4, meta.end);
+const ILOC_SIZES = new Set([0, 4, 8]);
+function heifTiff(b: Uint8Array, budget: Budget): Span | null {
+  const meta = boxes(b, 0, b.length, budget).find((x) => x.type === 'meta');
+  if (!meta || meta.body + 4 > meta.end) return null;
+  const inner = boxes(b, meta.body + 4, meta.end, budget);
   const iinf = inner.find((x) => x.type === 'iinf');
   const iloc = inner.find((x) => x.type === 'iloc');
-  if (!iinf || !iloc) return null;
+  if (!iinf || !iloc || iinf.body + 4 > iinf.end) return null;
   // iinf: full box; entry count u16 (v0) or u32; then infe boxes.
-  const iinfVersion = b[iinf.body]!;
-  const entriesAt = iinf.body + 4 + (iinfVersion === 0 ? 2 : 4);
+  const entriesAt = iinf.body + 4 + (b[iinf.body] === 0 ? 2 : 4);
   let exifId: number | null = null;
-  for (const infe of boxes(b, entriesAt, iinf.end)) {
-    if (infe.type !== 'infe') continue;
+  for (const infe of boxes(b, entriesAt, iinf.end, budget)) {
+    budget.step();
+    if (infe.type !== 'infe' || infe.body + 4 > infe.end) continue;
     const v = b[infe.body]!;
     if (v < 2) continue;
     const idSize = v === 2 ? 2 : 4;
-    const id = uint(b, infe.body + 4, idSize);
-    if (id !== null && ascii(b, infe.body + 4 + idSize + 2, 4) === 'Exif') {
+    const id = uint(b, infe.body + 4, idSize, infe.end);
+    const typeAt = infe.body + 4 + idSize + 2;
+    if (
+      id !== null &&
+      typeAt + 4 <= infe.end &&
+      ascii(b, typeAt, 4) === 'Exif'
+    ) {
       exifId = id;
       break;
     }
   }
   if (exifId === null) return null;
-  // iloc: full box.
+  // iloc: full box. Every read stays inside it; extent tables of other items are skipped whole.
+  const end = iloc.end;
   const v = b[iloc.body]!;
   if (v > 2) return null;
   let o = iloc.body + 4;
-  if (o + 4 > iloc.end) return null;
+  if (o + 2 > end) return null;
   const offsetSize = b[o]! >> 4;
   const lengthSize = b[o]! & 15;
   const baseSize = b[o + 1]! >> 4;
   const indexSize = v === 0 ? 0 : b[o + 1]! & 15;
+  if (
+    ![offsetSize, lengthSize, baseSize, indexSize].every((s) =>
+      ILOC_SIZES.has(s),
+    )
+  )
+    return null;
   o += 2;
   const idSize = v < 2 ? 2 : 4;
-  const count = uint(b, o, v < 2 ? 2 : 4);
+  const count = uint(b, o, idSize, end);
   if (count === null) return null;
-  o += v < 2 ? 2 : 4;
-  for (let i = 0; i < count && o < iloc.end; i++) {
-    const id = uint(b, o, idSize);
+  o += idSize;
+  const extentSize = indexSize + offsetSize + lengthSize;
+  for (let i = 0; i < count; i++) {
+    budget.step();
+    const id = uint(b, o, idSize, end);
     o += idSize;
     let method = 0;
     if (v >= 1) {
-      method = (uint(b, o, 2) ?? 0) & 15;
+      const m = uint(b, o, 2, end);
+      if (m === null) return null;
+      method = m & 15;
       o += 2;
     }
     o += 2; // data_reference_index
-    const base = uint(b, o, baseSize);
+    const base = uint(b, o, baseSize, end);
     o += baseSize;
-    const extents = uint(b, o, 2);
+    const extents = uint(b, o, 2, end);
     o += 2;
     if (id === null || base === null || extents === null) return null;
-    let first: { offset: number; length: number } | null = null;
-    for (let e = 0; e < extents; e++) {
-      o += indexSize;
-      const offset = uint(b, o, offsetSize);
-      o += offsetSize;
-      const length = uint(b, o, lengthSize);
-      o += lengthSize;
-      if (offset === null || length === null) return null;
-      first ??= { offset: base + offset, length };
-    }
+    const table = o;
+    o += extents * extentSize;
+    if (o > end) return null;
     if (id !== exifId) continue;
-    if (method !== 0 || !first || first.offset + 4 > b.length) return null;
-    const end = Math.min(b.length, first.offset + first.length);
-    const start = first.offset + 4 + be32(b, first.offset);
-    return start < end ? { start, end } : null;
+    // The Exif item: its first extent, stored in this file (construction method 0).
+    if (method !== 0 || extents === 0) return null;
+    const offset = uint(b, table + indexSize, offsetSize, end);
+    const length = uint(b, table + indexSize + offsetSize, lengthSize, end);
+    if (offset === null || length === null) return null;
+    const at = base + offset;
+    if (length < 4 || at + 4 > b.length) return null;
+    const stop = Math.min(b.length, at + length);
+    const start = at + 4 + be32(b, at);
+    return start < stop ? { start, end: stop } : null;
   }
   return null;
 }
@@ -274,7 +315,7 @@ const TYPE_SIZE: Record<number, number> = {
   9: 4,
   10: 8,
 };
-function tiff(b: Uint8Array, span: Span) {
+function tiff(b: Uint8Array, span: Span, budget: Budget) {
   const { start, end } = span;
   if (end - start < 8) return null;
   const order = ascii(b, start, 2);
@@ -290,6 +331,7 @@ function tiff(b: Uint8Array, span: Span) {
     const n = u16(at);
     if (n > 512 || at + 2 + n * 12 > end) return tags;
     for (let i = 0; i < n; i++) {
+      budget.step();
       const e = at + 2 + i * 12;
       const type = u16(e + 2);
       const count = u32(e + 4);
@@ -360,24 +402,33 @@ function degrees(
   const sign = ref === negative && micro !== 0n ? '-' : '';
   return `${sign}${whole}.${frac}`;
 }
+function readTags(b: Uint8Array) {
+  const budget = new Budget();
+  try {
+    const family = sniffImage(b);
+    const span =
+      family === 'jpeg'
+        ? jpegTiff(b, budget)
+        : family === 'png'
+          ? pngTiff(b, budget)
+          : family === 'webp'
+            ? webpTiff(b, budget)
+            : family === 'heif'
+              ? heifTiff(b, budget)
+              : null;
+    return span ? tiff(b, span, budget) : null;
+  } catch (error) {
+    // Out of budget: the structure is not a plausible camera file; no claim.
+    if (error instanceof Exhausted) return null;
+    throw error;
+  }
+}
 const EXIF_DATE = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/;
 const OFFSET = /^[+-]\d{2}:\d{2}$/;
 
 /** EXIF claims of the file; a file without (readable) metadata yields all nulls. */
 export function readFileClaims(b: Uint8Array): FileClaims {
-  const family = sniffImage(b);
-  const span =
-    family === 'jpeg'
-      ? jpegTiff(b)
-      : family === 'png'
-        ? pngTiff(b)
-        : family === 'webp'
-          ? webpTiff(b)
-          : family === 'heif'
-            ? heifTiff(b)
-            : null;
-  if (!span) return NONE;
-  const t = tiff(b, span);
+  const t = readTags(b);
   if (!t) return NONE;
   let takenLocal: string | null = null;
   let takenAt: string | null = null;

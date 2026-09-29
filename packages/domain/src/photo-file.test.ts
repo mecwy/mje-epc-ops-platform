@@ -13,7 +13,11 @@ import {
   sniffImage,
   THUMB_MEDIA_TYPES,
 } from './photo-file.js';
-import { photoAsOf, photographedItems } from './photo-store.js';
+import {
+  photoAsOf,
+  photographedItems,
+  submittedPhotos,
+} from './photo-store.js';
 import type { PhotoDto } from '@mje/contracts';
 
 // Synthetic TEST metadata: a made-up position and time, not a real site.
@@ -142,6 +146,70 @@ describe('photo files: EXIF claims', () => {
       ).takenAt,
     ).toBeNull();
   });
+  it('HEIF item tables cannot make the reader loop: zero-size extents, huge counts, 10 MB of fill', () => {
+    const box = (type: string, ...payload: Buffer[]) => {
+      const data = Buffer.concat(payload);
+      const head = Buffer.alloc(8);
+      head.writeUInt32BE(data.length + 8, 0);
+      head.write(type, 4, 'latin1');
+      return Buffer.concat([head, data]);
+    };
+    const full = (type: string, version: number, ...payload: Buffer[]) =>
+      box(type, Buffer.from([version, 0, 0, 0]), ...payload);
+    const infe = full(
+      'infe',
+      2,
+      Buffer.from([0, 1, 0, 0]),
+      Buffer.from('Exif\0', 'latin1'),
+    );
+    const heif = (iloc: Buffer) =>
+      Buffer.concat([
+        box('ftyp', Buffer.from('heic\0\0\0\0mif1', 'latin1')),
+        full('meta', 0, full('iinf', 0, Buffer.from([0, 1]), infe), iloc),
+      ]);
+    /** iloc v1, all field sizes 0; `items` entries of (id, method 0, dref 0, extent count). */
+    const zeroIloc = (items: number, id: number, extents: number) => {
+      const table = Buffer.alloc(2 + 2 + items * 8);
+      table.writeUInt16BE(0, 0); // offset/length/base/index sizes: 0
+      table.writeUInt16BE(items, 2);
+      for (let i = 0; i < items; i++) {
+        table.writeUInt16BE(id, 4 + i * 8);
+        table.writeUInt16BE(extents, 4 + i * 8 + 6);
+      }
+      return full('iloc', 1, table);
+    };
+    const none = { takenLocal: null, takenAt: null, gps: null };
+    const fill = Buffer.alloc(10 * 1024 * 1024, 0xff);
+    fill[0] = 0xff;
+    fill[1] = 0xd8;
+    const hostile = [
+      // other items with 65 535 zero-size extents each (the reported case)
+      heif(zeroIloc(5000, 2, 0xffff)),
+      // the maximum item count
+      heif(zeroIloc(0xffff, 2, 0xffff)),
+      // the Exif item itself with zero-size extents
+      heif(zeroIloc(1, 1, 0xffff)),
+      // unsupported field sizes
+      heif(
+        full(
+          'iloc',
+          1,
+          Buffer.from([0x33, 0x33, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1]),
+        ),
+      ),
+      // declared extent table longer than the box
+      heif(
+        full('iloc', 0, Buffer.from([0x44, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xff])),
+      ),
+      // 10 MB of JPEG fill bytes
+      fill,
+    ];
+    for (const file of hostile) {
+      const started = performance.now();
+      expect(readFileClaims(file)).toEqual(none);
+      expect(performance.now() - started).toBeLessThan(250);
+    }
+  });
   it('never throws on truncated or hostile structures', () => {
     const tiff = exifTiff(EXIF);
     const files = [
@@ -211,6 +279,17 @@ describe('photos in a report day', () => {
         photo({ link: null }),
       ]),
     ).toEqual(new Set(['support']));
+  });
+  it('a submission takes only photos with a valid current link; unlinked ones are staging', () => {
+    const photos = [
+      photo({ id: 'a', link: { type: 'item', id: 'support' } }),
+      photo({ id: 'b', link: { type: 'issue', id: 'i1' } }),
+      photo({ id: 'c', link: null }),
+      photo({ id: 'd', link: { type: 'item', id: 'retired' } }),
+    ];
+    expect(
+      submittedPhotos(photos, new Set(['support', 'rail'])).map((p) => p.id),
+    ).toEqual(['a', 'b']);
   });
   it('a snapshot entry keeps the link and the position kind, not the coordinates', () => {
     const frozen = photoAsOf(photo({ link: { type: 'item', id: 'support' } }));
