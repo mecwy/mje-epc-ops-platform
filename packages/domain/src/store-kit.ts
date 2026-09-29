@@ -41,7 +41,14 @@ export class ReportError extends Error {
       | 'ISSUE_NOT_CLOSED'
       | 'DATE_BEFORE_CREATED'
       | 'DATE_BEFORE_CLOSE'
-      | 'DATE_BEFORE_REOPEN',
+      | 'DATE_BEFORE_REOPEN'
+      // photos (U2.1 rule 8)
+      | 'NEEDS_LOCATION'
+      | 'UNSUPPORTED_MEDIA'
+      | 'PHOTO_TOO_LARGE'
+      | 'PHOTO_ELSEWHERE'
+      | 'ISSUE_NOT_FOUND'
+      | 'NOT_LINKED',
   ) {
     super(code);
   }
@@ -51,6 +58,21 @@ export interface ReportProjectRow {
   name: string;
   code: string;
   timezone: string;
+}
+
+/**
+ * Serializes writes that depend on whether a report day is open (submission vs. photo upload):
+ * both take this transaction lock, so a photo never lands on a day frozen while it was stored.
+ */
+export async function lockReportDay(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  businessDate: string,
+) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+    `${orgId}:day:${projectId}:${businessDate}`,
+  ]);
 }
 
 export const sha = (v: unknown) =>

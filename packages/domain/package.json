@@ -18,6 +18,7 @@
     "build": "tsc"
   },
   "devDependencies": {
+    "@mje/testing": "workspace:*",
     "@types/pg": "8.23.1"
   },
   "dependencies": {
