@@ -2,11 +2,11 @@
 // signed token, so the web app can be exercised without Entra. Refuses any non-local database.
 // Usage: pnpm build && node --env-file=.env scripts/dev-report-server.mjs [--reset]
 // Then open the printed http://localhost:5178/#dev-token=… link while `pnpm --filter @mje/web dev` runs.
-import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
+import { assertLocalDatabase } from './local-db.mjs';
 import { AlphaStore, ReportStore } from '../packages/domain/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
@@ -17,11 +17,7 @@ const requireApi = createRequire(
 const { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } = await import(
   requireApi.resolve('jose')
 );
-const source = new URL(process.env.DATABASE_URL);
-assert.ok(
-  ['localhost', '127.0.0.1'].includes(source.hostname),
-  'dev server only accepts a local database',
-);
+const source = assertLocalDatabase(process.env.DATABASE_URL);
 const database = 'mje_report_dev';
 const role = 'mje_dev_app';
 // Stable TEST identifiers so a restarted server keeps the same seeded rows.

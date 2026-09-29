@@ -1,4 +1,4 @@
-import { useEffect, useId, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { isReported, isToken } from '@mje/domain/rules';
 import { useI18n } from './i18n.js';
 import { Icon } from './icons.js';
@@ -90,6 +90,10 @@ export function TokenChips({
   );
 }
 
+/**
+ * A native modal dialog: the browser moves focus in, keeps Tab inside, makes the page behind
+ * inert, closes on Escape, and focus returns to the control that opened it.
+ */
 export function Sheet({
   title,
   onClose,
@@ -101,38 +105,50 @@ export function Sheet({
 }) {
   const { t } = useI18n();
   const labelId = useId();
+  const ref = useRef<HTMLDialogElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    document.addEventListener('keydown', onKey);
+    const dialog = ref.current;
+    if (!dialog) return;
+    const opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (!dialog.open) dialog.showModal();
     document.body.classList.add('noscroll');
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.classList.remove('noscroll');
+      if (dialog.open) dialog.close();
+      opener?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
-    <>
-      <div className="backdrop" onClick={onClose} />
-      <div
-        className="sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={labelId}
-      >
-        <div className="sheet-h">
-          <h2 id={labelId}>{title}</h2>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('close')}
-            onClick={onClose}
-          >
-            <Icon.close />
-          </button>
-        </div>
-        <div className="sheet-b">{children}</div>
+    <dialog
+      ref={ref}
+      className="sheet"
+      aria-labelledby={labelId}
+      onCancel={(e) => {
+        e.preventDefault();
+        close.current();
+      }}
+      onClick={(e) => {
+        if (e.target === ref.current) close.current();
+      }}
+    >
+      <div className="sheet-h">
+        <h2 id={labelId}>{title}</h2>
+        <button
+          type="button"
+          className="icon"
+          aria-label={t('close')}
+          onClick={() => close.current()}
+        >
+          <Icon.close />
+        </button>
       </div>
-    </>
+      <div className="sheet-b">{children}</div>
+    </dialog>
   );
 }
 

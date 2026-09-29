@@ -36,57 +36,82 @@ export function PlanEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Plan writes run strictly one after another; each sends the rows current when it runs,
+  // so an older request can never land after a newer one or after the confirmation.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const latest = useRef<PlanRowDto[] | null>(null);
+  const saved = useRef<PlanRowDto[] | null>(null);
+  const enqueue = useCallback(<T,>(job: () => Promise<T>): Promise<T> => {
+    const next = queue.current.then(job, job);
+    queue.current = next.catch(() => undefined);
+    return next;
+  }, []);
   const load = useCallback(async () => {
     const p = await api.plan(day.projectId, target);
     setPlan(p);
     setRows(p.rows);
+    latest.current = p.rows;
+    saved.current = p.rows;
   }, [api, day.projectId, target]);
   useEffect(() => {
     void load();
   }, [load]);
   const valid = rows.every((r) => r.target === '' || dec(r.target) !== null);
-  const saveDraft = useCallback(
-    (next: PlanRowDto[]) => {
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(async () => {
+  const writeDraft = useCallback(
+    () =>
+      enqueue(async () => {
+        const next = latest.current;
+        if (!next || next === saved.current) return;
         if (!next.every((r) => r.target === '' || dec(r.target) !== null))
           return;
-        try {
-          const r = await api.savePlanDraft({
-            projectId: day.projectId,
-            targetBusinessDate: target,
-            clientMutationId: crypto.randomUUID(),
-            rows: next,
-          });
-          setPlan((p) => (p ? { ...p, status: r.status, draft: next } : p));
-          setError(null);
-        } catch (e) {
-          setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED');
-        }
-      }, 600);
-    },
-    [api, day.projectId, target],
-  );
-  const change = (next: PlanRowDto[]) => {
-    setRows(next);
-    saveDraft(next);
-  };
-  const confirm = async () => {
-    if (timer.current) clearTimeout(timer.current);
-    setBusy(true);
-    try {
-      if (plan?.draft !== rows)
-        await api.savePlanDraft({
+        const r = await api.savePlanDraft({
           projectId: day.projectId,
           targetBusinessDate: target,
           clientMutationId: crypto.randomUUID(),
-          rows,
+          rows: next,
         });
-      await api.confirmPlan({
-        projectId: day.projectId,
-        targetBusinessDate: target,
-        clientMutationId: crypto.randomUUID(),
-      });
+        saved.current = next;
+        setPlan((p) => (p ? { ...p, status: r.status, draft: next } : p));
+        setError(null);
+      }),
+    [api, day.projectId, target, enqueue],
+  );
+  // Leaving the editor saves what was typed instead of dropping it with the timer.
+  useEffect(
+    () => () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+        writeDraft().catch(() => undefined);
+      }
+    },
+    [writeDraft],
+  );
+  const change = (next: PlanRowDto[]) => {
+    setRows(next);
+    latest.current = next;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      writeDraft().catch((e) =>
+        setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
+      );
+    }, 600);
+  };
+  const confirm = async () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    setBusy(true);
+    try {
+      await writeDraft();
+      await enqueue(() =>
+        api.confirmPlan({
+          projectId: day.projectId,
+          targetBusinessDate: target,
+          clientMutationId: crypto.randomUUID(),
+        }),
+      );
       await load();
       onChanged();
       setError(null);
@@ -139,7 +164,7 @@ export function PlanEditor({
               <NumInput
                 id={`plan-${r.item}`}
                 value={r.target}
-                disabled={!canWrite}
+                disabled={!canWrite || busy}
                 onChange={(v) =>
                   change(
                     rows.map((x, j) =>

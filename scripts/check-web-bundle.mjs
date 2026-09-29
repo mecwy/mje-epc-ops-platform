@@ -1,10 +1,12 @@
 // The production web bundle must not contain the local development token path
 // (scripts/dev-report-server.mjs + #dev-token). Vite strips `import.meta.env.DEV` branches;
-// this guard fails the build check if that ever stops being true.
+// this guard runs at the end of every web build (local, CI and Docker) and fails it if that
+// ever stops being true, e.g. a build made with NODE_ENV=development.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = 'apps/web/dist';
+const root = join(dirname(fileURLToPath(import.meta.url)), '../apps/web/dist');
 const files = [];
 const walk = (dir) => {
   for (const name of readdirSync(dir)) {

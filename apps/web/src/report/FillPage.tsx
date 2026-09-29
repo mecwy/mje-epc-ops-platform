@@ -83,21 +83,29 @@ function QtyRow({
         disabled={locked}
         onSet={(v) => h.edit(`qty.${it.key}`, v)}
       />
-      {!compact &&
-        dec(q) !== null &&
-        (sug ? (
-          cur === sug.sum ? (
-            <div className="calc">
-              {t('cumulative')} <b className="num">{fmtNum(sug.sum, locale)}</b>{' '}
+      {!compact && (dec(q) !== null || cur) && (
+        <>
+          {/* The declared cumulative is always visible and editable; the suggestion sits apart. */}
+          <label className="calc">
+            <span className="grow">{t('cumulative')}</span>
+            <NumInput
+              id={`c-${it.key}`}
+              size="cum"
+              value={cur}
+              disabled={locked}
+              label={t('cumulative')}
+              onChange={(v) => h.edit(`cumulative.${it.key}`, v)}
+            />
+            {sug && cur === sug.sum && (
               <span className="ok-t">
                 <Icon.check />
               </span>
-            </div>
-          ) : (
+            )}
+          </label>
+          {sug && cur !== sug.sum && (
             <div className="calc">
               <span className="grow">
-                {t('cumulative')} {fmtNum(sug.base, locale)} +{' '}
-                {fmtNum(sug.qty, locale)} ={' '}
+                {fmtNum(sug.base, locale)} + {fmtNum(sug.qty, locale)} ={' '}
                 <b className="num">{fmtNum(sug.sum, locale)}</b>
                 <span className="muted small">
                   {' '}
@@ -114,20 +122,9 @@ function QtyRow({
                 </button>
               )}
             </div>
-          )
-        ) : (
-          <label className="calc">
-            <span className="grow">{t('cumulative')}</span>
-            <NumInput
-              id={`c-${it.key}`}
-              size="cum"
-              value={cur}
-              disabled={locked}
-              label={t('cumulative')}
-              onChange={(v) => h.edit(`cumulative.${it.key}`, v)}
-            />
-          </label>
-        ))}
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -372,7 +369,7 @@ export function FillPage({
   const { t, label, locale } = useI18n();
   const [mm, setMm] = useState(false);
   const f = h.facts!;
-  const locked = day.state === 'submitted';
+  const locked = day.state === 'submitted' || busy;
   useEffect(() => {
     if (!focus) return;
     if (focus.startsWith('m-')) setMm(true);
@@ -436,6 +433,23 @@ export function FillPage({
                   b: day.currentRevisionNumber + 1,
                 })}{' '}
                 · {day.correctionReason}
+              </div>
+            )}
+            {f.noWork && (
+              <div className="banner warn">
+                <span>
+                  {t('noWork')}
+                  {f.noWork.note ? ` · ${f.noWork.note}` : ''}
+                </span>{' '}
+                {!locked && (
+                  <button
+                    type="button"
+                    className="pill"
+                    onClick={() => h.edit('noWork', null)}
+                  >
+                    {t('clear')}
+                  </button>
+                )}
               </div>
             )}
             <div className="fgrid">

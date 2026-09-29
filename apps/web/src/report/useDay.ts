@@ -1,20 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DayFactsDto, NoWorkReason } from '@mje/contracts';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import type { NoWorkReason } from '@mje/contracts';
 import {
   ApiError,
   type DayView,
   type ReportApi,
   type ReportContent,
 } from '../api.js';
-import { savable, setFact } from './model.js';
+import { DraftSession, type FlushOutcome } from './draft.js';
+import { setFact } from './model.js';
 
-export type SaveState = 'idle' | 'saving' | 'saved' | 'failed' | 'invalid';
-const newId = () => crypto.randomUUID();
+export type { SaveState } from './draft.js';
+const AUTOSAVE_MS = 700;
+
+export class ActionAborted extends Error {
+  constructor(public readonly outcome: FlushOutcome) {
+    super(outcome);
+  }
+}
 
 /**
- * One project day. Edits autosave (debounced) with expectedVersion; only one write is in
- * flight and later edits follow it. A version conflict reloads the day instead of overwriting.
- * Submitted content is read from the frozen revision, never recomputed.
+ * One project day for the screens. Each day owns its DraftSession, so a save in flight for
+ * one day can never touch another. Reloads keep unsaved local edits; only an explicit
+ * conflict replaces them with the server state. Submitted days read the frozen revision.
  */
 export function useDay(
   api: ReportApi,
@@ -22,169 +29,193 @@ export function useDay(
   businessDate: string,
   onConflict: () => void,
 ) {
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
   const [day, setDay] = useState<DayView | null>(null);
-  const [read, setRead] = useState<ReportContent | null>(null);
-  const [facts, setFacts] = useState<DayFactsDto | null>(null);
-  const [save, setSave] = useState<SaveState>('idle');
+  const [frozen, setFrozen] = useState<ReportContent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const version = useRef(0);
-  const latest = useRef<DayFactsDto | null>(null);
-  const sent = useRef<DayFactsDto | null>(null);
-  const inflight = useRef<Promise<void> | null>(null);
+  const session = useRef<DraftSession | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const key = `${projectId}:${businessDate}`;
-  const current = useRef(key);
-  current.current = key;
+  const conflict = useRef(onConflict);
+  conflict.current = onConflict;
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const d = await api.day(projectId, businessDate);
-      if (current.current !== key) return;
+  /** Server view of the day. Local edits survive unless `replace` (after a conflict). */
+  const refresh = useCallback(
+    async (s: DraftSession, replace: boolean) => {
+      const d = await api.day(s.projectId, s.businessDate);
+      if (session.current !== s) return;
       const content =
         d.state === 'submitted' && d.currentRevisionNumber > 0
           ? (
               await api.revision(
-                projectId,
-                businessDate,
+                s.projectId,
+                s.businessDate,
                 d.currentRevisionNumber,
               )
             ).snapshot
-          : d;
-      if (current.current !== key) return;
-      version.current = d.version;
-      latest.current = d.facts;
-      sent.current = d.facts;
+          : null;
+      if (session.current !== s) return;
+      if (replace || !s.dirty) s.reset(d.version, d.facts);
       setDay(d);
-      setRead(content);
-      setFacts(d.facts);
-      setSave('idle');
-    } catch (e) {
-      setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED');
-    }
-  }, [api, projectId, businessDate, key]);
+      setFrozen(content);
+    },
+    [api],
+  );
 
   useEffect(() => {
+    const previous = session.current;
+    // Unsaved edits of the day being left are saved to that day, not dropped.
+    if (previous?.dirty) void previous.flush();
+    if (timer.current) clearTimeout(timer.current);
+    const s = new DraftSession(
+      projectId,
+      businessDate,
+      0,
+      emptyFacts(),
+      (c) => api.saveFacts(c),
+      rerender,
+    );
+    session.current = s;
     setDay(null);
-    setRead(null);
-    setFacts(null);
-    void load();
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [load]);
+    setFrozen(null);
+    setError(null);
+    api
+      .day(projectId, businessDate)
+      .then(async (d) => {
+        if (session.current !== s) return;
+        s.reset(d.version, d.facts);
+        const content =
+          d.state === 'submitted' && d.currentRevisionNumber > 0
+            ? (
+                await api.revision(
+                  projectId,
+                  businessDate,
+                  d.currentRevisionNumber,
+                )
+              ).snapshot
+            : null;
+        if (session.current !== s) return;
+        setDay(d);
+        setFrozen(content);
+      })
+      .catch(
+        (e) =>
+          session.current === s &&
+          setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
+      );
+    // `api` is stable for a signed-in session; a language change does not reload the day.
+  }, [api, projectId, businessDate]);
 
-  const flush = useCallback(async (): Promise<void> => {
-    if (timer.current) {
-      clearTimeout(timer.current);
-      timer.current = null;
-    }
-    while (inflight.current) await inflight.current;
-    const f = latest.current;
-    if (!f || f === sent.current) return;
-    if (!savable(f)) {
-      setSave('invalid');
-      return;
-    }
-    const run = (async () => {
-      setSave('saving');
+  const afterFlush = useCallback(
+    async (s: DraftSession, outcome: FlushOutcome) => {
+      if (outcome === 'conflict') {
+        conflict.current();
+        await refresh(s, true);
+      } else if (outcome === 'ok' && !s.dirty) await refresh(s, false);
+    },
+    [refresh],
+  );
+
+  const flush = useCallback(async (): Promise<FlushOutcome> => {
+    const s = session.current;
+    if (!s) return 'ok';
+    if (timer.current) clearTimeout(timer.current);
+    const outcome = await s.flush();
+    await afterFlush(s, outcome);
+    return outcome;
+  }, [afterFlush]);
+
+  const edit = useCallback(
+    (path: string, value: string | null) => {
+      const s = session.current;
+      if (!s) return;
+      let next =
+        path === 'noWork'
+          ? { ...s.facts, noWork: null }
+          : setFact(s.facts, path, value ?? '');
+      if (path.startsWith('qty.'))
+        next = setFact(
+          next,
+          `updated.${path.slice(4)}`,
+          new Date().toISOString(),
+        );
+      s.edit(next);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void flush(), AUTOSAVE_MS);
+    },
+    [flush],
+  );
+
+  /** Run an action only on exactly what the user sees, fully saved; otherwise abort. */
+  const act = useCallback(
+    async (fn: (version: number) => Promise<unknown>) => {
+      const s = session.current;
+      if (!s) throw new ActionAborted('failed');
+      if (timer.current) clearTimeout(timer.current);
+      const outcome = await s.settle();
+      if (outcome !== 'ok') {
+        await afterFlush(s, outcome);
+        throw new ActionAborted(outcome);
+      }
       try {
-        const r = await api.saveFacts({
-          projectId,
-          businessDate,
-          expectedVersion: version.current,
-          clientMutationId: newId(),
-          facts: f,
-        });
-        version.current = r.version;
-        sent.current = f;
-        setDay((d) => (d ? { ...d, version: r.version, state: r.state } : d));
-        setSave('saved');
+        await fn(s.version);
       } catch (e) {
         if (
           e instanceof ApiError &&
           (e.code === 'VERSION_CONFLICT' || e.code === 'LOCKED')
         ) {
-          onConflict();
-          await load();
-        } else setSave('failed');
-      }
-    })();
-    inflight.current = run;
-    await run;
-    inflight.current = null;
-    if (latest.current !== sent.current && savable(latest.current!))
-      await flush();
-  }, [api, projectId, businessDate, load, onConflict]);
-
-  const edit = useCallback(
-    (path: string, value: string) => {
-      setFacts((prev) => {
-        if (!prev) return prev;
-        let next = setFact(prev, path, value);
-        if (path.startsWith('qty.'))
-          next = setFact(
-            next,
-            `updated.${path.slice(4)}`,
-            new Date().toISOString(),
-          );
-        latest.current = next;
-        return next;
-      });
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => void flush(), 700);
-    },
-    [flush],
-  );
-
-  const act = useCallback(
-    async (fn: () => Promise<unknown>) => {
-      await flush();
-      try {
-        await fn();
-      } catch (e) {
-        if (e instanceof ApiError && e.code === 'VERSION_CONFLICT')
-          onConflict();
-        await load();
+          conflict.current();
+          await refresh(s, true);
+        }
         throw e;
       }
-      await load();
+      await refresh(s, true);
     },
-    [flush, load, onConflict],
+    [afterFlush, refresh],
   );
-  const base = () => ({ projectId, businessDate, clientMutationId: newId() });
+
+  const s = session.current;
+  const ready = day !== null && s !== null;
+  const base = () => ({
+    projectId,
+    businessDate,
+    clientMutationId: crypto.randomUUID(),
+  });
   return {
     day,
-    read,
-    facts,
-    save,
+    /** Submitted days: the frozen revision. Otherwise: the live view with the local facts. */
+    read: ready ? (frozen ?? { ...day, facts: s.facts }) : null,
+    facts: ready ? s.facts : null,
+    save: s?.state ?? 'idle',
     error,
-    reload: load,
     edit,
     flush,
-    submit: () =>
-      act(() => api.submit({ ...base(), expectedVersion: version.current })),
+    reload: () => (s ? refresh(s, false) : Promise.resolve()),
+    submit: () => act((v) => api.submit({ ...base(), expectedVersion: v })),
     noWork: (reason: NoWorkReason, note: string) =>
-      act(() =>
-        api.noWork({
-          ...base(),
-          expectedVersion: version.current,
-          reason,
-          note,
-        }),
-      ),
+      act((v) => api.noWork({ ...base(), expectedVersion: v, reason, note })),
     startCorrection: (reason: string) =>
-      act(() =>
-        api.startCorrection({
-          ...base(),
-          expectedVersion: version.current,
-          reason,
-        }),
+      act((v) =>
+        api.startCorrection({ ...base(), expectedVersion: v, reason }),
       ),
     cancelCorrection: () =>
-      act(() =>
-        api.cancelCorrection({ ...base(), expectedVersion: version.current }),
-      ),
+      act((v) => api.cancelCorrection({ ...base(), expectedVersion: v })),
   };
 }
 export type DayHandle = ReturnType<typeof useDay>;
+
+function emptyFacts() {
+  return {
+    weather: '',
+    temperature: '',
+    qty: {},
+    cumulative: {},
+    narrative: { construction: '', quality: '', safety: '' },
+    people: {},
+    presence: {},
+    machinery: {},
+    materials: {},
+    milestones: {},
+    noWork: null,
+    updated: {},
+  };
+}

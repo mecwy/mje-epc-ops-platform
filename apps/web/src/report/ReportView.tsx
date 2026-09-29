@@ -102,7 +102,11 @@ function Progress({ c }: { c: ReportContent }) {
 function Resources({ c }: { c: ReportContent }) {
   const { t, label, locale } = useI18n();
   const f = c.facts;
-  const any = ROLE_KEYS.some((r) => dec(f.people[r]) !== null);
+  const numeric = ROLE_KEYS.filter((r) => dec(f.people[r]) !== null);
+  // A total is complete only when every role is a number or n/a; otherwise say it is partial.
+  const partial = ROLE_KEYS.some(
+    (r) => dec(f.people[r]) === null && f.people[r] !== 'na',
+  );
   const sum = (groups: string[]) =>
     ROLE_KEYS.filter((r) => groups.includes(ROLE_GROUP[r])).reduce(
       (a, r) => a + (dec(f.people[r]) ?? 0n),
@@ -110,17 +114,24 @@ function Resources({ c }: { c: ReportContent }) {
     );
   const machinery = byKind(c.items, 'machinery');
   const materials = byKind(c.items, 'material');
-  const blank = materials.filter((m) => !f.materials[m.key]).length;
-  const arrived = materials.filter((m) => (dec(f.materials[m.key]) ?? 0n) > 0n);
+  const value = (m: ReportItemDto) => (f.materials[m.key] ?? '').trim();
+  const blank = materials.filter((m) => value(m) === '').length;
+  const unknown = materials.filter((m) => value(m) === 'unknown').length;
+  const arrived = materials.filter((m) => (dec(value(m)) ?? 0n) > 0n);
+  // "No deliveries" only when every material is an explicit zero or n/a.
+  const noneArrived = materials.every(
+    (m) => value(m) === 'na' || dec(value(m)) === 0n,
+  );
   return (
     <section className="card">
       <h2 className="blk">{t('resources')}</h2>
       <Kv label={t('people')}>
-        {any ? (
+        {numeric.length ? (
           <>
             <b className="num">{decText(sum(['gc', 'sub', 'worker']))}</b>{' '}
             {t('persons')} · {t('mgmtN', { n: decText(sum(['gc', 'sub'])) })} ·{' '}
             {t('installN', { n: decText(sum(['worker'])) })}
+            {partial && <span className="miss"> · {t('incomplete')}</span>}
           </>
         ) : (
           <span className="miss">{t('notFilled')}</span>
@@ -147,16 +158,25 @@ function Resources({ c }: { c: ReportContent }) {
             <span className="miss">{t('notFilled')}</span>
           ) : (
             <>
-              {arrived.length
-                ? arrived
-                    .map(
-                      (m) =>
-                        `${label(m.label)} +${fmtNum(f.materials[m.key], locale)} ${unitOf(label, m)}`,
-                    )
-                    .join(' · ')
-                : t('noArrival')}
+              {arrived.length > 0 &&
+                arrived
+                  .map(
+                    (m) =>
+                      `${label(m.label)} +${fmtNum(value(m), locale)} ${unitOf(label, m)}`,
+                  )
+                  .join(' · ')}
+              {noneArrived && t('noArrival')}
+              {unknown > 0 && (
+                <span className="miss">
+                  {arrived.length ? ' · ' : ''}
+                  {t('unknown')} {unknown}
+                </span>
+              )}
               {blank > 0 && (
-                <span className="miss"> · {t('nBlank', { n: blank })}</span>
+                <span className="miss">
+                  {arrived.length || unknown ? ' · ' : ''}
+                  {t('nBlank', { n: blank })}
+                </span>
               )}
             </>
           )}

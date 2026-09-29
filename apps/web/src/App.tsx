@@ -10,7 +10,7 @@ import { liveCoverage, byKind } from './report/model.js';
 import { PlanEditor } from './report/PlanEditor.js';
 import { ReportView } from './report/ReportView.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
-import { useDay } from './report/useDay.js';
+import { ActionAborted, useDay } from './report/useDay.js';
 
 type Session = { token: () => Promise<string>; signOut: (() => void) | null };
 
@@ -79,9 +79,12 @@ function Workspace({
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2600);
   }, []);
+  // The client lives as long as the session; a language change must not reload the day.
+  const retryText = useRef(t('retrying'));
+  retryText.current = t('retrying');
   const api = useMemo(
-    () => reportApi(session.token, () => say(t('retrying'))),
-    [session, say, t],
+    () => reportApi(session.token, () => say(retryText.current)),
+    [session, say],
   );
   const [date, setDate] = useState(() => siteToday(project.timezone));
   const [view, setView] = useState<'field' | 'report'>('report');
@@ -122,7 +125,17 @@ function Workspace({
       if (done) say(done);
       return true;
     } catch (e) {
-      const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
+      // A conflict has already reloaded the day and told the user.
+      if (e instanceof ActionAborted && e.outcome === 'conflict') return false;
+      const code =
+        e instanceof ActionAborted
+          ? e.outcome === 'invalid'
+            ? 'NUMBER_INVALID'
+            : 'REQUEST_FAILED'
+          : e instanceof ApiError
+            ? e.code
+            : 'REQUEST_FAILED';
+      if (code === 'VERSION_CONFLICT' || code === 'LOCKED') return false;
       say(
         code === 'NUMBER_INVALID'
           ? t('numberInvalid')
@@ -200,7 +213,7 @@ function Workspace({
       />
     );
   else {
-    const locked = day.state === 'submitted' || !canWrite;
+    const locked = day.state === 'submitted' || !canWrite || busy;
     const today = (
       <section className="card">
         {day.state === 'submitted' && (

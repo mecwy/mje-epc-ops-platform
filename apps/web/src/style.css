@@ -1335,3 +1335,21 @@ input.sm:disabled {
 .crow > .chips {
   margin-left: auto;
 }
+/* native dialog sheets */
+dialog.sheet {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  top: auto;
+  right: auto;
+  overflow: hidden;
+}
+dialog.sheet::backdrop {
+  background: #1c1f2266;
+}
+@media (min-width: 720px) {
+  dialog.sheet {
+    top: 50%;
+  }
+}
