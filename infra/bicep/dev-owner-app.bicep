@@ -12,12 +12,17 @@ param spaClientId string
 param imageReference string
 @minLength(7)
 param sourceRevision string
+@description('The foundation\'s storage account; the app identity holds Storage Blob Data Contributor on its private "evidence" container only.')
+param storageAccountName string
 
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
 }
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: registryName
+}
+resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: storageAccountName
 }
 resource appIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: appIdentityName
@@ -63,6 +68,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'PGHOST', value: postgresFqdn }
           { name: 'PGDATABASE', value: 'mje' }
           { name: 'PGUSER', value: appIdentity.name }
+          // Photo bytes through the app's managed identity; no key or connection string.
+          { name: 'BLOB_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
+          { name: 'BLOB_EVIDENCE_CONTAINER', value: 'evidence' }
         ]
         probes: [{
           type: 'Liveness'
