@@ -14,6 +14,8 @@ export function useIssues(
   projectId: string,
   businessDate: string,
   onChanged: () => void,
+  /** The day's state and revision: issues and lag reminders reload when they change. */
+  dayStamp: string,
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const sessions = useRef(new Map<string, IssueSession>());
@@ -28,7 +30,7 @@ export function useIssues(
   const current = session;
   useEffect(() => {
     void current.load();
-  }, [current]);
+  }, [current, dayStamp]);
 
   const after = async <T>(p: Promise<T>) => {
     const r = await p;
@@ -42,6 +44,7 @@ export function useIssues(
     busy: current.busy,
     error: current.error,
     pending: current.pending !== null,
+    needsRetry: current.needsRetry,
     reload: () => current.load(),
     retry: () => after(current.retry()),
     create: (x: Parameters<IssueSession['create']>[0]) =>

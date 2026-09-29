@@ -177,6 +177,12 @@ export const MESSAGES = {
     'Izmenjeno na drugom uređaju; ponovo učitano',
     'Cambiado en otro dispositivo; recargado',
   ],
+  conflictStale: [
+    '已在其他设备更新，但未能重新载入，请重试',
+    'Changed on another device, but reloading failed; retry',
+    'Izmenjeno na drugom uređaju, ali ponovno učitavanje nije uspelo; pokušajte ponovo',
+    'Cambiado en otro dispositivo, pero no se pudo recargar; reintente',
+  ],
   construction: [
     '施工情况',
     'Work done',
@@ -285,6 +291,12 @@ export const MESSAGES = {
   ],
   installN: ['安装 {n}', 'installers {n}', 'montaža {n}', 'montaje {n}'],
   issues: ['问题', 'Issues', 'Problemi', 'Incidencias'],
+  issuesStale: [
+    '未能载入最新的问题列表，操作未发送，请重试',
+    'Could not load the latest issues; nothing was sent. Retry',
+    'Najnovija lista problema nije učitana; ništa nije poslato. Pokušajte ponovo',
+    'No se pudo cargar la lista actual de problemas; no se envió nada. Reintente',
+  ],
   itAcCable: ['交流电缆', 'AC cable', 'AC kabl', 'Cable CA'],
   itCabinet: [
     '低压并网柜',

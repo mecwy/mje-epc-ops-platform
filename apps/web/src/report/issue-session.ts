@@ -70,10 +70,17 @@ export class IssueSession {
   issues: IssueItem[] | null = null;
   lag: string[] = [];
   busy = false;
-  /** Last definite rejection code, or 'NETWORK' while a command awaits retry. */
+  /**
+   * Last definite rejection code; 'NETWORK' while a command awaits retry; 'STALE' when the
+   * list could not be reloaded after a write (actions wait for a reload); 'CONFLICT_STALE'
+   * for a version conflict whose reload failed.
+   */
   error: string | null = null;
   pending: Pending | null = null;
   private reads = 0;
+  /** Ticket of the newest read applied, and the read count when the last write settled. */
+  private applied = 0;
+  private writtenAt = 0;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -91,7 +98,8 @@ export class IssueSession {
         this.api.issues(this.projectId, this.businessDate),
         this.api.lag(this.projectId, this.businessDate),
       ]);
-      if (ticket !== this.reads) return false;
+      if (ticket <= this.applied) return false;
+      this.applied = ticket;
       this.issues = list.issues;
       this.lag = lag.suggestions.map((s) => s.workItemKey);
       return true;
@@ -102,14 +110,38 @@ export class IssueSession {
     }
   }
 
+  /**
+   * True once a read started after the last write has been applied. A read superseded by a
+   * newer one is not enough on its own, so this reads again (bounded) until one lands.
+   */
+  private async fresh(): Promise<boolean> {
+    for (let i = 0; i < 3 && this.applied <= this.writtenAt; i++)
+      await this.load();
+    return this.applied > this.writtenAt;
+  }
+
   private find(id: string) {
     return this.issues?.find((i) => i.id === id) ?? null;
   }
 
-  /** Resend an unresolved command unchanged (same key). */
+  /** Resend an unresolved command unchanged (same key), or reload a stale list. */
   retry(): Promise<IssueOutcome> {
-    return this.enqueue(async () =>
-      this.pending ? this.send(this.pending) : 'ok',
+    return this.enqueue(async () => {
+      if (this.pending) return this.send(this.pending);
+      if (!(await this.fresh())) return 'failed';
+      if (this.error === 'STALE' || this.error === 'CONFLICT_STALE')
+        this.error = null;
+      this.notify();
+      return 'ok';
+    });
+  }
+
+  /** Whether the user has something to retry: an unsent command or a failed reload. */
+  get needsRetry() {
+    return (
+      this.pending !== null ||
+      this.error === 'STALE' ||
+      this.error === 'CONFLICT_STALE'
     );
   }
 
@@ -121,14 +153,19 @@ export class IssueSession {
       await this.call(p);
       this.pending = null;
       this.error = null;
-      await this.load();
+      this.writtenAt = this.reads;
+      if (!(await this.fresh())) this.error = 'STALE';
       return 'ok';
     } catch (e) {
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
       if (DEFINITE.has(code)) {
         this.pending = null;
-        this.error = code;
-        await this.load();
+        this.writtenAt = this.reads;
+        // A conflict is only "reloaded" once the reload has actually landed.
+        this.error =
+          (await this.fresh()) || code !== 'VERSION_CONFLICT'
+            ? code
+            : 'CONFLICT_STALE';
         return 'rejected';
       }
       this.error = 'NETWORK';
@@ -163,6 +200,12 @@ export class IssueSession {
     return this.enqueue(async () => {
       if (this.pending) {
         this.error = 'NETWORK';
+        this.notify();
+        return 'failed';
+      }
+      // Never build a command from versions older than the last write's result.
+      if (!(await this.fresh())) {
+        this.error = 'STALE';
         this.notify();
         return 'failed';
       }

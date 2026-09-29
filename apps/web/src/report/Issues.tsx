@@ -27,12 +27,42 @@ export function issueErrorKey(code: string | null): MessageKey | null {
       return 'dateOrder';
     case 'VERSION_CONFLICT':
       return 'conflictReloaded';
+    case 'CONFLICT_STALE':
+      return 'conflictStale';
+    case 'STALE':
+      return 'issuesStale';
     case 'READ_ONLY':
     case 'FORBIDDEN':
       return 'forbidden';
     default:
       return 'saveFail';
   }
+}
+
+/**
+ * Unsent command or failed reload: say which, and offer Retry (the same command, same key).
+ * Otherwise the last definite rejection, if any.
+ */
+export function IssueBanner({ handle }: { handle: IssuesHandle }) {
+  const { t } = useI18n();
+  if (handle.needsRetry) {
+    const key = handle.pending ? 'saveFail' : issueErrorKey(handle.error);
+    return (
+      <div className="banner err">
+        {key ? t(key) : null}{' '}
+        <button
+          type="button"
+          className="pill"
+          disabled={handle.busy}
+          onClick={() => void handle.retry()}
+        >
+          {t('retry')}
+        </button>
+      </div>
+    );
+  }
+  const key = handle.error === 'NETWORK' ? null : issueErrorKey(handle.error);
+  return key ? <div className="banner warn">{t(key)}</div> : null;
 }
 
 export const CATEGORY_LABEL = {
@@ -164,8 +194,6 @@ export function FillIssues({
   const open = (handle.issues ?? []).filter((i) => i.status === 'open');
   const closedToday = (handle.issues ?? []).filter((i) => i.closedToday);
   const disabled = !canWrite || handle.busy || handle.pending;
-  const errorKey =
-    handle.error === 'NETWORK' ? null : issueErrorKey(handle.error);
   return (
     <>
       <div className="blk-row">
@@ -181,20 +209,7 @@ export function FillIssues({
           </button>
         )}
       </div>
-      {handle.pending && (
-        <div className="banner err">
-          {t('saveFail')}{' '}
-          <button
-            type="button"
-            className="pill"
-            disabled={handle.busy}
-            onClick={() => void handle.retry()}
-          >
-            {t('retry')}
-          </button>
-        </div>
-      )}
-      {errorKey && <div className="banner warn">{t(errorKey)}</div>}
+      <IssueBanner handle={handle} />
       {canWrite &&
         handle.lag.map((key) => (
           <div className="suggest" key={key}>
@@ -533,7 +548,8 @@ function IssueSheet({
           {!issue.escalate && !category && (
             <p className="muted small">{t('categoryRequired')}</p>
           )}
-          {issue.status === 'open' ? (
+          {/* Current state decides the action; status is as of the shown day. */}
+          {issue.state !== 'CLOSED' ? (
             issue.controlled ? (
               <p className="muted small">{t('needsExpert')}</p>
             ) : (
@@ -562,39 +578,41 @@ function IssueSheet({
   );
 }
 
-/** Executive reply to an escalated issue; written into the issue's notes. */
+/**
+ * Executive reply to an escalated issue; written into the issue's notes. A reply whose
+ * outcome is unknown stays pending here and is resent unchanged by Retry, never re-sent as
+ * a new reply.
+ */
 export function ReplySheet({
+  handle,
+  issueId,
   onClose,
-  onSend,
 }: {
+  handle: IssuesHandle;
+  issueId: string;
   onClose: () => void;
-  onSend: (text: string) => Promise<boolean>;
 }) {
   const { t } = useI18n();
   const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
   return (
     <Sheet title={t('reply')} onClose={onClose}>
+      <IssueBanner handle={handle} />
       <label className="field">
         <span>{t('reply')}</span>
         <textarea
           rows={3}
           maxLength={2000}
           value={text}
+          disabled={handle.pending}
           onChange={(e) => setText(e.target.value)}
         />
       </label>
       <button
         type="button"
         className="primary wide"
-        disabled={busy || !text.trim()}
+        disabled={handle.busy || handle.pending || !text.trim()}
         onClick={async () => {
-          setBusy(true);
-          try {
-            if (await onSend(text.trim())) onClose();
-          } finally {
-            setBusy(false);
-          }
+          if ((await handle.reply(issueId, text.trim())) === 'ok') onClose();
         }}
       >
         {t('send')}

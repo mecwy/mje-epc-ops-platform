@@ -118,7 +118,13 @@ function Workspace({
   };
   const h = useDay(api, project.id, date, () => say(t('conflictReloaded')));
   const reloadDay = useCallback(() => void h.reload(), [h.reload]);
-  const issues = useIssues(api, project.id, date, reloadDay);
+  const issues = useIssues(
+    api,
+    project.id,
+    date,
+    reloadDay,
+    `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`,
+  );
   const busy = actionBusy || h.busy;
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
@@ -223,7 +229,10 @@ function Workspace({
       <button
         type="button"
         className="card rowbtn"
-        onClick={() => setSheet('issues')}
+        onClick={() => {
+          void issues.reload();
+          setSheet('issues');
+        }}
       >
         <span className="grow">
           <b>{t('manageIssues')}</b>
@@ -441,8 +450,9 @@ function Workspace({
       )}
       {replyTo && (
         <ReplySheet
+          handle={issues}
+          issueId={replyTo}
           onClose={() => setReplyTo(null)}
-          onSend={async (text) => (await issues.reply(replyTo, text)) === 'ok'}
         />
       )}
       {sheet === 'issues' && day && (

@@ -161,4 +161,100 @@ describe('issue session', () => {
     expect(s.error).toBe('DATE_BEFORE_REOPEN');
     expect(s.pending).toBeNull();
   });
+
+  it('a refresh superseded by another read does not release the next action early', async () => {
+    const f = fake(() => []);
+    let version = 3;
+    let failReads = false;
+    const reads: { resolve: () => void; version: number }[] = [];
+    const api = {
+      ...f.api,
+      // Each read captures the version when it starts; the test decides when it lands.
+      issues: (_p: string, date: string) => {
+        const at = version;
+        return new Promise<IssueList>((resolve, reject) =>
+          reads.push({
+            version: at,
+            resolve: () =>
+              failReads
+                ? reject(new ApiError('NETWORK', 0))
+                : resolve({
+                    access: 'write',
+                    projectId: 'p',
+                    businessDate: date,
+                    issues: [issue('i1', at)],
+                  }),
+          }),
+        );
+      },
+    };
+    const s = session(api, 'A');
+    const first = s.load();
+    reads[0]!.resolve();
+    await first;
+    const note = s.note('i1', 'one');
+    const close = s.close('i1');
+    await tick();
+    version = 4;
+    f.writes[0]!.settle();
+    await tick();
+    // The note's refresh (read 1) is superseded by a concurrent load (read 2) that has not
+    // landed when the refresh returns.
+    const other = s.load();
+    await tick();
+    reads[1]!.resolve();
+    await note;
+    await tick();
+    reads[2]!.resolve();
+    await other;
+    await tick();
+    expect(f.writes[1]!.kind).toBe('close');
+    expect(f.writes[1]!.command['expectedVersion']).toBe(4);
+    f.writes[1]!.settle();
+    // Its refresh fails every time: the next action is not sent with an old version.
+    version = 5;
+    failReads = true;
+    const pending = close;
+    for (let i = 0; i < 3; i++) {
+      await tick();
+      reads.at(-1)!.resolve();
+    }
+    expect(await pending).toBe('ok');
+    expect(s.error).toBe('STALE');
+    const next = s.reopen('i1');
+    for (let i = 0; i < 3; i++) {
+      await tick();
+      reads.at(-1)!.resolve();
+    }
+    expect(await next).toBe('failed');
+    expect(f.writes).toHaveLength(2);
+    expect(s.needsRetry).toBe(true);
+    failReads = false;
+    const retry = s.retry();
+    await tick();
+    reads.at(-1)!.resolve();
+    expect(await retry).toBe('ok');
+    expect(s.error).toBeNull();
+    expect(s.issues?.[0]?.version).toBe(5);
+  });
+
+  it('a conflict says "reloaded" only when the reload landed', async () => {
+    let fail = false;
+    const f = fake(() => {
+      if (fail) throw new ApiError('NETWORK', 0);
+      return [issue('i1', 1)];
+    });
+    const s = session(f.api, 'A');
+    await s.load();
+    const r = s.close('i1');
+    await tick();
+    fail = true;
+    f.writes[0]!.settle(new ApiError('VERSION_CONFLICT', 409));
+    expect(await r).toBe('rejected');
+    expect(s.error).toBe('CONFLICT_STALE');
+    expect(s.needsRetry).toBe(true);
+    fail = false;
+    expect(await s.retry()).toBe('ok');
+    expect(s.error).toBeNull();
+  });
 });
