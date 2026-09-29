@@ -46,11 +46,47 @@ describe('report contracts', () => {
       }),
     ).toThrow('facts.milestones.m.actual');
     expect(() => parseFacts({ ...facts(), qty: { 'a b': '1' } })).toThrow(
-      'facts.qty.a b',
+      'facts.qty[0]',
     );
     expect(() =>
       parseFacts({ ...facts(), updated: { support: 'yesterday' } }),
     ).toThrow('facts.updated.support');
+  });
+  it('presence accepts Person UUID keys (normalized) and prototype keys; bad keys are reported by position, not echoed', () => {
+    const uuid = '10000000-0000-4000-8000-000000000001';
+    const f = parseFacts({
+      ...facts(),
+      presence: { [uuid.toUpperCase()]: 'present', W1: 'absent' },
+    });
+    expect(f.presence).toEqual({ [uuid]: 'present', W1: 'absent' });
+    const hostile = `x\n${'k'.repeat(5000)}`;
+    try {
+      parseFacts({ ...facts(), qty: { [hostile]: '1' } });
+      throw new Error('accepted');
+    } catch (e) {
+      expect(e).toBeInstanceOf(InvalidReportInput);
+      const err = e as InvalidReportInput;
+      expect(err.field).toBe('facts.qty[0]');
+      expect(err.message.length).toBeLessThan(100);
+      expect(err.message).not.toMatch(/\n/);
+    }
+  });
+  it('updated timestamps must be real instants, not just the right shape', () => {
+    const ok = (t: string) =>
+      parseFacts({ ...facts(), updated: { support: t } }).updated['support'];
+    expect(ok('2026-09-29T14:20:00Z')).toBe('2026-09-29T14:20:00Z');
+    expect(ok('2026-09-29T14:20:00.123+02:00')).toBe(
+      '2026-09-29T14:20:00.123+02:00',
+    );
+    for (const bad of [
+      '2026-02-30T12:00:00Z',
+      '2026-99-99T99:99:99+99:99',
+      '2026-09-29T24:00:00Z',
+      '2026-09-29T12:60:00Z',
+      '2026-09-29T12:00:00+15:00',
+      '2026-09-29T12:00:00+14:30',
+    ])
+      expect(() => ok(bad), bad).toThrow(InvalidReportInput);
   });
   it('save command needs uuids, a valid date and a non-negative integer version', () => {
     const cmd = {

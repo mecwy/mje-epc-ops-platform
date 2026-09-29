@@ -32,13 +32,19 @@ try {
 } catch {
   /* no web sources yet */
 }
+// Literal keys in t('k'), t("k"), t(`k`) and translate(lang, 'k'); a template with ${} is dynamic
+// and must go through a typed MessageKey mapping instead, which the compiler checks.
+const CALL =
+  /\b(?:t|translate\s*\(\s*[^,()]+,)\s*\(?\s*(['"`])([A-Za-z][\w.]*)\1/g;
 const used = new Set();
 for (const f of files) {
   const text = readFileSync(f, 'utf8');
-  for (const m of text.matchAll(/\bt\(\s*'([A-Za-z][\w.]*)'/g)) used.add(m[1]);
+  for (const m of text.matchAll(CALL)) used.add(m[2]);
+  for (const m of text.matchAll(/\bt\(\s*`[^`]*\$\{/g))
+    failures.push(`${f}: dynamic template key near offset ${m.index}`);
 }
 for (const key of used)
-  if (!(key in MESSAGES))
+  if (!Object.hasOwn(MESSAGES, key))
     failures.push(`${key}: used in web but missing from messages`);
 const total = Object.keys(MESSAGES).length;
 if (!total) failures.push('no message keys found');

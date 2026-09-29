@@ -84,9 +84,13 @@ export interface NoWorkCommand {
   note: string;
 }
 
+/** `field` is a bounded, printable path: rejected client keys are never echoed verbatim. */
 export class InvalidReportInput extends Error {
-  constructor(public readonly field: string) {
-    super(`Invalid field: ${field}`);
+  public readonly field: string;
+  constructor(field: string) {
+    const safe = field.replace(/[^\x20-\x7e]/g, '?').slice(0, 80);
+    super(`Invalid field: ${safe}`);
+    this.field = safe;
   }
 }
 
@@ -103,6 +107,19 @@ function isRealDate(s: string): boolean {
   if (!DATE.test(s)) return false;
   const d = new Date(`${s}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+/** ISO-8601 instant with a real date, real time (leap seconds excluded) and an offset within ±14:00. */
+function isRealTimestamp(s: string): boolean {
+  const m = ISO.exec(s);
+  if (!m || !isRealDate(s.slice(0, 10))) return false;
+  const [hh, mm, ss] = s.slice(11, 19).split(':').map(Number);
+  if (hh! > 23 || mm! > 59 || ss! > 59) return false;
+  const offset = s.slice(19).replace(/^\.\d+/, '');
+  if (offset !== 'Z') {
+    const [oh, om] = offset.slice(1).split(':').map(Number);
+    if (oh! > 14 || om! > 59 || (oh === 14 && om! > 0)) return false;
+  }
+  return !Number.isNaN(Date.parse(s));
 }
 function obj(v: unknown, field: string): Record<string, unknown> {
   if (!v || typeof v !== 'object' || Array.isArray(v))
@@ -137,12 +154,23 @@ export function reported(v: unknown, field: string): Reported {
   if (!DECIMAL.test(n)) throw new InvalidReportInput(field);
   return n;
 }
+/** Map keys are validated before they are used in any message; a bad key is reported by position. */
+function mapEntries(
+  v: unknown,
+  field: string,
+  keyOk: (k: string) => boolean = (k) => KEY.test(k),
+): [string, unknown][] {
+  const entries = Object.entries(obj(v ?? {}, field));
+  if (entries.length > 500) throw new InvalidReportInput(field);
+  entries.forEach(([k], i) => {
+    if (!keyOk(k)) throw new InvalidReportInput(`${field}[${i}]`);
+  });
+  return entries;
+}
 function reportedMap(v: unknown, field: string): Record<string, Reported> {
   const out: Record<string, Reported> = {};
-  for (const [k, val] of Object.entries(obj(v ?? {}, field))) {
-    if (!KEY.test(k)) throw new InvalidReportInput(`${field}.${k}`);
+  for (const [k, val] of mapEntries(v, field))
     out[k] = reported(val, `${field}.${k}`);
-  }
   return out;
 }
 function oneOf<T extends readonly string[]>(
@@ -158,22 +186,17 @@ function oneOf<T extends readonly string[]>(
 export function parseFacts(v: unknown): DayFactsDto {
   const o = obj(v, 'facts');
   const narrative = obj(o['narrative'] ?? {}, 'facts.narrative');
+  // Presence is keyed by Person id (a UUID, normalized to lower case); prototype-style keys stay valid.
   const presence: DayFactsDto['presence'] = {};
-  for (const [k, val] of Object.entries(
-    obj(o['presence'] ?? {}, 'facts.presence'),
-  )) {
-    if (!KEY.test(k)) throw new InvalidReportInput(`facts.presence.${k}`);
-    presence[k] = oneOf(
-      val,
-      ['present', 'absent', ''] as const,
-      `facts.presence.${k}`,
-    );
-  }
+  for (const [k, val] of mapEntries(
+    o['presence'],
+    'facts.presence',
+    (k) => KEY.test(k) || UUID.test(k),
+  ))
+    presence[k.toLowerCase() === k ? k : UUID.test(k) ? k.toLowerCase() : k] =
+      oneOf(val, ['present', 'absent', ''] as const, `facts.presence.${k}`);
   const milestones: DayFactsDto['milestones'] = {};
-  for (const [k, val] of Object.entries(
-    obj(o['milestones'] ?? {}, 'facts.milestones'),
-  )) {
-    if (!KEY.test(k)) throw new InvalidReportInput(`facts.milestones.${k}`);
+  for (const [k, val] of mapEntries(o['milestones'], 'facts.milestones')) {
     const m = obj(val, `facts.milestones.${k}`);
     const actual = str(m['actual'] ?? '', `facts.milestones.${k}.actual`, 10);
     if (actual && !isRealDate(actual))
@@ -184,12 +207,9 @@ export function parseFacts(v: unknown): DayFactsDto {
     };
   }
   const updated: Record<string, string> = {};
-  for (const [k, val] of Object.entries(
-    obj(o['updated'] ?? {}, 'facts.updated'),
-  )) {
+  for (const [k, val] of mapEntries(o['updated'], 'facts.updated')) {
     const s = str(val, `facts.updated.${k}`, 40);
-    if (!KEY.test(k) || !ISO.test(s))
-      throw new InvalidReportInput(`facts.updated.${k}`);
+    if (!isRealTimestamp(s)) throw new InvalidReportInput(`facts.updated.${k}`);
     updated[k] = s;
   }
   let noWork: DayFactsDto['noWork'] = null;

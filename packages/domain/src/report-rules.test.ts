@@ -12,6 +12,7 @@ import {
   distanceM,
   foremanTotals,
   hasFacts,
+  isDeviceFix,
   isReported,
   lagSuggestions,
   peopleTotal,
@@ -86,6 +87,17 @@ describe('plans', () => {
     const rows = planRows(undefined, plan([['support', '300']]));
     expect(rows).toEqual([{ item: 'support', target: '300' }]);
   });
+  it('a confirmed version is a copy: later draft edits do not reach it', () => {
+    const draft = [{ item: 'support', target: '300' }];
+    const outcome = confirmPlan({ versions: [], draft }, undefined, 'T');
+    expect(outcome.ok).toBe(true);
+    draft[0]!.target = '999';
+    draft.push({ item: 'rail', target: '1' });
+    if (outcome.ok)
+      expect(outcome.version.rows).toEqual([
+        { item: 'support', target: '300' },
+      ]);
+  });
   it('confirm creates a version once and never duplicates without a new draft', () => {
     const p: PlanState = {
       versions: [],
@@ -130,6 +142,27 @@ describe('quantities', () => {
     });
     expect(suggestCumulative(undefined, '260')).toBeNull();
     expect(suggestCumulative('5120', 'unknown')).toBeNull();
+  });
+  it('sums outside Decimal(20,6) are not offered: suggestion null, foreman total null', () => {
+    expect(suggestCumulative('99999999999999.999999', '0.000001')).toBeNull();
+    expect(suggestCumulative('99999999999999.999998', '0.000001')).toEqual({
+      base: '99999999999999.999998',
+      qty: '0.000001',
+      sum: '99999999999999.999999',
+    });
+    expect(
+      foremanTotals([
+        { crew: 'A', rows: [{ item: 'x', qty: '99999999999999' }], at: '1' },
+        {
+          crew: 'B',
+          rows: [
+            { item: 'x', qty: '1' },
+            { item: 'y', qty: '1' },
+          ],
+          at: '2',
+        },
+      ]),
+    ).toEqual({ x: null, y: '1' });
   });
   it('foreman totals take the latest report per crew', () => {
     const t = foremanTotals([
@@ -193,42 +226,46 @@ describe('coverage', () => {
 });
 
 describe('escalation reminder', () => {
-  const day = (q: string) => ({
+  const day = (businessDate: string, q: string) => ({
+    businessDate,
     baseline: baseline(plan([['support', '300']])),
     qty: { support: q },
   });
-  it('fires after 3 days under 80% of baseline, unless escalated or dismissed', () => {
+  const three = [
+    day('2026-10-03', '200'),
+    day('2026-10-02', '200'),
+    day('2026-10-01', '200'),
+  ];
+  it('fires after 3 consecutive days under 80% of baseline, unless escalated or dismissed', () => {
+    expect(lagSuggestions(three, new Set(), new Set())).toEqual(['support']);
+    // exactly 80% is not under 80%
     expect(
       lagSuggestions(
-        [day('200'), day('200'), day('200')],
+        [day('2026-10-03', '200'), day('2026-10-02', '240'), three[2]!],
         new Set(),
         new Set(),
       ),
+    ).toEqual([]);
+    expect(lagSuggestions(three.slice(0, 2), new Set(), new Set())).toEqual([]);
+    expect(lagSuggestions(three, new Set(['support']), new Set())).toEqual([]);
+    expect(lagSuggestions(three, new Set(), new Set(['support']))).toEqual([]);
+  });
+  it('a gap in the history breaks the streak: three low entries on non-consecutive days do not fire', () => {
+    expect(
+      lagSuggestions(
+        [
+          day('2026-10-03', '200'),
+          day('2026-10-01', '200'),
+          day('2026-09-30', '200'),
+        ],
+        new Set(),
+        new Set(),
+      ),
+    ).toEqual([]);
+    // order of entries does not matter; dates do
+    expect(
+      lagSuggestions([three[2]!, three[0]!, three[1]!], new Set(), new Set()),
     ).toEqual(['support']);
-    expect(
-      lagSuggestions(
-        [day('200'), day('250'), day('200')],
-        new Set(),
-        new Set(),
-      ),
-    ).toEqual([]);
-    expect(
-      lagSuggestions([day('200'), day('200')], new Set(), new Set()),
-    ).toEqual([]);
-    expect(
-      lagSuggestions(
-        [day('200'), day('200'), day('200')],
-        new Set(['support']),
-        new Set(),
-      ),
-    ).toEqual([]);
-    expect(
-      lagSuggestions(
-        [day('200'), day('200'), day('200')],
-        new Set(),
-        new Set(['support']),
-      ),
-    ).toEqual([]);
   });
   it('issue rules: escalation needs a category; expert items are not PM-closable', () => {
     expect(canEscalate({ controlled: false, category: '' })).toBe(false);
@@ -238,12 +275,30 @@ describe('escalation reminder', () => {
 });
 
 describe('photos and check-in', () => {
-  it('in-app capture needs a fix; album does not', () => {
+  it('in-app capture needs a real fix; album does not', () => {
     expect(photoAcceptable('camera', null)).toBe(false);
-    expect(
-      photoAcceptable('camera', { lat: 0, lon: 0, accuracyM: 12, fixAt: 'T' }),
-    ).toBe(true);
+    const fix = {
+      lat: 44.8,
+      lon: 20.4,
+      accuracyM: 12,
+      fixAt: '2026-09-29T10:00:00Z',
+    };
+    expect(photoAcceptable('camera', fix)).toBe(true);
     expect(photoAcceptable('album', null)).toBe(true);
+    // an object is not a fix: off-globe coordinates, negative/NaN accuracy or no fix time
+    for (const bad of [
+      { ...fix, lat: 999 },
+      { ...fix, lon: -181 },
+      { ...fix, lat: Number.NaN },
+      { ...fix, accuracyM: -1 },
+      { ...fix, accuracyM: null },
+      { ...fix, accuracyM: Number.POSITIVE_INFINITY },
+      { ...fix, fixAt: null },
+      { ...fix, fixAt: '' },
+    ]) {
+      expect(isDeviceFix(bad), JSON.stringify(bad)).toBe(false);
+      expect(photoAcceptable('camera', bad)).toBe(false);
+    }
   });
   it('proxy check-in only by the crew foreman or a manager, inside the fence, once a day', () => {
     const base = {
@@ -287,15 +342,32 @@ describe('photos and check-in', () => {
       ok: false,
       reason: 'outsideSite',
     });
-    expect(checkinDecision({ ...base, distanceM: null })).toEqual({
+    // boundary: exactly the radius is inside; one metre more is outside
+    expect(checkinDecision({ ...base, distanceM: 500 })).toEqual({ ok: true });
+    expect(checkinDecision({ ...base, distanceM: 500.001 })).toEqual({
       ok: false,
-      reason: 'noLocation',
+      reason: 'outsideSite',
     });
+    for (const d of [null, Number.NaN, -1, Number.NEGATIVE_INFINITY])
+      expect(checkinDecision({ ...base, distanceM: d }), String(d)).toEqual({
+        ok: false,
+        reason: 'noLocation',
+      });
+    expect(() => checkinDecision({ ...base, radiusM: 0 })).toThrow(RangeError);
+    expect(() => checkinDecision({ ...base, radiusM: Number.NaN })).toThrow(
+      RangeError,
+    );
   });
   it('distance and dates', () => {
+    // 0.001° of longitude at 44° N is about 80 m
+    const d = distanceM({ lat: 44, lon: 20 }, { lat: 44, lon: 20.001 });
+    expect(d).toBeGreaterThan(75);
+    expect(d).toBeLessThan(85);
+    expect(distanceM({ lat: 44, lon: 20 }, { lat: 44, lon: 20 })).toBe(0);
+    expect(distanceM({ lat: 91, lon: 20 }, { lat: 44, lon: 20 })).toBeNaN();
     expect(
-      Math.round(distanceM({ lat: 44, lon: 20 }, { lat: 44, lon: 20.001 })),
-    ).toBeGreaterThan(70);
+      distanceM({ lat: 44, lon: 20 }, { lat: 44, lon: Number.NaN }),
+    ).toBeNaN();
     expect(shiftDate('2026-09-30', 1)).toBe('2026-10-01');
   });
 });

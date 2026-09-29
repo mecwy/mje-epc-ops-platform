@@ -21,6 +21,16 @@ describe('i18n resources', () => {
     expect(translate('en', 'tonightDue', { n: 3 })).toBe('3 items to fill');
     expect(translate('sr', 'nav_report')).toBe('Izveštaj');
     expect(translate('es', 'no.such.key')).toBe('no.such.key');
+    // inherited object names are not message keys
+    expect(translate('en', 'constructor')).toBe('constructor');
+  });
+  it('inserts values literally: no replacement patterns, no re-scanning of inserted text', () => {
+    expect(translate('en', 'tonightDue', { n: '$&' })).toBe('$& items to fill');
+    expect(translate('en', 'tonightDue', { n: '{n}' })).toBe(
+      '{n} items to fill',
+    );
+    // an unknown placeholder stays visible instead of vanishing
+    expect(translate('en', 'tonightDue', {})).toBe('{n} items to fill');
   });
   it('picks the saved language first, then the browser suggestion, then zh', () => {
     expect(initialLang('sr', ['en-US'])).toBe('sr');

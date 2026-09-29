@@ -24,12 +24,15 @@ export function translate(
   key: MessageKey | string,
   vars: Record<string, string | number> = {},
 ): string {
-  const row = (MESSAGES as Record<string, readonly string[]>)[key];
+  const row = Object.hasOwn(MESSAGES, key)
+    ? (MESSAGES as Record<string, readonly string[]>)[key]
+    : undefined;
   const index = ORDER.indexOf(lang);
-  let text = row?.[index] || row?.[0] || key;
-  for (const [name, value] of Object.entries(vars))
-    text = text.replaceAll(`{${name}}`, String(value));
-  return text;
+  const text = row?.[index] || row?.[0] || key;
+  // One pass with a callback: values are inserted literally and are never re-scanned.
+  return text.replace(/\{(\w+)\}/g, (match, name: string) =>
+    Object.hasOwn(vars, name) ? String(vars[name]) : match,
+  );
 }
 
 export const makeT =
