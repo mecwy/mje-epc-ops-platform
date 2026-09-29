@@ -902,8 +902,91 @@ try {
     )
   ).rows.map((r) => r.number);
   assert.deepEqual(versions6, [1, 2, 3, 4, 5, 6]);
+
+  // Deterministic: while another session holds the project/date plan lock, neither a draft
+  // save nor a confirm can complete; both finish once it is released.
+  const D9 = '2026-10-13';
+  let d9Confirmed = false;
+  const lockKey = `${orgA}:plan:${projectA}:${D9}`;
+  const holder = await owner.connect();
+  try {
+    await holder.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [
+      lockKey,
+    ]);
+    const settled = { save: false, confirm: false };
+    const draftCmd = {
+      projectId: projectA,
+      targetBusinessDate: D9,
+      clientMutationId: randomUUID(),
+      rows: [{ item: 'support', target: '321' }],
+    };
+    const blockedSave = call('/plan/draft', pm, draftCmd).then((r) => {
+      settled.save = true;
+      return r;
+    });
+    const blockedConfirm = call('/plan/confirm', pm, {
+      projectId: projectA,
+      targetBusinessDate: D9,
+      clientMutationId: randomUUID(),
+    }).then((r) => {
+      settled.confirm = true;
+      return r;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.deepEqual(settled, { save: false, confirm: false });
+    await holder.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [
+      lockKey,
+    ]);
+    const [saveResult, confirmResult] = await Promise.all([
+      blockedSave,
+      blockedConfirm,
+    ]);
+    assert.equal(saveResult.status, 200);
+    // the confirm either ran first (no draft yet: empty plan) or after the save (confirms 321)
+    d9Confirmed = confirmResult.status === 200;
+    if (confirmResult.status === 200)
+      assert.deepEqual(confirmResult.body.rows, [
+        { item: 'support', target: '321' },
+      ]);
+    else assert.equal(confirmResult.body.code, 'PLAN_EMPTY');
+
+    // audit contents: a creation has no "before", an overwrite records the previous rows;
+    // replaying the same command adds nothing
+    const overwrite = {
+      ...draftCmd,
+      clientMutationId: randomUUID(),
+      rows: [{ item: 'support', target: '654' }],
+    };
+    await expectStatus(call('/plan/draft', pm, overwrite), 200);
+    const draftAudits = async () =>
+      (
+        await owner.query(
+          `SELECT before, after, reason, "actorAccountId", "correlationId" FROM "AuditLog"
+          WHERE action='REPORT_PLAN_DRAFT' AND reason=$1 ORDER BY "createdAt", "correlationId"`,
+          [D9],
+        )
+      ).rows;
+    const before = await draftAudits();
+    const created = before.find(
+      (a) => a.correlationId === draftCmd.clientMutationId,
+    );
+    const replaced = before.find(
+      (a) => a.correlationId === overwrite.clientMutationId,
+    );
+    assert.equal(created.actorAccountId, accountPm);
+    assert.deepEqual(created.after, draftCmd.rows);
+    assert.deepEqual(replaced.after, overwrite.rows);
+    assert.deepEqual(
+      replaced.before,
+      confirmResult.status === 200 ? null : draftCmd.rows,
+    );
+    await expectStatus(call('/plan/draft', pm, overwrite), 200); // replay
+    assert.equal((await draftAudits()).length, before.length);
+  } finally {
+    holder.release();
+  }
   pass(
-    'concurrent draft save and confirm never lose a saved draft; two confirms create one version',
+    'concurrent draft save and confirm never lose a saved draft; both wait for the plan lock; two confirms create one version; draft audits record before/after and replays add none',
   );
 
   // ---------- same-key submit twice at once; save vs submit ----------
@@ -1047,10 +1130,10 @@ try {
       REPORT_CORRECTION_CANCEL: 2,
       REPORT_CORRECTION_START: 3,
       REPORT_NO_WORK: 1,
-      // D1 v1, v2; D6 five race rounds + one of two concurrent confirms
-      REPORT_PLAN_CONFIRM: 8,
-      // D1, D2, D1 again; D6 2 × 5 rounds + '999'
-      REPORT_PLAN_DRAFT: 14,
+      // D1 v1, v2; D6 five race rounds + one of two concurrent confirms; D9 if it confirmed
+      REPORT_PLAN_CONFIRM: 8 + (d9Confirmed ? 1 : 0),
+      // D1, D2, D1 again; D6 2 × 5 rounds + '999'; D9 save + overwrite
+      REPORT_PLAN_DRAFT: 16,
       // D1, race winner, three correction edits, D7, D8 (+ D8 late save if it won)
       REPORT_SAVE_FACTS: saveVsSubmit[0].status === 200 ? 8 : 7,
       REPORT_SAVE_ITEMS: 2,
