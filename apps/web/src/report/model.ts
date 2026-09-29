@@ -39,6 +39,35 @@ export function cumulativeSuggestion(
   return s && base ? { ...s, asOf: base.asOf } : null;
 }
 
+export type CumulativeCheck =
+  | { item: string; kind: 'belowToday' }
+  | { item: string; kind: 'notSuggested'; sum: string };
+/**
+ * Declared cumulatives that disagree with today's quantity. They are reminders, never a block
+ * and never a silent change: a cumulative below today's quantity cannot be right; one that
+ * differs from "last declared + today" may be deliberate but must be seen (for example after
+ * today's quantity was corrected). Unknown or blank values are not compared.
+ */
+export function cumulativeChecks(
+  content: Pick<ReportContent, 'items' | 'facts'>,
+  base: Record<string, Carried>,
+): CumulativeCheck[] {
+  const out: CumulativeCheck[] = [];
+  for (const it of byKind(content.items, 'work')) {
+    const q = dec(content.facts.qty[it.key]);
+    const cur = dec(content.facts.cumulative[it.key]);
+    if (q === null || cur === null) continue;
+    if (cur < q) {
+      out.push({ item: it.key, kind: 'belowToday' });
+      continue;
+    }
+    const s = cumulativeSuggestion(base[it.key], content.facts.qty[it.key]);
+    if (s && dec(s.sum) !== cur)
+      out.push({ item: it.key, kind: 'notSuggested', sum: s.sum });
+  }
+  return out;
+}
+
 /** Live coverage for the form. Photo reminders wait for the photo slice (A5). */
 export function liveCoverage(
   content: Pick<ReportContent, 'items' | 'baseline' | 'facts'>,

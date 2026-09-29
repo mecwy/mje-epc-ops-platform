@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AccountInfo } from '@azure/msal-browser';
-import { ApiError, reportApi, type AuthConfig, type Project } from './api.js';
+import {
+  ApiError,
+  reportApi,
+  type AuthConfig,
+  type Project,
+  type RevisionView,
+} from './api.js';
 import { EntraAuth, devToken } from './auth.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
@@ -9,7 +15,7 @@ import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
 import { liveCoverage, byKind } from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
-import { ReportView } from './report/ReportView.js';
+import { ReportBody, ReportView } from './report/ReportView.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
 import { useIssues } from './report/useIssues.js';
@@ -99,6 +105,14 @@ function Workspace({
     null | 'menu' | 'noWork' | 'correct' | 'issues'
   >(null);
   const [focus, setFocus] = useState<string | null>(null);
+  // A submitted version opened from the history, read-only; the fence drops a late answer
+  // for another day or version.
+  const [viewing, setViewing] = useState<{
+    n: number;
+    rev: RevisionView | null;
+    failed: boolean;
+  } | null>(null);
+  const viewTicket = useRef(0);
   const [actionBusy, setBusy] = useState(false);
   // One PlanSession per target date for the life of the workspace (pending saves survive).
   const plans = useRef(new Map<string, PlanSession>());
@@ -129,6 +143,22 @@ function Workspace({
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
+  useEffect(() => {
+    viewTicket.current++;
+    setViewing(null);
+  }, [date, task]);
+  const openVersion = (n: number) => {
+    const ticket = ++viewTicket.current;
+    setSheet(null);
+    setViewing({ n, rev: null, failed: false });
+    api.revision(project.id, date, n).then(
+      (rev) =>
+        ticket === viewTicket.current && setViewing({ n, rev, failed: false }),
+      () =>
+        ticket === viewTicket.current &&
+        setViewing({ n, rev: null, failed: true }),
+    );
+  };
   useEffect(() => {
     document.body.classList.toggle('in-task', task !== null);
   }, [task]);
@@ -224,6 +254,24 @@ function Workspace({
 
   // Issues have their own lifecycle: on a submitted day they are still managed live (and the
   // lag reminder only exists once the day is submitted), while the report stays frozen.
+  // Correction is found where the submitted report is read, not only in the "more" menu.
+  const correctEntry =
+    view === 'report' &&
+    !task &&
+    !viewing &&
+    canWrite &&
+    day?.state === 'submitted' ? (
+      <button
+        type="button"
+        className="card rowbtn"
+        onClick={() => setSheet('correct')}
+      >
+        <span className="grow">
+          <b>{t('startCorrect')}</b>
+        </span>
+        <Icon.right />
+      </button>
+    ) : null;
   const manageIssues =
     view === 'report' && !task && canWrite && day?.state === 'submitted' ? (
       <button
@@ -255,7 +303,37 @@ function Workspace({
       </button>
     ) : null;
   let body;
-  if (h.error)
+  if (viewing && view === 'report' && !task) {
+    const meta = day?.revisions.find((r) => r.n === viewing.n) ?? null;
+    body = (
+      <>
+        <div className="banner warn">
+          {t('viewingVersion', { n: viewing.n })}{' '}
+          <button
+            type="button"
+            className="pill"
+            onClick={() => {
+              viewTicket.current++;
+              setViewing(null);
+            }}
+          >
+            {t('backToCurrent')}
+          </button>
+        </div>
+        {viewing.failed ? (
+          <div className="banner err">{t('loadFail')}</div>
+        ) : viewing.rev ? (
+          <ReportBody
+            c={viewing.rev.snapshot}
+            version={meta ?? viewing.rev}
+            timeZone={project.timezone}
+          />
+        ) : (
+          <p className="muted">{t('loading')}</p>
+        )}
+      </>
+    );
+  } else if (h.error)
     body = (
       <div className="banner err">
         {h.error === 'FORBIDDEN' ? t('forbidden') : t('saveFail')}
@@ -422,7 +500,8 @@ function Workspace({
         </header>
         <main className={`page view-${view}`}>
           {body}
-          {manageIssues}
+          {correctEntry}
+          {manageIssues && !viewing ? manageIssues : null}
         </main>
       </div>
       {sheet === 'menu' && (
@@ -433,6 +512,7 @@ function Workspace({
           revisions={day?.revisions ?? []}
           timeZone={project.timezone}
           onCorrect={() => setSheet('correct')}
+          onView={openVersion}
           onCancel={() => {
             setSheet(null);
             void run(h.cancelCorrection);
