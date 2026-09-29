@@ -1,227 +1,335 @@
 # A6 design: field devices, worker check-in and foreman quantities
 
-Status: design for review (AGENTS.md: slices with state machines and timing get a one-page design before code). No application code, migration or contract in this PR. All examples are synthetic TEST data; coordinates are `0.000000, 0.000000`-style placeholders.
+Status: design r2 for review. It answers the first Codex review (12 findings) and records the user decisions of 2026-09-29. It contains no application code, migration or contract. All examples are synthetic TEST data; coordinates are `0.000000, 0.000000`-style placeholders.
 
-Scope: U2.1 rules 1, 9, 11, 12, 13 and 14 (check-in, headcount, time, decimals, permissions), the foreman quantity report and the PM "adopt" step. Out of scope: the offline queue (A8), hours or timesheets, face recognition, payroll, a mini-program or native app, bulk roster import.
+Scope: U2.1 rules 1, 9, 11, 12, 13 and 14, the foreman quantity report and the PM "adopt" step.
 
-## 0. Key decisions
+Out of scope:
 
-1. A **FieldDevice** is a browser-held secret bound to one Person on one project. It proves possession of a secret that a PM or foreman confirmed for that person. It does not prove identity, presence or who holds the phone.
-2. The token is 256 random bits, **generated on the device** (Web Crypto), sent once in the bind body and afterwards only in `Authorization: Bearer fd1.<token>`. The server stores SHA-256 only. The QR code carries a rotatable **project entry code** in the URL fragment, never a token.
-3. States: `PENDING → CONFIRMED → REVOKED`, plus `REJECTED` and `EXPIRED`. Terminal states never come back. Rebinding creates a new row. A person has at most one CONFIRMED device per project.
-4. **Check-ins from a PENDING device are rejected** (`DEVICE_PENDING`). The foreman confirms on the spot or checks the worker in as a proxy.
-5. One non-voided check-in per (project, person, business day). The business day comes from `occurredAt` in the project timezone, never from the server receive time.
-6. Self check-in outside 500 m, or with accuracy worse than 100 m, is **rejected** (spec rule 9). The fact can still be recorded through a foreman or PM proxy. A rejection is a request error, not a finding. Accepted check-ins store the location as a claim, with flags.
-7. Proxy check-in is allowed only for the crew's foreman on that business day, or a project PM. It records who acted, where they were, and the proxy kind.
-8. A check-in counts toward "checked in N (self X / proxy Y)". It never becomes hours and never writes `facts.people` or `facts.presence`.
-9. Foreman reports are append-only revisions per crew and day. The PM **adopts** a total explicitly, against the exact revisions they saw. A partial (unknown-containing) total cannot be adopted. The snapshot keeps both the foreman claim and the PM value.
-10. Field facts that arrive after the day is submitted are stored and marked `afterSubmission`. The submitted revision never changes (rule 1). Adoption on a locked day needs a correction.
+- the offline queue (A8);
+- hours or timesheets;
+- face recognition;
+- payroll;
+- mini-program or native app;
+- bulk roster import;
+- backdated roster changes.
 
-## 1. Actors and identity
+## 0. Decisions
 
-| Actor                        | Authenticates with                                                                 | May                                                                                                                                                          |
-| ---------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Worker (Person, no account)  | CONFIRMED FieldDevice                                                              | Own check-in; release own device                                                                                                                             |
-| Foreman (Person, no account) | CONFIRMED FieldDevice + FOREMAN row in `CrewAssignment` valid on the business date | Worker actions; proxy check-in and device confirm/reject for own crew; crew quantity report                                                                  |
-| Project manager              | Entra `LoginAccount` + `PROJECT_MANAGER` membership                                | Confirm, reject or revoke any device of the project; proxy any rostered person; void a check-in; adopt totals; set the site reference; rotate the entry code |
-| Executive reader             | Entra + `EXECUTIVE_READER`                                                         | Reads the submitted snapshot only (OD18); no field endpoints                                                                                                 |
+User decisions (2026-09-29):
 
-- **Person** is the natural person. **LoginAccount** is an Entra account (optional). **FieldDevice** is a per-project possession credential of a Person. Roles are never stored on the device. Foreman power is recomputed on every request from `CrewAssignment`, so a foreman who is replaced loses proxy rights on the next request.
-- **Same person, several devices or accounts.** Check-in uniqueness is per Person, so extra devices cannot add presence. Confirming a new device revokes the person's previous CONFIRMED device in the same transaction (`endReason=REPLACED`). The confirmer's Person must differ from the device's Person (DB CHECK). A PM or foreman cannot confirm their own device through a second account or device.
-- **Lost phone:** the PM revokes it (immediate), and the worker binds the new phone. **Cleared browser data:** the token is gone, so the worker rebinds. **Shared phone:** one token means one person. Another person on that phone is checked in by the foreman (U2.1 check-in decision); the attempt is refused, not treated as a violation.
-- **Limit, stated plainly:** the server cannot tell that two tokens sit on the same handset. We deliberately do no fingerprinting. Organized proxying cannot be fully prevented. It is handled by per-binding confirmation, flags and human spot checks, never by automatic judgement.
+| #   | Decision                                                                                                                                                                                                      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U1  | Selfie is optional and off by default per project. It is enabled only after HR/legal confirm.                                                                                                                 |
+| U2  | Self check-in is rejected outside the project radius (default 500 m, adjustable 50–2000 m per project) or with accuracy worse than 100 m. The fact can be recorded by an on-site foreman proxy or a PM proxy. |
+| U3  | A PM may proxy off site. A known off-site location is flagged `REMOTE_PROXY`. A foreman proxy must be on site.                                                                                                |
+| U4  | Foremen confirm devices of their own current crew. The PM list marks these for spot checks.                                                                                                                   |
+| U5  | Token lifetime: 180 days or end of project membership, 30 days idle, pending 24 h.                                                                                                                            |
+| U6  | Late self or foreman check-in: up to 24 h by device clock, flagged `LATE` after 15 min. Older facts only by PM proxy.                                                                                         |
+| U7  | Anyone holding the QR code sees current display names. This is an intentional disclosure: rotating the code stops future reads but cannot retract names already seen.                                         |
+| U8  | Headcount is never filled from check-ins. Check-in counts are shown beside the PM's declared counts.                                                                                                          |
 
-## 2. FieldDevice state machine
+Design rules:
+
+- A FieldDevice is a browser-held secret for one Person on one project. It proves only that a PM or the crew foreman confirmed, face to face, the browser showing a challenge. It proves nothing about identity, presence or who holds the phone. Server-side, one handset cannot be told from another; we do no fingerprinting. Organized proxying is handled by confirmation, flags and spot checks, never by automatic judgement.
+- Roles are never on the device. Authority is recomputed per request from timestamp-effective `CrewAssignment` rows. The project comes from the device, never from a field request body.
+- A check-in is the claim "P was on site at T". It never becomes hours and never writes `facts.people` or `facts.presence`.
+- Foreman totals are claims. The PM adopts a total explicitly, and only when it is complete. A submitted revision never changes (rule 1).
+- **Prerequisite, PR A6.0:** enforce OD18 on the server before any A6 field reaches a read path. An `EXECUTIVE_READER` gets `GET day`/`days`/`revision` as either "not submitted" or the latest frozen revision, also during a correction. It never gets live facts, foreman data, check-ins or adoption controls. Tests go through HTTP. Later A6 PRs add field data to `GET day` only in the writer branch.
+
+## 1. Identity, roster and authority
+
+| Concept                             | Rule                                                                                                                                                                                                                                                                         |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Person / LoginAccount / FieldDevice | Person is the natural person. LoginAccount is an optional Entra account. FieldDevice is a per-project possession credential. Check-in uniqueness is per Person, so extra devices or accounts add nothing. A person with two accounts is still one Person for `SELF_CONFIRM`. |
+| `CrewAssignment`                    | Append-only interval rows (`MEMBER` of crew C, or `FOREMAN` of C), half-open `[validFrom, validUntil)` as timestamptz. A new row needs `validFrom ≥ now − 5 min`. The only update allowed is setting `validUntil ≥ now`, once. Past intervals are never rewritten.           |
+| Non-overlap                         | Per (project, person), `MEMBER` intervals never overlap. Per crew, `FOREMAN` intervals never overlap. A person is `FOREMAN` of at most one crew at a time. This is enforced by a trigger under the person or crew advisory lock and tested concurrently.                     |
+| Handover                            | Foreman A → B at T is one transaction: close A's row at T and open B's at T. A loses authority at T. A move between crews works the same way and keeps the device.                                                                                                           |
+| Durable termination                 | Closing a person's last open `MEMBER` interval in the project revokes their CONFIRMED device and rejects PENDING ones in the same transaction (`UNASSIGNED`). Reassignment needs a new binding.                                                                              |
+| Actor authority                     | Always evaluated at `receivedAt` (now), never at a time the caller picks. Foreman writes need an open `FOREMAN` row for the subject's crew at now.                                                                                                                           |
+| Subject membership                  | For a check-in, P must be a `MEMBER` of the crew at `occurredAt`. For a foreman proxy, it must also hold at now.                                                                                                                                                             |
+| Historical writes                   | A foreman may write only for the site's today or yesterday, within the U6 window, and only with current authority. There is no delegation. Anything older is PM-only, and the PM needs current project membership.                                                           |
+
+## 2. FieldDevice lifecycle
 
 ```text
-          bind (entry code + roster pick)
-                    │
-                    ▼
-   ┌──────────── PENDING ────────────┐
-   │ reject (PM/foreman)             │ pendingUntil passed
-   ▼                                 ▼
-REJECTED     confirm (PM/foreman)  EXPIRED ◀── idle > 30 d, expiresAt, or assignment ended
-                    │                  ▲
-                    ▼                  │
-               CONFIRMED ──────────────┘
-                 │   ▲  rotate (same state, new hash, generation+1)
-                 └───┘
-                    │ revoke (PM) · release (self) · replaced by a newer confirm
-                    ▼
-                 REVOKED
+bind ─▶ PENDING ──confirm (challenge)──▶ CONFIRMED ──revoke / release / replaced / unassigned──▶ REVOKED
+          │  └─reject / superseded──▶ REJECTED            │ rotate: same state, generation+1
+          └─pendingUntil passed──▶ EXPIRED ◀──idle 30 d / expiresAt──┘
 ```
 
-| Transition          | Actor                                                                                       | Guard                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| → PENDING           | Holder of the active entry code                                                             | Person rostered on the project today; at most 3 PENDING rows per person; rate limits (below)                                           |
-| PENDING → CONFIRMED | PM of the project, or the foreman of the person's crew on the site's today                  | `now < pendingUntil` (24 h); confirmer person ≠ device person; `expectedVersion`                                                       |
-| PENDING → REJECTED  | Same as confirm                                                                             | `expectedVersion`                                                                                                                      |
-| CONFIRMED → REVOKED | PM (reason required); the device itself (`release`, "not me"); a newer confirm (`REPLACED`) | Row lock `FOR UPDATE`                                                                                                                  |
-| → EXPIRED           | Derived at read time, persisted on the next write                                           | PENDING past `pendingUntil`; CONFIRMED past `expiresAt` (180 d or end of assignment), idle > 30 d, or no valid crew/project assignment |
-| rotate              | The device                                                                                  | Old token valid; new token well-formed; replay-safe via `prevTokenHash`                                                                |
+Terminal states never return. Rebinding creates a new row. An expired device is detected at authentication and persisted in the same transaction. `CHECK` constraints:
 
-Invariants:
+- CONFIRMED ⇒ `confirmedAt` and `confirmedByPersonId` are NOT NULL, exactly one of `confirmedByAccountId`/`confirmedByDeviceId` is set, and `confirmedByPersonId <> personId`.
+- Ended states ⇒ `endedAt` and `endReason` are NOT NULL.
+- A trigger allows only forward transitions.
 
-- I1: `tokenHash` is globally unique, because the lookup happens before the org is known.
-- I2: there is at most one CONFIRMED device per (org, project, person) (partial unique index).
-- I3: `confirmedByPersonId <> personId`.
-- I4: forward-only transitions (trigger).
-- I5: every transition appends a `FieldDeviceEvent` and an `AuditLog` row with `actorKind` `HUMAN` or `FIELD_DEVICE`.
-- I6: only an effective CONFIRMED device authenticates.
+**Confirmation ceremony.** After binding, the pending browser calls `POST /api/field/device/challenge`. The server stores a new random 6-digit code, hashed, bound to `(deviceId, deviceVersion, personId, projectId)`. It expires in 5 min, can be used once and allows 5 attempts; a new challenge supersedes the old one. The browser shows the code and the chosen display name. The confirmer, standing with the worker, checks the name and types the code: `confirm {personId, code, expectedCurrentDeviceId}`. The confirmer never picks a row. The server looks for the one PENDING device of that person whose live challenge matches and whose bound version equals the row's version. No match → `CHALLENGE_INVALID`, which counts as an attempt. The bearer token is never the challenge. Two competing binds for one person produce two different codes, and only the browser physically shown gets confirmed.
 
-**Token.** The client creates `fd1.` + base64url(32 random bytes) and keeps it in `localStorage` (the phone test showed it survives sessions). Client generation makes a lost bind response safe to retry: the retry carries the same token, so the same hash maps to the same row, and the server never holds plaintext for replay. A token a malicious client picks itself grants nothing until a human confirms it. The token is never put in a URL, query, QR code, log, audit row, error body or response.
+**Confirm, serialized per (org, project, person).** Lock order is in §5. The transaction:
 
-**Entry code / QR.** The QR code is `https://<app-host>/field#e=<entryCode>`. The fragment never reaches server access logs, and the PWA posts the code in a body. The code (128 bits, one active per project) only allows reading the roster picker and requesting a binding. It is stored as issued, because it is printed publicly and is not a credential. The PM rotates it at once when a poster leaks. Old codes then return `ENTRY_CODE_INVALID`.
+1. Locks the person.
+2. Re-reads the target and the person's current CONFIRMED device.
+3. If the current confirmed device ≠ `expectedCurrentDeviceId`, returns `CONFIRM_STALE`. The confirmer's view was old: another phone was confirmed or revoked meanwhile.
+4. Revokes the current device (`REPLACED`) **before** confirming the target.
+5. Rejects every other PENDING device of the person (`SUPERSEDED`).
+6. Confirms the target and burns the challenge.
 
-**Rotation and revocation.** The client rotates a CONFIRMED token every 30 days of use. Every field request re-reads the device row inside its own transaction; there is no cache. A check-in takes `FOR SHARE` and revoke takes `FOR UPDATE`, so a check-in either commits before the revoke or sees REVOKED.
+The partial unique index "one CONFIRMED per person and project" holds at every step.
 
-**Rate limits** (Postgres fixed windows, no Redis). The limits count per hashed client IP, using a daily random salt kept in the DB and dropped after 48 h:
+**Token and rotation.** The token is `fd1.` + base64url(32 random bytes), generated on the device. Every accepted hash is inserted into `FieldTokenHash` (PK = hash) and never reused, so a replayed or chosen token can never match another device's current or previous hash (`TOKEN_CONFLICT`). The body exception: only `bind` (token) and `rotate` (new token) carry a secret in the body. These bodies are excluded from logs, and their idempotency hash covers `sha256(token)`, never the token.
 
-- Entry/roster reads: 20 per 10 min per IP-hash.
-- Bind: 10 per hour per IP-hash and 60 per hour per entry code.
-- Unknown or ended tokens: 20 per 10 min per IP-hash, after which all field calls from that hash get `429`.
-- Failed check-ins: 30 per hour per device.
+Rotation runs every 30 days of use, from one tab, under a Web Locks lock:
 
-Every `429` carries `Retry-After`.
+| Step          | Client                                                                         | Server                                                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1             | Generate N. Persist `{current:O, pending:N, generation:g}` **before** sending. |                                                                                                                                                                                           |
+| 2             | `POST rotate` with `Bearer O`, body `{newToken:N, expectedGeneration:g}`       | Bootstrap auth (§5) and lock the device. If hash(O) = current and generation = g: set `prevTokenHash`=hash(O), current=hash(N), generation g+1, and insert hash(N) into `FieldTokenHash`. |
+| 3             | 200 → `current=N`, clear pending                                               |                                                                                                                                                                                           |
+| Lost response | Retry the same O, N, g                                                         | hash(O) = `prevTokenHash`, current = hash(N), generation = g+1 → return the same 200. **This is the only request the previous hash may make.** Any other use → `FIELD_AUTH_REQUIRED`.     |
+| Stale tab     | 401 while pending is set → try `GET me` with N; if it works, adopt N           | Generation ≠ g with a current hash → `VERSION_CONFLICT`                                                                                                                                   |
 
-## 3. Check-in rules
+`prevTokenHash` is cleared on the first request authenticated with the new token, or after 7 days. Revoke and rotate both lock the device row, and a revoked device accepts neither.
 
-| Topic         | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Slot          | One non-voided `WorkerCheckIn` per (org, project, person, businessDate): partial unique index plus an advisory lock on the same key. The same person on another project the same day is allowed, flagged `MULTI_PROJECT_DAY` and never added up as time.                                                                                                                                                                                                     |
-| Business day  | `businessDate = localDate(occurredAt, Project.timezone)`. The client sends the date it displayed; a mismatch is `BUSINESS_DAY_MISMATCH`, never silently re-dated. Example (TEST, UTC+2 site): `occurredAt 2026-10-01T22:30Z` → `2026-10-02`.                                                                                                                                                                                                                 |
-| Times         | `occurredAt` (device clock at tap), `deviceSentAt` (device clock at send), `fixAt` (location fix), `receivedAt` (server, request start), `recordedAt` (insert `now()`). They are stored separately and none is copied into another.                                                                                                                                                                                                                          |
-| Clock checks  | `abs(receivedAt − deviceSentAt) > 5 min` → `DEVICE_CLOCK_SKEW`. The server does not correct a claimed time. `occurredAt > receivedAt + 1 min` → `OCCURRED_IN_FUTURE`. `fixAt` more than 2 min before `occurredAt` → `STALE_FIX`.                                                                                                                                                                                                                             |
-| Late          | `receivedAt − occurredAt ≤ 15 min`: normal. 15 min to 24 h: accepted with `LATE`. Over 24 h: `TOO_LATE` (use a PM proxy). A6 keeps no offline queue (A8); the page retries with the same key while it is open.                                                                                                                                                                                                                                               |
-| Geofence      | Reference point = latest `ProjectSiteReference` (default radius 500 m). Self check-in: `accuracyM > 100` → `LOCATION_TOO_COARSE`; haversine distance > radius → `GEOFENCE_OUTSIDE`; accepted but `distance + accuracy > radius` → flag `NEAR_EDGE`. No reference set → `SITE_NOT_CONFIGURED`. The row stores lat/lon (Decimal 9,6 as strings), accuracy, integer metres of distance and the reference `n` used.                                              |
-| Why reject    | U2.1 rule 9 and the check-in decisions require a location inside the site. GPS is still only a claim: rejection filters obvious remote attempts, and a person really present with bad GPS still gets recorded through the proxy path. A rejected attempt appends a `FieldDeviceEvent` with the reason and distance rounded to 100 m, **without coordinates**.                                                                                                |
-| Proxy         | The actor is the foreman of the person's crew on `businessDate` (device) or a PM (Entra). Worker devices get `PROXY_NOT_ALLOWED`. A foreman proxy needs the foreman's own fix inside the fence. A PM proxy records the PM's location if available and is flagged `REMOTE_PROXY` otherwise (see Q3). Stored: `kind=PROXY`, actor person, actor device or account, actor location.                                                                             |
-| Selfie        | Optional (spec: manual spot checks only). A per-project switch defaults **off** until HR/legal confirm. When on: the client re-encodes the image (drops EXIF) and uploads it to the private evidence container under `selfie/`. The row keeps `sha256` and the blob key. Only a PM of the project can read it, through the API. It is never logged, never in list responses and never in snapshots (only `hasSelfie`). No face recognition and no templates. |
-| Void          | PM only, reason required. It sets void columns once (trigger-guarded) and frees the slot. It never deletes the row or touches a submitted revision.                                                                                                                                                                                                                                                                                                          |
-| Present       | A check-in is the claim "P was on site at `occurredAt`", made by P or a proxy. Headcount = distinct persons with a non-voided check-in, split self / proxy / flagged. It does not mean on site now, a full day, verified or hours. It is never multiplied and never written into `facts.people`/`facts.presence`; differences from the PM's declared counts are shown, not judged.                                                                           |
-| Submitted day | Still accepted (a past fact that the worker cannot correct) and flagged `afterSubmission` (received after the day's last submit). It enters a revision only if the PM corrects. This deliberately differs from A5 photos (`LOCKED`), because the field actor has no correction path.                                                                                                                                                                         |
-| Idempotency   | Every POST carries `clientMutationId` → `IdempotencyRecord(actorId = deviceId or accountId, route, key)`. Same key and body → the original response. Same key, different body → `IDEMPOTENCY_KEY_REUSED`. A new key after success → `ALREADY_CHECKED_IN`, returning the existing check-in's time and kind only; the client treats this as done.                                                                                                              |
+**Entry code.** The QR code is `https://<app-host>/field#e=<code>`. The fragment is never sent to the server. The code (128-bit, one active per project, PM-rotated) allows only the roster read and bind (U7).
+
+**Throttling** uses Postgres fixed windows, no Redis. IP-hash is the client IP hashed with a daily DB salt that is dropped after 48 h. Limits are sized for a whole crew behind one site NAT or carrier-grade NAT:
+
+| Request         | Limit                                                                             |
+| --------------- | --------------------------------------------------------------------------------- |
+| Entry           | 300 / 10 min per IP-hash; 600 / 10 min per code                                   |
+| Bind            | 150 / h per IP-hash; 300 / h per code; ≤ 3 PENDING per person                     |
+| Challenge       | 10 / h per device; 5 attempts per challenge; 30 failed confirms / h per confirmer |
+| Unknown token   | 60 / 10 min per IP-hash                                                           |
+| Failed check-in | 30 / h per device                                                                 |
+
+## 3. Check-in
+
+**Event vs transport.** The idempotency hash covers the route plus the canonical _event_. For self and foreman-proxy check-ins the event is: `personId` (proxy only), `businessDate`, `occurredAt`, `fix {lat, lon, accuracyM, fixAt}` and `stagedSelfieId?`. _Transport_ data is `deviceSentAt` (the device clock at this attempt) and is not hashed. A retry keeps the key and event and refreshes `deviceSentAt`. The row stores the committing attempt's `deviceSentAt`, `receivedAt` and `clockSkewMs`, plus `recordedAt` (the transaction time) and `siteTimezone` (the timezone used).
+
+**Order of processing:**
+
+1. Parse.
+2. Bootstrap auth (§5).
+3. Resource authorization (§6).
+4. Idempotency lookup. A hit returns the stored result with **no** time or geofence rules re-run; a changed body → `IDEMPOTENCY_KEY_REUSED`.
+5. Time admission.
+6. Geofence.
+7. Locks and slot.
+8. Insert.
+
+**Time admission** (self and foreman proxy, first attempt only):
+
+| #   | Rule                                                                                                            | Error                   |
+| --- | --------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| T1  | `fixAt ≤ occurredAt ≤ fixAt + 2 min`. No fix from the future and none staler than 2 min.                        | `FIX_TIME_INVALID`      |
+| T2  | `occurredAt ≤ deviceSentAt`                                                                                     | `TIME_ORDER_INVALID`    |
+| T3  | `abs(receivedAt − deviceSentAt) ≤ 5 min`, which also bounds `occurredAt ≤ receivedAt + 5 min`. Never corrected. | `DEVICE_CLOCK_SKEW`     |
+| T4  | Age = `deviceSentAt − occurredAt` (same clock): ≤ 15 min normal; ≤ 24 h flag `LATE`; beyond that rejected       | `TOO_LATE`              |
+| T5  | `localDate(occurredAt, project.timezone) = body.businessDate`, computed with the tz database, so DST-safe       | `BUSINESS_DAY_MISMATCH` |
+
+**Geofence** (self; foreman proxy uses the foreman's fix). Reference = the latest `ProjectSiteReference`.
+
+| Condition                                  | Result                |
+| ------------------------------------------ | --------------------- |
+| Accuracy > 100 m                           | `LOCATION_TOO_COARSE` |
+| Distance > radius                          | `GEOFENCE_OUTSIDE`    |
+| Accepted with distance + accuracy > radius | Flag `NEAR_EDGE`      |
+| No reference                               | `SITE_NOT_CONFIGURED` |
+
+A rejection appends a `FieldDeviceEvent` with the reason and distance in 100 m buckets, **without coordinates**. It is a request error, never a finding.
+
+**PM proxy** (Entra) has its own admission:
+
+| Field               | Rule                                                                                                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `businessDate`      | Site today back to today − 7 days; older → `TOO_LATE`                                                                                                                         |
+| `occurredAt`        | Optional. If given: ≤ `receivedAt` and inside `businessDate` locally (`timePrecision=EXACT`). If absent: `timePrecision=DAY`, never invented.                                 |
+| `source` + `reason` | `OBSERVED_ON_SITE`, `FOREMAN_REPORTED` or `OTHER`. The reason is required when the date is not today or when no in-fence fix exists.                                          |
+| Actor fix           | Optional current PM fix with `fixAt` within 2 min of `receivedAt`. It is stored in the `actor*` columns only, never as the worker's location; the worker's lat/lon stay null. |
+| Flags               | Inside → none. `distance − accuracy > radius` → `REMOTE_PROXY`. Accuracy > 100 m or ambiguous → `PROXY_LOCATION_COARSE`. No fix → `PROXY_LOCATION_UNAVAILABLE`.               |
+
+Planned `checkinDecision` change: the manager branch no longer needs an in-fence location and returns flags. The self and foreman branches keep the hard fence.
+
+**Other rules:**
+
+- **Slot:** one non-voided check-in per (project, person, businessDate), backed by a partial unique index and the slot lock. A replay returns the original. A new key → `ALREADY_CHECKED_IN` with `{occurredAt, kind}` only. Another project the same day is allowed and flagged `MULTI_PROJECT_DAY`.
+- **Void:** PM only, reason required. Void columns are set once and record `voidSeq`.
+- **Present:** headcount is the number of distinct persons with a non-voided check-in, split self / proxy / flagged. It does not mean "on site now", a full day, verified, or hours.
+- **Selfie (U1)** is a staged, append-only flow:
+  1. `POST /api/field/selfie` (self only, idempotent on key + sha256) stores the blob under the private `selfie/` prefix and a `FieldSelfie` row owned by (device, person, project). It expires in 1 h if unattached.
+  2. The check-in body references `stagedSelfieId`. The check-in transaction checks the owner (same device, person and project, unexpired, unattached) and inserts `CheckInSelfie(checkInId UNIQUE, selfieId UNIQUE)`. There is no later attachment and no replacement.
+  3. The snapshot keeps only `hasSelfie`. Reads go through a PM-only proxy.
+  4. Retention: after 30 days a worker deletes the blob and sets `FieldSelfie.deletedAt` once (audited). `hasSelfie` stays, marked deleted. Unattached staged blobs are deleted after 1 h.
+  5. This needs Blob delete permission for the worker identity, which is an infra item.
 
 ## 4. Foreman quantity reports
 
-- **Shape.** `ForemanReport` is one header per (project, day, crew). Each submit appends a `ForemanReportRevision` with: `n`, the rows `[{itemKey, qty}]`, a note (≤ 500), `occurredAt`, `receivedAt` and the submitting person and device. `itemKey` must be a `ReportItem` of kind `work` in the project (`ITEM_NOT_FOUND`). `qty` is a decimal string within Decimal(20,6), `unknown`, `na` or blank. Blank rows are dropped, an explicit `0` is kept, and any other form is `NUMBER_INVALID`. There are no hour fields. The crew's check-in count is displayed, not stored in the report.
-- **Concurrency.** The submit carries `expectedRevision` (0 for the first). A mismatch is `REVISION_CONFLICT`, so an older screen never overwrites a newer revision. Revisions have no UPDATE or DELETE grant.
-- **Totals** = the latest revision per crew. Per item: the sum of known decimals, the crews reporting `unknown`/`na`, and "N of M active crews reported". **`foremanTotals` must be extended** to return completeness. Today it skips tokens and returns a bare sum, which would present a partial total as exact.
-- **Adopt** (PM, Entra) sends `{item, expectedVersion (DailyClose), basis: [{crewId, n}]}`. The server recomputes the total from the current latest revisions:
-  - The latest revisions differ from `basis` → `FOREMAN_TOTAL_CHANGED` (a stale view).
-  - The total is partial → `ADOPT_PARTIAL`; the PM may still type a value.
-  - The day is locked → `LOCKED` (allowed during a correction).
-  - Otherwise the server writes `facts.qty[item]` and appends a `ForemanAdoption` row with the value, the basis and the actor. It never adopts automatically, and a foreman submit never writes facts.
-- **Snapshot** at submit freezes: the per-crew latest revisions (ids and `n`), the totals with completeness, the day's adoptions, and the check-in list without coordinates. The foreman total is the claim; `facts.qty` is the PM value. A difference between them is displayed, not treated as an issue.
-- **Multiple foremen.** Each crew has one FOREMAN assignment per date. A foreman replaced mid-day hands the same revision chain to the new foreman, who must pass `expectedRevision`. Different crews reporting the same item are summed, because they are separate crews' work. Overlap cannot be detected and is not assumed; the PM sees a per-crew breakdown. A person is in at most one crew per project and date, enforced in the store under a lock and tested.
+- **Revision:** `ForemanReport` has one header per (project, date, crew). `ForemanReportRevision` holds:
+  - `n` and `expectedRevision` → `REVISION_CONFLICT`;
+  - rows `[{itemKey, qty}]`: the key must be a project `work` item (`ITEM_NOT_FOUND`), and a duplicate key → `INVALID_INPUT`;
+  - `qty`: a decimal within Decimal(20,6), `unknown`, `na`, or blank, stored as blank rather than dropped; anything else → `NUMBER_INVALID`;
+  - a note (≤ 500), `occurredAt`, `receivedAt` and `siteTimezone`.
 
-## 5. Sequences
+  There are no hour fields. Revisions are insert-only.
+
+- **Expected crew set** for (project, date): crews with a `FOREMAN` interval overlapping the business day in the site timezone. It is computed under the day lock.
+- **Per item, per expected crew**, the status is one of `MISSING_REPORT`, `OMITTED` (item absent or blank), `UNKNOWN`, `NA`, `ZERO` or `VALUE`.
+
+| Item total            | Condition                                                                                                      |
+| --------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `COMPLETE` value      | Every expected crew is `ZERO`, `VALUE` or `NA`, at least one is `ZERO`/`VALUE`, and the sum fits Decimal(20,6) |
+| `ALL_NA` (nonnumeric) | Every expected crew is `NA`                                                                                    |
+| `PARTIAL`             | Any `MISSING_REPORT`/`OMITTED`/`UNKNOWN`; the known subtotal is shown as "≥"                                   |
+| `OVERFLOW`            | The sum is outside Decimal(20,6); no number is shown                                                           |
+
+Only `COMPLETE` can be adopted; the PM may still type any value. `foremanTotals` will return this structure instead of a bare sum.
+
+- **Adopt:** the PM sends `{item, expectedVersion, basis: {expectedCrews: [crewId], revisions: [{crewId, n|null}]}}`. Under the lock order (§5) the server recomputes the expected crew set and the latest revisions:
+  - Any difference, including roster changes → `FOREMAN_TOTAL_CHANGED`.
+  - A total that is not `COMPLETE` → `ADOPT_NOT_COMPLETE`.
+  - A locked day → `LOCKED`, unless a correction is open.
+  - Otherwise the server writes `facts.qty[item]` and appends a `ForemanAdoption` row with the basis, value and `daySeq`.
+
+  Nothing is adopted automatically.
+
+- **Snapshot at submit,** read under the day lock:
+  - the expected crew set;
+  - the latest revision ids and `n` per crew;
+  - per-item statuses and totals;
+  - adoptions;
+  - check-ins without coordinates;
+  - `fieldSeqBoundary` (below).
+
+  The foreman value is the claim and `facts.qty` is the PM value. A difference is shown, not treated as an issue.
+
+## 5. Transactions and lock order
+
+**Bootstrap (field routes, low-privilege `mje_alpha_app`):**
+
+1. Set `app.device_token_hash`, then do a **non-locking** SELECT through the lookup policy, which is SELECT-only and returns `orgId, id, personId`.
+2. Set `app.org_id` (transaction-local).
+3. Lifecycle routes take the person locks of the actor and the subject, sorted, before any device row lock.
+4. Do a locked re-read through `alpha_org` (`FOR SHARE`; `FOR UPDATE` for rotate or release). Revalidate the hash, state, expiry and current membership.
+
+Transaction-local settings end at commit or rollback. A pooled-connection test checks that no context leaks.
+
+**Global lock order.** Every transaction takes locks in this order, skipping levels it does not need:
+
+1. Person advisory locks `(org, project, person)`, sorted.
+2. `FieldDevice` rows, sorted by id.
+3. `DailyClose` row `FOR UPDATE`.
+4. `lockReportDay(org, project, date)`.
+5. Slot or crew-report advisory locks.
+6. Target rows (`ForemanReport`, `WorkerCheckIn`).
+7. The `FieldDay` counter row.
+
+| Operation                                          | Locks taken                                |
+| -------------------------------------------------- | ------------------------------------------ |
+| Self or foreman check-in                           | 2 (actor share) → 4 → 5 → 7                |
+| PM proxy, void                                     | 4 → 5/6 → 7                                |
+| Foreman report                                     | 2 → 4 → 6 → 7                              |
+| Adopt, day submit                                  | 3 → 4 → 7 (submit reads; adopt increments) |
+| Confirm, reject, revoke, release, rotate, unassign | 1 → 2                                      |
+
+**Submission boundary.** Each field write for a day increments `FieldDay.lastSeq` under the day lock and stores `daySeq` on its row. Those writes are check-in, void (`voidSeq`), foreman revision and adoption. Submit records `fieldSeqBoundary = lastSeq` under the same lock. A revision contains exactly the rows with `daySeq ≤ boundary`, minus voids with `voidSeq ≤ boundary`. Rows above the boundary are `afterSubmission`; they enter only through a correction. Receipt timestamps are never used for this.
+
+**Revocation ordering.** Every privileged field write holds its actor device lock until commit: check-in, proxy, confirm, reject, report, selfie, rotate. Revoke needs `FOR UPDATE`, so a write either commits before the revoke or sees REVOKED.
+
+## 6. Endpoint matrix
+
+Field routes accept only `Bearer fd1.*` (entry and bind are the exceptions) and PM routes accept only Entra JWTs. Field bodies carry no `projectId`: the project is the device's. A target `:id` or `personId` outside that project, in another org or nonexistent → `NOT_FOUND`. An unknown token from any org → `FIELD_AUTH_REQUIRED`, with identical bodies. A replay re-runs authentication and resource checks before returning the stored result. IdempotencyRecord `actorId` is the device id or account id.
+
+| Endpoint                                                                                                                                                        | Auth                                              | Idempotency                                               | Resource checks                                                                                                  | Main errors                                                                                                              |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `POST field/entry`                                                                                                                                              | Entry code                                        | none (read)                                               | Active code                                                                                                      | `ENTRY_CODE_INVALID`, `RATE_LIMITED`                                                                                     |
+| `POST field/bind`                                                                                                                                               | Entry code                                        | `sha256(token)`: same token + person + project → same row | Person is a current project member                                                                               | `TOKEN_CONFLICT` (same token with another person or project, or a known hash), `TOO_MANY_PENDING`, `PERSON_NOT_ROSTERED` |
+| `GET field/me`                                                                                                                                                  | Any non-ended device, incl. PENDING               | —                                                         | Own device                                                                                                       | `DEVICE_ENDED`                                                                                                           |
+| `POST field/device/challenge`                                                                                                                                   | PENDING device                                    | none (new challenge each time)                            | Own device                                                                                                       | `RATE_LIMITED`                                                                                                           |
+| `POST field/device/release`                                                                                                                                     | Own device                                        | key                                                       | Own                                                                                                              | —                                                                                                                        |
+| `POST field/device/rotate`                                                                                                                                      | CONFIRMED, or prev hash for an exact replay       | §2 protocol                                               | Own                                                                                                              | `VERSION_CONFLICT`, `TOKEN_CONFLICT`                                                                                     |
+| `POST field/devices/confirm`, `/reject`                                                                                                                         | CONFIRMED foreman                                 | key                                                       | Subject is a current member of the actor's current crew; not self                                                | `NOT_FOREMAN`, `CHALLENGE_INVALID`, `CONFIRM_STALE`, `SELF_CONFIRM`                                                      |
+| `POST field/selfie`                                                                                                                                             | CONFIRMED                                         | key + sha256                                              | Own person; project switch on                                                                                    | `FEATURE_OFF`, 413/415                                                                                                   |
+| `POST field/checkin`                                                                                                                                            | CONFIRMED (PENDING → `DEVICE_PENDING`)            | key + event                                               | Own person; member at `occurredAt`                                                                               | T1–T5, geofence codes, `ALREADY_CHECKED_IN`                                                                              |
+| `POST field/checkin/proxy`                                                                                                                                      | CONFIRMED foreman                                 | key + event                                               | Subject in the actor's current crew at now and at `occurredAt`                                                   | `PROXY_NOT_ALLOWED`, as above                                                                                            |
+| `GET`/`POST field/report`                                                                                                                                       | CONFIRMED foreman                                 | key + event                                               | Own current crew; date today or yesterday                                                                        | `REVISION_CONFLICT`, `NUMBER_INVALID`, `ITEM_NOT_FOUND`                                                                  |
+| PM `report/field/*`: devices list, confirm, reject, revoke; entry-code rotate; site reference; crews and assignments; check-ins list, proxy, void; foreman view | Entra `PROJECT_MANAGER` of the resource's project | key (writes)                                              | Resource belongs to the project; crew, person and device in the same project (composite FKs include `projectId`) | `FORBIDDEN`, `READ_ONLY`, `VERSION_CONFLICT`, `CONFIRM_STALE`                                                            |
+| `POST report/foreman/adopt`                                                                                                                                     | Entra PM                                          | key                                                       | Item in the project                                                                                              | `FOREMAN_TOTAL_CHANGED`, `ADOPT_NOT_COMPLETE`, `LOCKED`                                                                  |
+
+HTTP statuses:
+
+- 400: `INVALID_INPUT` (contract parse errors, including a duplicate item key).
+- 401: `FIELD_AUTH_REQUIRED`, `DEVICE_ENDED`.
+- 403: `DEVICE_PENDING`, `FORBIDDEN`, `READ_ONLY`, `NOT_FOREMAN`, `PROXY_NOT_ALLOWED`, `SELF_CONFIRM`, `FEATURE_OFF`.
+- 404: `NOT_FOUND`, `ENTRY_CODE_INVALID`, `ITEM_NOT_FOUND`, `PERSON_NOT_ROSTERED`.
+- 429: `RATE_LIMITED`.
+- 409: all other domain codes, including `NUMBER_INVALID` as today.
+
+A Postgres deadlock or serialization failure → 503 `RETRY`, which is safe to repeat with the same key. Error bodies stay `{code, correlationId}` and never contain a token, hash, entry code, challenge, coordinates, selfie key or another person's name.
+
+## 7. Data model (one additive migration; `orgId` on every table; composite tenant FKs; RLS `alpha_org`)
+
+| Table                                | Key columns and constraints                                                                                                                                                                                                                                                                                                                                                                         | App grants                                  |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `Crew`                               | projectId, code, name, activeFrom/Until; unique (orgId, projectId, id)                                                                                                                                                                                                                                                                                                                              | S, I, U(activeUntil)                        |
+| `CrewAssignment`                     | (orgId, projectId, crewId) FK → Crew; personId, role, validFrom/validUntil timestamptz; non-overlap trigger                                                                                                                                                                                                                                                                                         | S, I, U(validUntil) once                    |
+| `ProjectSiteReference`               | projectId, n, lat/lon Decimal(9,6), radiusM 50–2000; unique (orgId, projectId, n)                                                                                                                                                                                                                                                                                                                   | S, I                                        |
+| `FieldEntryCode`                     | projectId, code, retiredAt; one active per project; SELECT-only lookup policy on `app.entry_code`                                                                                                                                                                                                                                                                                                   | S, I, U(retiredAt)                          |
+| `FieldDevice`                        | projectId, personId, state, tokenHash, prevTokenHash, generation, pendingUntil, confirm* and end* columns (CHECKs in §2), expiresAt, lastSeenAt, version; unique (orgId, projectId, id); partial unique (orgId, projectId, personId) WHERE CONFIRMED; SELECT-only lookup policy on `app.device_token_hash`                                                                                          | S, I, U(lifecycle columns), forward trigger |
+| `FieldTokenHash`                     | hash PK, orgId, deviceId, acceptedAt                                                                                                                                                                                                                                                                                                                                                                | S, I                                        |
+| `FieldConfirmChallenge`              | deviceId, deviceVersion, personId, projectId, codeHash, expiresAt, attempts, usedAt, supersededAt                                                                                                                                                                                                                                                                                                   | S, I, U(attempts, usedAt, supersededAt)     |
+| `FieldDeviceEvent`                   | deviceId?, projectId, kind, reasonCode, distanceBucketM, at, actor; no coordinates                                                                                                                                                                                                                                                                                                                  | S, I                                        |
+| `FieldDay`                           | (orgId, projectId, businessDate) unique, lastSeq                                                                                                                                                                                                                                                                                                                                                    | S, I, U(lastSeq)                            |
+| `WorkerCheckIn`                      | projectId, personId, businessDate, siteTimezone, kind, (orgId, projectId, deviceId) FK, actorPersonId/AccountId/DeviceId, occurredAt, timePrecision, fixAt, deviceSentAt, receivedAt, recordedAt, clockSkewMs, lat/lon/accuracyM/distanceM (self only), siteRefN, actor fix, source, reason, flags, daySeq, voidedAt/By/Reason/voidSeq; partial unique slot; index (orgId, projectId, businessDate) | S, I, U(void columns) once                  |
+| `FieldSelfie`, `CheckInSelfie`       | owner device, person and project; sha256; blobKey; expiresAt; deletedAt / (checkInId UNIQUE, selfieId UNIQUE)                                                                                                                                                                                                                                                                                       | S, I, U(deletedAt) once / S, I              |
+| `ForemanReport`                      | (orgId, projectId, crewId) FK; businessDate; currentN; unique per (project, date, crew)                                                                                                                                                                                                                                                                                                             | S, I, U(currentN)                           |
+| `ForemanReportRevision`              | reportId, n, rows jsonb, note, by person/device, occurredAt, receivedAt, siteTimezone, daySeq; unique (reportId, n)                                                                                                                                                                                                                                                                                 | S, I                                        |
+| `ForemanAdoption`                    | projectId, businessDate, itemKey, value Decimal(20,6), basis jsonb, daySeq, byAccountId                                                                                                                                                                                                                                                                                                             | S, I                                        |
+| `FieldThrottle`, `FieldThrottleSalt` | bucket, window, count / day, salt; no personal data; pruned after 48 h                                                                                                                                                                                                                                                                                                                              | S, I, U, D                                  |
+
+`FOREMAN`/`WORKER` are not added to `Membership`, because Membership needs a LoginAccount.
+
+## 8. Sequences
 
 ```text
-A. First scan → bind → confirm → check-in
-Worker PWA                      API /api/field                 DB
- scan QR → /field#e=CODE
- POST entry {entryCode}  ─────▶ throttle; resolve code (RLS by code hash) ─▶ roster (display names)
- pick self; token=random256
- POST bind {code, personId, token, key} ─▶ throttle; hash; INSERT FieldDevice PENDING ─▶ event BIND
-   ◀── {deviceId, PENDING}
- POST checkin ───────────────▶ DEVICE_PENDING (event CHECKIN_REJECTED)
-Foreman PWA / PM web: list pending ─▶ confirm {deviceId, expectedVersion}
-   ─▶ lock row; guard crew/role/≠self; PENDING→CONFIRMED; revoke older CONFIRMED (REPLACED); audit
- POST checkin {key, businessDate, occurredAt, deviceSentAt, fix} ─▶ auth(hash→device FOR SHARE)
-   ─▶ clock/fix/fence checks ─▶ advisory lock (project, person, date) ─▶ INSERT WorkerCheckIn ─▶ 200
-
-B. Revoked device
-PM: revoke ─▶ device FOR UPDATE → REVOKED (commit)
-Worker: POST checkin ─▶ auth reads REVOKED ─▶ 401 DEVICE_ENDED (no project or person data); PWA shows "bind again"
-(in-flight check-in holding FOR SHARE commits first; revoke waits; nothing lands after the revoke commits)
-
-C. Duplicate / retry
-POST checkin key=K ─▶ committed, response lost
-POST checkin key=K (same body) ─▶ IdempotencyRecord hit ─▶ same 200 body
-POST checkin key=K2 ─▶ slot taken ─▶ 409 ALREADY_CHECKED_IN {occurredAt, kind}
-POST checkin key=K (different body) ─▶ 409 IDEMPOTENCY_KEY_REUSED
-
-D. Foreman proxy
-Foreman PWA: POST checkin/proxy {personId, key, occurredAt, foreman fix}
- ─▶ auth foreman device ─▶ CrewAssignment(foreman, crew, businessDate) ∋ person? else PROXY_NOT_ALLOWED
- ─▶ foreman fix inside fence ─▶ slot lock ─▶ INSERT kind=PROXY, actorPersonId, actorDeviceId, actor location
-
-E. Foreman report → PM adopt
-Foreman: GET report (latest n=1) → POST report {expectedRevision:1, rows, note, key} ─▶ n=2
-PM web: GET day → sees "foreman 120 (2/2 crews)", basis [{B,2},{C,1}]
-Foreman C: POST report {expectedRevision:1} ─▶ C n=2   (PM view is now stale)
-PM: POST adopt {item, expectedVersion, basis [{B,2},{C,1}]} ─▶ 409 FOREMAN_TOTAL_CHANGED ─▶ reload
-PM: POST adopt {basis [{B,2},{C,2}]} ─▶ facts.qty[item]=total; ForemanAdoption appended; DailyClose version+1
+A bind → challenge → confirm → check-in
+ W: scan /field#e=CODE → POST entry → roster → pick self, token T → POST bind → PENDING
+ W: POST checkin → 403 DEVICE_PENDING;  POST device/challenge → shows "Name · 482913"
+ F: (with W) POST devices/confirm {personId, code 482913, expectedCurrentDeviceId:null}
+    → person lock → rows → revoke old (none) → reject other PENDING → CONFIRMED
+ W: POST checkin {key, event, deviceSentAt} → device share → T1–T5 → fence → day+slot lock → seq → 200
+B revoked:  PM revoke (person lock, device FOR UPDATE) commits → W checkin → 401 DEVICE_ENDED
+C retry:    key K commits, response lost → K again (fresh deviceSentAt, even 30 h later) → auth ok → same 200
+            K with changed event → IDEMPOTENCY_KEY_REUSED; new key → ALREADY_CHECKED_IN
+D proxy:    F POST checkin/proxy {personId, event with F's fix} → F foreman of W's crew now and at occurredAt → PROXY row
+E adopt:    PM GET day (writer) → item COMPLETE 120, basis {crews [B,C], revs [B2,C1]}
+            F(C) POST report expectedRevision 1 → C2 (day lock, seq)
+            PM adopt with the old basis → FOREMAN_TOTAL_CHANGED → reload → adopt with [B2,C2] → facts.qty, ForemanAdoption
+F submit:   check-in waiting on the day lock while submit holds it → gets seq > boundary → afterSubmission
 ```
 
-## 6. Data model sketch
+## 9. Required negative tests (integration, isolated TEST DB, `mje_alpha_app`, via HTTP where a route exists)
 
-Every table has `orgId`. Every tenant FK is composite `(orgId, x)`. RLS uses policy `alpha_org` (`orgId = app.org_id`) for `mje_alpha_app`, as in earlier migrations. Everything is additive in one new migration.
+| Class                   | Cases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stale overwrites newer  | Adopt with an old basis, a changed revision or a changed expected crew set. Foreman submit on n−1. `CONFIRM_STALE` after another phone was confirmed. PM confirm/revoke with an old `expectedVersion`. A concurrent rotate from two tabs. A check-in racing a revoke under controlled lock timing.                                                                                                                                                                                                                                                                                                                      |
+| Unknown as exact        | Per-item statuses: `MISSING_REPORT`, `OMITTED`, blank, `UNKNOWN`, all-`NA`, explicit `0`, `OVERFLOW` → not adoptable. A PM proxy without a time is stored as `DAY` precision, never invented. A missing fix is never distance 0. NaN or out-of-range coordinates.                                                                                                                                                                                                                                                                                                                                                       |
+| History rewritten       | UPDATE/DELETE on revisions, adoptions, events, site references, token hashes, `CheckInSelfie` and assignment history fails for the app role. Only the void and `validUntil` columns update, once. A REVOKED device never returns to CONFIRMED. A submitted snapshot is unchanged by later check-ins, voids, reports, roster or site-reference changes.                                                                                                                                                                                                                                                                  |
+| Empty list skips checks | A foreman with no current crew, or an empty crew → `NOT_FOREMAN`. An empty expected crew set is not `COMPLETE`. An empty roster still validates the entry code. Unassignment revokes, and reassignment does not revive the device.                                                                                                                                                                                                                                                                                                                                                                                      |
+| Unsanitised errors      | No response, log or audit row contains a token, hash, entry code, challenge, coordinates, selfie key or another person's name. Wrong-org and unknown tokens get identical 401s. A cross-project `:id` gets the same 404 as a nonexistent one.                                                                                                                                                                                                                                                                                                                                                                           |
+| Device and auth         | Competing binds for one person: only the browser whose challenge is typed gets confirmed. Challenge expiry, reuse, wrong version and 5 bad attempts. Self-confirm through a second account. Bind retry with the same token → one row; the same token with another person → `TOKEN_CONFLICT`. Rotation lost response, second rotation with the previous hash, previous hash on an ordinary route, a reused hash, revoke vs rotate. Bootstrap under the low-privilege role and pooled-connection context isolation. PENDING device on privileged routes. Throttle 429s, and a shared IP onboarding 40 people without 429. |
+| Time                    | Retries at 6 min and 25 h after a commit (replay OK). A first attempt at 25 h → `TOO_LATE`. A future fix, a stale fix, `occurredAt > deviceSentAt`, skew of ±6 min. 23:59/00:00 local and DST transitions; a client date ≠ server-derived date. `siteTimezone` persisted.                                                                                                                                                                                                                                                                                                                                               |
+| Authority               | Cross-crew proxy; a proxy from a worker device. A foreman replaced at noon: A is refused at 12:01, B is allowed. Overlapping assignment inserts, concurrently. A backdated assignment is refused. A report for two days ago by a foreman → refused.                                                                                                                                                                                                                                                                                                                                                                     |
+| PM proxy                | 7-day window. An off-site fix → `REMOTE_PROXY`. No fix → `PROXY_LOCATION_UNAVAILABLE`. A coarse fix. The actor fix is never stored as the worker's location.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Ordering                | A check-in, void, foreman revision or adoption interleaved with submit, under controlled lock timing: each row is either ≤ boundary and in the revision, or > boundary and `afterSubmission`.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Selfie                  | Someone else's staged selfie, an expired one, one already attached, attaching after the check-in, feature off, retention deletion keeping `hasSelfie`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Executive reader (A6.0) | `GET day`/`days`/`revision` over HTTP before submit, after submit and during a correction: no live facts, foreman data or check-ins.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
-| Table                                | Key columns                                                                                                                                                                                                                                                                                          | Constraints / grants                                                                                                                                                                                                                                                                                |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Crew`                               | projectId, code, name, activeFrom/Until                                                                                                                                                                                                                                                              | unique (orgId, projectId, code); SELECT, INSERT, UPDATE(activeUntil)                                                                                                                                                                                                                                |
-| `CrewAssignment`                     | crewId, personId, role `MEMBER`/`FOREMAN`, validFrom/validUntil (date)                                                                                                                                                                                                                               | at most one open FOREMAN per crew (partial unique); append rows, only `validUntil` updatable                                                                                                                                                                                                        |
-| `ProjectSiteReference`               | projectId, n, lat/lon Decimal(9,6), radiusM (50–2000), setByAccountId, setAt                                                                                                                                                                                                                         | unique (orgId, projectId, n); SELECT, INSERT only                                                                                                                                                                                                                                                   |
-| `FieldEntryCode`                     | projectId, code (128-bit), createdBy, retiredAt                                                                                                                                                                                                                                                      | one active per project (partial unique); lookup policy on `app.entry_code`                                                                                                                                                                                                                          |
-| `FieldDevice`                        | projectId, personId, state, tokenHash bytea, prevTokenHash, tokenGeneration, entryCodeId, pendingUntil, confirmedAt/ByPersonId/ByAccountId/ByDeviceId, endedAt/ByPersonId/endReason, expiresAt, lastSeenAt, version                                                                                  | unique tokenHash (global); partial unique (orgId, projectId, personId) WHERE state='CONFIRMED'; CHECK confirmer ≠ person; forward-only trigger; UPDATE grant on state/lifecycle/hash columns only; extra SELECT policy `tokenHash = app.device_token_hash` (as `LoginAccount` uses `app.object_id`) |
-| `FieldDeviceEvent`                   | deviceId?, projectId, kind, reasonCode, distanceBucketM, at, actor                                                                                                                                                                                                                                   | append-only (SELECT, INSERT); no coordinates                                                                                                                                                                                                                                                        |
-| `WorkerCheckIn`                      | projectId, personId, businessDate, kind SELF/PROXY, deviceId, actorPersonId, actorAccountId, actorDeviceId, occurredAt, deviceSentAt, fixAt, receivedAt, recordedAt, lat, lon, accuracyM, distanceM, siteRefN, actorLat/Lon/AccuracyM, flags text[], selfieSha256, selfieBlobKey, voidedAt/By/Reason | partial unique (orgId, projectId, personId, businessDate) WHERE voidedAt IS NULL; index (orgId, projectId, businessDate); trigger: only the void columns, once                                                                                                                                      |
-| `ForemanReport`                      | projectId, businessDate, crewId, currentN                                                                                                                                                                                                                                                            | unique (orgId, projectId, businessDate, crewId); UPDATE(currentN) only                                                                                                                                                                                                                              |
-| `ForemanReportRevision`              | reportId, n, rows jsonb, note, byPersonId, byDeviceId, occurredAt, receivedAt                                                                                                                                                                                                                        | unique (orgId, reportId, n); SELECT, INSERT only                                                                                                                                                                                                                                                    |
-| `ForemanAdoption`                    | projectId, businessDate, itemKey, value Decimal(20,6), basis jsonb, dailyCloseVersion, byAccountId, at                                                                                                                                                                                               | append-only                                                                                                                                                                                                                                                                                         |
-| `FieldThrottle`, `FieldThrottleSalt` | bucket char(64), windowStart, count / day, salt                                                                                                                                                                                                                                                      | non-tenant, no personal data; rows older than 48 h pruned                                                                                                                                                                                                                                           |
+## 10. Open questions
 
-Device authentication works like `inTransaction`: set `app.device_token_hash`, read the device through its policy, then set `app.org_id` from the row. The request body never supplies the org. `FOREMAN`/`WORKER` are **not** added to `Membership`, which requires a LoginAccount (execution plan decision 3 is revised here; see conflicts).
+The user decided the earlier Q1–Q8 (§0). Two defaults remain for the user to confirm:
 
-## 7. API sketch
+1. Selfie retention once enabled. **Default: 30 days, then delete the image and keep `hasSelfie`.**
+2. How far back a PM proxy may go. **Default: 7 days, reason required when the date is not today.**
 
-Field routes accept only `Bearer fd1.*` and report routes accept only Entra JWTs; each guard rejects the other kind with 401. Any `projectId` in a field body must equal the device's project, otherwise `FORBIDDEN`. Errors keep the existing `{code, correlationId}` shape. Request bodies of `/api/field/*` are never logged.
-
-| Field (device)                                     | Purpose                                                                                                       |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `POST /api/field/entry`                            | {entryCode} → project display name, the site's today, crews and roster display names (throttled, no device)   |
-| `POST /api/field/bind`                             | {entryCode, personId, token, clientMutationId} → {deviceId, state}                                            |
-| `GET /api/field/me`                                | Device state, person, crew and today's role, today's check-in; for a foreman, pending devices and crew status |
-| `POST /api/field/checkin`, `/checkin/proxy`        | Self / proxy check-in (§3)                                                                                    |
-| `POST /api/field/devices/:id/confirm`, `/reject`   | Foreman, own crew, `expectedVersion`                                                                          |
-| `POST /api/field/device/rotate`, `/device/release` | Rotate the token; self-revoke                                                                                 |
-| `GET`/`POST /api/field/report`                     | Own crew's latest revision and planned items / submit a revision                                              |
-| `POST /api/field/checkin/:id/selfie`               | Only when the project switch is on                                                                            |
-
-PM routes (Entra, `PROJECT_MANAGER`, per project): `GET /api/report/field/devices`, `POST …/devices/:id/{confirm,reject,revoke}`, `POST …/entry-code/rotate`, `POST …/site-reference`, `GET …/checkins`, `POST …/checkins/proxy`, `POST …/checkins/:id/void`, `GET …/foreman`, `POST /api/report/foreman/adopt`, and minimal `POST …/crews`, `…/crew-assignments`.
-
-Error codes (HTTP):
-
-- 401: `FIELD_AUTH_REQUIRED` (missing or unknown token), `DEVICE_ENDED` (revoked, rejected or expired; only the holder of the hash can learn this).
-- 403: `DEVICE_PENDING`, `FORBIDDEN`, `PROXY_NOT_ALLOWED`, `NOT_FOREMAN`, `SELF_CONFIRM`, `READ_ONLY`.
-- 404: `NOT_FOUND`, `ENTRY_CODE_INVALID`, `ITEM_NOT_FOUND`, `PERSON_NOT_ROSTERED`.
-- 409, device and slot: `VERSION_CONFLICT`, `REVISION_CONFLICT`, `ALREADY_CHECKED_IN`, `IDEMPOTENCY_KEY_REUSED`, `TOO_MANY_PENDING`, `PENDING_EXPIRED`.
-- 409, adoption: `FOREMAN_TOTAL_CHANGED`, `ADOPT_PARTIAL`, `LOCKED`.
-- 409, check-in timing and location: `BUSINESS_DAY_MISMATCH`, `DEVICE_CLOCK_SKEW`, `OCCURRED_IN_FUTURE`, `STALE_FIX`, `TOO_LATE`, `GEOFENCE_OUTSIDE`, `LOCATION_TOO_COARSE`, `SITE_NOT_CONFIGURED`.
-- 400: `INVALID_INPUT` (including a malformed token or `NUMBER_INVALID`).
-- 413/415: selfie size or type.
-- 429: `RATE_LIMITED`.
-
-## 8. Required negative tests (integration, isolated TEST DB, low-privilege role)
-
-| AGENTS.md class                        | A6 case                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Stale response overwrites newer state  | Adopt with an old basis → `FOREMAN_TOTAL_CHANGED`. A foreman submit on `expectedRevision` n−1 → `REVISION_CONFLICT`. PM confirm with an old `expectedVersion` after a revoke → `VERSION_CONFLICT`. A check-in racing a revoke under controlled lock timing: nothing commits after the revoke.                                                                                                                                                                                                                                                                                                                                                                            |
-| Unknown treated as exact (incl. 0)     | A crew with `unknown` makes the total partial and adopt → `ADOPT_PARTIAL`. Blank ≠ `0`. A missing fix is never distance 0. `NaN`/out-of-range coordinates → `INVALID_INPUT`. A missing crew report is not zero.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| History rewritten                      | UPDATE/DELETE on `ForemanReportRevision`, `FieldDeviceEvent`, `ProjectSiteReference` or `ForemanAdoption` fails for the app role. Only the void columns of `WorkerCheckIn` change, once. A REVOKED device cannot return to CONFIRMED. A submitted snapshot is unchanged after later check-ins, reports, voids or site-reference edits.                                                                                                                                                                                                                                                                                                                                   |
-| Empty list skips identity/tenant check | A foreman with no crew or an empty crew → `NOT_FOREMAN`, never "allowed for all". An empty roster still validates the entry code. A device whose person has no active assignment is `DEVICE_ENDED`. A proxy for a person on no crew → `PROXY_NOT_ALLOWED`.                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Unsanitised errors                     | No response, log line or audit row contains a token, token hash, entry code, coordinates, selfie key or another person's name. Wrong-org and unknown tokens get identical 401 bodies.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Slice-specific                         | Cross-crew proxy (foreman B → crew C person); proxy by a worker device. Revoked, rejected, expired or pending token. Wrong-org token (org A device + org B projectId → `FORBIDDEN`, no row). Duplicate check-in (same key replay, new key, concurrent pair → exactly one row). Geofence edge: 499/500/501 m, accuracy 100/101 m, `NEAR_EDGE`. Timezone day boundary: 23:59/00:00 local across a DST change; a client date ≠ server-derived date. Same person with two devices: confirm the second → the first is REVOKED(REPLACED), one check-in only. Self-confirm through a second account → `SELF_CONFIRM`. Rate-limit 429. Bind retry with the same token → one row. |
-
-## 9. Open questions for the user (recommended default in bold)
-
-1. **Selfie:** required or optional? **Optional, and off per project until local HR/legal confirm** (spec §8). Retention: **30 days, then delete the blob and keep `hasSelfie`**.
-2. **Geofence:** keep 500 m and reject? **Yes, reject self check-in (spec); per-project radius 50–2000 m; accuracy limit 100 m.**
-3. **PM proxy away from the site** (for example from the office when phones fail): allow? **Allow, flagged `REMOTE_PROXY`; foreman proxy must be on site.**
-4. **Can foremen confirm devices?** The spec says yes. **Yes for their own crew, shown as "confirmed by foreman" in the PM list for spot checks.**
-5. **Token lifetime:** **180 days absolute or end of assignment, 30 days idle, pending 24 h; re-confirmation needed after expiry.**
-6. **Late check-in window** until A8 sets the offline limit (A06): **24 h, flagged `LATE` after 15 min; older only by PM proxy.**
-7. **Roster exposure:** anyone holding the QR sees display names. **Accept (rotatable code, throttled, display names only); revisit if posters leave the site.**
-8. **Headcount auto-fill:** an earlier review note said the headcount becomes automatic once check-in is live. **No: show check-in counts beside the PM's declared counts; add an explicit "adopt" later if wanted.**
+PR plan: A6.0 reader filter (OD18) → A6a roster, devices and entry → A6b check-in and selfie → A6c foreman reports and adopt → A6d web.
