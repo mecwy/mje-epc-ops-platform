@@ -92,10 +92,17 @@ try {
   );
   await blobs.ensureContainer();
   const puts = [];
+  // Armed by a test: the next thumbnail write succeeds and then the request fails, as a database
+  // error after the blob writes would (the transaction rolls back, both blobs stay).
+  let failAfterThumbnailWrite = false;
   const countingBlobs = {
     put: async (key, bytes, contentType) => {
       puts.push(key);
       await blobs.put(key, bytes, contentType);
+      if (failAfterThumbnailWrite && key.endsWith('.thumb')) {
+        failAfterThumbnailWrite = false;
+        throw new Error('TEST failure after the blob writes');
+      }
     },
     get: (key) => blobs.get(key),
   };
@@ -474,7 +481,7 @@ try {
   assert.equal(p1.businessDate, D1);
   assert.deepEqual(puts, [
     `${orgA}/${p1.sha256}`,
-    `${orgA}/${p1.sha256}.thumb`,
+    `${orgA}/${sha(thumb1.bytes)}.thumb`,
   ]);
   const got = await raw(`/${p1.id}`, pm);
   assert.equal(got.status, 200);
@@ -540,6 +547,97 @@ try {
   assert.equal(await photoRows(), 1);
   pass(
     'a replay returns the stored body; a reused key with other bytes 409; mismatched Idempotency-Key 400; the same bytes under a new key return the same photo with no second row, blob write or audit; the same bytes for another day 409 PHOTO_ELSEWHERE',
+  );
+
+  // ---------- a duplicate never changes links (delayed retry after an unlink) ----------
+  const q = jpeg('delayed');
+  const q1 = await expectStatus(
+    upload(pm, album({ businessDate: D3, workItemKey: 'support' }), q),
+    200,
+  );
+  assert.equal(q1.linkVersion, 1);
+  const qUnlinked = await expectStatus(
+    call('/photos/unlink', pm, {
+      photoId: q1.id,
+      clientMutationId: key(),
+      expectedVersion: 1,
+    }),
+    200,
+  );
+  assert.equal(qUnlinked.linkVersion, 2);
+  const linkAudits = await audits('PHOTO_LINK');
+  const qLate = await expectStatus(
+    upload(pm, album({ businessDate: D3, workItemKey: 'rail' }), q),
+    200,
+  );
+  assert.equal(qLate.id, q1.id);
+  assert.equal(qLate.deduplicated, true);
+  assert.equal(qLate.link, null, 'the unlink stands');
+  assert.equal(qLate.linkVersion, 2);
+  assert.equal(await audits('PHOTO_LINK'), linkAudits);
+  assert.equal(
+    await count(
+      'SELECT count(*)::int AS n FROM "EvidenceLink" WHERE "photoId"=$1',
+      [q1.id],
+    ),
+    1,
+  );
+  pass(
+    'a delayed duplicate upload carrying a link after the photo was unlinked returns the photo unchanged: no link, same link version, no link row or audit (links change only through link/unlink with expectedVersion)',
+  );
+
+  // ---------- blobs left by a rolled-back upload cannot poison a retry ----------
+  const rolled = jpeg('rolled-back');
+  const rowsBeforeFailure = await photoRows();
+  console.log(
+    'NOTE the next two request_failed log lines are the injected TEST failures',
+  );
+  failAfterThumbnailWrite = true;
+  const failed = await upload(pm, album({ businessDate: D3 }), rolled, {
+    bytes: testPng({ tag: 'thumb-a' }),
+    type: 'image/png',
+  });
+  assert.equal(failed.status, 500);
+  assert.equal(failed.body.code, 'REQUEST_FAILED');
+  assert.equal(await photoRows(), rowsBeforeFailure);
+  assert.ok(await blobs.get(`${orgA}/${sha(rolled.bytes)}`), 'orphan photo');
+  const thumbB = { bytes: testWebp({ tag: 'thumb-b' }), type: 'image/webp' };
+  const retried = await expectStatus(
+    upload(pm, album({ businessDate: D3 }), rolled, thumbB),
+    200,
+  );
+  assert.equal(retried.deduplicated, false);
+  const retriedThumb = await raw(`/${retried.id}/thumbnail`, pm);
+  assert.equal(retriedThumb.status, 200);
+  assert.equal(retriedThumb.type, 'image/webp');
+  assert.ok(retriedThumb.bytes.equals(thumbB.bytes));
+  assert.ok((await raw(`/${retried.id}`, pm)).bytes.equals(rolled.bytes));
+  const thumbRow = await owner.query(
+    'SELECT "thumbBlobKey", "thumbSha256" FROM "PhotoEvidence" WHERE id=$1',
+    [retried.id],
+  );
+  assert.deepEqual(thumbRow.rows[0], {
+    thumbBlobKey: `${orgA}/${sha(thumbB.bytes)}.thumb`,
+    thumbSha256: sha(thumbB.bytes),
+  });
+  // An object under a photo's key that does not hold those bytes is refused, never overwritten.
+  const tampered = jpeg('tampered');
+  const tamperedKey = `${orgA}/${sha(tampered.bytes)}`;
+  await blobs.put(tamperedKey, testJpeg({ tag: 'other' }), 'image/jpeg');
+  const refused = await upload(pm, album({ businessDate: D3 }), tampered);
+  assert.equal(refused.status, 500);
+  assert.equal(
+    await count(
+      'SELECT count(*)::int AS n FROM "PhotoEvidence" WHERE sha256=$1',
+      [sha(tampered.bytes)],
+    ),
+    0,
+  );
+  assert.ok(
+    (await blobs.get(tamperedKey)).bytes.equals(testJpeg({ tag: 'other' })),
+  );
+  pass(
+    'after a failure behind the blob writes, a retry with another thumbnail (other bytes and type) stores and serves the new one (thumbnails are addressed by their own sha256; the orphan photo blob is verified and reused); an existing object that does not hold the bytes its key names is refused and left untouched',
   );
 
   // ---------- album: only what the file says; never the uploader position ----------
@@ -788,6 +886,8 @@ try {
   const execList = await expectStatus(list(D1, exec), 200);
   assert.equal(execList.access, 'read');
   assert.equal(execList.photos.length, 6);
+  // heif, webp and cameraWithFileGps have no link yet.
+  assert.equal(execList.unlinkedPhotos, 3);
   assert.equal((await raw(`/${p1.id}`, exec)).status, 200);
   assert.equal((await raw(`/${p1.id}/thumbnail`, exec)).status, 200);
   await expectStatus(list(D1, twin), 403, 'FORBIDDEN');
@@ -872,6 +972,9 @@ try {
   );
   view = await expectStatus(day(D1), 200);
   assert.deepEqual(photoMissing(view), []);
+  // heif and webp are unlinked: the day shows them so the UI can prompt before submitting.
+  assert.equal(view.unlinkedPhotos, 2);
+  assert.equal(view.photos.length, 6);
   const submitted = await expectStatus(
     call('/submit', pm, {
       projectId: projectA,
@@ -887,7 +990,12 @@ try {
     call(`/revision?projectId=${projectA}&businessDate=${D1}&n=${n}`, pm);
   const rev1 = await expectStatus(rev(1), 200);
   const frozen = Object.fromEntries(rev1.snapshot.photos.map((p) => [p.id, p]));
-  assert.equal(rev1.snapshot.photos.length, 6);
+  // Unlinked photos are staging only: the revision takes the 4 linked ones.
+  assert.deepEqual(
+    rev1.snapshot.photos.map((p) => p.id).sort(),
+    [p1.id, noGps.id, withGps.id, cameraWithFileGps.id].sort(),
+  );
+  assert.ok(rev1.snapshot.photos.every((p) => p.link !== null));
   assert.deepEqual(frozen[p1.id], {
     id: p1.id,
     source: 'camera',
@@ -917,16 +1025,27 @@ try {
     200,
   );
   assert.deepEqual(after.link, { type: 'issue', id: issue.id });
+  // A photo left unlinked at submission can still be linked; the revision does not change.
+  await expectStatus(
+    call('/photos/link', pm, {
+      photoId: heif.id,
+      clientMutationId: key(),
+      expectedVersion: 0,
+      link: { type: 'item', id: 'support' },
+    }),
+    200,
+  );
   assert.deepEqual(await expectStatus(rev(1), 200), rev1);
   view = await expectStatus(day(D1), 200);
   assert.equal(view.state, 'submitted');
   assert.deepEqual(photoMissing(view), ['rail']);
+  assert.equal(view.unlinkedPhotos, 1);
   assert.deepEqual(
     view.photos.find((p) => p.id === cameraWithFileGps.id).link,
     { type: 'issue', id: issue.id },
   );
   pass(
-    'coverage asks for a photo only where a work item has quantity and no currently linked photo; linking clears it; the submitted revision freezes each photo (source, position kind, accuracy, times, link) without coordinates; a relink after submission is allowed and leaves the revision unchanged',
+    'coverage asks for a photo only where a work item has quantity and no currently linked photo; linking clears it; the day reports its unlinked photos; the submitted revision freezes only the linked photos (source, position kind, accuracy, times, link) without coordinates; a relink, or linking a photo left out, after submission is allowed and leaves the revision unchanged',
   );
 
   // ---------- day lock: a submitted day takes photos only during a correction ----------
@@ -959,7 +1078,9 @@ try {
   assert.equal(second.revisionNumber, 2);
   assert.deepEqual(photoMissing(second), []);
   const rev2 = await expectStatus(rev(2), 200);
-  assert.equal(rev2.snapshot.photos.length, 7);
+  // The 4 of revision 1, the photo linked afterwards and the late one; webp is still unlinked.
+  assert.equal(rev2.snapshot.photos.length, 6);
+  assert.ok(!rev2.snapshot.photos.some((p) => p.id === webp.id));
   assert.deepEqual(rev2.snapshot.photos.find((p) => p.id === late.id).link, {
     type: 'item',
     id: 'rail',
@@ -994,7 +1115,11 @@ try {
   // Racing a submission: the photo either makes the revision or finds the day locked.
   const d2 = await expectStatus(day(D2), 200);
   const [raceUpload, raceSubmit] = await Promise.all([
-    upload(pm, album({ businessDate: D2 }), jpeg('vs-submit')),
+    upload(
+      pm,
+      album({ businessDate: D2, workItemKey: 'support' }),
+      jpeg('vs-submit'),
+    ),
     call('/submit', pm, {
       projectId: projectA,
       businessDate: D2,
@@ -1171,13 +1296,14 @@ try {
   const photoLinks = await count(
     `SELECT count(*)::int AS n FROM "EvidenceLink" WHERE "businessDate" IS NOT NULL`,
   );
-  // Uploads that carried a link: p1 (support), withGps (issue), late (rail).
-  const uploadsWithLink = 3;
+  const uploadsWithLink = await count(
+    `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='PHOTO_UPLOAD' AND after->'link' <> 'null'::jsonb`,
+  );
   const counts = Object.fromEntries(byAction.rows.map((r) => [r.action, r.n]));
   assert.equal(counts.PHOTO_UPLOAD, await photoRows());
   // Every inserted link row is audited once: by the upload that carried it or by PHOTO_LINK.
   assert.equal(counts.PHOTO_LINK + uploadsWithLink, photoLinks);
-  assert.equal(counts.PHOTO_UNLINK, 1);
+  assert.equal(counts.PHOTO_UNLINK, 2);
   const shapes = await owner.query(
     `SELECT DISTINCT jsonb_typeof(after) AS t FROM "AuditLog" WHERE action LIKE 'PHOTO_%'`,
   );

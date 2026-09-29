@@ -9,8 +9,9 @@ import type { PhotoBlob, PhotoBlobStore } from '@mje/domain';
 export const EVIDENCE_CONTAINER = 'evidence';
 
 /**
- * Photo bytes in a private Azure Blob container. Keys are content-addressed
- * (`${orgId}/${sha256}`), so a key is written once and never overwritten. No URL or SAS is ever
+ * Photo bytes in a private Azure Blob container. Keys are content-addressed (`${orgId}/${sha256}`,
+ * thumbnails `${orgId}/${thumbSha256}.thumb`), so a key is written once and never overwritten;
+ * an existing key is accepted only when it holds the same bytes. No URL or SAS is ever
  * handed out: the API reads the bytes and serves them after its own access check.
  * In Azure the app authenticates with its managed identity (no account key); the connection
  * string form is for the local Azurite emulator only.
@@ -50,20 +51,28 @@ export class AzurePhotoBlobStore implements PhotoBlobStore {
   }
 
   async put(key: string, bytes: Uint8Array, contentType: string) {
+    const blob = this.container.getBlockBlobClient(key);
     try {
-      await this.container.getBlockBlobClient(key).uploadData(bytes, {
+      await blob.uploadData(bytes, {
         blobHTTPHeaders: { blobContentType: contentType },
         conditions: { ifNoneMatch: '*' },
       });
+      return;
     } catch (error) {
-      // Same key = same bytes (content-addressed): an existing blob is already the right one.
       if (
-        error instanceof RestError &&
-        (error.statusCode === 409 || error.statusCode === 412)
+        !(error instanceof RestError) ||
+        (error.statusCode !== 409 && error.statusCode !== 412)
       )
-        return;
-      throw error;
+        throw error;
     }
+    // The key exists, e.g. left by an upload whose database write rolled back. Content addressing
+    // means it must hold exactly these bytes; anything else is refused, never overwritten.
+    const existing = await blob.downloadToBuffer();
+    if (!existing.equals(Buffer.from(bytes)))
+      throw new Error('Existing blob does not hold the bytes its key names');
+    const properties = await blob.getProperties();
+    if (properties.contentType !== contentType)
+      await blob.setHTTPHeaders({ blobContentType: contentType });
   }
 
   async get(key: string): Promise<PhotoBlob | null> {

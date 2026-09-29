@@ -60,7 +60,12 @@ import {
   type ReportProjectRow,
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
-import { photoAsOf, photographedItems, photosOfDay } from './photo-store.js';
+import {
+  photoAsOf,
+  photographedItems,
+  photosOfDay,
+  submittedPhotos,
+} from './photo-store.js';
 
 export {
   READ_ROLES,
@@ -361,13 +366,19 @@ export class ReportStore {
       );
     }
     const baseline = ReportStore.baseline(today.state);
-    // Rule 1 and 8: the day's photos with the links they have now; a later relink never
-    // reaches a revision. Coverage asks for a photo where a work item has quantity today.
+    // Rule 1 and 8: the day's photos with a valid current link are the submitted evidence,
+    // frozen with that link; a later relink never reaches a revision. Unlinked photos are
+    // staging only: left out, still linkable later. Coverage asks for a photo where a work
+    // item has quantity today.
     const photos = await photosOfDay(
       client,
       actor.orgId,
       project.id,
       businessDate,
+    );
+    const evidence = submittedPhotos(
+      photos,
+      new Set(ReportStore.keys(items, 'work')),
     );
     const cov = coverage({
       facts,
@@ -375,7 +386,7 @@ export class ReportStore {
       machineryIds: ReportStore.keys(items, 'machinery'),
       materialIds: ReportStore.keys(items, 'material'),
       baseline,
-      photographedItems: photographedItems(photos),
+      photographedItems: photographedItems(evidence),
     });
     const nextStatus = planStatus(nextPlan.state);
     // Rule 1: the issues of the day as they stand now; later edits never reach a revision.
@@ -388,6 +399,7 @@ export class ReportStore {
     return {
       coverage: cov,
       photos,
+      unlinkedPhotos: photos.length - evidence.length,
       snapshot: {
         businessDate,
         siteTimezone: project.timezone,
@@ -407,7 +419,7 @@ export class ReportStore {
         cumulativeCarry,
         materialsCumulative,
         issues,
-        photos: photos.map(photoAsOf),
+        photos: evidence.map(photoAsOf),
         coverage: cov,
         actorAccountId: actor.accountId,
         actorPersonId: actor.personId,
@@ -488,6 +500,7 @@ export class ReportStore {
         snapshot,
         coverage: cov,
         photos,
+        unlinkedPhotos,
       } = await this.snapshot(
         client,
         actor,
@@ -521,6 +534,8 @@ export class ReportStore {
         materialsCumulative: snapshot.materialsCumulative,
         issues: snapshot.issues,
         photos,
+        /** Photos a submission would leave out (no valid current link); prompt before submit. */
+        unlinkedPhotos,
         coverage: cov,
         revisions: revisions.map((r) => ({
           n: r.revisionNumber,

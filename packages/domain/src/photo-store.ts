@@ -38,14 +38,19 @@ import {
  * it is recorded as a claim and never marks anything verified. No image content is analysed.
  *
  * - One PhotoEvidence row per distinct file per org (sha256): uploading the same bytes again for
- *   the same project and day returns the stored photo; nothing is written twice.
+ *   the same project and day returns the stored photo as it is; nothing is written twice and its
+ *   links never change (links change only through link/unlink with the link version).
  * - camera (in-app capture) must carry a usable device fix, else NEEDS_LOCATION and nothing is
  *   stored. album uploads never carry the uploader's position; the file's own EXIF time and GPS
  *   are read here and kept as file claims (an album photo without GPS is flagged 'none').
- * - Bytes live in blob storage behind `PhotoBlobStore`, content-addressed `${orgId}/${sha256}`;
- *   they are only served through the API after the same project access check.
+ * - Bytes live in blob storage behind `PhotoBlobStore`, content-addressed: `${orgId}/${sha256}`
+ *   for the photo, `${orgId}/${thumbSha256}.thumb` for its thumbnail. Blobs are written before the
+ *   row; an object left by a rolled-back upload can only hold the bytes its key names (the store
+ *   verifies an existing object) and is reused by a retry. Bytes are only served through the API
+ *   after the same project access check, and re-hashed before they are.
  * - A photo backs one work item or one issue. Link changes are append-only (supersede + insert),
- *   so the history stays and a submitted revision keeps the link it froze.
+ *   so the history stays and a submitted revision keeps the link it froze. An unlinked photo is
+ *   staging only: a submission freezes just the photos with a valid current link.
  * - Uploads follow the day lock of the facts: a submitted day accepts photos only while a
  *   correction is open. Link changes do not change a submitted revision (rule 1) and are allowed
  *   on any day by the project manager.
@@ -57,7 +62,10 @@ export interface PhotoBlob {
   contentType: string;
 }
 export interface PhotoBlobStore {
-  /** Stores bytes under a content-addressed key; an existing key is left as it is. */
+  /**
+   * Stores bytes under a content-addressed key. If the key already exists it must hold exactly
+   * these bytes (else the call fails; nothing is overwritten); its content type is set to this one.
+   */
   put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
   get(key: string): Promise<PhotoBlob | null>;
 }
@@ -84,6 +92,7 @@ interface PhotoRow {
   blobKey: string;
   thumbBlobKey: string | null;
   thumbMediaType: string | null;
+  thumbSha256: string | null;
   captureLat: string | null;
   captureLon: string | null;
   captureAccuracyM: string | null;
@@ -108,7 +117,7 @@ interface LinkRow {
 // Report photos have a business date; the Phase 0 kinds without one are never served here.
 // linkVersion counts link changes: every inserted link and every superseded one.
 const PHOTO_SELECT = `SELECT p.id, p."projectId", p."businessDate"::text AS "businessDate", p.source, p."mediaType",
-  p."sizeBytes"::int AS "sizeBytes", p.sha256, p."blobKey", p."thumbBlobKey", p."thumbMediaType",
+  p."sizeBytes"::int AS "sizeBytes", p.sha256, p."blobKey", p."thumbBlobKey", p."thumbMediaType", p."thumbSha256",
   p."captureLat"::text AS "captureLat", p."captureLon"::text AS "captureLon", p."captureAccuracyM"::text AS "captureAccuracyM",
   p."captureFixAt", p."deviceCapturedAt", p."fileTakenAt", p."fileTakenLocal",
   p."fileGpsLat"::text AS "fileGpsLat", p."fileGpsLon"::text AS "fileGpsLon", p."receivedAt", p."uploadedByPersonId",
@@ -194,6 +203,31 @@ export function photoAsOf(p: PhotoDto): PhotoAsOfDto {
     fileTakenLocal: p.file.takenLocal,
     link: p.link,
   };
+}
+/**
+ * The photos a submission takes as evidence: exactly one current link to an active work item of
+ * the project or to one of its issues. Unlinked photos are staging only and are left out.
+ */
+export function submittedPhotos(
+  photos: PhotoDto[],
+  activeWorkItems: ReadonlySet<string>,
+): PhotoDto[] {
+  return photos.filter(
+    (p) =>
+      p.link !== null &&
+      (p.link.type === 'issue' || activeWorkItems.has(p.link.id)),
+  );
+}
+async function activeWorkItems(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+): Promise<Set<string>> {
+  const r = await client.query<{ key: string }>(
+    `SELECT key FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 AND kind='work' AND active`,
+    [orgId, projectId],
+  );
+  return new Set(r.rows.map((x) => x.key));
 }
 /** Work items with at least one currently linked photo (coverage, rule 5). */
 export function photographedItems(photos: PhotoDto[]): Set<string> {
@@ -318,11 +352,23 @@ export class PhotoStore {
   async list(identity: Identity, projectId: string, businessDate: string) {
     return inTransaction(this.pool, identity, async (client, actor) => {
       const { access } = await projectAccess(client, actor, projectId);
+      const photos = await photosOfDay(
+        client,
+        actor.orgId,
+        projectId,
+        businessDate,
+      );
+      const evidence = submittedPhotos(
+        photos,
+        await activeWorkItems(client, actor.orgId, projectId),
+      );
       return {
         access,
         projectId,
         businessDate,
-        photos: await photosOfDay(client, actor.orgId, projectId, businessDate),
+        photos,
+        /** Photos a submission would leave out (no valid current link). */
+        unlinkedPhotos: photos.length - evidence.length,
       };
     });
   }
@@ -333,7 +379,7 @@ export class PhotoStore {
       return { access, photo };
     });
   }
-  /** Photo or thumbnail bytes, after the project read check. The photo bytes are re-hashed. */
+  /** Photo or thumbnail bytes, after the project read check; both are re-hashed before serving. */
   async content(
     identity: Identity,
     photoId: string,
@@ -351,20 +397,24 @@ export class PhotoStore {
             mediaType: row.mediaType,
             sha256: row.sha256,
           };
-        if (row.thumbBlobKey === null || row.thumbMediaType === null)
+        if (
+          row.thumbBlobKey === null ||
+          row.thumbMediaType === null ||
+          row.thumbSha256 === null
+        )
           throw new ReportError('NOT_FOUND');
         return {
           key: row.thumbBlobKey,
           mediaType: row.thumbMediaType,
-          sha256: null,
+          sha256: row.thumbSha256,
         };
       },
     );
     const blob = await this.blobs.get(target.key);
     if (!blob) throw new ReportError('NOT_FOUND');
     // Content addressing makes tampering or a mixed-up blob detectable; never serve it silently.
-    if (target.sha256 !== null && sha256(blob.bytes) !== target.sha256)
-      throw new Error('Stored photo does not match its recorded hash');
+    if (sha256(blob.bytes) !== target.sha256)
+      throw new Error('Stored blob does not match its recorded hash');
     return { bytes: blob.bytes, mediaType: target.mediaType };
   }
 
@@ -385,6 +435,7 @@ export class PhotoStore {
       if (!photoAcceptable(command.source, fix))
         throw new ReportError('NEEDS_LOCATION');
       const hash = sha256(photo.bytes);
+      const thumbHash = thumb ? sha256(thumb.bytes) : null;
       return idempotent(
         client,
         actor,
@@ -395,7 +446,7 @@ export class PhotoStore {
           sha256: hash,
           mediaType: photo.mediaType,
           thumbnail: thumb
-            ? { sha256: sha256(thumb.bytes), mediaType: thumb.mediaType }
+            ? { sha256: thumbHash, mediaType: thumb.mediaType }
             : null,
         },
         async () => {
@@ -444,29 +495,8 @@ export class PhotoStore {
               prior.businessDate !== command.businessDate
             )
               throw new ReportError('PHOTO_ELSEWHERE');
-            if (command.link) {
-              const state = await this.linkState(client, actor.orgId, prior.id);
-              // An existing link is never replaced implicitly; relinking is its own command.
-              if (!state.current) {
-                await this.insertLink(
-                  client,
-                  actor,
-                  prior.id,
-                  command.businessDate,
-                  command.link,
-                );
-                await audit(
-                  client,
-                  actor,
-                  { type: 'PHOTO', id: prior.id, version: state.version + 1 },
-                  'PHOTO_LINK',
-                  command.businessDate,
-                  { link: null },
-                  { link: command.link },
-                  command.clientMutationId,
-                );
-              }
-            }
+            // Returned as it is: a duplicate never changes links (a delayed retry must not undo
+            // a later unlink or relink); linking goes through link/unlink with expectedVersion.
             return {
               ...(await this.view(client, actor.orgId, prior.id)),
               deduplicated: true,
@@ -476,7 +506,9 @@ export class PhotoStore {
           const claims = readFileClaims(photo.bytes);
           const id = randomUUID();
           const blobKey = `${actor.orgId}/${hash}`;
-          const thumbKey = thumb ? `${blobKey}.thumb` : null;
+          const thumbKey = thumbHash
+            ? `${actor.orgId}/${thumbHash}.thumb`
+            : null;
           await this.blobs.put(blobKey, photo.bytes, photo.mediaType);
           if (thumb && thumbKey)
             await this.blobs.put(thumbKey, thumb.bytes, thumb.mediaType);
@@ -488,8 +520,8 @@ export class PhotoStore {
               "deviceCapturedAt","assignmentStatus","projectId","businessDate",source,
               "captureLat","captureLon","captureAccuracyM","captureFixAt",
               "fileTakenAt","fileTakenLocal","fileGpsLat","fileGpsLon",
-              "thumbBlobKey","thumbMediaType","uploadedByAccountId","uploadedByPersonId")
-            VALUES($1,$2,now(),$3,$4,$5,$6,$7,$8,'ASSIGNED',$9,$10::date,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$3,$22)`,
+              "thumbBlobKey","thumbMediaType","thumbSha256","uploadedByAccountId","uploadedByPersonId")
+            VALUES($1,$2,now(),$3,$4,$5,$6,$7,$8,'ASSIGNED',$9,$10::date,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$23,$3,$22)`,
             [
               id,
               actor.orgId,
@@ -513,6 +545,7 @@ export class PhotoStore {
               thumbKey,
               thumb?.mediaType ?? null,
               actor.personId,
+              thumbHash,
             ],
           );
           if (command.link)

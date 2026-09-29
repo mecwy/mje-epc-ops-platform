@@ -7,6 +7,8 @@
 -- new row and marks the previous one superseded (once, nothing else may change), so the full
 -- link history stays and a submitted report keeps the link it froze.
 -- Rows without "businessDate" are the older Phase 0 kinds and keep their previous rules.
+-- Blob keys are content-addressed (photo: orgId/sha256, thumbnail: orgId/thumbSha256.thumb), so
+-- an object left by a rolled-back upload can only ever hold the bytes its key names.
 
 ALTER TABLE "PhotoEvidence"
   ADD COLUMN "projectId" UUID,
@@ -23,8 +25,10 @@ ALTER TABLE "PhotoEvidence"
   ADD COLUMN "fileTakenLocal" TEXT,
   ADD COLUMN "fileGpsLat" NUMERIC(9, 6),
   ADD COLUMN "fileGpsLon" NUMERIC(9, 6),
+  -- Client-made thumbnail, content-addressed by its own digest.
   ADD COLUMN "thumbBlobKey" TEXT,
   ADD COLUMN "thumbMediaType" TEXT,
+  ADD COLUMN "thumbSha256" CHAR(64),
   ADD COLUMN "uploadedByAccountId" UUID,
   ADD COLUMN "uploadedByPersonId" UUID,
   -- Upload order; never the clock.
@@ -56,7 +60,9 @@ ALTER TABLE "PhotoEvidence"
   ADD CONSTRAINT "PhotoEvidence_file_taken_check" CHECK ("fileTakenLocal" IS NULL OR "fileTakenLocal" ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'),
   ADD CONSTRAINT "PhotoEvidence_file_taken_at_check" CHECK ("fileTakenAt" IS NULL OR "fileTakenLocal" IS NOT NULL),
   ADD CONSTRAINT "PhotoEvidence_thumb_check" CHECK (("thumbBlobKey" IS NULL) = ("thumbMediaType" IS NULL)
-    AND ("thumbBlobKey" IS NULL OR ("thumbBlobKey" = "orgId"::text || '/' || "sha256" || '.thumb'
+    AND ("thumbBlobKey" IS NULL) = ("thumbSha256" IS NULL)
+    AND ("thumbBlobKey" IS NULL OR ("thumbSha256" ~ '^[0-9a-f]{64}$'
+      AND "thumbBlobKey" = "orgId"::text || '/' || "thumbSha256" || '.thumb'
       AND "thumbMediaType" IN ('image/jpeg', 'image/png', 'image/webp'))));
 CREATE INDEX "PhotoEvidence_project_day_idx" ON "PhotoEvidence"("orgId", "projectId", "businessDate", "seq");
 

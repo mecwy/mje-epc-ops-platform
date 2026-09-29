@@ -808,6 +808,7 @@ model PhotoEvidence {
   fileGpsLon           Decimal?        @db.Decimal(9, 6)
   thumbBlobKey         String?
   thumbMediaType       String?
+  thumbSha256          String?         @db.Char(64)
   uploadedByAccountId  String?         @db.Uuid
   uploadedByAccount    LoginAccount?   @relation("PhotoEvidence_uploadedByAccount", fields: [orgId, uploadedByAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   uploadedByPersonId   String?         @db.Uuid
