@@ -12,6 +12,9 @@ import { PlanSession } from './report/plan-session.js';
 import { ReportView } from './report/ReportView.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
+import { useIssues } from './report/useIssues.js';
+import { FillIssues, ReplySheet } from './report/Issues.js';
+import { Sheet } from './ui.js';
 
 type Session = { token: () => Promise<string>; signOut: (() => void) | null };
 
@@ -91,9 +94,10 @@ function Workspace({
   const [view, setView] = useState<'field' | 'report'>('report');
   const [fieldTab, setFieldTab] = useState<'today' | 'plan'>('today');
   const [task, setTask] = useState<null | 'fill' | 'check'>(null);
-  const [sheet, setSheet] = useState<null | 'menu' | 'noWork' | 'correct'>(
-    null,
-  );
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<
+    null | 'menu' | 'noWork' | 'correct' | 'issues'
+  >(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [actionBusy, setBusy] = useState(false);
   // One PlanSession per target date for the life of the workspace (pending saves survive).
@@ -113,6 +117,14 @@ function Workspace({
     return session;
   };
   const h = useDay(api, project.id, date, () => say(t('conflictReloaded')));
+  const reloadDay = useCallback(() => void h.reload(), [h.reload]);
+  const issues = useIssues(
+    api,
+    project.id,
+    date,
+    reloadDay,
+    `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`,
+  );
   const busy = actionBusy || h.busy;
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
@@ -210,6 +222,38 @@ function Workspace({
     </nav>
   );
 
+  // Issues have their own lifecycle: on a submitted day they are still managed live (and the
+  // lag reminder only exists once the day is submitted), while the report stays frozen.
+  const manageIssues =
+    view === 'report' && !task && canWrite && day?.state === 'submitted' ? (
+      <button
+        type="button"
+        className="card rowbtn"
+        onClick={() => {
+          void issues.reload();
+          setSheet('issues');
+        }}
+      >
+        <span className="grow">
+          <b>{t('manageIssues')}</b>
+          {issues.lag.length > 0 && (
+            <span className="muted small">
+              {t('lagTitle', {
+                item: issues.lag
+                  .map((k) => {
+                    const it = day.items.find(
+                      (i) => i.kind === 'work' && i.key === k,
+                    );
+                    return it ? label(it.label) : k;
+                  })
+                  .join(' · '),
+              })}
+            </span>
+          )}
+        </span>
+        <Icon.right />
+      </button>
+    ) : null;
   let body;
   if (h.error)
     body = (
@@ -228,6 +272,7 @@ function Workspace({
         missing={cov.missing.length}
         onFill={() => setTask('fill')}
         onNoWork={() => setSheet('noWork')}
+        onReply={canWrite ? null : (id) => setReplyTo(id)}
       />
     );
   else {
@@ -311,6 +356,8 @@ function Workspace({
               onSubmit={() => void submit()}
               busy={busy}
               tomorrowText={tomorrowText}
+              issues={issues}
+              canWrite={canWrite}
             />
           ) : (
             <CheckPage
@@ -373,7 +420,10 @@ function Workspace({
             <Icon.more />
           </button>
         </header>
-        <main className={`page view-${view}`}>{body}</main>
+        <main className={`page view-${view}`}>
+          {body}
+          {manageIssues}
+        </main>
       </div>
       {sheet === 'menu' && (
         <MenuSheet
@@ -397,6 +447,18 @@ function Workspace({
             await run(() => h.noWork(reason, note), t('submittedToast'));
           }}
         />
+      )}
+      {replyTo && (
+        <ReplySheet
+          handle={issues}
+          issueId={replyTo}
+          onClose={() => setReplyTo(null)}
+        />
+      )}
+      {sheet === 'issues' && day && (
+        <Sheet title={t('manageIssues')} onClose={() => setSheet(null)}>
+          <FillIssues handle={issues} items={day.items} canWrite={canWrite} />
+        </Sheet>
       )}
       {sheet === 'correct' && (
         <CorrectionSheet
