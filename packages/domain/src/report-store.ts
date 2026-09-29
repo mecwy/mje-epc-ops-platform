@@ -52,6 +52,7 @@ import {
   audit,
   idempotent,
   inTransaction,
+  lockReportDay,
   projectAccess,
   projectWriter,
   type Access,
@@ -59,6 +60,7 @@ import {
   type ReportProjectRow,
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
+import { photoAsOf, photographedItems, photosOfDay } from './photo-store.js';
 
 export {
   READ_ROLES,
@@ -359,13 +361,21 @@ export class ReportStore {
       );
     }
     const baseline = ReportStore.baseline(today.state);
+    // Rule 1 and 8: the day's photos with the links they have now; a later relink never
+    // reaches a revision. Coverage asks for a photo where a work item has quantity today.
+    const photos = await photosOfDay(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+    );
     const cov = coverage({
       facts,
       itemIds: ReportStore.keys(items, 'work'),
       machineryIds: ReportStore.keys(items, 'machinery'),
       materialIds: ReportStore.keys(items, 'material'),
       baseline,
-      photographedItems: new Set<string>(), // photos arrive in slice A5
+      photographedItems: photographedItems(photos),
     });
     const nextStatus = planStatus(nextPlan.state);
     // Rule 1: the issues of the day as they stand now; later edits never reach a revision.
@@ -377,6 +387,7 @@ export class ReportStore {
     );
     return {
       coverage: cov,
+      photos,
       snapshot: {
         businessDate,
         siteTimezone: project.timezone,
@@ -396,6 +407,7 @@ export class ReportStore {
         cumulativeCarry,
         materialsCumulative,
         issues,
+        photos: photos.map(photoAsOf),
         coverage: cov,
         actorAccountId: actor.accountId,
         actorPersonId: actor.personId,
@@ -472,7 +484,11 @@ export class ReportStore {
       const revisions = day
         ? await this.revisions(client, actor.orgId, day.id)
         : [];
-      const { snapshot, coverage: cov } = await this.snapshot(
+      const {
+        snapshot,
+        coverage: cov,
+        photos,
+      } = await this.snapshot(
         client,
         actor,
         project,
@@ -504,6 +520,7 @@ export class ReportStore {
         cumulativeBase: snapshot.cumulativeBase,
         materialsCumulative: snapshot.materialsCumulative,
         issues: snapshot.issues,
+        photos,
         coverage: cov,
         revisions: revisions.map((r) => ({
           n: r.revisionNumber,
@@ -626,6 +643,8 @@ export class ReportStore {
   ) {
     if (day.state === 'SUBMITTED' && day.correctionReason === null)
       throw new ReportError('LOCKED');
+    // A photo upload for this day either lands before the snapshot or finds the day locked.
+    await lockReportDay(client, actor.orgId, project.id, businessDate);
     const items = await this.items(client, actor.orgId, project.id);
     const { snapshot, coverage: cov } = await this.snapshot(
       client,
