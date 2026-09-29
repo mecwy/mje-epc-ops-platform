@@ -40,7 +40,7 @@ Keep private development evidence in a separate controlled local location with a
 
 Public CI checks formatting, types, build, publication guards, process startup, database constraints and private Blob access using synthetic data. It does not read private source documents or execute real-source acceptance. Source hash/table-coordinate regression remains in the controlled local archive. Passing this CI is not evidence of field verification, business acceptance or production readiness.
 
-The Azure workflow is manual and previews infrastructure only. The Dev foundation and database migrations are applied by the owner's controlled CLI, not by CI; the Dev application is not yet deployed. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
+The Azure workflow is manual and previews infrastructure only. The Dev foundation and database migrations are applied by the owner's controlled CLI, not by CI; the Dev application login and TEST project were bootstrapped and the application was deployed the same way (health check passes); a real Microsoft sign-in has not been verified yet. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
 
 ## Owner Alpha preparation
 
