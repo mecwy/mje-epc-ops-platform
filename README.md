@@ -1,6 +1,6 @@
 # MJE EPC operations platform
 
-**Current state (see AGENTS.md for the maintained summary):** Site Daily Close rules and contracts, the daily-report database and API, issues and escalation, the web report screens, and a guarded Dev bootstrap job are merged. Every figure is a declaration, not a verification. Photos, field check-in / foreman quantities, the executive multi-project home and offline queueing are not implemented. Real Entra sign-in, real phones and cloud persistence have not been verified. This is not an employee-ready or production-ready application.
+**Current state (see AGENTS.md for the maintained summary):** Site Daily Close rules and contracts, the daily-report database and API, issues and escalation, the web report and issue screens, the photo backend (storage, API, snapshot links) and a guarded Dev bootstrap job are merged. Every figure is a declaration, not a verification. The photo screens, field check-in / foreman quantities, the executive multi-project home and offline queueing are not implemented. Real Entra sign-in, real phones and cloud persistence have not been verified. This is not an employee-ready or production-ready application.
 
 The selected stack is TypeScript strict, React/Vite, NestJS, a Node worker, PostgreSQL/Prisma and Azure Blob, with Azure Container Apps as the intended application runtime. The first business scope is Site Daily Close. CRM, costing and payments currently have schema placeholders only.
 
