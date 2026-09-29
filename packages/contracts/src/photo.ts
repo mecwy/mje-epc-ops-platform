@@ -8,7 +8,7 @@
 import { isRealTimestamp } from './report.js';
 import {
   InvalidReportInput,
-  KEY,
+  itemKey,
   date,
   id,
   obj,
@@ -125,9 +125,7 @@ function timestamp(v: unknown, field: string): string {
   if (!isRealTimestamp(s)) throw new InvalidReportInput(field);
   return s;
 }
-function key(v: unknown, field: string): string {
-  return pattern(v, KEY, field);
-}
+const key = itemKey;
 function link(o: Record<string, unknown>): PhotoLinkDto | null {
   const item = given(o['workItemKey']);
   const issue = given(o['issueId']);

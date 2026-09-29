@@ -130,6 +130,39 @@ describe('photo upload fields', () => {
   });
 });
 
+describe('work-item keys on photos', () => {
+  it('accept the shared 64-character limit in upload and link, and refuse 65', () => {
+    const k = (n: number) => 'k'.repeat(n);
+    for (const n of [1, 32, 33, 64]) {
+      expect(
+        parseUploadPhotoCommand({ ...camera, workItemKey: k(n) }).link,
+      ).toEqual({ type: 'item', id: k(n) });
+      expect(
+        parseLinkPhotoCommand({
+          photoId: P,
+          clientMutationId: K,
+          expectedVersion: 0,
+          link: { type: 'item', id: k(n) },
+        }).link.id,
+      ).toBe(k(n));
+    }
+    bad(
+      () => parseUploadPhotoCommand({ ...camera, workItemKey: k(65) }),
+      'workItemKey',
+    );
+    bad(
+      () =>
+        parseLinkPhotoCommand({
+          photoId: P,
+          clientMutationId: K,
+          expectedVersion: 0,
+          link: { type: 'item', id: k(65) },
+        }),
+      'link.id',
+    );
+  });
+});
+
 describe('photo link commands', () => {
   it('link needs one target and the link version', () => {
     expect(

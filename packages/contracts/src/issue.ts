@@ -6,7 +6,7 @@
 import { ESCALATION_CATEGORIES, type EscalationCategory } from './report.js';
 import {
   InvalidReportInput,
-  KEY,
+  itemKey,
   date,
   id,
   obj,
@@ -87,11 +87,7 @@ function category(v: unknown, field: string): EscalationCategory | '' {
   if (v === undefined || v === null || v === '') return '';
   return oneOf(v, ESCALATION_CATEGORIES, field);
 }
-function key(v: unknown, field: string): string {
-  const s = str(v, field, 64);
-  if (!KEY.test(s)) throw new InvalidReportInput(field);
-  return s;
-}
+const key = itemKey;
 /** Absent, null and '' all mean "not given". */
 function optional<T>(
   v: unknown,
