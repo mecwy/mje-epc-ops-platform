@@ -32,17 +32,16 @@ try {
 } catch {
   /* no web sources yet */
 }
-// Keys come from a bracket- and string-aware scan of t(...) / translate(...) calls; a template
-// key with ${} cannot be checked here and fails the guard. Identifier keys are typed MessageKey,
-// which the compiler checks.
-const { scanTranslationCalls } =
-  await import('../packages/ui/dist/i18n/scan.js');
+// Keys come from a TypeScript parse of t(...) / translate(...) calls (scripts/i18n-scan.mjs);
+// a key that is not a string literal cannot be checked here and fails the guard. Identifier
+// keys are typed MessageKey, which the compiler checks.
+const { scanTranslationCalls } = await import('./i18n-scan.mjs');
 const used = new Set();
 for (const f of files) {
-  const { keys, dynamic } = scanTranslationCalls(readFileSync(f, 'utf8'));
+  const { keys, dynamic } = scanTranslationCalls(readFileSync(f, 'utf8'), f);
   for (const k of keys) used.add(k);
-  for (const offset of dynamic)
-    failures.push(`${f}: dynamic template key at offset ${offset}`);
+  for (const d of dynamic)
+    failures.push(`${f}:${d.line}: dynamic message key ${d.text}`);
 }
 for (const key of used)
   if (!Object.hasOwn(MESSAGES, key))
