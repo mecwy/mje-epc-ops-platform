@@ -12,9 +12,10 @@ import { NestFactory } from '@nestjs/core';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { AlphaError, AlphaStore } from '@mje/domain';
-import { InvalidAlphaInput } from '@mje/contracts';
+import { AlphaError, AlphaStore, ReportError, ReportStore } from '@mje/domain';
+import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
 import { AlphaController } from './alpha.controller.js';
+import { ReportController } from './report.controller.js';
 import {
   TokenVerifier,
   type TokenConfiguration,
@@ -44,12 +45,20 @@ class SafeErrorFilter implements ExceptionFilter {
           : status === 404
             ? 'NOT_FOUND'
             : 'INVALID_REQUEST';
-    } else if (error instanceof InvalidAlphaInput) {
+    } else if (
+      error instanceof InvalidAlphaInput ||
+      error instanceof InvalidReportInput
+    ) {
       status = 400;
       code = 'INVALID_INPUT';
-    } else if (error instanceof AlphaError) {
+    } else if (error instanceof AlphaError || error instanceof ReportError) {
       code = error.code;
-      status = code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404 : 409;
+      status =
+        code === 'FORBIDDEN' || code === 'READ_ONLY'
+          ? 403
+          : code === 'NOT_FOUND'
+            ? 404
+            : 409;
     }
     if (error && typeof error === 'object' && 'type' in error) {
       if (error.type === 'entity.too.large') {
@@ -73,6 +82,8 @@ class SafeErrorFilter implements ExceptionFilter {
 }
 export interface AlphaRuntime {
   store: AlphaStore;
+  /** Site Daily Close (U2.1); absent until the report slice is enabled. */
+  reportStore?: ReportStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
@@ -95,11 +106,15 @@ export async function createApp(alpha?: AlphaRuntime) {
       HealthController,
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
+      ...(alpha?.reportStore ? [ReportController] : []),
     ],
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
           { provide: TokenVerifier, useValue: alpha.verifier },
+          ...(alpha.reportStore
+            ? [{ provide: ReportStore, useValue: alpha.reportStore }]
+            : []),
         ]
       : [],
   })
