@@ -120,6 +120,7 @@
   "scripts/i18n-scan.mjs",
   "scripts/i18n-scan.test.mjs",
   "scripts/integration.mjs",
+  "scripts/issue-integration.mjs",
   "scripts/local-db.mjs",
   "scripts/local-db.test.mjs",
   "scripts/publication-policy.mjs",
