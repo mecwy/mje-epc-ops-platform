@@ -106,6 +106,8 @@
   "scripts/check-i18n.mjs",
   "scripts/check-public.mjs",
   "scripts/check-web-bundle.mjs",
+  "scripts/cloud-bootstrap.mjs",
+  "scripts/cloud-bootstrap.test.mjs",
   "scripts/cloud-migrate.mjs",
   "scripts/cloud-migrate.test.mjs",
   "scripts/container-smoke.mjs",
