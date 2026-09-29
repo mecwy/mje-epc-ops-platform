@@ -23,11 +23,13 @@ import {
 import type { IssueAsOf } from './issue-store.js';
 import type { DayState } from './report-store.js';
 
-/** A draft is not a report yet (shown as empty); a correction in progress shows the last submission. */
-export function readerDayState(state: DayState): 'empty' | 'submitted' {
-  return state === 'submitted' || state === 'correcting'
-    ? 'submitted'
-    : 'empty';
+/**
+ * A day in a reader's day list: only submitted days, shown as submitted also while a correction
+ * is open. Any other day is left out entirely (null), so a reader cannot tell a draft from no
+ * record at all, or when one was started.
+ */
+export function readerDayState(state: DayState): 'submitted' | null {
+  return state === 'submitted' || state === 'correcting' ? 'submitted' : null;
 }
 
 /** Confirmed plan versions stay visible to readers; the draft does not exist for them. */

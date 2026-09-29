@@ -31,6 +31,7 @@ import {
   lockReportDay,
   projectAccess,
   projectWriter,
+  type Access,
   type Actor,
 } from './store-kit.js';
 
@@ -50,7 +51,8 @@ import {
  *   verifies an existing object) and is reused by a retry. Bytes are only served through the API
  *   after the same project access check, and re-hashed before they are.
  * - A read-only account (OD18) only ever sees photos frozen in a submitted revision of the
- *   project, with the link they had there; any other photo is NOT_FOUND for it, not FORBIDDEN.
+ *   project, with the link they had there. A photo id the caller may not see (missing, another
+ *   project, or unfrozen for a reader) is NOT_FOUND on every photo route, never FORBIDDEN.
  * - A photo backs one work item or one issue. Link changes are append-only (supersede + insert),
  *   so the history stays and a submitted revision keeps the link it froze. An unlinked photo is
  *   staging only: a submission freezes just the photos with a valid current link.
@@ -344,6 +346,32 @@ export class PhotoStore {
     if (!r.rows[0]) throw new ReportError('NOT_FOUND');
     return r.rows[0];
   }
+  /**
+   * A photo the caller may see, else NOT_FOUND. A photo in a project the caller cannot access
+   * is not found either (403 would confirm the id exists), for writers and readers alike; a
+   * reader also only sees photos frozen in a submitted revision (OD18).
+   */
+  private async visible(
+    client: PoolClient,
+    actor: Actor,
+    photoId: string,
+  ): Promise<{ row: PhotoRow; access: Access }> {
+    const row = await this.row(client, actor.orgId, photoId);
+    let access: Access;
+    try {
+      ({ access } = await projectAccess(client, actor, row.projectId));
+    } catch (error) {
+      if (error instanceof ReportError && error.code === 'FORBIDDEN')
+        throw new ReportError('NOT_FOUND');
+      throw error;
+    }
+    if (
+      access === 'read' &&
+      !(await isFrozen(client, actor.orgId, row.projectId, row.id))
+    )
+      throw new ReportError('NOT_FOUND');
+    return { row, access };
+  }
   private async view(client: PoolClient, orgId: string, photoId: string) {
     return toDto(await this.row(client, orgId, photoId));
   }
@@ -456,10 +484,10 @@ export class PhotoStore {
   }
   async get(identity: Identity, photoId: string) {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      const photo = await this.view(client, actor.orgId, photoId);
-      const { access } = await projectAccess(client, actor, photo.projectId);
+      const { row, access } = await this.visible(client, actor, photoId);
+      const photo = toDto(row);
       if (access === 'read') {
-        // OD18: not frozen in a submission = not found (existence is not revealed).
+        // OD18: the reader sees the link the latest submission that froze it had.
         const frozen = await latestFrozenAs(
           client,
           actor.orgId,
@@ -473,8 +501,8 @@ export class PhotoStore {
     });
   }
   /**
-   * Photo or thumbnail bytes, after the project read check (a reader: only photos frozen in a
-   * submitted revision); both are re-hashed before serving.
+   * Photo or thumbnail bytes of a photo the caller may see (see `visible`); both are re-hashed
+   * before serving.
    */
   async content(
     identity: Identity,
@@ -485,14 +513,7 @@ export class PhotoStore {
       this.pool,
       identity,
       async (client, actor) => {
-        const row = await this.row(client, actor.orgId, photoId);
-        const { access } = await projectAccess(client, actor, row.projectId);
-        // OD18: readers get the bytes of submitted photos only; otherwise not found.
-        if (
-          access === 'read' &&
-          !(await isFrozen(client, actor.orgId, row.projectId, row.id))
-        )
-          throw new ReportError('NOT_FOUND');
+        const { row } = await this.visible(client, actor, photoId);
         if (which === 'photo')
           return {
             key: row.blobKey,
@@ -686,8 +707,12 @@ export class PhotoStore {
 
   async link(identity: Identity, command: LinkPhotoCommand): Promise<PhotoDto> {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      const photo = await this.row(client, actor.orgId, command.photoId);
-      await projectWriter(client, actor, photo.projectId);
+      const { row: photo, access } = await this.visible(
+        client,
+        actor,
+        command.photoId,
+      );
+      if (access !== 'write') throw new ReportError('READ_ONLY');
       return idempotent(
         client,
         actor,
@@ -741,8 +766,12 @@ export class PhotoStore {
     command: UnlinkPhotoCommand,
   ): Promise<PhotoDto> {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      const photo = await this.row(client, actor.orgId, command.photoId);
-      await projectWriter(client, actor, photo.projectId);
+      const { row: photo, access } = await this.visible(
+        client,
+        actor,
+        command.photoId,
+      );
+      if (access !== 'write') throw new ReportError('READ_ONLY');
       return idempotent(
         client,
         actor,

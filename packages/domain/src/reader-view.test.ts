@@ -48,9 +48,9 @@ const photo = (id: string, link: PhotoDto['link']): PhotoDto => ({
 });
 
 describe('reader view (OD18)', () => {
-  it('shows a draft as empty and an open correction as the last submission', () => {
-    expect(readerDayState('empty')).toBe('empty');
-    expect(readerDayState('draft')).toBe('empty');
+  it('lists only submitted days; an open correction is the last submission', () => {
+    expect(readerDayState('empty')).toBe(null);
+    expect(readerDayState('draft')).toBe(null);
     expect(readerDayState('submitted')).toBe('submitted');
     expect(readerDayState('correcting')).toBe('submitted');
   });

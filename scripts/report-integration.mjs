@@ -1157,6 +1157,17 @@ try {
     assert.equal(r.unlinkedPhotos, 0);
     assert.deepEqual(r.revisions, []);
   };
+  // The day list as sent, byte for byte, before any of the unsubmitted work below.
+  const daysText = async (bearer) => {
+    const response = await fetch(
+      `${base}/api/report/days?projectId=${projectA}&from=${D1}&to=${D10}`,
+      { headers: { Authorization: `Bearer ${bearer}` } },
+    );
+    assert.equal(response.status, 200);
+    return response.text();
+  };
+  const readerDaysBefore = await daysText(exec);
+  const writerDaysBefore = await daysText(pm);
   // Unsubmitted work: a plan draft for D10 (the day after the empty D9), a D10 draft day,
   // and an open correction on D1 with an edit and a newer confirmed plan for D1.
   await expectStatus(
@@ -1278,32 +1289,34 @@ try {
     [1],
   );
   assert.equal((await dayOf(D4, pm)).version, 1);
-  // days: a draft is empty, a correction in progress is the submitted day
-  const writerDays = await expectStatus(
-    call(`/days?projectId=${projectA}&from=${D1}&to=${D10}`, pm),
-    200,
+  // days: only submitted days; a draft day is not listed, a correction in progress is the
+  // submitted day. The reader's response is byte-identical to the one before the draft was
+  // started and the correction opened; the writer's changed.
+  const readerDaysAfter = await daysText(exec);
+  const writerDaysAfter = await daysText(pm);
+  assert.equal(readerDaysAfter, readerDaysBefore);
+  assert.notEqual(writerDaysAfter, writerDaysBefore);
+  const writerDays = JSON.parse(writerDaysAfter);
+  const readerDays = JSON.parse(readerDaysAfter);
+  assert.deepEqual(
+    writerDays.find((d) => d.businessDate === D10),
+    { businessDate: D10, state: 'draft', revision: 0 },
   );
-  const readerDays = await expectStatus(
-    call(`/days?projectId=${projectA}&from=${D1}&to=${D10}`, exec),
-    200,
+  assert.deepEqual(
+    writerDays.find((d) => d.businessDate === D1),
+    { businessDate: D1, state: 'correcting', revision: 2 },
   );
-  assert.ok(writerDays.some((d) => d.state === 'draft'));
-  assert.ok(writerDays.some((d) => d.state === 'correcting'));
   assert.deepEqual(
     readerDays,
-    writerDays.map((d) => ({
-      ...d,
-      state: { draft: 'empty', correcting: 'submitted' }[d.state] ?? d.state,
-    })),
+    writerDays
+      .filter((d) => ['submitted', 'correcting'].includes(d.state))
+      .map((d) => ({ ...d, state: 'submitted' })),
   );
   assert.deepEqual(
     readerDays.find((d) => d.businessDate === D1),
     { businessDate: D1, state: 'submitted', revision: 2 },
   );
-  assert.deepEqual(
-    readerDays.find((d) => d.businessDate === D10),
-    { businessDate: D10, state: 'empty', revision: 0 },
-  );
+  assert.ok(!readerDays.some((d) => d.businessDate === D10));
   // plans: the draft is hidden; confirmed versions stay visible
   const readerPlanD10 = await planOf(D10, exec);
   assert.equal(readerPlanD10.draft, null);
@@ -1332,7 +1345,7 @@ try {
   assert.deepEqual(readerD1After, readerD1);
   assert.notEqual((await dayOf(D1, pm)).version, 0);
   pass(
-    'OD18: a reader gets nothing of an empty or draft day, only revision 2 of a correcting day (not the correction, its reason or a newer plan), the frozen no-work revision, version 0; days map draft→empty and correcting→submitted; plan drafts are hidden while confirmed versions stay; the writer view is unchanged',
+    'OD18: a reader gets nothing of an empty or draft day, only revision 2 of a correcting day (not the correction, its reason or a newer plan), the frozen no-work revision, version 0; days list submitted days only (correcting→submitted, drafts left out) and are byte-identical before and after a draft and a correction are started; plan drafts are hidden while confirmed versions stay; the writer view is unchanged',
   );
 
   // ---------- database-level protections: RLS and no updates on revisions ----------

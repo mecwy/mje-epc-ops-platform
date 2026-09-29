@@ -475,7 +475,7 @@ export class ReportStore {
         ORDER BY d."businessDate"`,
         [actor.orgId, projectId, REPORT_SCOPE, from, to],
       );
-      return result.rows.map((r) => {
+      const rows = result.rows.map((r) => {
         const state: DayState =
           r.state === 'SUBMITTED'
             ? r.correcting
@@ -486,10 +486,16 @@ export class ReportStore {
               : 'empty';
         return {
           businessDate: r.businessDate,
-          // OD18: a reader never learns of a draft or an open correction.
-          state: access === 'read' ? readerDayState(state) : state,
+          state,
           revision: r.currentRevisionNumber,
         };
+      });
+      if (access === 'write') return rows;
+      // OD18: a reader gets submitted days only; a draft day is not listed at all, so the
+      // response does not change when one is started or edited.
+      return rows.flatMap((r) => {
+        const state = readerDayState(r.state);
+        return state ? [{ ...r, state }] : [];
       });
     });
   }
