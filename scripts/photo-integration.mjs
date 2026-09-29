@@ -883,13 +883,28 @@ try {
   );
 
   // ---------- read access: the project's readers; nobody else ----------
+  // OD18: before a submission a reader gets none of the day's photos; each is not found.
   const execList = await expectStatus(list(D1, exec), 200);
   assert.equal(execList.access, 'read');
-  assert.equal(execList.photos.length, 6);
+  assert.deepEqual(execList.photos, []);
+  assert.equal(execList.unlinkedPhotos, 0);
+  const notFoundForReader = async (id) => {
+    for (const suffix of ['', '/thumbnail', '/meta']) {
+      const r = await raw(`/${id}${suffix}`, exec);
+      assert.equal(r.status, 404, `${id}${suffix}`);
+      assert.equal(r.json.code, 'NOT_FOUND');
+    }
+  };
+  await notFoundForReader(p1.id);
+  assert.deepEqual((await expectStatus(day(D1, exec), 200)).photos, []);
+  // The project manager's reads are unchanged.
+  const pmList = await expectStatus(list(D1), 200);
+  assert.equal(pmList.access, 'write');
+  assert.equal(pmList.photos.length, 6);
   // heif, webp and cameraWithFileGps have no link yet.
-  assert.equal(execList.unlinkedPhotos, 3);
-  assert.equal((await raw(`/${p1.id}`, exec)).status, 200);
-  assert.equal((await raw(`/${p1.id}/thumbnail`, exec)).status, 200);
+  assert.equal(pmList.unlinkedPhotos, 3);
+  assert.equal((await raw(`/${p1.id}`, pm)).status, 200);
+  assert.equal((await raw(`/${p1.id}/thumbnail`, pm)).status, 200);
   await expectStatus(list(D1, twin), 403, 'FORBIDDEN');
   await expectStatus(list(D1, pmB), 403, 'FORBIDDEN');
   for (const [bearer, status] of [
@@ -912,7 +927,7 @@ try {
     'FORBIDDEN',
   );
   pass(
-    "executive reads the list, photo and thumbnail bytes; writes by the executive (READ_ONLY), the same person's other-project account, another org's PM or into another org's project are refused; other project 403, other org 404, anonymous 401; missing thumbnail or photo 404",
+    "before any submission the executive gets an empty list and 404 NOT_FOUND for photo, thumbnail and metadata (OD18) while the PM reads them; writes by the executive (READ_ONLY), the same person's other-project account, another org's PM or into another org's project are refused; other project 403, other org 404, anonymous 401; missing thumbnail or photo 404",
   );
 
   // ---------- coverage and the frozen snapshot (rules 1, 5) ----------
@@ -1044,6 +1059,38 @@ try {
     view.photos.find((p) => p.id === cameraWithFileGps.id).link,
     { type: 'issue', id: issue.id },
   );
+  // OD18: a reader gets the 4 frozen photos with the link each had at submission.
+  const ids = (photos) => photos.map((p) => p.id);
+  const execFrozen = await expectStatus(list(D1, exec), 200);
+  assert.deepEqual(ids(execFrozen.photos), ids(rev1.snapshot.photos));
+  assert.equal(execFrozen.unlinkedPhotos, 0);
+  assert.deepEqual(
+    execFrozen.photos.find((p) => p.id === cameraWithFileGps.id).link,
+    { type: 'item', id: 'rail' },
+  );
+  assert.ok(execFrozen.photos.every((p) => p.linkVersion === 0));
+  const execDay = await expectStatus(day(D1, exec), 200);
+  assert.equal(execDay.version, 0);
+  assert.deepEqual(execDay.photos, execFrozen.photos);
+  assert.equal(execDay.unlinkedPhotos, 0);
+  assert.equal((await raw(`/${p1.id}`, exec)).status, 200);
+  assert.equal((await raw(`/${p1.id}/thumbnail`, exec)).status, 200);
+  const execMeta = await expectStatus(
+    call(`/photos/${cameraWithFileGps.id}/meta`, exec),
+    200,
+  );
+  assert.deepEqual(execMeta.photo.link, { type: 'item', id: 'rail' });
+  // heif was linked only after the submission, webp never: not found for the reader.
+  await notFoundForReader(heif.id);
+  await notFoundForReader(webp.id);
+  assert.equal((await raw(`/${heif.id}`, pm)).status, 200);
+  assert.equal(
+    (await expectStatus(call(`/photos/${heif.id}/meta`, pm), 200)).photo.id,
+    heif.id,
+  );
+  pass(
+    'OD18: after submission a reader lists, reads and fetches only the photos frozen in the revision, with their frozen link and version 0; a photo linked after submission or never frozen is 404 for the reader and still readable by the PM',
+  );
   pass(
     'coverage asks for a photo only where a work item has quantity and no currently linked photo; linking clears it; the day reports its unlinked photos; the submitted revision freezes only the linked photos (source, position kind, accuracy, times, link) without coordinates; a relink, or linking a photo left out, after submission is allowed and leaves the revision unchanged',
   );
@@ -1066,6 +1113,14 @@ try {
     upload(pm, camera({ workItemKey: 'rail' }), jpeg('late-rail')),
     200,
   );
+  // OD18: during the correction the reader still gets revision 1; the new photo is not found.
+  const execDuring = await expectStatus(list(D1, exec), 200);
+  assert.deepEqual(ids(execDuring.photos), ids(rev1.snapshot.photos));
+  const execDayDuring = await expectStatus(day(D1, exec), 200);
+  assert.equal(execDayDuring.state, 'submitted');
+  assert.equal(execDayDuring.currentRevisionNumber, 1);
+  assert.deepEqual(execDayDuring.photos, execFrozen.photos);
+  await notFoundForReader(late.id);
   const second = await expectStatus(
     call('/submit', pm, {
       projectId: projectA,
@@ -1087,10 +1142,24 @@ try {
   });
   assert.deepEqual(await expectStatus(rev(1), 200), rev1);
   await expectStatus(upload(pm, album(), jpeg('after-2')), 409, 'LOCKED');
-  // Another day stays open.
-  await expectStatus(upload(pm, album({ businessDate: D3 }), jpeg('d3')), 200);
+  // OD18: after the resubmission the reader gets revision 2's photos, heif and the late one too.
+  const execRev2 = await expectStatus(list(D1, exec), 200);
+  assert.deepEqual(ids(execRev2.photos), ids(rev2.snapshot.photos));
+  for (const id of [late.id, heif.id])
+    assert.equal((await raw(`/${id}`, exec)).status, 200);
+  await notFoundForReader(webp.id);
+  // Another day stays open; its photo is not the reader's until that day is submitted.
+  const d3Photo = await expectStatus(
+    upload(pm, album({ businessDate: D3 }), jpeg('d3')),
+    200,
+  );
+  await notFoundForReader(d3Photo.id);
+  assert.deepEqual((await expectStatus(list(D3, exec), 200)).photos, []);
+  assert.ok(
+    ids((await expectStatus(list(D3), 200)).photos).includes(d3Photo.id),
+  );
   pass(
-    'a submitted day refuses uploads (409 LOCKED) but replays still answer; during a correction a photo is accepted and the next revision includes it; revision 1 unchanged; other days unaffected',
+    'a submitted day refuses uploads (409 LOCKED) but replays still answer; during a correction a photo is accepted and the next revision includes it (a reader sees revision 1 until then, OD18); revision 1 unchanged; other days unaffected',
   );
 
   // ---------- concurrency: the same new file uploaded twice at once ----------
