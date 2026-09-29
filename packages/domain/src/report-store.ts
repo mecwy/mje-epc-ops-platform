@@ -58,6 +58,7 @@ import {
   type Actor,
   type ReportProjectRow,
 } from './store-kit.js';
+import { issuesAsOf } from './issue-store.js';
 
 export {
   READ_ROLES,
@@ -367,6 +368,13 @@ export class ReportStore {
       photographedItems: new Set<string>(), // photos arrive in slice A5
     });
     const nextStatus = planStatus(nextPlan.state);
+    // Rule 1: the issues of the day as they stand now; later edits never reach a revision.
+    const issues = await issuesAsOf(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+    );
     return {
       coverage: cov,
       snapshot: {
@@ -387,6 +395,7 @@ export class ReportStore {
         cumulativeBase: previousCumulative,
         cumulativeCarry,
         materialsCumulative,
+        issues,
         coverage: cov,
         actorAccountId: actor.accountId,
         actorPersonId: actor.personId,
@@ -494,6 +503,7 @@ export class ReportStore {
         previousSubmittedDate: snapshot.previousSubmittedDate,
         cumulativeBase: snapshot.cumulativeBase,
         materialsCumulative: snapshot.materialsCumulative,
+        issues: snapshot.issues,
         coverage: cov,
         revisions: revisions.map((r) => ({
           n: r.revisionNumber,

@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { ManagedIdentityCredential } from '@azure/identity';
-import { AlphaStore, ReportStore } from '@mje/domain';
+import { AlphaStore, IssueStore, ReportStore } from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
 import { TokenVerifier } from './auth/token-verifier.js';
 
@@ -51,7 +51,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
   const roles = await pool.query<{
     unsafe: boolean;
   }>(`SELECT (r.rolsuper OR r.rolbypassrls OR EXISTS
-    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
+    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
     FROM pg_roles r WHERE r.rolname=current_user`);
   if (roles.rows[0]?.unsafe !== false)
     throw new Error(
@@ -62,6 +62,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     verifier,
     store: new AlphaStore(pool),
     reportStore: new ReportStore(pool),
+    issueStore: new IssueStore(pool),
   };
 }
 const app = await createApp(runtime);
