@@ -16,6 +16,7 @@ import {
   AlphaError,
   AlphaStore,
   IssueStore,
+  PhotoStore,
   ReportError,
   ReportStore,
 } from '@mje/domain';
@@ -23,6 +24,7 @@ import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
 import { AlphaController } from './alpha.controller.js';
 import { ReportController } from './report.controller.js';
 import { IssueController } from './issue.controller.js';
+import { PhotoController } from './photo.controller.js';
 import {
   TokenVerifier,
   type TokenConfiguration,
@@ -65,7 +67,11 @@ class SafeErrorFilter implements ExceptionFilter {
           ? 403
           : code === 'NOT_FOUND'
             ? 404
-            : 409;
+            : code === 'PHOTO_TOO_LARGE'
+              ? 413
+              : code === 'UNSUPPORTED_MEDIA'
+                ? 415
+                : 409;
     }
     if (error && typeof error === 'object' && 'type' in error) {
       if (error.type === 'entity.too.large') {
@@ -93,6 +99,8 @@ export interface AlphaRuntime {
   reportStore?: ReportStore;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
   issueStore?: IssueStore;
+  /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
+  photoStore?: PhotoStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
@@ -117,6 +125,7 @@ export async function createApp(alpha?: AlphaRuntime) {
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
       ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
+      ...(alpha?.reportStore && alpha.photoStore ? [PhotoController] : []),
     ],
     providers: alpha
       ? [
@@ -127,6 +136,9 @@ export async function createApp(alpha?: AlphaRuntime) {
             : []),
           ...(alpha.reportStore && alpha.issueStore
             ? [{ provide: IssueStore, useValue: alpha.issueStore }]
+            : []),
+          ...(alpha.reportStore && alpha.photoStore
+            ? [{ provide: PhotoStore, useValue: alpha.photoStore }]
             : []),
         ]
       : [],

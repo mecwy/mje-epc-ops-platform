@@ -53,6 +53,9 @@ importers:
       '@azure/identity':
         specifier: 4.13.3
         version: 4.13.3
+      '@azure/storage-blob':
+        specifier: 12.34.0
+        version: 12.34.0
       '@mje/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -74,6 +77,9 @@ importers:
       jose:
         specifier: 6.2.12
         version: 6.2.12
+      multer:
+        specifier: 2.4.0
+        version: 2.4.0
       pg:
         specifier: 8.23.0
         version: 8.23.0
@@ -87,6 +93,9 @@ importers:
       '@types/express':
         specifier: 5.0.6
         version: 5.0.6
+      '@types/multer':
+        specifier: 2.3.0
+        version: 2.3.0
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
@@ -150,6 +159,9 @@ importers:
         specifier: ^8.23.0
         version: 8.23.0
     devDependencies:
+      '@mje/testing':
+        specifier: workspace:*
+        version: link:../testing
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
@@ -876,6 +888,9 @@ packages:
 
   '@types/lodash@4.17.25':
     resolution: {integrity: sha512-+K1NIO8I+F9/wNulfVvu23QYd0Pe9/OCqRrim4NoYIf1VoEDL90Ve4ClzpyqBLc7NpGGWRvYNCKZ1BE/Jpf8dQ==}
+
+  '@types/multer@2.3.0':
+    resolution: {integrity: sha512-i7STIm9V4K2MPH4ZYMtrZAwNxs3kglk2LgleaTuB9pUXgADBcQYQuYMd7+6xgTIxfoggIkFA/DkkvycdZpIARA==}
 
   '@types/node@24.19.0':
     resolution: {integrity: sha512-zY+5tKxXdhGh1PYI0ac+7juvEu4OI6vWtVVoj5i2m42jxAY1U+zHGt6QCyOFwykdP62sM3MJ9stoYYUw5aCWew==}
@@ -3058,6 +3073,10 @@ snapshots:
   '@types/json-schema@7.0.15': {}
 
   '@types/lodash@4.17.25': {}
+
+  '@types/multer@2.3.0':
+    dependencies:
+      '@types/express': 5.0.6
 
   '@types/node@24.19.0':
     dependencies:

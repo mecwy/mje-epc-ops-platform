@@ -6,3 +6,4 @@ export interface HealthResponse {
 export * from './alpha.js';
 export * from './report.js';
 export * from './issue.js';
+export * from './photo.js';

@@ -16,6 +16,8 @@ export class InvalidReportInput extends Error {
 export const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** Master-row key (work item, machinery, material): a letter, then up to KEY_MAX - 1 more. */
+export const KEY_MAX = 64;
 export const KEY = /^[A-Za-z][\w-]{0,63}$/;
 export const TEXT_MAX = 4000;
 
@@ -58,4 +60,10 @@ export function oneOf<T extends readonly string[]>(
   if (typeof v !== 'string' || !(list as readonly string[]).includes(v))
     throw new InvalidReportInput(field);
   return v as T[number];
+}
+/** A master-row key; the same 64-character limit as the rows themselves and the database. */
+export function itemKey(v: unknown, field: string): string {
+  const s = str(v, field, KEY_MAX);
+  if (!KEY.test(s)) throw new InvalidReportInput(field);
+  return s;
 }
