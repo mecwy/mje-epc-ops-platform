@@ -48,3 +48,32 @@ test('bootstrap refuses identifiers that are not GUIDs', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /not a GUID: OWNER_OBJECT_ID/);
 });
+
+test('failures before any database work print only a code, never paths or details', async () => {
+  const { mkdtempSync, mkdirSync, copyFileSync, rmSync } =
+    await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  // A copy without dependencies next to it: module loading fails inside the boundary.
+  const dir = mkdtempSync(join(tmpdir(), 'mje-bootstrap-'));
+  try {
+    mkdirSync(join(dir, 'scripts'));
+    copyFileSync(
+      new URL('./cloud-bootstrap.mjs', import.meta.url),
+      join(dir, 'scripts', 'cloud-bootstrap.mjs'),
+    );
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/cloud-bootstrap.mjs'],
+      { cwd: dir, env: good, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 1);
+    assert.equal(
+      result.stderr.trim(),
+      'Cloud bootstrap failed: code MODULE_NOT_FOUND',
+    );
+    assert.doesNotMatch(result.stderr, /requireStack|node_modules|\/scripts\//);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

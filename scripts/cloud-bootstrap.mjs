@@ -7,9 +7,27 @@
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 
+// Registered before anything else runs: configuration checks, module loading and the
+// credential are all inside the sanitising boundary.
+class BootstrapStop extends Error {}
+const fail = (message) => {
+  throw new BootstrapStop(`Cloud bootstrap stopped: ${message}`);
+};
+// Database, SDK and module-loading errors can carry identifiers or paths in their details;
+// the job log gets only our own stop messages or a bare error code.
+process.on('uncaughtException', (error) => {
+  if (error instanceof BootstrapStop) console.error(error.message);
+  else
+    console.error(
+      `Cloud bootstrap failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
+    );
+  process.exit(1);
+});
+
 function required(name) {
   const value = process.env[name];
-  if (!value) throw new Error(`Missing cloud bootstrap configuration: ${name}`);
+  if (!value)
+    throw new BootstrapStop(`Missing cloud bootstrap configuration: ${name}`);
   return value;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -34,7 +52,7 @@ if (
   process.env.PGSERVICE ||
   process.env.PGSERVICEFILE
 )
-  throw new Error(
+  throw new BootstrapStop(
     'Cloud bootstrap target or identity is not the approved Dev shape',
   );
 for (const [name, value] of [
@@ -43,7 +61,9 @@ for (const [name, value] of [
   ['OWNER_OBJECT_ID', ownerObjectId],
 ])
   if (!UUID.test(value))
-    throw new Error(`Cloud bootstrap configuration is not a GUID: ${name}`);
+    throw new BootstrapStop(
+      `Cloud bootstrap configuration is not a GUID: ${name}`,
+    );
 
 const requireApi = createRequire(
   new URL('../apps/api/package.json', import.meta.url),
@@ -61,7 +81,7 @@ const connect = async (database) => {
     'https://ossrdbms-aad.database.windows.net/.default',
   );
   if (!token?.token)
-    throw new Error('Managed identity database token unavailable');
+    throw new BootstrapStop('Managed identity database token unavailable');
   const client = new Client({
     host,
     port: 5432,
@@ -78,21 +98,6 @@ const connect = async (database) => {
 const ident = (name) => `"${name.replaceAll('"', '""')}"`;
 const lower = (row) =>
   Object.fromEntries(Object.entries(row).map(([k, v]) => [k.toLowerCase(), v]));
-class BootstrapStop extends Error {}
-const fail = (message) => {
-  throw new BootstrapStop(`Cloud bootstrap stopped: ${message}`);
-};
-// Database and SDK errors can carry identifiers in detail fields; the job log gets only our
-// own stop messages or a bare error code.
-process.on('uncaughtException', (error) => {
-  if (error instanceof BootstrapStop) console.error(error.message);
-  else
-    console.error(
-      `Cloud bootstrap failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
-    );
-  process.exit(1);
-});
-
 // 1. Application login, verified against the managed identity it must map to.
 const system = await connect('postgres');
 try {
