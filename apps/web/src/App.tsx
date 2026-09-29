@@ -12,6 +12,8 @@ import { PlanSession } from './report/plan-session.js';
 import { ReportView } from './report/ReportView.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
+import { useIssues } from './report/useIssues.js';
+import { ReplySheet } from './report/Issues.js';
 
 type Session = { token: () => Promise<string>; signOut: (() => void) | null };
 
@@ -91,6 +93,7 @@ function Workspace({
   const [view, setView] = useState<'field' | 'report'>('report');
   const [fieldTab, setFieldTab] = useState<'today' | 'plan'>('today');
   const [task, setTask] = useState<null | 'fill' | 'check'>(null);
+  const [replyTo, setReplyTo] = useState<string | null>(null);
   const [sheet, setSheet] = useState<null | 'menu' | 'noWork' | 'correct'>(
     null,
   );
@@ -113,6 +116,19 @@ function Workspace({
     return session;
   };
   const h = useDay(api, project.id, date, () => say(t('conflictReloaded')));
+  const issueError = useCallback(
+    (code: string) =>
+      say(
+        code === 'VERSION_CONFLICT'
+          ? t('conflictReloaded')
+          : code === 'FORBIDDEN' || code === 'READ_ONLY'
+            ? t('forbidden')
+            : t('saveFail'),
+      ),
+    [say, t],
+  );
+  const reloadDay = useCallback(() => void h.reload(), [h.reload]);
+  const issues = useIssues(api, project.id, date, reloadDay, issueError);
   const busy = actionBusy || h.busy;
   const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
@@ -228,6 +244,7 @@ function Workspace({
         missing={cov.missing.length}
         onFill={() => setTask('fill')}
         onNoWork={() => setSheet('noWork')}
+        onReply={canWrite ? null : (id) => setReplyTo(id)}
       />
     );
   else {
@@ -311,6 +328,8 @@ function Workspace({
               onSubmit={() => void submit()}
               busy={busy}
               tomorrowText={tomorrowText}
+              issues={issues}
+              canWrite={canWrite}
             />
           ) : (
             <CheckPage
@@ -396,6 +415,12 @@ function Workspace({
           onSubmit={async (reason, note) => {
             await run(() => h.noWork(reason, note), t('submittedToast'));
           }}
+        />
+      )}
+      {replyTo && (
+        <ReplySheet
+          onClose={() => setReplyTo(null)}
+          onSend={(text) => issues.reply(replyTo, text)}
         />
       )}
       {sheet === 'correct' && (

@@ -7,7 +7,11 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
 import { assertLocalDatabase } from './local-db.mjs';
-import { AlphaStore, ReportStore } from '../packages/domain/dist/index.js';
+import {
+  AlphaStore,
+  IssueStore,
+  ReportStore,
+} from '../packages/domain/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 
@@ -185,6 +189,7 @@ const app = await createApp({
   verifier,
   store: new AlphaStore(pool),
   reportStore,
+  issueStore: new IssueStore(pool),
 });
 await app.listen(3300, '127.0.0.1');
 const token = async (oid) => {
