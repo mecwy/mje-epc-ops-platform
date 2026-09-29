@@ -23,11 +23,18 @@ import {
   planRows,
   planStatus,
   shiftDate,
+  carryCumulative,
+  carryMaterial,
+  type CarriedCumulative,
   type Coverage,
   type DayFacts,
+  type MaterialCumulative,
   type PlanState,
   type PlanVersion,
 } from './report-rules.js';
+
+const planLock = (orgId: string, projectId: string, target: string) =>
+  `${orgId}:plan:${projectId}:${target}`;
 
 /**
  * Site Daily Close store (U2.1 rules 1–7, 12–14). One DailyClose row per project and business
@@ -462,21 +469,30 @@ export class ReportStore {
       businessDate,
     );
     const previousCumulative =
-      (previous?.snapshot['facts'] as DayFacts | undefined)?.cumulative ?? {};
+      (previous?.snapshot['cumulativeCarry'] as
+        Record<string, CarriedCumulative> | undefined) ?? {};
+    const cumulativeCarry = carryCumulative(
+      businessDate,
+      facts,
+      previousCumulative,
+    );
     const previousMaterials =
-      (previous?.snapshot['materialsCumulative'] as Record<
-        string,
-        string | null
-      >) ?? {};
-    const materialsCumulative: Record<string, string | null> = {};
+      (previous?.snapshot['materialsCumulative'] as
+        Record<string, MaterialCumulative> | undefined) ?? {};
+    const materialsCumulative: Record<string, MaterialCumulative> = {};
     for (const m of items.filter((i) => i.kind === 'material')) {
-      const base = dec(
-        previous ? previousMaterials[m.key] : m.openingCumulative,
+      const opening = dec(m.openingCumulative);
+      const base: MaterialCumulative = previous
+        ? (previousMaterials[m.key] ?? { value: null, complete: false })
+        : {
+            value: opening === null ? null : decText(opening),
+            complete: opening !== null,
+          };
+      materialsCumulative[m.key] = carryMaterial(
+        base,
+        facts.materials[m.key],
+        facts.noWork !== null,
       );
-      materialsCumulative[m.key] =
-        base === null
-          ? null
-          : decText(base + (dec(facts.materials[m.key]) ?? 0n));
     }
     const baseline = ReportStore.baseline(today.state);
     const cov = coverage({
@@ -506,6 +522,7 @@ export class ReportStore {
         },
         previousSubmittedDate: previous?.businessDate ?? null,
         cumulativeBase: previousCumulative,
+        cumulativeCarry,
         materialsCumulative,
         coverage: cov,
         actorAccountId: actor.accountId,
@@ -906,6 +923,8 @@ export class ReportStore {
           );
           if (!day || day.state !== 'SUBMITTED')
             throw new ReportError('NOT_SUBMITTED');
+          if (day.version !== command.expectedVersion)
+            throw new ReportError('VERSION_CONFLICT');
           if (day.correctionReason !== null) throw new ReportError('LOCKED');
           await client.query(
             `UPDATE "DailyClose" SET "correctionReason"=$3, version=version+1, "updatedAt"=now(), "updatedBy"=$4 WHERE "orgId"=$1 AND id=$2`,
@@ -955,6 +974,9 @@ export class ReportStore {
             day.correctionReason === null
           )
             throw new ReportError('NOT_CORRECTING');
+          // A stale cancel must not discard edits of a newer correction.
+          if (day.version !== command.expectedVersion)
+            throw new ReportError('VERSION_CONFLICT');
           const current = (
             await this.revisions(client, actor.orgId, day.id)
           ).find((r) => r.revisionNumber === day.currentRevisionNumber);
@@ -999,6 +1021,15 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          // Same lock as confirmPlan: a confirm never deletes a draft saved after it read.
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [planLock(actor.orgId, project.id, command.targetBusinessDate)],
+          );
+          const before = await client.query<{ rows: PlanRowDto[] }>(
+            `SELECT rows FROM "PlanDraft" WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate"=$3::date`,
+            [actor.orgId, project.id, command.targetBusinessDate],
+          );
           await client.query(
             `INSERT INTO "PlanDraft"(id,"orgId","projectId","targetBusinessDate",rows,"updatedBy") VALUES($1,$2,$3,$4::date,$5,$6)
           ON CONFLICT ("orgId","projectId","targetBusinessDate") DO UPDATE SET rows=excluded.rows,"updatedAt"=now(),"updatedBy"=excluded."updatedBy"`,
@@ -1016,6 +1047,20 @@ export class ReportStore {
             actor.orgId,
             project.id,
             command.targetBusinessDate,
+          );
+          await this.audit(
+            client,
+            actor,
+            {
+              type: 'PLAN_DRAFT',
+              id: project.id,
+              version: plan.versions.length,
+            },
+            'REPORT_PLAN_DRAFT',
+            command.targetBusinessDate,
+            before.rows[0]?.rows ?? null,
+            command.rows,
+            command.clientMutationId,
           );
           return {
             targetBusinessDate: command.targetBusinessDate,
@@ -1040,7 +1085,7 @@ export class ReportStore {
           // One confirmation at a time per target day; the unique (project, date, number) key is the backstop.
           await client.query(
             'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-            [`${actor.orgId}:plan:${project.id}:${command.targetBusinessDate}`],
+            [planLock(actor.orgId, project.id, command.targetBusinessDate)],
           );
           const plan = await this.planState(
             client,

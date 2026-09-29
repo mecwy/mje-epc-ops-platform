@@ -69,11 +69,15 @@ try {
   const accountPm = randomUUID(),
     accountExec = randomUUID(),
     accountTwin = randomUUID(),
-    accountB = randomUUID();
+    accountB = randomUUID(),
+    accountExpired = randomUUID(),
+    accountExecA = randomUUID();
   const objectPm = randomUUID(),
     objectExec = randomUUID(),
     objectTwin = randomUUID(),
-    objectB = randomUUID();
+    objectB = randomUUID(),
+    objectExpired = randomUUID(),
+    objectExecA = randomUUID();
   const seedActor = randomUUID();
   for (const [orgId, name] of [
     [orgA, 'TEST Organization A'],
@@ -106,6 +110,8 @@ try {
     [accountTwin, orgA, personPm, objectTwin],
     [accountExec, orgA, personExec, objectExec],
     [accountB, orgB, personB, objectB],
+    [accountExpired, orgA, personPm, objectExpired],
+    [accountExecA, orgA, personExec, objectExecA],
   ])
     await owner.query(
       'INSERT INTO "LoginAccount"(id,"orgId","updatedAt","updatedBy","entraTenantId","entraObjectId","personId") VALUES($1,$2,now(),$3,$4,$5,$6)',
@@ -120,6 +126,11 @@ try {
   await membership(orgA, accountTwin, 'PROJECT_MANAGER', projectA2); // same person, other project only
   await membership(orgA, accountExec, 'EXECUTIVE_READER', null); // org-wide read
   await membership(orgB, accountB, 'PROJECT_MANAGER', projectB);
+  await membership(orgA, accountExecA, 'EXECUTIVE_READER', projectA); // one project only
+  await owner.query(
+    'INSERT INTO "Membership"(id,"orgId","updatedAt","updatedBy",role,"activeFrom","activeUntil","accountId","projectId") VALUES($1,$2,now(),$3,\'PROJECT_MANAGER\',now()-interval \'2 days\',now()-interval \'1 hour\',$4,$5)',
+    [randomUUID(), orgA, seedActor, accountExpired, projectA],
+  );
 
   const keys = await generateKeyPair('RS256');
   const key = {
@@ -156,6 +167,8 @@ try {
       .sign(keys.privateKey);
   }
   const pm = await token(objectPm),
+    expired = await token(objectExpired),
+    execA = await token(objectExecA),
     exec = await token(objectExec),
     twin = await token(objectTwin),
     pmB = await token(objectB);
@@ -287,8 +300,24 @@ try {
     call(`/day?projectId=${projectA}&businessDate=${D1}`, pmB),
     403,
   );
+  await expectStatus(call('/projects', expired), 403, 'FORBIDDEN');
+  await expectStatus(
+    call('/facts', expired, cmd({ facts: facts() })),
+    403,
+    'FORBIDDEN',
+  );
+  const execAProjects = await expectStatus(call('/projects', execA), 200);
+  assert.deepEqual(
+    execAProjects.projects.map((p) => [p.code, p.access]),
+    [['TEST-A', 'read']],
+  );
+  await expectStatus(
+    call(`/day?projectId=${projectA2}&businessDate=${D1}`, execA),
+    403,
+    'FORBIDDEN',
+  );
   pass(
-    'executive cannot write; same person on another project cannot write; other org cannot read or write',
+    'executive cannot write; same person on another project cannot write; other org cannot read or write; an expired membership is refused; a project-scoped executive sees only that project',
   );
 
   // ---------- reading never creates a day ----------
@@ -417,7 +446,9 @@ try {
   assert.ok(['A', 'B'].includes(view.facts.weather));
   assert.equal(view.state, 'draft');
   assert.deepEqual(view.cumulativeBase, {});
-  assert.deepEqual(view.materialsCumulative, { rail: '12300' }); // opening 12000 + today 300
+  assert.deepEqual(view.materialsCumulative, {
+    rail: { value: '12300', complete: true },
+  }); // opening 12000 + today 300
   pass(
     'expectedVersion 0 creates; replay returns the same body; key reuse with a new body 409; concurrent saves: exactly one wins',
   );
@@ -565,55 +596,58 @@ try {
   );
 
   // ---------- rule 2: correction = reason + new revision; v1 preserved; cancel restores ----------
-  await expectStatus(
-    call('/correction/start', pm, {
+  const dayVersion = async (date) =>
+    (
+      await expectStatus(
+        call(`/day?projectId=${projectA}&businessDate=${date}`, pm),
+        200,
+      )
+    ).version;
+  const correction = (path, bearer, over) =>
+    call(`/correction/${path}`, bearer, {
       projectId: projectA,
       businessDate: D1,
       clientMutationId: randomUUID(),
-      reason: '',
-    }),
+      ...over,
+    });
+  let v = await dayVersion(D1);
+  await expectStatus(
+    correction('start', pm, { expectedVersion: v, reason: '' }),
     400,
   );
   await expectStatus(
-    call('/correction/start', exec, {
-      projectId: projectA,
-      businessDate: D1,
-      clientMutationId: randomUUID(),
-      reason: 'x',
-    }),
+    correction('start', exec, { expectedVersion: v, reason: 'x' }),
     403,
     'READ_ONLY',
   );
   await expectStatus(
-    call('/correction/start', pm, {
-      projectId: projectA,
+    correction('start', pm, {
       businessDate: D2,
-      clientMutationId: randomUUID(),
+      expectedVersion: 0,
       reason: 'x',
     }),
     409,
     'NOT_SUBMITTED',
   );
   await expectStatus(
-    call('/correction/cancel', pm, {
-      projectId: projectA,
-      businessDate: D1,
-      clientMutationId: randomUUID(),
-    }),
+    correction('cancel', pm, { expectedVersion: v }),
     409,
     'NOT_CORRECTING',
   );
+  await expectStatus(
+    correction('start', pm, { expectedVersion: v - 1, reason: 'x' }),
+    409,
+    'VERSION_CONFLICT',
+  );
   const correcting = await expectStatus(
-    call('/correction/start', pm, {
-      projectId: projectA,
-      businessDate: D1,
-      clientMutationId: randomUUID(),
+    correction('start', pm, {
+      expectedVersion: v,
       reason: 'TEST 支架数量填错',
     }),
     200,
   );
   assert.equal(correcting.state, 'correcting');
-  await expectStatus(
+  const edited = await expectStatus(
     call(
       '/facts',
       pm,
@@ -624,12 +658,14 @@ try {
     ),
     200,
   );
+  // a cancel sent before the edit arrives after it: refused, the edit survives
+  await expectStatus(
+    correction('cancel', pm, { expectedVersion: correcting.version }),
+    409,
+    'VERSION_CONFLICT',
+  );
   const cancelled = await expectStatus(
-    call('/correction/cancel', pm, {
-      projectId: projectA,
-      businessDate: D1,
-      clientMutationId: randomUUID(),
-    }),
+    correction('cancel', pm, { expectedVersion: edited.version }),
     200,
   );
   view = await expectStatus(
@@ -638,21 +674,19 @@ try {
   );
   assert.equal(view.state, 'submitted');
   assert.equal(view.facts.weather, rev1.snapshot.facts.weather); // draft restored from the snapshot
-  await expectStatus(
-    call('/correction/start', pm, {
-      projectId: projectA,
-      businessDate: D1,
-      clientMutationId: randomUUID(),
+  const reopened = await expectStatus(
+    correction('start', pm, {
+      expectedVersion: cancelled.version,
       reason: 'TEST 支架数量填错',
     }),
     200,
   );
-  await expectStatus(
+  const fixed = await expectStatus(
     call(
       '/facts',
       pm,
       cmd({
-        expectedVersion: cancelled.version + 1,
+        expectedVersion: reopened.version,
         facts: facts({
           qty: { support: '130', rail: '' },
           cumulative: { support: '1210' },
@@ -662,7 +696,7 @@ try {
     200,
   );
   const resubmitted = await expectStatus(
-    call('/submit', pm, cmd({ expectedVersion: cancelled.version + 2 })),
+    call('/submit', pm, cmd({ expectedVersion: fixed.version })),
     200,
   );
   assert.equal(resubmitted.revisionNumber, 2);
@@ -692,8 +726,43 @@ try {
   );
   assert.equal(rev2.snapshot.facts.qty.support, '130');
   assert.equal(rev2.snapshot.correctionReason, 'TEST 支架数量填错');
+  // correction B is open and edited; a stale cancel from correction A must not wipe it
+  const correctionB = await expectStatus(
+    correction('start', pm, {
+      expectedVersion: view.version,
+      reason: 'TEST 天气填错',
+    }),
+    200,
+  );
+  const editedB = await expectStatus(
+    call(
+      '/facts',
+      pm,
+      cmd({
+        expectedVersion: correctionB.version,
+        facts: { ...rev2.snapshot.facts, weather: 'TEST B edit' },
+      }),
+    ),
+    200,
+  );
+  await expectStatus(
+    correction('cancel', pm, { expectedVersion: fixed.version }),
+    409,
+    'VERSION_CONFLICT',
+  );
+  view = await expectStatus(
+    call(`/day?projectId=${projectA}&businessDate=${D1}`, pm),
+    200,
+  );
+  assert.equal(view.state, 'correcting');
+  assert.equal(view.facts.weather, 'TEST B edit');
+  await expectStatus(
+    correction('cancel', pm, { expectedVersion: editedB.version }),
+    200,
+  );
+  v = await dayVersion(D1);
   pass(
-    'correction needs a reason and a submitted day; cancel restores the snapshot; resubmit = revision 2, revision 1 intact',
+    'correction needs a reason, a submitted day and the current version; stale cancels are refused; cancel restores the snapshot; resubmit = revision 2, revision 1 intact',
   );
 
   // ---------- rule 3: carry-over from the last submitted day, however many days back ----------
@@ -702,8 +771,13 @@ try {
     200,
   );
   assert.equal(view.previousSubmittedDate, D1);
-  assert.deepEqual(view.cumulativeBase, { support: '1210' });
-  assert.deepEqual(view.materialsCumulative, { rail: '12300' }); // carried, nothing added today
+  assert.deepEqual(view.cumulativeBase, {
+    support: { value: '1210', asOf: D1 },
+  });
+  // carried from D1; today's receipt is still blank on a work day, so not complete yet
+  assert.deepEqual(view.materialsCumulative, {
+    rail: { value: '12300', complete: false },
+  });
   assert.equal(view.baseline, null);
   assert.equal(
     (await owner.query('SELECT count(*)::int AS n FROM "DailyClose"')).rows[0]
@@ -756,6 +830,137 @@ try {
     'no-work submits immediately with its reason and no missing items; the day is then locked',
   );
 
+  // ---------- carry-over through a no-work day (D1 → D4 no work → D5) ----------
+  const d4 = await expectStatus(
+    call(`/revision?projectId=${projectA}&businessDate=${D4}&n=1`, pm),
+    200,
+  );
+  assert.deepEqual(d4.snapshot.cumulativeCarry, {
+    support: { value: '1210', asOf: D1 },
+  });
+  assert.deepEqual(d4.snapshot.materialsCumulative, {
+    rail: { value: '12300', complete: true },
+  });
+  const D5 = '2026-10-09';
+  view = await expectStatus(
+    call(`/day?projectId=${projectA}&businessDate=${D5}`, pm),
+    200,
+  );
+  assert.equal(view.previousSubmittedDate, D4);
+  assert.deepEqual(view.cumulativeBase, {
+    support: { value: '1210', asOf: D1 },
+  });
+  pass(
+    'a no-work day hands on the last declared cumulative and the material total unchanged',
+  );
+
+  // ---------- plan draft vs confirm: every successful save is confirmed or still a draft ----------
+  const D6 = '2026-10-10';
+  const plan6 = (clientMutationId, target) =>
+    call('/plan/draft', pm, {
+      projectId: projectA,
+      targetBusinessDate: D6,
+      clientMutationId,
+      rows: [{ item: 'support', target }],
+    });
+  const confirm6 = () =>
+    call('/plan/confirm', pm, {
+      projectId: projectA,
+      targetBusinessDate: D6,
+      clientMutationId: randomUUID(),
+    });
+  for (let i = 0; i < 5; i++) {
+    await expectStatus(plan6(randomUUID(), `${100 + i}`), 200);
+    const [confirmed, saved] = await Promise.all([
+      confirm6(),
+      plan6(randomUUID(), `${200 + i}`),
+    ]);
+    assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const plan = await expectStatus(
+      call(`/plan?projectId=${projectA}&targetBusinessDate=${D6}`, pm),
+      200,
+    );
+    const target = confirmed.body.rows[0].target;
+    if (target === `${200 + i}`) assert.equal(plan.draft, null);
+    else {
+      assert.equal(target, `${100 + i}`);
+      assert.deepEqual(plan.draft, [{ item: 'support', target: `${200 + i}` }]);
+    }
+  }
+  await expectStatus(plan6(randomUUID(), '999'), 200);
+  const twoConfirms = await Promise.all([confirm6(), confirm6()]);
+  assert.deepEqual(twoConfirms.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(
+    twoConfirms.find((r) => r.status === 409).body.code,
+    'PLAN_NO_CHANGE',
+  );
+  const versions6 = (
+    await owner.query(
+      'SELECT number FROM "PlanVersion" WHERE "targetBusinessDate"=$1::date ORDER BY number',
+      [D6],
+    )
+  ).rows.map((r) => r.number);
+  assert.deepEqual(versions6, [1, 2, 3, 4, 5, 6]);
+  pass(
+    'concurrent draft save and confirm never lose a saved draft; two confirms create one version',
+  );
+
+  // ---------- same-key submit twice at once; save vs submit ----------
+  const D7 = '2026-10-11',
+    D8 = '2026-10-12';
+  await expectStatus(
+    call('/facts', pm, cmd({ businessDate: D7, facts: facts() })),
+    200,
+  );
+  const sameKey = cmd({ businessDate: D7, expectedVersion: 1 });
+  const both = await Promise.all([
+    call('/submit', pm, sameKey),
+    call('/submit', pm, sameKey),
+  ]);
+  assert.deepEqual(
+    both.map((r) => r.status),
+    [200, 200],
+  );
+  assert.deepEqual(both[0].body, both[1].body);
+  assert.equal(
+    (
+      await owner.query(
+        `SELECT count(*)::int AS n FROM "Revision" r JOIN "DailyClose" d ON d.id=r."dailyCloseId" WHERE d."businessDate"=$1::date`,
+        [D7],
+      )
+    ).rows[0].n,
+    1,
+  );
+  await expectStatus(
+    call('/facts', pm, cmd({ businessDate: D8, facts: facts() })),
+    200,
+  );
+  const saveVsSubmit = await Promise.all([
+    call(
+      '/facts',
+      pm,
+      cmd({
+        businessDate: D8,
+        expectedVersion: 1,
+        facts: facts({ weather: 'late' }),
+      }),
+    ),
+    call('/submit', pm, cmd({ businessDate: D8, expectedVersion: 1 })),
+  ]);
+  assert.deepEqual(saveVsSubmit.map((r) => r.status).sort(), [200, 409]);
+  view = await expectStatus(
+    call(`/day?projectId=${projectA}&businessDate=${D8}`, pm),
+    200,
+  );
+  if (saveVsSubmit[1].status === 200) {
+    assert.equal(view.state, 'submitted');
+    assert.notEqual(view.facts.weather, 'late');
+  } else assert.equal(view.state, 'draft');
+  pass(
+    'the same submit sent twice at once yields one revision and one response; save and submit on one version: exactly one wins',
+  );
+
   // ---------- executive read ----------
   const execView = await expectStatus(
     call(`/day?projectId=${projectA}&businessDate=${D1}`, exec),
@@ -790,11 +995,29 @@ try {
         table,
       );
     await client.query("SELECT set_config('app.org_id', $1, true)", [orgA]);
+    const revisionsA = (
+      await client.query('SELECT count(*)::int AS n FROM "Revision"')
+    ).rows[0].n;
     assert.equal(
-      (await client.query('SELECT count(*)::int AS n FROM "Revision"')).rows[0]
+      revisionsA,
+      (await owner.query('SELECT count(*)::int AS n FROM "Revision"')).rows[0]
         .n,
-      3,
     );
+    for (const [statement, params] of [
+      [
+        'INSERT INTO "PlanDraft"(id,"orgId","projectId","targetBusinessDate",rows,"updatedBy") VALUES($1,$2,$3,\'2026-12-01\',\'[]\',$4)',
+        [randomUUID(), orgB, projectB, accountB],
+      ],
+      ['UPDATE "DailyReportDraft" SET "orgId"=$1', [orgB]],
+    ]) {
+      await client.query('SAVEPOINT rls');
+      await assert.rejects(
+        client.query(statement, params),
+        /row-level security|violates|foreign key/,
+        statement,
+      );
+      await client.query('ROLLBACK TO SAVEPOINT rls');
+    }
     // Each denied statement aborts the transaction; a savepoint isolates the next check.
     for (const statement of [
       'UPDATE "Revision" SET reason=\'tamper\'',
@@ -820,17 +1043,23 @@ try {
   assert.deepEqual(
     Object.fromEntries(audits.rows.map((r) => [r.action, r.n])),
     {
-      REPORT_CORRECTION_CANCEL: 1,
-      REPORT_CORRECTION_START: 2,
+      // cancel A + cancel B; start A, reopen, start B
+      REPORT_CORRECTION_CANCEL: 2,
+      REPORT_CORRECTION_START: 3,
       REPORT_NO_WORK: 1,
-      REPORT_PLAN_CONFIRM: 2,
-      REPORT_SAVE_FACTS: 4,
+      // D1 v1, v2; D6 five race rounds + one of two concurrent confirms
+      REPORT_PLAN_CONFIRM: 8,
+      // D1, D2, D1 again; D6 2 × 5 rounds + '999'
+      REPORT_PLAN_DRAFT: 14,
+      // D1, race winner, three correction edits, D7, D8 (+ D8 late save if it won)
+      REPORT_SAVE_FACTS: saveVsSubmit[0].status === 200 ? 8 : 7,
       REPORT_SAVE_ITEMS: 2,
-      REPORT_SUBMIT: 2,
+      // D1, D1 resubmit, D7 once (same key twice), D8 if submit won
+      REPORT_SUBMIT: saveVsSubmit[1].status === 200 ? 4 : 3,
     },
   );
   pass(
-    'RLS hides every report table from another org; the app role cannot update or delete revisions or plan versions; every write is audited',
+    'RLS hides every report table from another org and refuses writes into it; the app role cannot update or delete revisions or plan versions; every write is audited',
   );
 
   console.log(

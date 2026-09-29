@@ -72,6 +72,7 @@ export interface SubmitReportCommand {
 export interface StartCorrectionCommand {
   projectId: string;
   businessDate: string;
+  expectedVersion: number;
   clientMutationId: string;
   reason: string;
 }
@@ -86,6 +87,7 @@ export interface NoWorkCommand {
 export interface CancelCorrectionCommand {
   projectId: string;
   businessDate: string;
+  expectedVersion: number;
   clientMutationId: string;
 }
 export const REPORT_ITEM_KINDS = ['work', 'machinery', 'material'] as const;
@@ -337,6 +339,7 @@ export function parseStartCorrectionCommand(
   return {
     projectId: id(o['projectId'], 'projectId'),
     businessDate: date(o['businessDate'], 'businessDate'),
+    expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
     reason,
   };
@@ -359,6 +362,7 @@ export function parseCancelCorrectionCommand(
   return {
     projectId: id(o['projectId'], 'projectId'),
     businessDate: date(o['businessDate'], 'businessDate'),
+    expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
   };
 }

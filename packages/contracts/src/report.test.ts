@@ -150,8 +150,16 @@ describe('report contracts', () => {
     const base = {
       projectId: ID + '1',
       businessDate: '2026-09-29',
+      expectedVersion: 3,
       clientMutationId: ID + '4',
     };
+    expect(() =>
+      parseStartCorrectionCommand({
+        ...base,
+        expectedVersion: undefined,
+        reason: 'x',
+      }),
+    ).toThrow('expectedVersion');
     expect(() =>
       parseStartCorrectionCommand({ ...base, reason: '   ' }),
     ).toThrow('reason');
