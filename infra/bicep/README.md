@@ -27,3 +27,14 @@ Rollback before deployment is code-only. After deployment, preserve database/sto
 Deployment order is foundation → build and push the separate `Dockerfile.migrate` image by digest → create `dev-migration-job.bicep` → manually start it once to apply additive schema migrations as the migration identity → create a non-admin PostgreSQL Entra principal for the application identity on the `postgres` database → grant that principal membership in the migration-created `mje_alpha_app` role on `mje` → bootstrap a controlled owner/project membership → push an immutable application image and deploy this template. The migration job has no automatic schedule, no public ingress, one replica and no automatic retry. Its script requires the exact Dev server name pattern, database and migration identity and obtains a short-lived token at runtime. It must never use the local URL fallback. None of those cloud steps has been run. Microsoft documents the [managed-identity PostgreSQL principal](https://learn.microsoft.com/en-us/azure/postgresql/security/security-connect-with-managed-identity) and [Container Apps registry identity](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity-image-pull).
 
 The browser SPA redirect URI must then match the actual HTTPS Container App URL. Verify the exact Dev app registration before owner login. A successful local or public CI build does not establish cloud database reachability, capacity, token consent or a usable app. The Dev foundation and app can incur charges after deployment; obtain the cost decision before creating them. Reverting an app revision should preserve database snapshots and Blob evidence.
+
+## Rollback that preserves data (Dev and later)
+
+Once an environment holds records that must be kept, an application rollback never removes schema or data:
+
+1. Stop new writes if needed: scale the app to zero or set its revision inactive; the database and Blob stay as they are.
+2. Roll back the application image or revision to the previous known-good digest. Migrations are additive; the previous application ignores the added tables and columns.
+3. Keep every added table and column, every `Revision`, `RevisionEvent`, `AuditLog` row and Blob object. Fix forward with a new, reviewed migration if the schema itself must change.
+4. Re-enable writes after the fix is verified.
+
+`DROP TABLE` / `DROP COLUMN`, `prisma db push` / `migrate reset` and deleting the resource group are allowed only on a database explicitly labelled as a disposable TEST database. This supersedes the "drop the four tables and the `correctionReason` column" note in the A2 pull request, which was written before Dev held any data.

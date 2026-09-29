@@ -1,6 +1,6 @@
 # MJE EPC operations platform
 
-Phase 0 baseline plus a locally verified owner-Alpha API and browser UI candidate. Cloud sign-in and offline submission have not been verified. This is not an employee-ready or production-ready application.
+**Current state (see AGENTS.md for the maintained summary):** Site Daily Close rules and contracts, the daily-report database and API, issues and escalation, the web report screens, and a guarded Dev bootstrap job are merged. Every figure is a declaration, not a verification. Photos, field check-in / foreman quantities, the executive multi-project home and offline queueing are not implemented. Real Entra sign-in, real phones and cloud persistence have not been verified. This is not an employee-ready or production-ready application.
 
 The selected stack is TypeScript strict, React/Vite, NestJS, a Node worker, PostgreSQL/Prisma and Azure Blob, with Azure Container Apps as the intended application runtime. The first business scope is Site Daily Close. CRM, costing and payments currently have schema placeholders only.
 
@@ -40,7 +40,7 @@ Keep private development evidence in a separate controlled local location with a
 
 Public CI checks formatting, types, build, publication guards, process startup, database constraints and private Blob access using synthetic data. It does not read private source documents or execute real-source acceptance. Source hash/table-coordinate regression remains in the controlled local archive. Passing this CI is not evidence of field verification, business acceptance or production readiness.
 
-The Azure workflow is manual and previews infrastructure only. Its Dev-scoped OIDC login and what-if have been exercised; no paid foundation or application has been deployed. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
+The Azure workflow is manual and previews infrastructure only. The Dev foundation and database migrations are applied by the owner's controlled CLI, not by CI; the Dev application is not yet deployed. Infrastructure examples are incomplete foundations; see [infra/bicep/README.md](infra/bicep/README.md). Do not provision production resources without explicit authorization.
 
 ## Owner Alpha preparation
 
