@@ -25,11 +25,20 @@ const password = randomBytes(24).toString('hex');
 const admin = new Pool({ connectionString: source.toString() });
 // pool.end() resolves before idle sockets finish closing; DROP DATABASE ... WITH (FORCE) can
 // then terminate one (57P01) and the pool would re-emit it as an unhandled 'error'. Only that
-// shutdown termination is ignored; any other pool error still fails the run.
-const tolerateShutdown = (pool) =>
-  pool.on('error', (error) => {
-    if (error?.code !== '57P01') throw error;
+// termination, and only after this pool's own end() was called, is ignored; any other pool
+// error, or a 57P01 while the pool is in use, still fails the run.
+const tolerateShutdown = (pool) => {
+  let closing = false;
+  const end = pool.end.bind(pool);
+  pool.end = () => {
+    closing = true;
+    return end();
+  };
+  return pool.on('error', (error) => {
+    if (closing && error?.code === '57P01') return;
+    throw error;
   });
+};
 const isolated = new URL(source);
 isolated.pathname = `/${database}`;
 let owner, appPool, app;

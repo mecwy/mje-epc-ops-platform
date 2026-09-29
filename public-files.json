@@ -124,6 +124,8 @@
   "scripts/check-web-bundle.mjs",
   "scripts/cloud-bootstrap.mjs",
   "scripts/cloud-bootstrap.test.mjs",
+  "scripts/entra-mapping.mjs",
+  "scripts/entra-mapping.test.mjs",
   "scripts/cloud-migrate.mjs",
   "scripts/cloud-migrate.test.mjs",
   "scripts/container-smoke.mjs",

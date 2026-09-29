@@ -75,6 +75,7 @@ const requireDomain = createRequire(
   new URL('../packages/domain/package.json', import.meta.url),
 );
 const { Client } = (await import(requireDomain.resolve('pg'))).default;
+const { checkMapping, tokenTenant } = await import('./entra-mapping.mjs');
 const credential = new ManagedIdentityCredential({ clientId });
 const connect = async (database) => {
   const token = await credential.getToken(
@@ -93,6 +94,8 @@ const connect = async (database) => {
     options: '-c search_path=pg_catalog',
   });
   await client.connect();
+  // Accepted by this server, so its tenant claim is the tenant the server trusts.
+  client.serverTenant = tokenTenant(token.token);
   return client;
 };
 const ident = (name) => `"${name.replaceAll('"', '""')}"`;
@@ -112,27 +115,37 @@ try {
     );
     console.log(`created Entra login ${appPrincipal} (service, non-admin)`);
   }
-  const mapped = (
+  // The mapping itself is stored as the role's "pgaadauth" security label (authoritative;
+  // it carries no tenant). The tenant is the one this server accepted our token from. The
+  // documented listing, when it lists this login, must agree with both.
+  const labels = (
+    await system.query(
+      `SELECT l.label FROM pg_catalog.pg_shseclabel l
+      JOIN pg_catalog.pg_roles r ON r.oid = l.objoid
+      WHERE l.classoid = 'pg_catalog.pg_authid'::pg_catalog.regclass
+        AND l.provider = 'pgaadauth' AND r.rolname = $1`,
+      [appPrincipal],
+    )
+  ).rows;
+  const listed = (
     await system.query(
       'SELECT * FROM pg_catalog.pgaadauth_list_principals(false)',
     )
   ).rows
     .map(lower)
-    // Documented result: rolename, principalType, objectId, tenantId, isMfa, isAdmin (0/1).
     .filter((r) => r.rolename === appPrincipal);
-  const principal = mapped[0];
-  const off = (v) => v === 0 || v === '0' || v === false || v === 'f';
-  if (mapped.length !== 1 || !principal)
-    fail('the application login has no single Entra mapping');
-  if (String(principal.objectid ?? '').toLowerCase() !== appObjectId)
-    fail('the login maps to another Entra object');
-  if (String(principal.principaltype ?? '').toLowerCase() !== 'service')
-    fail('the login is not a service principal');
-  if (String(principal.tenantid ?? '').toLowerCase() !== tenantId)
-    fail('the login belongs to another tenant');
-  if (!off(principal.isadmin)) fail('the login is an Entra admin');
-  if (!off(principal.ismfa))
-    fail('the login is marked MFA; a service login cannot be');
+  const problem = checkMapping({
+    labels,
+    listed,
+    serverTenant: system.serverTenant,
+    appObjectId,
+    tenantId,
+  });
+  if (problem) fail(problem);
+  if (!listed.length)
+    console.log(
+      'Entra listing has no row for this login; the security label and server tenant were used',
+    );
   const canLogin = await system.query(
     'SELECT rolcanlogin FROM pg_catalog.pg_roles WHERE rolname=$1',
     [appPrincipal],
@@ -140,7 +153,7 @@ try {
   if (!canLogin.rows[0]?.rolcanlogin)
     fail('the application login cannot log in');
   console.log(
-    `Entra login ${appPrincipal} verified: service principal, expected object, non-admin`,
+    `Entra login ${appPrincipal} verified: service principal, expected object, non-admin, server tenant`,
   );
 } finally {
   await system.end();
