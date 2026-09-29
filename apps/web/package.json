@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host localhost",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node ../../scripts/check-web-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
     "@azure/msal-browser": "4.30.0",
     "@mje/contracts": "workspace:*",
+    "@mje/domain": "workspace:*",
+    "@mje/ui": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
