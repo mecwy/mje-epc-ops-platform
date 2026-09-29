@@ -225,6 +225,7 @@ model Project {
   PlanDraft_project                       PlanDraft[]        @relation("PlanDraft_project")
   ReportItem_project                      ReportItem[]       @relation("ReportItem_project")
   LagDismissal_project                    LagDismissal[]     @relation("LagDismissal_project")
+  PhotoEvidence_project                   PhotoEvidence[]    @relation("PhotoEvidence_project")
 
   @@unique([orgId, id])
   @@unique([orgId, code])
@@ -358,6 +359,7 @@ model Person {
   Issue_ownerPersonId                   Issue[]                @relation("Issue_ownerPersonId")
   IssueNote_authorPersonId              IssueNote[]            @relation("IssueNote_person")
   IssueTransition_actorPersonId         IssueTransition[]      @relation("IssueTransition_person")
+  PhotoEvidence_uploadedByPersonId      PhotoEvidence[]        @relation("PhotoEvidence_uploadedByPerson")
   DailyClose_responsiblePersonId        DailyClose[]           @relation("DailyClose_responsiblePersonId")
   DailyClose_delegatePersonId           DailyClose[]           @relation("DailyClose_delegatePersonId")
 
@@ -385,6 +387,8 @@ model LoginAccount {
   issueNotes           IssueNote[]        @relation("IssueNote_account")
   issueTransitions     IssueTransition[]  @relation("IssueTransition_account")
   lagDismissals        LagDismissal[]     @relation("LagDismissal_actor")
+  photoUploads         PhotoEvidence[]    @relation("PhotoEvidence_uploadedByAccount")
+  photoLinkSupersedes  EvidenceLink[]     @relation("EvidenceLink_supersededBy")
   Membership_accountId Membership[]       @relation("Membership_accountId")
 
   @@unique([orgId, id])
@@ -787,9 +791,33 @@ model PhotoEvidence {
   sourceDocumentId     String?         @db.Uuid
   sourceDocument       SourceDocument? @relation("PhotoEvidence_sourceDocumentId", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   EvidenceLink_photoId EvidenceLink[]  @relation("EvidenceLink_photoId")
+  /// Site-report photo (U2.1 rule 8): project, site business day and source are set together
+  /// (CHECK constraints in SQL). camera = in-app capture with a device fix; album = no uploader position.
+  projectId            String?         @db.Uuid
+  project              Project?        @relation("PhotoEvidence_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  businessDate         DateTime?       @db.Date
+  source               String?
+  captureLat           Decimal?        @db.Decimal(9, 6)
+  captureLon           Decimal?        @db.Decimal(9, 6)
+  captureAccuracyM     Decimal?        @db.Decimal(8, 2)
+  captureFixAt         DateTime?       @db.Timestamptz(6)
+  /// Claims read from the file (EXIF), never a verification. fileTakenLocal is the value as written.
+  fileTakenAt          DateTime?       @db.Timestamptz(6)
+  fileTakenLocal       String?
+  fileGpsLat           Decimal?        @db.Decimal(9, 6)
+  fileGpsLon           Decimal?        @db.Decimal(9, 6)
+  thumbBlobKey         String?
+  thumbMediaType       String?
+  uploadedByAccountId  String?         @db.Uuid
+  uploadedByAccount    LoginAccount?   @relation("PhotoEvidence_uploadedByAccount", fields: [orgId, uploadedByAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  uploadedByPersonId   String?         @db.Uuid
+  uploadedByPerson     Person?         @relation("PhotoEvidence_uploadedByPerson", fields: [orgId, uploadedByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// Upload order (identity); never the clock.
+  seq                  BigInt          @default(autoincrement())
 
   @@unique([orgId, id])
   @@unique([orgId, sha256])
+  @@index([orgId, projectId, businessDate, seq], map: "PhotoEvidence_project_day_idx")
 }
 
 model EvidenceLink {
@@ -809,8 +837,20 @@ model EvidenceLink {
   verification        PresenceVerification? @relation("EvidenceLink_verificationId", fields: [orgId, verificationId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   inspectionId        String?               @db.Uuid
   inspection          Inspection?           @relation("EvidenceLink_inspectionId", fields: [orgId, inspectionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// Site-report link (businessDate set): exactly one of workItemKey / issueId. Append-only: a
+  /// change supersedes the current row once (trigger) and inserts a new one.
+  businessDate        DateTime?             @db.Date
+  workItemKey         String?
+  issueId             String?               @db.Uuid
+  issue               Issue?                @relation("EvidenceLink_issue", fields: [orgId, issueId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  supersededAt        DateTime?             @db.Timestamptz(6)
+  supersededBy        String?               @db.Uuid
+  superseder          LoginAccount?         @relation("EvidenceLink_supersededBy", fields: [orgId, supersededBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// Link order (identity); never the clock.
+  seq                 BigInt                @default(autoincrement())
 
   @@unique([orgId, id])
+  @@index([orgId, photoId, seq], map: "EvidenceLink_photo_idx")
 }
 
 model Issue {
@@ -851,6 +891,7 @@ model Issue {
   seq           BigInt            @default(autoincrement())
   notes         IssueNote[]       @relation("IssueNote_issue")
   transitions   IssueTransition[] @relation("IssueTransition_issue")
+  photoLinks    EvidenceLink[]    @relation("EvidenceLink_issue")
 
   @@unique([orgId, id])
   @@index([orgId, projectId, createdOn, seq], map: "Issue_project_createdOn_idx")
