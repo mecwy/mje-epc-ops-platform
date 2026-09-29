@@ -28,11 +28,40 @@ const password = randomBytes(24).toString('hex');
 const admin = new Pool({ connectionString: source.toString() });
 // pool.end() resolves before idle sockets finish closing; DROP DATABASE ... WITH (FORCE) can
 // then terminate one (57P01) and the pool would re-emit it as an unhandled 'error'. Only that
-// shutdown termination is ignored; any other pool error still fails the run.
-const tolerateShutdown = (pool) =>
-  pool.on('error', (error) => {
-    if (error?.code !== '57P01') throw error;
+// termination, and only after this pool's own end() was called, is ignored; any other pool
+// error, or a 57P01 while the pool is in use, still fails the run.
+const tolerateShutdown = (pool) => {
+  let closing = false;
+  const end = pool.end.bind(pool);
+  pool.end = () => {
+    closing = true;
+    return end();
+  };
+  return pool.on('error', (error) => {
+    if (closing && error?.code === '57P01') return;
+    throw error;
   });
+};
+// Resolves once `count` sessions are waiting on the advisory lock for `key` (as taken by
+// hashtextextended(key, 0)); fails after a timeout instead of guessing with a sleep.
+const waitForLockWaiters = async (key, count, timeoutMs = 15000) => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { n } = (
+      await owner.query(
+        `SELECT count(*)::int AS n FROM pg_catalog.pg_locks
+        WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+          AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())
+          AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+        [key],
+      )
+    ).rows[0];
+    if (n >= count) return;
+    if (Date.now() > deadline)
+      throw new Error(`timed out: ${n} of ${count} lock waiters for ${key}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
 const isolated = new URL(source);
 isolated.pathname = `/${database}`;
 let owner, appPool, app;
@@ -941,7 +970,8 @@ try {
       settled.confirm = true;
       return r;
     });
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // Wait (bounded) until both requests are observed waiting on exactly this lock.
+    await waitForLockWaiters(lockKey, 2);
     assert.deepEqual(settled, { save: false, confirm: false });
     await holder.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [
       lockKey,
