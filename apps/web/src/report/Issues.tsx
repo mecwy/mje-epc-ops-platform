@@ -12,6 +12,29 @@ import { Chip, Sheet } from '../ui.js';
 import { fmtShort } from './format.js';
 import type { IssuesHandle, NewIssue } from './useIssues.js';
 
+/** A specific, actionable message for each rejection the issue API can give. */
+export function issueErrorKey(code: string | null): MessageKey | null {
+  switch (code) {
+    case null:
+      return null;
+    case 'CATEGORY_REQUIRED':
+      return 'categoryRequired';
+    case 'NEEDS_EXPERT':
+      return 'needsExpert';
+    case 'DATE_BEFORE_CLOSE':
+    case 'DATE_BEFORE_REOPEN':
+    case 'DATE_BEFORE_CREATED':
+      return 'dateOrder';
+    case 'VERSION_CONFLICT':
+      return 'conflictReloaded';
+    case 'READ_ONLY':
+    case 'FORBIDDEN':
+      return 'forbidden';
+    default:
+      return 'saveFail';
+  }
+}
+
 export const CATEGORY_LABEL = {
   progressLag: 'cat_progressLag',
   milestoneRisk: 'cat_milestoneRisk',
@@ -139,7 +162,10 @@ export function FillIssues({
     return it ? label(it.label) : key;
   };
   const open = (handle.issues ?? []).filter((i) => i.status === 'open');
-  const disabled = !canWrite || handle.busy;
+  const closedToday = (handle.issues ?? []).filter((i) => i.closedToday);
+  const disabled = !canWrite || handle.busy || handle.pending;
+  const errorKey =
+    handle.error === 'NETWORK' ? null : issueErrorKey(handle.error);
   return (
     <>
       <div className="blk-row">
@@ -155,6 +181,20 @@ export function FillIssues({
           </button>
         )}
       </div>
+      {handle.pending && (
+        <div className="banner err">
+          {t('saveFail')}{' '}
+          <button
+            type="button"
+            className="pill"
+            disabled={handle.busy}
+            onClick={() => void handle.retry()}
+          >
+            {t('retry')}
+          </button>
+        </div>
+      )}
+      {errorKey && <div className="banner warn">{t(errorKey)}</div>}
       {canWrite &&
         handle.lag.map((key) => (
           <div className="suggest" key={key}>
@@ -221,13 +261,32 @@ export function FillIssues({
           )}
         </div>
       ))}
+      {closedToday.length > 0 && (
+        <>
+          <h3>{t('closedTab')}</h3>
+          {closedToday.map((i) => (
+            <div className="irow" key={i.id}>
+              <button
+                type="button"
+                className="grow plain"
+                onClick={() => setSheet({ kind: 'issue', id: i.id })}
+              >
+                <b>{i.title}</b>
+                <span className="muted small">
+                  {categoryText(t, i.category)}
+                </span>
+              </button>
+            </div>
+          ))}
+        </>
+      )}
       {sheet?.kind === 'new' && (
         <NewIssueSheet
           items={work}
           preset={sheet.preset ?? {}}
           onClose={() => setSheet(null)}
           onCreate={async (x) => {
-            if (await handle.create(x)) setSheet(null);
+            if ((await handle.create(x)) === 'ok') setSheet(null);
           }}
         />
       )}
@@ -414,7 +473,7 @@ function IssueSheet({
   const [category, setCategory] = useState<EscalationCategory | ''>(
     issue.category,
   );
-  const disabled = !canWrite || busy;
+  const disabled = !canWrite || busy || handle.pending;
   return (
     <Sheet title={issue.title} onClose={onClose}>
       <div className="chips">
@@ -448,7 +507,8 @@ function IssueSheet({
             className="ghost"
             disabled={disabled || !text.trim()}
             onClick={async () => {
-              if (await handle.note(issue.id, text.trim())) setText('');
+              if ((await handle.note(issue.id, text.trim())) === 'ok')
+                setText('');
             }}
           >
             {t('send')}

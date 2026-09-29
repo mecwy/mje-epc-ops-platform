@@ -218,6 +218,12 @@ export const MESSAGES = {
   ],
   cumulative: ['累计', 'Cumulative', 'Ukupno', 'Acumulado'],
   date: ['日期', 'Date', 'Datum', 'Fecha'],
+  dateOrder: [
+    '日期早于上一次关闭或重新打开',
+    'The date is before the last close or reopen',
+    'Datum je pre poslednjeg zatvaranja ili ponovnog otvaranja',
+    'La fecha es anterior al último cierre o reapertura',
+  ],
   demoCheckin: [
     '演示：工人签到',
     'Demo: worker check-in',
@@ -366,6 +372,12 @@ export const MESSAGES = {
     'Main navigation',
     'Glavna navigacija',
     'Navegación principal',
+  ],
+  manageIssues: [
+    '管理问题',
+    'Manage issues',
+    'Upravljaj problemima',
+    'Gestionar incidencias',
   ],
   markUnknown: [
     '标为未知',
