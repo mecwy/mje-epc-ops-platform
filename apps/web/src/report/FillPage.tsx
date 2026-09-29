@@ -9,6 +9,8 @@ import type { MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
 import { activeWork, byKind, cumulativeSuggestion, target } from './model.js';
 import type { DayHandle, SaveState } from './useDay.js';
+import { FillIssues } from './Issues.js';
+import type { IssuesHandle } from './useIssues.js';
 
 const ROLE_LABEL = {
   manager: 'role_manager',
@@ -356,6 +358,8 @@ export function FillPage({
   onSubmit,
   busy,
   tomorrowText,
+  issues,
+  canWrite,
 }: {
   h: DayHandle;
   day: DayView;
@@ -368,6 +372,8 @@ export function FillPage({
   onSubmit: () => void;
   busy: boolean;
   tomorrowText: string;
+  issues: IssuesHandle;
+  canWrite: boolean;
 }) {
   const { t, label, locale } = useI18n();
   const [mm, setMm] = useState(false);
@@ -592,7 +598,11 @@ export function FillPage({
                   )}
                 </section>
                 <section className="card">
-                  <h2 className="blk">{t('issues')}</h2>
+                  <FillIssues
+                    handle={issues}
+                    items={day.items}
+                    canWrite={canWrite}
+                  />
                   {narrative('quality')}
                   {narrative('safety')}
                 </section>

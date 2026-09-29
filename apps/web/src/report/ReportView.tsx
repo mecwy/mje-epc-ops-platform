@@ -7,6 +7,7 @@ import { Icon } from '../icons.js';
 import { Chip, Kv } from '../ui.js';
 import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, target } from './model.js';
+import { Attention, IssueList } from './Issues.js';
 
 function Val({ raw }: { raw: string | undefined }) {
   const { t, locale } = useI18n();
@@ -200,7 +201,10 @@ function Issues({ c }: { c: ReportContent }) {
   const n = c.facts.narrative;
   return (
     <section className="card">
-      <h2 className="blk">{t('issues')}</h2>
+      <div className="blk-row">
+        <h2 className="blk">{t('issues')}</h2>
+      </div>
+      <IssueList issues={c.issues ?? []} />
       <Kv label={t('quality')}>
         {n.quality.trim() || <span className="miss">{t('notFilled')}</span>}
       </Kv>
@@ -300,10 +304,12 @@ export function ReportBody({
   c,
   version,
   timeZone,
+  onReply,
 }: {
   c: ReportContent;
   version: RevisionMeta | null;
   timeZone: string;
+  onReply?: ((issueId: string) => void) | null;
 }) {
   const { t, locale, label } = useI18n();
   const f = c.facts;
@@ -323,6 +329,7 @@ export function ReportBody({
           {weather && <span className="muted">{weather}</span>}
         </div>
       )}
+      <Attention issues={c.issues ?? []} onReply={onReply ?? null} />
       <div className="rgrid">
         <div className="rcol">
           {f.noWork ? (
@@ -356,6 +363,7 @@ export function ReportView({
   missing,
   onFill,
   onNoWork,
+  onReply,
 }: {
   day: DayView;
   read: ReportContent;
@@ -363,6 +371,7 @@ export function ReportView({
   missing: number;
   onFill: () => void;
   onNoWork: () => void;
+  onReply: ((issueId: string) => void) | null;
 }) {
   const { t } = useI18n();
   if (day.state === 'submitted')
@@ -370,6 +379,7 @@ export function ReportView({
       <ReportBody
         c={read}
         version={day.revisions.at(-1) ?? null}
+        onReply={onReply}
         timeZone={day.siteTimezone}
       />
     );

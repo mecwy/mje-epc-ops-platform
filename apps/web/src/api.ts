@@ -1,5 +1,12 @@
 import type {
   CancelCorrectionCommand,
+  CloseIssueCommand,
+  CreateIssueCommand,
+  DismissLagCommand,
+  EscalationCategory,
+  NoteIssueCommand,
+  ReplyIssueCommand,
+  SetEscalateCommand,
   ConfirmPlanCommand,
   DayFactsDto,
   NoWorkCommand,
@@ -44,6 +51,48 @@ export interface MaterialTotal {
   value: string | null;
   complete: boolean;
 }
+/** An issue as it stands on a business day (live) or stood at submission (snapshot). */
+export interface IssueAsOf {
+  id: string;
+  title: string;
+  category: EscalationCategory | '';
+  escalate: boolean;
+  controlled: boolean;
+  ownerPersonId: string | null;
+  dueOn: string | null;
+  workItemKey: string | null;
+  status: 'open' | 'closed';
+  closedToday: boolean;
+  last: { kind: 'note' | 'reply'; text: string; onDate: string } | null;
+}
+export interface IssueNote {
+  id: string;
+  kind: 'note' | 'reply';
+  text: string;
+  onDate: string;
+  authorPersonId: string;
+  at: string;
+}
+/** The editable issue of the issue list: as-of-day status plus current version and notes. */
+export interface IssueItem extends IssueAsOf {
+  createdOn: string;
+  closedOn: string | null;
+  state: string;
+  version: number;
+  notes: IssueNote[];
+}
+export interface IssueList {
+  access: Access;
+  projectId: string;
+  businessDate: string;
+  issues: IssueItem[];
+}
+export interface LagView {
+  projectId: string;
+  businessDate: string;
+  suggestions: { workItemKey: string }[];
+}
+
 /** What the report screens render: a live day or a frozen revision snapshot. */
 export interface ReportContent {
   businessDate: string;
@@ -59,6 +108,8 @@ export interface ReportContent {
   cumulativeBase: Record<string, Carried>;
   materialsCumulative: Record<string, MaterialTotal>;
   coverage: Coverage;
+  /** Absent only in revisions submitted before issues existed. */
+  issues?: IssueAsOf[];
 }
 export interface RevisionMeta {
   n: number;
@@ -182,6 +233,19 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
         'plan/draft',
         c,
       ),
+    issues: (projectId: string, businessDate: string) =>
+      get<IssueList>('issues', { projectId, businessDate }),
+    lag: (projectId: string, businessDate: string) =>
+      get<LagView>('issues/lag', { projectId, businessDate }),
+    createIssue: (c: CreateIssueCommand) => post<unknown>('issues', c),
+    noteIssue: (c: NoteIssueCommand) => post<unknown>('issues/note', c),
+    escalateIssue: (c: SetEscalateCommand) =>
+      post<unknown>('issues/escalate', c),
+    closeIssue: (c: CloseIssueCommand) => post<unknown>('issues/close', c),
+    reopenIssue: (c: CloseIssueCommand) => post<unknown>('issues/reopen', c),
+    replyIssue: (c: ReplyIssueCommand) => post<unknown>('issues/reply', c),
+    dismissLag: (c: DismissLagCommand) =>
+      post<unknown>('issues/lag/dismiss', c),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',
