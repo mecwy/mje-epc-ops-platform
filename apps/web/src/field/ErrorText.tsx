@@ -17,5 +17,6 @@ export function ErrorText({
   uncertain?: boolean;
 }) {
   const { t } = useI18n();
-  return <>{t(outcomeKey(code, { write, uncertain }))}</>;
+  const key = outcomeKey(code, { write, uncertain });
+  return <>{t(key)}</>;
 }

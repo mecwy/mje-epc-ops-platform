@@ -27,7 +27,7 @@ import {
 import { ENDED, FieldSession } from './session.js';
 import { releaseDevice } from './release.js';
 import { CheckInCard } from './CheckInCard.js';
-import { CrewCard, OwnedActionsBar, ReportCard } from './ForemanPanel.js';
+import { ForemanArea } from './ForemanPanel.js';
 import { foremanOwners, type ForemanOwners } from './foreman-owners.js';
 
 function storage(kind: 'local' | 'session'): Storage | null {
@@ -502,19 +502,8 @@ function DevicePage({
         <div hidden={Boolean(view.me.foreman) && tab !== 'me'}>
           <CheckInCard api={api} me={view.me} onEnded={endDevice} />
         </div>
-        {owners.current && view.me.foreman && (
-          <>
-            <div hidden={tab !== 'crew'}>
-              <CrewCard me={view.me} owners={owners.current} />
-            </div>
-            <div hidden={tab !== 'report'}>
-              <ReportCard me={view.me} owners={owners.current} />
-            </div>
-          </>
-        )}
-        {owners.current && !view.me.foreman && (
-          // The role went away while an attempt was owned: its Retry / Give up stay here.
-          <OwnedActionsBar owners={owners.current} />
+        {owners.current && (
+          <ForemanArea me={view.me} owners={owners.current} tab={tab} />
         )}
         {releaseButton}
       </>

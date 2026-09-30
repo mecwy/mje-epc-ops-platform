@@ -758,11 +758,7 @@ export function OwnedActionsBar({ owners }: { owners: ForemanOwners }) {
                 {r.running ? (
                   t('saving')
                 ) : r.code ? (
-                  <ErrorText
-                    code={r.code}
-                    write
-                    uncertain={r.uncertain}
-                  />
+                  <ErrorText code={r.code} write uncertain={r.uncertain} />
                 ) : null}
               </span>
             </span>
@@ -790,5 +786,32 @@ export function OwnedActionsBar({ owners }: { owners: ForemanOwners }) {
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * The foreman parts of the device page: the crew and report cards while this person is a
+ * foreman, otherwise the owned-attempts bar. The owners come from the device page and outlive
+ * both (AGENTS.md), so losing and regaining the role never orphans an attempt.
+ */
+export function ForemanArea({
+  me,
+  owners,
+  tab,
+}: {
+  me: FieldMeDto;
+  owners: ForemanOwners;
+  tab: 'me' | 'crew' | 'report';
+}) {
+  if (!me.foreman) return <OwnedActionsBar owners={owners} />;
+  return (
+    <>
+      <div hidden={tab !== 'crew'}>
+        <CrewCard me={me} owners={owners} />
+      </div>
+      <div hidden={tab !== 'report'}>
+        <ReportCard me={me} owners={owners} />
+      </div>
+    </>
   );
 }
