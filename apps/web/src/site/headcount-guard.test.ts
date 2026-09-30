@@ -50,6 +50,7 @@ describe('U8: check-ins sit beside the headcount and never fill it', () => {
     for (const f of [
       'site/CheckIns.tsx',
       'report/CheckInsBeside.tsx',
+      'report/ForemanLine.tsx',
       'App.tsx',
     ])
       expect(readFileSync(join(root, f), 'utf8')).not.toMatch(

@@ -1592,6 +1592,26 @@ ul.plainlist:not(.card) {
   border-radius: 12px;
   background: var(--line-2);
 }
+.fline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+.fline-h {
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+}
+.fline .plainlist {
+  align-self: stretch;
+}
+.fcrew {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+}
 .devrow.voided b {
   text-decoration: line-through;
 }

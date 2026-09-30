@@ -70,7 +70,14 @@ export class OwnedCommands<D, A> {
     // Tell the view now: a mounted editor must give way to the owned payload before the
     // wait for a recovery read (which notifies nobody until it lands).
     this.session.changed();
-    const r = await this.session.act((data) => build(data, key), reread);
+    let r: Outcome<R>;
+    try {
+      r = await this.session.act((data) => build(data, key), reread);
+    } catch (err) {
+      // A throw while building or sending (not an answer): the action owns nothing any more.
+      if (this.session.pending?.key !== key) this.release();
+      throw err;
+    }
     this.settle(r, key);
     return r;
   }
