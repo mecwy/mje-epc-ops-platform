@@ -1639,6 +1639,12 @@ try {
       bearer: pmB,
       projectId: projectB,
     });
+    // A real device of the same org in another project (for the event-actor FK checks).
+    dev.a2 = await onboard(person.a2only, {
+      code: entryCode[projectA2],
+      bearer: pm2,
+      projectId: projectA2,
+    });
     const theirs = await expectStatus(me(dev.wb.token), 200);
     assert.equal(theirs.project.id, projectB);
     const unknown = await me(newToken());
@@ -2080,21 +2086,24 @@ try {
           ],
         );
       for (const actor of [
-        { person: person.wb },
-        { person: randomUUID() },
-        { device: randomUUID() },
-        { device: dev.wb.id },
+        { case: 'same-org device of another project', device: dev.a2.id },
+        { case: "another org's real device", device: dev.wb.id },
+        { case: "another org's person", person: person.wb },
+        { case: 'nonexistent person', person: randomUUID() },
+        { case: 'nonexistent device', device: randomUUID() },
       ]) {
         await app.query('SAVEPOINT s');
         await assert.rejects(
           actorEvent(actor),
           (e) => e.code === '23503',
-          `actor ${JSON.stringify(actor)} was accepted`,
+          `event actor accepted: ${actor.case}`,
         );
         await app.query('ROLLBACK TO SAVEPOINT s');
       }
+      // Accepted: a person of the org, and a device of the same project.
       await app.query('SAVEPOINT s');
       await actorEvent({ person: person.w1 });
+      await actorEvent({ person: person.f1, device: dev.f1.id });
       await app.query('ROLLBACK TO SAVEPOINT s');
       // RLS: another org's rows are invisible, and cannot be inserted.
       const other = await app.query(
@@ -2144,7 +2153,7 @@ try {
       for (const c of pooled) c.release();
     }
     pass(
-      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code; an interval closes once; an ended device never returns to CONFIRMED (not even for the owner); events and intervals are append-only for the owner too; device-event actors must be people and devices of the same org and project, never another tenant's or nonexistent ones; RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
+      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code; an interval closes once; an ended device never returns to CONFIRMED (not even for the owner); events and intervals are append-only for the owner too; device-event actors must be people of the org and devices of the same project (another org's real device, a same-org device of another project and nonexistent ones are refused; a same-project device is accepted); RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
     );
   }
 
