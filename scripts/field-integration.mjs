@@ -275,6 +275,7 @@ try {
     'km',
     'kd',
     'kr',
+    'kz',
     'kc1',
     'kc2',
     'kp',
@@ -2726,6 +2727,7 @@ try {
     'kp',
     'kd',
     'kr',
+    'kz',
     's1',
     's2',
     's3',
@@ -3012,6 +3014,103 @@ try {
     );
     pass(
       'failed check-ins: 30 refusals per hour per device (15 same-key retries and 15 new keys, each counted and logged); the 31st attempt, new key or same key, is RATE_LIMITED with no further event; replays of a committed success are never counted and are still served while the device is limited',
+    );
+  }
+
+  step('check-in: failed check-ins, concurrent at the threshold');
+  {
+    // 29 refusals already counted; 8 refused attempts queue on the person's slot lock and run
+    // one after another. The first one's deferred housekeeping is held (so any accounting done
+    // after the request would come too late): exactly one more refusal may be counted, the
+    // other seven are RATE_LIMITED. A changed command under the successful key is RATE_LIMITED
+    // too, and the success itself still replays.
+    await freshWindow(3600);
+    const okTap = await tap(dev.kz.token);
+    const success = await expectStatus(Promise.resolve(okTap.r), 200);
+    const bucket = `checkin-fail:${dev.kz.id}`;
+    await owner.query(
+      `INSERT INTO "FieldThrottle"(bucket, "windowStart", count)
+      VALUES ($1, to_timestamp(floor(extract(epoch FROM now()) / 3600) * 3600), 29)
+      ON CONFLICT (bucket, "windowStart") DO UPDATE SET count = 29`,
+      [bucket],
+    );
+    const D = okTap.body.businessDate;
+    const slotKey = `${orgA}:field-slot:${person.kz}:${D}`;
+    const unlock = await holdAdvisory(slotKey);
+    const bodies = [];
+    for (let i = 0; i < 8; i++)
+      bodies.push({ ...(await tapBody({ m: 900 })), businessDate: D });
+    let settled = 0;
+    const racing = bodies.map((b) =>
+      kpost('/checkin', dev.kz.token, b).finally(() => settled++),
+    );
+    let hit, release;
+    const reached = new Promise((resolve) => (hit = resolve));
+    const opened = new Promise((resolve) => (release = resolve));
+    const openGate = async () => {
+      held.delete(openGate);
+      release();
+    };
+    held.add(openGate);
+    queryGate = {
+      match: (text) => text.includes('SET "clockHighWater"'),
+      hit,
+      opened,
+    };
+    try {
+      // Every request is either queued behind the held slot lock or already answered.
+      const until = Date.now() + 10_000;
+      for (;;) {
+        // Queued on the day lock (level 4) behind the one holding it, or on the slot lock.
+        const waiting = await count(
+          `SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND wait_event='advisory'`,
+          [username],
+        );
+        if (waiting + settled >= 8) break;
+        if (Date.now() > until)
+          throw new Error(
+            `requests did not queue (${waiting} waiting, ${settled} answered)`,
+          );
+        await sleep(20);
+      }
+      await unlock();
+      await withTimeout(reached, STEP_MS, 'a refusal reaches its housekeeping');
+      const until2 = Date.now() + 15_000;
+      while (settled < 7 && Date.now() < until2) await sleep(20);
+    } finally {
+      await openGate();
+      queryGate = null;
+    }
+    const results = await Promise.all(racing);
+    const codes = results.map((r) => r.body.code).sort();
+    assert.deepEqual(codes, [
+      'GEOFENCE_OUTSIDE',
+      ...Array(7).fill('RATE_LIMITED'),
+    ]);
+    assert.equal((await refusals(dev.kz.id)).length, 1);
+    await expectStatus(
+      kpost('/checkin', dev.kz.token, {
+        ...okTap.body,
+        occurredAt: new Date(
+          Date.parse(okTap.body.occurredAt) + 1,
+        ).toISOString(),
+      }),
+      429,
+      'RATE_LIMITED',
+    );
+    assert.deepEqual(
+      await expectStatus(kpost('/checkin', dev.kz.token, okTap.body), 200),
+      success,
+    );
+    assert.equal(
+      await count(
+        `SELECT count::int AS n FROM "FieldThrottle" WHERE bucket=$1`,
+        [bucket],
+      ),
+      30,
+    );
+    pass(
+      'failed check-ins at the threshold, concurrently, with housekeeping on and held: from 29 counted refusals, 8 queued refused attempts yield exactly one more counted refusal (one event) and 7 RATE_LIMITED; a changed command under the successful key is RATE_LIMITED (not IDEMPOTENCY_KEY_REUSED); the success still replays uncounted; the counter ends at 30',
     );
   }
 

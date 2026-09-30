@@ -531,10 +531,15 @@ export class CheckInStore {
             occurredAt: cmd.occurredAt,
             fix: cmd.fix,
           };
-    // Design §2: 30 refused check-ins per hour per device. Every refused attempt counts (same-key
-    // retries too), in its own transaction after the request, so a business rollback never
-    // undoes it; a replayed success never counts and is still served while the device is limited.
-    let actorId: string | null = null;
+    // Design §2 (C29): 30 refused check-ins per hour per device. A unit is reserved in the
+    // throttle's own committed transaction before the business transaction, atomically while the
+    // count is below the limit, so concurrent requests can never share the last unit. A refused
+    // attempt keeps its unit (independent of the business rollback); anything else gives it
+    // back. With no unit left the device may only replay a committed success (C29).
+    const deviceId = await this.throttle.deviceOf(tokenHash);
+    const limit = deviceId ? LIMITS.failedCheckIns(deviceId) : null;
+    const reserved = limit ? await this.throttle.reserve(limit) : null;
+    const limited = limit !== null && reserved === null;
     const counted = (code: string) =>
       ![
         'RATE_LIMITED',
@@ -543,34 +548,30 @@ export class CheckInStore {
         'DEVICE_ENDED',
         'DEVICE_PENDING',
       ].includes(code);
-    const countFailure = () =>
-      actorId
-        ? this.throttle
-            .add(LIMITS.failedCheckIns(actorId))
-            .catch(() => undefined)
-        : undefined;
-    let outcome: DeviceOutcome;
+    let failed = false;
     try {
-      outcome = await this.deviceTransaction(
+      const outcome = await this.deviceTransaction(
         ip,
         tokenHash,
         kind,
         cmd,
         route,
         event,
-        (id) => (actorId = id),
+        limited,
       );
+      // A refused attempt committed its event; it is a request error, never a finding.
+      if (outcome.kind === 'refused') {
+        failed = true;
+        throw new FieldError(outcome.code);
+      }
+      return outcome.body;
     } catch (error) {
-      if (error instanceof FieldError && counted(error.code))
-        await countFailure();
+      if (error instanceof FieldError && counted(error.code)) failed = true;
       throw error;
+    } finally {
+      if (limit && reserved && !failed)
+        await this.throttle.release(limit, reserved).catch(() => undefined);
     }
-    // A refused attempt committed its event; it is a request error, never a finding.
-    if (outcome.kind === 'refused') {
-      await countFailure();
-      throw new FieldError(outcome.code);
-    }
-    return outcome.body;
   }
   private deviceTransaction(
     ip: string,
@@ -582,7 +583,7 @@ export class CheckInStore {
     },
     route: string,
     event: unknown,
-    actor: (deviceId: string) => void,
+    limited: boolean,
   ): Promise<DeviceOutcome> {
     return fieldTransaction<DeviceOutcome>(
       this.pool,
@@ -606,12 +607,12 @@ export class CheckInStore {
         },
       },
       async (client, { device: d, now: t, at }) => {
-        actor(d.id);
         const subject = cmd.personId ?? d.personId;
-        // A limited device is refused before anything else, unless this is a replay of a
-        // committed success (read-only lookup here; it is re-read below after the resource checks).
+        // A limited device is refused before anything else unless this is the exact replay of
+        // a committed success; a changed command under a used key is RATE_LIMITED too, not
+        // IDEMPOTENCY_KEY_REUSED (C29).
         if (
-          (await this.throttle.full(LIMITS.failedCheckIns(d.id), client)) &&
+          limited &&
           !(await priorOutcome(
             client,
             d.orgId,
@@ -619,7 +620,10 @@ export class CheckInStore {
             route,
             cmd.clientMutationId,
             event,
-          ))
+          ).catch((error: unknown) => {
+            if (error instanceof FieldError) return null;
+            throw error;
+          }))
         )
           throw new FieldError('RATE_LIMITED');
         // Resource authorization (before the idempotency lookup, so a replay re-runs it).
