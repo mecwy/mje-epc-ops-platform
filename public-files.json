@@ -118,6 +118,8 @@
   "packages/domain/src/alpha-store.ts",
   "packages/domain/src/field-kit.ts",
   "packages/domain/src/field-roster.ts",
+  "packages/domain/src/field-rules.test.ts",
+  "packages/domain/src/field-rules.ts",
   "packages/domain/src/field-store.ts",
   "packages/domain/src/index.ts",
   "packages/domain/src/issue-store.ts",

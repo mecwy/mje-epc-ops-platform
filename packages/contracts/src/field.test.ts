@@ -1,23 +1,71 @@
 import { describe, expect, it } from 'vitest';
 import {
   InvalidReportInput,
+  fieldBearer,
+  parseBindCommand,
+  parseChallengeConfirmCommand,
   parseCreateCrewCommand,
   parseEntryCommand,
   parseRosterChangesCommand,
+  parseRotateCommand,
 } from './index.js';
 
+const token = 'fd1.' + 'A'.repeat(42) + '_';
 const code = 'abcdefghij_-KLMNOPQRST';
 const id = '4f7c1a52-3d7e-4c21-9e1a-2b3c4d5e6f70';
 
-describe('entry code', () => {
-  it('entry takes a 128-bit code and nothing shorter', () => {
+describe('field credentials', () => {
+  it('only a well-formed Bearer fd1 header is a field credential', () => {
+    expect(fieldBearer(`Bearer ${token}`)).toBe(token);
+    for (const bad of [
+      undefined,
+      token,
+      `bearer ${token}`,
+      `Bearer ${token}x`,
+      `Bearer fd2.${'A'.repeat(43)}`,
+      'Bearer eyJhbGciOiJSUzI1NiJ9.e30.sig',
+      `Bearer ${token} `,
+    ])
+      expect(fieldBearer(bad)).toBeNull();
+  });
+  it('entry and bind take a 128-bit code; bind a device-made token', () => {
     expect(parseEntryCommand({ code })).toEqual({ code });
     expect(() => parseEntryCommand({ code: code.slice(1) })).toThrow(
       InvalidReportInput,
     );
-    expect(() => parseEntryCommand({ code: `${code}x` })).toThrow(
+    expect(
+      parseBindCommand({ code, personId: id.toUpperCase(), token }),
+    ).toEqual({ code, personId: id, token });
+    expect(() =>
+      parseBindCommand({ code, personId: id, token: 'fd1.x' }),
+    ).toThrow(InvalidReportInput);
+    expect(() =>
+      parseRotateCommand({ newToken: token, expectedGeneration: -1 }),
+    ).toThrow(InvalidReportInput);
+  });
+  it('a rejected token is never echoed in the error', () => {
+    try {
+      parseBindCommand({ code, personId: id, token: 'fd1.SECRET' });
+    } catch (error) {
+      expect(String((error as Error).message)).not.toContain('SECRET');
+    }
+  });
+  it('confirm needs an explicit expectedCurrentDeviceId (null = none) and a 6-digit code', () => {
+    const base = { clientMutationId: id, personId: id, code: '012345' };
+    expect(() => parseChallengeConfirmCommand(base)).toThrow(
       InvalidReportInput,
     );
+    expect(
+      parseChallengeConfirmCommand({ ...base, expectedCurrentDeviceId: null })
+        .expectedCurrentDeviceId,
+    ).toBeNull();
+    expect(() =>
+      parseChallengeConfirmCommand({
+        ...base,
+        code: '12345',
+        expectedCurrentDeviceId: null,
+      }),
+    ).toThrow(InvalidReportInput);
   });
 });
 

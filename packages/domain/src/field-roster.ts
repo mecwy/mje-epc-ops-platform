@@ -1,7 +1,8 @@
 /**
  * Project roster (A6 design §1): crews and append-only CrewAssignment intervals. Every write
- * takes the project roster lock exclusively and increments ProjectRoster.version. (A6a-2 adds
- * the recomputation of the affected persons' device validity from the final interval set.)
+ * takes the project roster lock exclusively and increments ProjectRoster.version; the device
+ * validity of every person whose intervals change is recomputed once, from the transaction's
+ * final interval set, before commit.
  */
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
@@ -11,7 +12,13 @@ import type {
   RosterChangesCommand,
   RosterDto,
 } from '@mje/contracts';
-import { FieldError, personLocks, rosterLock } from './field-kit.js';
+import {
+  FieldError,
+  endDevice,
+  personLocks,
+  rosterLock,
+  type EventActor,
+} from './field-kit.js';
 import { audit, type Actor } from './store-kit.js';
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -111,6 +118,43 @@ async function timeOk(
   return r.rows[0]!.ok;
 }
 
+/**
+ * Recomputes `memberUntil` of the persons' live devices (already locked FOR UPDATE) from the
+ * final interval set. Nobody who is a member now: the devices end at once (CONFIRMED →
+ * REVOKED, PENDING → REJECTED, reason UNASSIGNED). An elapsed `memberUntil` is never moved.
+ */
+export async function recomputeDevices(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  personIds: string[],
+  actor: EventActor,
+) {
+  for (const personId of personIds) {
+    const r = await client.query<{
+      id: string;
+      state: 'PENDING' | 'CONFIRMED';
+      member: boolean;
+    }>(
+      `UPDATE "FieldDevice" d SET "memberUntil"=r."until"
+      FROM field_member_run($1,$2,$3,now()) r
+      WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')
+        AND (d."memberUntil" IS NULL OR d."memberUntil" > now())
+      RETURNING d.id, d.state, r.member`,
+      [orgId, projectId, personId],
+    );
+    for (const d of r.rows)
+      if (!d.member)
+        await endDevice(
+          client,
+          { orgId, projectId, id: d.id, personId },
+          d.state === 'CONFIRMED' ? 'REVOKED' : 'REJECTED',
+          'UNASSIGNED',
+          actor,
+        );
+  }
+}
+
 export async function createCrew(
   client: PoolClient,
   actor: Actor,
@@ -196,7 +240,8 @@ export async function endCrew(
 
 /**
  * Assign, transfer, hand over or terminate, in one transaction: every close first, then every
- * open, so a transfer or handover at one instant is continuous.
+ * open (so a transfer or handover at one instant is continuous), then one recomputation of the
+ * affected persons' devices from the final interval set.
  */
 export async function changeRoster(
   client: PoolClient,
@@ -249,8 +294,15 @@ export async function changeRoster(
       ...opens.map((o) => o.personId),
     ]),
   ].sort();
-  // Level 1: every person whose intervals change (the trigger takes the same locks).
+  // Levels 1 and 2: every person whose intervals change (a foreman who only loses the FOREMAN
+  // role too), then their live devices FOR UPDATE, so an in-flight write by one of those
+  // devices commits first or sees the new roster.
   await personLocks(client, orgId, projectId, persons);
+  await client.query(
+    `SELECT id FROM "FieldDevice" WHERE "orgId"=$1 AND "projectId"=$2 AND "personId" = ANY($3::uuid[])
+      AND state IN ('PENDING','CONFIRMED') ORDER BY id FOR UPDATE`,
+    [orgId, projectId, persons],
+  );
   for (const c of closes)
     await client.query(
       `UPDATE "CrewAssignment" SET "validUntil"=COALESCE($3::timestamptz, now()), "closedBy"=$4
@@ -283,6 +335,10 @@ export async function changeRoster(
     opened.push(id);
   }
   const version = await bumpRoster(client, orgId, projectId);
+  await recomputeDevices(client, orgId, projectId, persons, {
+    accountId: actor.accountId,
+    personId: actor.personId,
+  });
   await audit(
     client,
     actor,
