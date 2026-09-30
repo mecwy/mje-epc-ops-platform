@@ -278,6 +278,9 @@ try {
     'ky',
     'kw',
     'kz',
+    'kg',
+    'kh',
+    'kj',
     'kc1',
     'kc2',
     'kp',
@@ -2757,6 +2760,7 @@ try {
     'ky',
     'kw',
     'kz',
+    'kj',
     's1',
     's2',
     's3',
@@ -3259,6 +3263,65 @@ try {
     assert.equal((await refusals(dev.kz.id)).length, 30);
     pass(
       'failed check-ins at the threshold, concurrently across two business days: from 29 refusals, the first attempt is held after counting while three others (both days) wait on the device refusal lock, not on day or slot locks; exactly one more refusal is counted and the three get RATE_LIMITED',
+    );
+  }
+
+  step(
+    'failed check-ins: a limited device, replay after authorization changed',
+  );
+  {
+    // A foreman's successful proxy is replayed while the device is at its limit. Authorized,
+    // it is served; once the subject has moved to another crew the re-checked authorization
+    // refuses, and a limited device then gets RATE_LIMITED with no new refusal event.
+    K.K3 = await crew(projectA, 'K3');
+    await expectStatus(
+      change([
+        open(K.K3, person.kg, 'FOREMAN'),
+        open(K.K3, person.kg),
+        open(K.K3, person.kh),
+      ]),
+      200,
+    );
+    await travel(
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '10 days' WHERE "personId" = ANY($1::uuid[])`,
+      [[person.kg, person.kh]],
+    );
+    dev.kg = await onboard(person.kg, { ip: KIP });
+    const proxied = await tap(dev.kg.token, { personId: person.kh });
+    const success = await expectStatus(Promise.resolve(proxied.r), 200);
+    await seedRefusals('kg', 30);
+    const replay = () => kpost('/checkin/proxy', dev.kg.token, proxied.body);
+    assert.deepEqual(await expectStatus(replay(), 200), success);
+    await expectStatus(
+      change([close(assignment(person.kh)), open(K.K1, person.kh)]),
+      200,
+    );
+    for (let i = 0; i < 3; i++)
+      await expectStatus(replay(), 429, 'RATE_LIMITED');
+    assert.equal((await refusals(dev.kg.id)).length, 30);
+    pass(
+      'a limited device is served only an authorized replay: a foreman proxy replay at 30 refusals is served; after the subject moved to another crew the same replay is RATE_LIMITED three times and the device keeps exactly 30 refusal events (no lockout extension)',
+    );
+  }
+
+  step('failed check-ins: clock recovery (future-dated refusals)');
+  {
+    // After a forward clock spike and its recovery, refusals decided "in the future" lie
+    // outside (t − 1 h, t] and do not limit a decision at the earlier, corrected time.
+    await owner.query(
+      `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorDeviceId","actorPersonId","decidedAt")
+      SELECT gen_random_uuid(), $1, $2, $3, $4, 'CHECKIN_REFUSED', 'GEOFENCE_OUTSIDE', $3, $4, clock_timestamp() + interval '2 hours'
+      FROM generate_series(1, 30)`,
+      [orgA, projectA, dev.kj.id, person.kj],
+    );
+    await expectStatus(
+      kpost('/checkin', dev.kj.token, await outsideBody()),
+      409,
+      'GEOFENCE_OUTSIDE',
+    );
+    assert.equal((await refusals(dev.kj.id)).length, 31);
+    pass(
+      'failed check-ins after clock recovery: 30 refusals decided two hours ahead (a spiked clock) do not limit a decision at the corrected, earlier time; the count window is (t − 1 h, t]',
     );
   }
 
