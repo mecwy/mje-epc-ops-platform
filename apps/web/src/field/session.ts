@@ -12,6 +12,12 @@ export const UNSETTLED = new Set([
   'RATE_LIMITED',
 ]);
 
+/**
+ * Unsettled codes after which the request may have committed (no answer, or a 5xx that is
+ * not RETRY): a later definite refusal of the same command may follow a stored success.
+ */
+const AMBIGUOUS = new Set(['NETWORK', 'REQUEST_FAILED']);
+
 /** Codes by which the server says this device token is no longer a device. */
 export const ENDED = new Set(['DEVICE_ENDED', 'FIELD_AUTH_REQUIRED']);
 
@@ -22,7 +28,17 @@ export interface Command<R> {
 }
 export type Outcome<R> =
   | { kind: 'ok'; value: R }
-  | { kind: 'rejected'; code: string; error: unknown }
+  | {
+      kind: 'rejected';
+      code: string;
+      error: unknown;
+      /**
+       * An earlier attempt of this same command (same key and body) went unanswered, so it
+       * may already have been stored: a refusal the server makes before replaying a key's
+       * stored answer (authority re-checked) does not mean it was never recorded.
+       */
+      uncertain: boolean;
+    }
   | { kind: 'failed'; code: string };
 
 /**
@@ -43,7 +59,8 @@ export class FieldSession<D> {
   busy = false;
   /** Last definite refusal, an unsettled code while `pending`, or 'STALE' (no fresh read). */
   error: string | null = null;
-  pending: (Command<unknown> & { reread: boolean }) | null = null;
+  pending: (Command<unknown> & { reread: boolean; uncertain: boolean }) | null =
+    null;
   private reads = 0;
   /** Ticket of the newest response applied (success or failure). */
   private applied = 0;
@@ -165,14 +182,28 @@ export class FieldSession<D> {
       if (!command) {
         this.error = 'NOT_FOUND';
         this.notify();
-        return { kind: 'rejected', code: 'NOT_FOUND', error: null };
+        return {
+          kind: 'rejected',
+          code: 'NOT_FOUND',
+          error: null,
+          uncertain: false,
+        };
       }
       return this.send(command, reread);
     });
   }
 
-  private async send<R>(c: Command<R>, reread: boolean): Promise<Outcome<R>> {
-    this.pending = { key: c.key, send: c.send, reread };
+  private async send<R>(
+    c: Command<R> & { uncertain?: boolean },
+    reread: boolean,
+  ): Promise<Outcome<R>> {
+    const pending = {
+      key: c.key,
+      send: c.send,
+      reread,
+      uncertain: c.uncertain ?? false,
+    };
+    this.pending = pending;
     this.busy = true;
     this.error = null;
     this.notify();
@@ -186,6 +217,10 @@ export class FieldSession<D> {
       return { kind: 'ok', value };
     } catch (e) {
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
+      // The transport resent this request after a lost one: that one may have committed.
+      const lostBefore =
+        (e as { afterLostAttempt?: unknown } | null)?.afterLostAttempt === true;
+      if (lostBefore || AMBIGUOUS.has(code)) pending.uncertain = true;
       if (UNSETTLED.has(code)) {
         this.error = code;
         return { kind: 'failed', code };
@@ -202,7 +237,7 @@ export class FieldSession<D> {
         this.writtenAt = this.reads;
         await this.fresh();
       }
-      return { kind: 'rejected', code, error: e };
+      return { kind: 'rejected', code, error: e, uncertain: pending.uncertain };
     } finally {
       this.busy = false;
       this.notify();

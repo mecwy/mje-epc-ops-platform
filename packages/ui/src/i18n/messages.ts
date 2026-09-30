@@ -693,6 +693,12 @@ export const MESSAGES = {
     'Ovo može samo trenutni poslovođa ekipe.',
     'Solo el encargado actual de la cuadrilla puede hacerlo.',
   ],
+  fe_notForemanMaybeRecorded: [
+    '重发被拒：你已不是该班组的工头。之前那次发送可能已经记录，请联系项目经理核对；不会再自动发送。',
+    "The resend was refused: you are no longer this crew's foreman. The earlier send may already have been recorded; ask the project manager to check. Nothing is sent again.",
+    'Ponovno slanje je odbijeno: više niste poslovođa ove ekipe. Ranije slanje je možda već zabeleženo; zamolite rukovodioca projekta da proveri. Ništa se više ne šalje.',
+    'El reenvío fue rechazado: ya no eres el encargado de esta cuadrilla. El envío anterior puede que ya se haya registrado; pide al jefe de proyecto que lo compruebe. No se vuelve a enviar nada.',
+  ],
   fe_notFound: [
     '在本项目中找不到（可能已变更），请刷新。',
     'Not found in this project (it may have changed); refresh.',
@@ -710,6 +716,12 @@ export const MESSAGES = {
     'You are outside the site area. Check in on site, or ask your foreman to check you in.',
     'Nalazite se van područja gradilišta. Prijavite se na gradilištu ili zamolite poslovođu da vas prijavi.',
     'Estás fuera del área de la obra. Ficha en la obra o pide al encargado que te fiche.',
+  ],
+  fe_proxyMaybeRecorded: [
+    '重发被拒：这个人已不在你的班组（或你已不是工头）。之前那次签到可能已经记录，请联系项目经理核对；不会再自动发送。',
+    'The resend was refused: this person is no longer in your crew (or you are no longer its foreman). The earlier check-in may already have been recorded; ask the project manager to check. Nothing is sent again.',
+    'Ponovno slanje je odbijeno: ova osoba više nije u vašoj ekipi (ili više niste poslovođa). Ranija prijava je možda već zabeležena; zamolite rukovodioca projekta da proveri. Ništa se više ne šalje.',
+    'El reenvío fue rechazado: esta persona ya no está en tu cuadrilla (o ya no eres el encargado). El fichaje anterior puede que ya se haya registrado; pide al jefe de proyecto que lo compruebe. No se vuelve a enviar nada.',
   ],
   fe_rateLimited: [
     '尝试次数太多，请稍后再试。',
@@ -883,6 +895,12 @@ export const MESSAGES = {
     '{n} phone(s) waiting for confirmation',
     '{n} telefon(a) čeka potvrdu',
     '{n} teléfono(s) pendiente(s) de confirmar',
+  ],
+  fm_proxyGiveUpHint: [
+    '放弃只会停止重试：这次签到可能已经记录。',
+    'Giving up only stops retrying: this check-in may already have been recorded.',
+    'Odustajanje samo prekida ponavljanje: ova prijava je možda već zabeležena.',
+    'Descartar solo deja de reintentar: este fichaje puede que ya se haya registrado.',
   ],
   fm_proxyNote: [
     '代签使用你手机的位置，你必须在现场；记录为“工头代签”。',

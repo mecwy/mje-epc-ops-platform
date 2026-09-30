@@ -64,7 +64,12 @@ function harness() {
       out =
         c.code === RIGHT
           ? { kind: 'ok', value: { state: 'CONFIRMED' } }
-          : { kind: 'rejected', code: 'CHALLENGE_INVALID', error: null };
+          : {
+              kind: 'rejected',
+              code: 'CHALLENGE_INVALID',
+              error: null,
+              uncertain: false,
+            };
       stored.set(c.clientMutationId, out);
     }
     if (mode === 'lost') return Promise.reject(new ApiError('NETWORK', 0));

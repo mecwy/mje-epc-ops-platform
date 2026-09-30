@@ -218,3 +218,33 @@ export class ReportDay {
     return r;
   }
 }
+
+/**
+ * The report days of one card (the site's today and yesterday), kept for the card's life: a
+ * day's read and owned send survive switching the day tab away and back.
+ */
+export class ReportDays {
+  private readonly days = new Map<string, ReportDay>();
+  constructor(
+    private readonly api: Pick<DeviceApi, 'report' | 'submitReport'>,
+    private readonly notify: () => void,
+    private readonly onEnded: (code: string) => void,
+    private readonly now?: () => Date,
+    private readonly newKey?: () => string,
+  ) {}
+  get(day: string): ReportDay {
+    let d = this.days.get(day);
+    if (!d) {
+      d = new ReportDay(
+        this.api,
+        day,
+        this.notify,
+        this.onEnded,
+        this.now,
+        this.newKey,
+      );
+      this.days.set(day, d);
+    }
+    return d;
+  }
+}

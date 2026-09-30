@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import {
   CHALLENGE_CODE,
   FOREMAN_NOTE_MAX,
@@ -16,7 +16,8 @@ import {
   checkDraft,
   draftFrom,
   qtyKind,
-  ReportDay,
+  type ReportDay,
+  ReportDays,
   reportDays,
   reportPayload,
   type Draft,
@@ -24,7 +25,7 @@ import {
 } from './foreman-report.js';
 import { ProxyFlow, type ProxyPhase } from './proxy-flow.js';
 import { CrewCommands } from './crew-commands.js';
-import type { FieldSession } from './session.js';
+import type { FieldSession, Outcome } from './session.js';
 
 function localStore(): Storage | null {
   try {
@@ -113,7 +114,9 @@ export function CrewList({
       });
   };
   if (commands.current) keep(commands.current.personId, commands.current.name);
-  if (flow.person && flow.queue.pending) keep(flow.person, flow.personName);
+  // A crew check-in keeps its row while unresolved (Retry / Give up) and with its refusal.
+  if (flow.person && (flow.queue.pending || flow.phase.kind === 'refused'))
+    keep(flow.person, flow.personName);
   const rows = [...crew.members, ...gone];
   // A sheet for someone who has left stays open only while their attempt is owned.
   const open =
@@ -122,12 +125,30 @@ export function CrewList({
       commands.current?.personId === confirming.personId)
       ? confirming
       : null;
+  // A refused confirmation whose sheet has closed (its person left) or that may already
+  // have been recorded (an earlier attempt went unanswered) stays named on the card.
+  const lastRefused =
+    commands.refused &&
+    commands.refusal &&
+    !open &&
+    (!inCrew(commands.refused.personId) || commands.refusalUncertain)
+      ? commands.refused
+      : null;
   return (
     <section className="card">
       <h2 className="blk">{t('fm_crewTitle', { crew: crew.crewName })}</h2>
       {unresolvedName && !open && (
         <div className="banner warn" role="alert">
           {t('fm_unresolvedFor', { name: unresolvedName })}
+        </div>
+      )}
+      {lastRefused && (
+        <div className="banner warn" role="alert">
+          <b>{lastRefused.name}</b>:{' '}
+          <ErrorText
+            code={commands.refusal}
+            uncertain={commands.refusalUncertain}
+          />
         </div>
       )}
       {rows.length === 0 && <p className="muted small">{t('fm_crewEmpty')}</p>}
@@ -178,14 +199,24 @@ export function CrewList({
                     </button>
                   )}
                   {mine && flow.phase.kind === 'unsettled' ? (
-                    <button
-                      type="button"
-                      className="pill accent"
-                      disabled={flow.busy}
-                      onClick={() => void flow.retry()}
-                    >
-                      {t('retry')}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="pill"
+                        disabled={flow.busy}
+                        onClick={() => flow.discard()}
+                      >
+                        {t('pm_giveUp')}
+                      </button>
+                      <button
+                        type="button"
+                        className="pill accent"
+                        disabled={flow.busy}
+                        onClick={() => void flow.retry()}
+                      >
+                        {t('retry')}
+                      </button>
+                    </>
                   ) : (
                     !done &&
                     !left && (
@@ -256,13 +287,14 @@ function ProxyStatus({ phase }: { phase: ProxyPhase }) {
     case 'refused':
       return (
         <span className="warn-t small" role="alert">
-          <ErrorText code={phase.code} />
+          <ErrorText code={phase.code} uncertain={phase.uncertain} />
         </span>
       );
     case 'unsettled':
       return (
         <span className="warn-t small" role="alert">
-          {t('fd_checkinUnsettled')} <ErrorText code={phase.code} />
+          {t('fd_checkinUnsettled')} <ErrorText code={phase.code} />{' '}
+          {t('fm_proxyGiveUpHint')}
         </span>
       );
   }
@@ -283,15 +315,22 @@ export function ConfirmSheet({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    code: string;
+    uncertain: boolean;
+  } | null>(null);
   // This member's attempt while it runs or is unresolved: shown as sent, no input.
   const owned =
     commands.current?.personId === member.personId ? commands.current : null;
   const unresolved = owned !== null && commands.isUnresolved(member.personId);
   const busy = commands.busy;
-  const settle = (r: { kind: string; code?: string }) => {
+  const settle = (r: Outcome<unknown>) => {
     if (r.kind === 'ok') onClose();
-    else setError(r.code ?? null);
+    else
+      setError({
+        code: r.code,
+        uncertain: r.kind === 'rejected' && r.uncertain,
+      });
   };
   return (
     <Sheet title={t('fm_confirmPhone')} onClose={() => !busy && onClose()}>
@@ -305,7 +344,7 @@ export function ConfirmSheet({
           {unresolved ? (
             <div className="banner warn" role="alert">
               {t('fm_attemptUnresolved')}{' '}
-              <ErrorText code={error ?? commands.error ?? 'NETWORK'} />
+              <ErrorText code={error?.code ?? commands.error ?? 'NETWORK'} />
             </div>
           ) : (
             <p className="muted small">{t('saving')}</p>
@@ -363,7 +402,7 @@ function CrewCodeEdit({
   onRun,
 }: {
   commands: CrewCommands;
-  error: string | null;
+  error: { code: string; uncertain: boolean } | null;
   onRun: (what: 'confirm' | 'reject', code: string) => void;
 }) {
   const { t } = useI18n();
@@ -385,7 +424,7 @@ function CrewCodeEdit({
       </label>
       {error && (
         <div className="banner err" role="alert">
-          <ErrorText code={error} />
+          <ErrorText code={error.code} uncertain={error.uncertain} />
         </div>
       )}
       <div className="row2">
@@ -432,13 +471,8 @@ export function ReportCard({
   const days = reportDays(me.project.timezone, new Date());
   const [day, setDay] = useState(days[0]);
   // Per site day, for the card's life: the read, its owned sends, the last refused payload.
-  const entries = useRef(new Map<string, ReportDay>());
-  let entry = entries.current.get(day);
-  if (!entry) {
-    entry = new ReportDay(api, day, rerender, onEnded);
-    entries.current.set(day, entry);
-  }
-  const e = entry;
+  const [byDay] = useState(() => new ReportDays(api, rerender, onEnded));
+  const e = byDay.get(day);
   useEffect(() => {
     if (!e.session.data && !e.session.readError) void e.session.load();
   }, [e]);
@@ -620,7 +654,7 @@ export function ReportForm({
       </p>
       {sends.refusal && (
         <div className="banner err" role="alert">
-          <ErrorText code={sends.refusal} />
+          <ErrorText code={sends.refusal} uncertain={sends.refusalUncertain} />
         </div>
       )}
       {data.items.length === 0 && (

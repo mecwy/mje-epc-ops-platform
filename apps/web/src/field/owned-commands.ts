@@ -16,6 +16,10 @@ export class OwnedCommands<D, A> {
   generation = 0;
   /** The last definite refusal of an owned command (shown after the form restarts). */
   refusal: string | null = null;
+  /** Whether an earlier attempt of that refused command went unanswered (Outcome.uncertain). */
+  refusalUncertain = false;
+  /** The action that was refused last (to name it after its form or row has gone). */
+  refused: A | null = null;
 
   constructor(
     readonly session: FieldSession<D>,
@@ -61,6 +65,8 @@ export class OwnedCommands<D, A> {
     // Claimed now, before any await: nothing else can start or adopt this command.
     this.owner = { action, key };
     this.refusal = null;
+    this.refusalUncertain = false;
+    this.refused = null;
     // Tell the view now: a mounted editor must give way to the owned payload before the
     // wait for a recovery read (which notifies nobody until it lands).
     this.session.changed();
@@ -86,7 +92,11 @@ export class OwnedCommands<D, A> {
   }
   private settle(r: Outcome<unknown>, key: string) {
     if (r.kind === 'failed' && this.session.pending?.key === key) return;
-    if (r.kind === 'rejected') this.refusal = r.code;
+    if (r.kind === 'rejected') {
+      this.refusal = r.code;
+      this.refusalUncertain = r.uncertain;
+      this.refused = this.owner?.action ?? null;
+    }
     this.release();
   }
   private release() {
