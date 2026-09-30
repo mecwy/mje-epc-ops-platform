@@ -2,10 +2,8 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { RosterDto } from '@mje/contracts';
-import { ApiError, type ForemanDayView, type Project } from '../api.js';
+import { ApiError, type Project } from '../api.js';
 import { I18nProvider } from '../i18n.js';
-import { AdoptFlow } from '../report/foreman-adopt.js';
-import { ForemanLine, PmFieldContext } from '../report/ForemanLine.js';
 import { ProxySheet } from './CheckIns.js';
 import { SiteSessions } from './site-sessions.js';
 
@@ -90,65 +88,5 @@ describe('A6d-4 follows the rule: form state = the owned command payload', () =>
     await day.proxy.retry();
     expect(sent).toHaveLength(2);
     expect(JSON.stringify(sent[1])).toBe(JSON.stringify(sent[0]));
-  });
-
-  it('an unresolved adoption shows the total it sent, not the current one', async () => {
-    const view = (value: string): ForemanDayView => ({
-      rosterVersion: 1,
-      expectedCrews: [
-        { crewId: 'c', code: 'A', name: 'TEST A', hasForeman: true },
-      ],
-      revisions: [],
-      items: {
-        support: {
-          status: 'COMPLETE',
-          value,
-          atLeast: null,
-          crews: { c: { status: 'VALUE', qty: value, expected: true } },
-        },
-      },
-      adoptions: [],
-      basis: {
-        rosterVersion: 1,
-        expectedCrews: ['c'],
-        revisions: [{ crewId: 'c', n: 1 }],
-      },
-      expectedCrewsChanged: null,
-    });
-    let current = view('10');
-    const flow = new AdoptFlow(
-      {
-        api: {
-          adoptForeman: async () => Promise.reject(new ApiError('NETWORK', 0)),
-        },
-        projectId: P,
-        businessDate: '2026-10-02',
-        hold: async () => ({ outcome: 'ok', version: 3 }),
-        current: () => ({ foreman: current, version: 3 }),
-        release: async () => true,
-        abandon: () => {},
-      },
-      () => {},
-    );
-    await flow.adopt('support', { basis: current.basis, value: '10' });
-    current = view('12'); // a newer read shows 12 while the adoption of 10 is unresolved
-    const html = wrap(
-      createElement(
-        PmFieldContext.Provider,
-        {
-          value: {
-            foreman: current,
-            adopt: flow,
-            canWrite: true,
-            dayState: 'draft',
-            timeZone: 'Europe/Belgrade',
-            checkIns: null,
-          },
-        },
-        createElement(ForemanLine, { itemKey: 'support' }),
-      ),
-    );
-    expect(html).toMatch(/Using 10 got no answer/);
-    expect(html).not.toMatch(/>Use 12</);
   });
 });

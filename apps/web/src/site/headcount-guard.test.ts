@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { CheckInListDto } from '@mje/contracts';
 import type { Project } from '../api.js';
 import { I18nProvider } from '../i18n.js';
+import { CheckInsBeside, PmFieldContext } from '../report/CheckInsBeside.js';
 import { declaredHeadcount } from '../report/model.js';
 import { CheckInsCard } from './CheckIns.js';
 import { SiteSessions } from './site-sessions.js';
@@ -46,7 +47,11 @@ describe('U8: check-ins sit beside the headcount and never fill it', () => {
     const fill = readFileSync(join(root, 'report/FillPage.tsx'), 'utf8');
     // ...and that input takes the typed value, never a check-in figure.
     expect(fill).toMatch(/h\.edit\(`people\.\$\{r\}`, v\)/);
-    for (const f of ['site/CheckIns.tsx', 'report/ForemanLine.tsx', 'App.tsx'])
+    for (const f of [
+      'site/CheckIns.tsx',
+      'report/CheckInsBeside.tsx',
+      'App.tsx',
+    ])
       expect(readFileSync(join(root, f), 'utf8')).not.toMatch(
         /edit\(\s*`people/,
       );
@@ -97,5 +102,26 @@ describe('U8: check-ins sit beside the headcount and never fill it', () => {
     expect(side).toMatch(/>5</);
     expect(side).toMatch(/Report headcount \(declared\)[\s\S]*>—</);
     expect(side).toContain('never filled from check-ins');
+  });
+  it('the fill page shows the count beside its people total for a writer, nothing for a reader', () => {
+    const at = (value: { checkIns: null } | null | object) =>
+      renderToString(
+        createElement(
+          I18nProvider,
+          null,
+          createElement(
+            PmFieldContext.Provider,
+            { value: value as never },
+            createElement(CheckInsBeside),
+          ),
+        ),
+      );
+    const writer = at({
+      checkIns: { present: 5, self: 4, proxy: 1, flagged: 1 },
+    });
+    expect(writer).toMatch(/checked in 5 \(self 4, by others 1\)/);
+    expect(writer).not.toMatch(/<input/);
+    expect(at(null)).toBe('');
+    expect(at({ checkIns: null })).toBe('');
   });
 });

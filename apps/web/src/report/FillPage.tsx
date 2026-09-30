@@ -7,7 +7,7 @@ import { Icon } from '../icons.js';
 import { NumInput, TokenChips } from '../ui.js';
 import type { MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
-import { CheckInsBeside, ForemanLine } from './ForemanLine.js';
+import { CheckInsBeside } from './CheckInsBeside.js';
 import {
   activeWork,
   byKind,
@@ -94,7 +94,6 @@ function QtyRow({
         disabled={locked}
         onSet={(v) => h.edit(`qty.${it.key}`, v)}
       />
-      <ForemanLine itemKey={it.key} />
       {!compact && (dec(q) !== null || cur) && (
         <>
           {/* The declared cumulative is always visible and editable; the suggestion sits apart. */}

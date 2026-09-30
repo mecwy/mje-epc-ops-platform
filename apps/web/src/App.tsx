@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -34,8 +35,7 @@ import { SitePage } from './site/SitePage.js';
 import { PmOwnerRegistry } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
-import { PmFieldContext, type PmField } from './report/ForemanLine.js';
-
+import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
 import {
   ResumeKeeper,
@@ -237,15 +237,16 @@ function Workspace({
   useEffect(() => {
     if (canWrite) void siteSessions.checkIns(date).list.load();
   }, [canWrite, siteSessions, date]);
-  // The foreman totals (read-only) and the check-ins beside the headcount: writers only.
+  // The check-ins beside the headcount on the fill page: writers only.
   const pmField: PmField | null =
     canWrite && h.day
       ? {
-          foreman: h.day.foreman ?? null,
-          timeZone: project.timezone,
           checkIns: siteSessions.checkIns(date).list.data?.summary ?? null,
         }
       : null;
+  const withPmField = (node: ReactNode) => (
+    <PmFieldContext.Provider value={pmField}>{node}</PmFieldContext.Provider>
+  );
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
@@ -595,54 +596,52 @@ function Workspace({
   }
 
   if (task && day && h.facts && cov)
-    return (
-      <PmFieldContext.Provider value={pmField}>
-        <PhotoHost env={photoEnv}>
-          {nav}
-          <div className="content">
-            {task === 'fill' ? (
-              <FillPage
-                h={h}
-                day={day}
-                cov={cov}
-                focus={focus}
-                onFocused={() => setFocus(null)}
-                onBack={() => {
-                  void h.flush();
-                  setTask(null);
-                }}
-                onCheck={() => {
-                  void h.flush();
-                  setTask('check');
-                }}
-                onPlan={() => {
-                  void h.flush();
-                  setTask(null);
-                  setView('field');
-                  setFieldTab('plan');
-                }}
-                onSubmit={() => void submit()}
-                busy={busy}
-                tomorrowText={tomorrowText}
-                issues={issues}
-                canWrite={canWrite}
-              />
-            ) : (
-              <CheckPage
-                h={h}
-                day={day}
-                cov={cov}
-                busy={busy}
-                onBack={() => setTask('fill')}
-                onFocus={goFill}
-                onSubmit={() => void submit()}
-                photos={photos}
-              />
-            )}
-          </div>
-          <Toast text={toast} />
-        </PhotoHost>
-      </PmFieldContext.Provider>
+    return withPmField(
+      <PhotoHost env={photoEnv}>
+        {nav}
+        <div className="content">
+          {task === 'fill' ? (
+            <FillPage
+              h={h}
+              day={day}
+              cov={cov}
+              focus={focus}
+              onFocused={() => setFocus(null)}
+              onBack={() => {
+                void h.flush();
+                setTask(null);
+              }}
+              onCheck={() => {
+                void h.flush();
+                setTask('check');
+              }}
+              onPlan={() => {
+                void h.flush();
+                setTask(null);
+                setView('field');
+                setFieldTab('plan');
+              }}
+              onSubmit={() => void submit()}
+              busy={busy}
+              tomorrowText={tomorrowText}
+              issues={issues}
+              canWrite={canWrite}
+            />
+          ) : (
+            <CheckPage
+              h={h}
+              day={day}
+              cov={cov}
+              busy={busy}
+              onBack={() => setTask('fill')}
+              onFocus={goFill}
+              onSubmit={() => void submit()}
+              photos={photos}
+            />
+          )}
+        </div>
+        <Toast text={toast} />
+      </PhotoHost>,
     );
 
   // The current photos, to link them; the report itself shows what the day froze.
@@ -654,126 +653,124 @@ function Workspace({
     (day.state !== 'empty' || (photos.photos?.length ?? 0) > 0) ? (
       <PhotosRow />
     ) : null;
-  return (
-    <PmFieldContext.Provider value={pmField}>
-      <PhotoHost env={photoEnv}>
-        {nav}
-        <div className="content">
-          <header className="bar">
-            <div className="bar-title">
-              <span className="bar-sub">
-                {project.name}
-                {!canWrite && ` · ${t('readOnly')}`}
-              </span>
-              <label className="bar-date">
-                <span>{fmtDay(date, locale)}</span>
-                <input
-                  type="date"
-                  value={date}
-                  aria-label={t('date')}
-                  onChange={(e) => e.target.value && setDate(e.target.value)}
-                />
-              </label>
+  return withPmField(
+    <PhotoHost env={photoEnv}>
+      {nav}
+      <div className="content">
+        <header className="bar">
+          <div className="bar-title">
+            <span className="bar-sub">
+              {project.name}
+              {!canWrite && ` · ${t('readOnly')}`}
+            </span>
+            <label className="bar-date">
+              <span>{fmtDay(date, locale)}</span>
+              <input
+                type="date"
+                value={date}
+                aria-label={t('date')}
+                onChange={(e) => e.target.value && setDate(e.target.value)}
+              />
+            </label>
+          </div>
+          <button
+            type="button"
+            className="icon"
+            aria-label={t('prevDay')}
+            onClick={() => setDate(shift(date, -1))}
+          >
+            <Icon.left />
+          </button>
+          <button
+            type="button"
+            className="icon"
+            aria-label={t('nextDay')}
+            onClick={() => setDate(shift(date, 1))}
+          >
+            <Icon.right />
+          </button>
+          <button
+            type="button"
+            className="icon"
+            aria-label={t('more')}
+            onClick={() => setSheet('menu')}
+          >
+            <Icon.more />
+          </button>
+        </header>
+        <main className={`page view-${view}`}>
+          {!canWrite && (
+            // Write access went away while a PM attempt was owned: its Retry / Give up stay.
+            <PmOwnedBar owners={pm} />
+          )}
+          {signin.expired && (
+            <div className="banner err" role="alert">
+              {signin.failure ? (
+                <FailureText failure={signin.failure} />
+              ) : (
+                t('signInExpired')
+              )}{' '}
+              <button
+                type="button"
+                disabled={signin.redirecting || renewBusy}
+                onClick={() => void renew()}
+              >
+                {t('signInAgain')}
+              </button>
             </div>
-            <button
-              type="button"
-              className="icon"
-              aria-label={t('prevDay')}
-              onClick={() => setDate(shift(date, -1))}
-            >
-              <Icon.left />
-            </button>
-            <button
-              type="button"
-              className="icon"
-              aria-label={t('nextDay')}
-              onClick={() => setDate(shift(date, 1))}
-            >
-              <Icon.right />
-            </button>
-            <button
-              type="button"
-              className="icon"
-              aria-label={t('more')}
-              onClick={() => setSheet('menu')}
-            >
-              <Icon.more />
-            </button>
-          </header>
-          <main className={`page view-${view}`}>
-            {!canWrite && (
-              // Write access went away while a PM attempt was owned: its Retry / Give up stay.
-              <PmOwnedBar owners={pm} />
-            )}
-            {signin.expired && (
-              <div className="banner err" role="alert">
-                {signin.failure ? (
-                  <FailureText failure={signin.failure} />
-                ) : (
-                  t('signInExpired')
-                )}{' '}
-                <button
-                  type="button"
-                  disabled={signin.redirecting || renewBusy}
-                  onClick={() => void renew()}
-                >
-                  {t('signInAgain')}
-                </button>
-              </div>
-            )}
-            {body}
-            {correctEntry}
-            {photosRow && !viewing ? photosRow : null}
-            {manageIssues && !viewing ? manageIssues : null}
-          </main>
-        </div>
-        {sheet === 'menu' && (
-          <MenuSheet
-            onClose={() => setSheet(null)}
-            canCorrect={canWrite && day?.state === 'submitted'}
-            canCancel={canWrite && day?.state === 'correcting'}
-            revisions={day?.revisions ?? []}
-            timeZone={project.timezone}
-            onCorrect={() => setSheet('correct')}
-            onView={openVersion}
-            onCancel={() => {
-              setSheet(null);
-              void run(h.cancelCorrection);
-            }}
-            onSignOut={session.signOut}
-          />
-        )}
-        {sheet === 'noWork' && (
-          <NoWorkSheet
-            onClose={() => setSheet(null)}
-            onSubmit={async (reason, note) => {
-              await run(() => h.noWork(reason, note), t('submittedToast'));
-            }}
-          />
-        )}
-        {replyTo && (
-          <ReplySheet
-            handle={issues}
-            issueId={replyTo}
-            onClose={() => setReplyTo(null)}
-          />
-        )}
-        {sheet === 'issues' && day && (
-          <Sheet title={t('manageIssues')} onClose={() => setSheet(null)}>
-            <FillIssues handle={issues} items={day.items} canWrite={canWrite} />
-          </Sheet>
-        )}
-        {sheet === 'correct' && (
-          <CorrectionSheet
-            onClose={() => setSheet(null)}
-            onStart={async (reason) => {
-              if (await run(() => h.startCorrection(reason))) setTask('fill');
-            }}
-          />
-        )}
-        <Toast text={toast} />
-      </PhotoHost>
-    </PmFieldContext.Provider>
+          )}
+          {body}
+          {correctEntry}
+          {photosRow && !viewing ? photosRow : null}
+          {manageIssues && !viewing ? manageIssues : null}
+        </main>
+      </div>
+      {sheet === 'menu' && (
+        <MenuSheet
+          onClose={() => setSheet(null)}
+          canCorrect={canWrite && day?.state === 'submitted'}
+          canCancel={canWrite && day?.state === 'correcting'}
+          revisions={day?.revisions ?? []}
+          timeZone={project.timezone}
+          onCorrect={() => setSheet('correct')}
+          onView={openVersion}
+          onCancel={() => {
+            setSheet(null);
+            void run(h.cancelCorrection);
+          }}
+          onSignOut={session.signOut}
+        />
+      )}
+      {sheet === 'noWork' && (
+        <NoWorkSheet
+          onClose={() => setSheet(null)}
+          onSubmit={async (reason, note) => {
+            await run(() => h.noWork(reason, note), t('submittedToast'));
+          }}
+        />
+      )}
+      {replyTo && (
+        <ReplySheet
+          handle={issues}
+          issueId={replyTo}
+          onClose={() => setReplyTo(null)}
+        />
+      )}
+      {sheet === 'issues' && day && (
+        <Sheet title={t('manageIssues')} onClose={() => setSheet(null)}>
+          <FillIssues handle={issues} items={day.items} canWrite={canWrite} />
+        </Sheet>
+      )}
+      {sheet === 'correct' && (
+        <CorrectionSheet
+          onClose={() => setSheet(null)}
+          onStart={async (reason) => {
+            if (await run(() => h.startCorrection(reason))) setTask('fill');
+          }}
+        />
+      )}
+      <Toast text={toast} />
+    </PhotoHost>,
   );
 }
 
