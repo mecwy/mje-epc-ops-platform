@@ -126,7 +126,8 @@ try {
     'P0001',
   );
   await rejects(`DELETE FROM "Revision" WHERE id=$1`, [revision], 'P0001');
-  // Every function in the public schema pins its search_path with pg_temp last, so a caller's
+  // Every function in the public schema pins one of the two approved search_paths exactly
+  // (pg_catalog first, pg_temp last), so a caller's
   // temporary table can never shadow a public table inside a trigger or helper (a later
   // function added without a pinned path fails here).
   {
@@ -137,8 +138,7 @@ try {
           -- functions owned by an extension (btree_gist's C support functions) are not ours
           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass
             AND d.objid = p.oid AND d.deptype = 'e')
-          AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(p.proconfig, '{}')) c
-            WHERE c LIKE 'search_path=%' AND c LIKE '%pg_temp' AND c NOT LIKE 'search_path=pg_temp%')
+          AND NOT (coalesce(p.proconfig, '{}') && ARRAY['search_path=pg_catalog, public, pg_temp', 'search_path=pg_catalog, pg_temp']::text[])
         ORDER BY 1`,
       )
     ).rows.map((r) => r.proname);
