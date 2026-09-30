@@ -4,7 +4,14 @@
 // OD05 paths A/B) to the bootstrap's TEST project: a TEST Person, a LoginAccount for that
 // object id and one report Membership. Existing rows are reused only if they match; anything
 // inconsistent or inactive stops the run instead of being overwritten. Idempotent; prints no
-// secrets and no identifiers.
+// secrets and no identifiers. Runs for the same account are serialised by a transaction lock.
+//
+// Limitation: the only identity key is the Entra object id. The script cannot tell that two
+// object ids belong to the same natural person; a new object id always gets a new Person, even
+// with the same display label. The operator must not run it for anyone already onboarded
+// under another object id (including someone moving from path A, a guest, to path B, a
+// member account): linking a second account to an existing Person is a separate, reviewed
+// change. Display names are TEST labels, never identity keys.
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 
@@ -137,6 +144,22 @@ try {
 
   await db.query('BEGIN');
   const one = async (sql, params) => (await db.query(sql, params)).rows[0];
+  // Serialise runs for this account on this project before anything is read, whatever role
+  // they ask for: two overlapping runs must not both see "no membership" and each add a role.
+  const lockKey = BigInt.asIntN(
+    64,
+    BigInt(
+      `0x${createHash('sha256')
+        .update(
+          `mje-dev-add-member:${org}:${project}:${tenantId}:${memberObjectId}`,
+        )
+        .digest('hex')
+        .slice(0, 16)}`,
+    ),
+  ).toString();
+  await db.query('SELECT pg_catalog.pg_advisory_xact_lock($1::bigint)', [
+    lockKey,
+  ]);
 
   // 1. The bootstrap's TEST project must already exist; this script never creates it.
   if (

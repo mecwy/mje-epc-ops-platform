@@ -30,7 +30,8 @@
     "check:web-bundle": "node scripts/check-web-bundle.mjs",
     "test:issues": "node --env-file=.env scripts/issue-integration.mjs",
     "test:photos": "node --env-file=.env scripts/photo-integration.mjs",
-    "test:field": "node --env-file=.env scripts/field-integration.mjs"
+    "test:field": "node --env-file=.env scripts/field-integration.mjs",
+    "test:add-member": "node --env-file=.env scripts/add-member-integration.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",

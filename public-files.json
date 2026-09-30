@@ -150,6 +150,8 @@
   "pnpm-workspace.yaml",
   "prisma.config.ts",
   "public-files.json",
+  "scripts/add-member-integration.mjs",
+  "scripts/add-member-test-hooks.mjs",
   "scripts/alpha-integration.mjs",
   "scripts/check-i18n.mjs",
   "scripts/check-public.mjs",
