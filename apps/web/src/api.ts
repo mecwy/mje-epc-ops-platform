@@ -24,7 +24,14 @@ import type {
   PhotoSourceDto,
   UnlinkPhotoCommand,
   EntryCodeDto,
+  FieldDeviceDto,
+  FieldDeviceListDto,
+  FieldSettingsCommand,
+  FieldSettingsDto,
+  PmConfirmCommand,
+  PmDeviceCommand,
   RotateEntryCodeCommand,
+  SiteReferenceCommand,
 } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
@@ -408,6 +415,35 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
       get<EntryCodeDto>('field/entry-code', { projectId }),
     rotateEntryCode: (c: RotateEntryCodeCommand) =>
       post<{ code: string; active: boolean }>('field/entry-code/rotate', c),
+    /** Every device of the project, following the cursor (newest first). */
+    devices: async (projectId: string): Promise<FieldDeviceDto[]> => {
+      const all: FieldDeviceDto[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 50; page++) {
+        const r: FieldDeviceListDto = await get<FieldDeviceListDto>(
+          'field/devices',
+          cursor
+            ? { projectId, cursor, limit: 500 }
+            : { projectId, limit: 500 },
+        );
+        all.push(...r.devices);
+        cursor = r.nextCursor;
+        if (!cursor) return all;
+      }
+      throw new ApiError('REQUEST_FAILED', 0);
+    },
+    confirmDevice: (c: PmConfirmCommand) =>
+      post<unknown>('field/devices/confirm', c),
+    rejectDevice: (c: PmDeviceCommand) =>
+      post<unknown>('field/devices/reject', c),
+    revokeDevice: (c: PmDeviceCommand) =>
+      post<unknown>('field/devices/revoke', c),
+    fieldSettings: (projectId: string) =>
+      get<FieldSettingsDto>('field/settings', { projectId }),
+    setFieldSettings: (c: FieldSettingsCommand) =>
+      post<{ n: number }>('field/settings', c),
+    setSiteReference: (c: SiteReferenceCommand) =>
+      post<{ n: number }>('field/site-reference', c),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',

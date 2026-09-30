@@ -1536,3 +1536,30 @@ svg.qr {
 .qr-poster .kv {
   grid-template-columns: 96px minmax(0, 1fr);
 }
+/* PM people page (A6d-2) */
+.devrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 10px 0;
+}
+.devrow > .grow {
+  flex: 1 1 180px;
+  gap: 2px;
+}
+.devrow > .chips,
+.devrow > .pill {
+  margin-left: auto;
+}
+input.codein {
+  font-size: 28px;
+  letter-spacing: 6px;
+  text-align: center;
+}
+.row2.wrap2 {
+  flex-wrap: wrap;
+}
+.row2.wrap2 > * {
+  flex: 1 1 140px;
+}

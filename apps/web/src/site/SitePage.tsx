@@ -6,7 +6,9 @@ import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
 import { FieldSession } from '../field/session.js';
 import { fmtStamp } from '../report/format.js';
+import { DevicesCard } from './Devices.js';
 import { encodeQr, qrPath } from './qr.js';
+import { SettingsCards } from './Settings.js';
 
 /** The link a site QR code carries; the code stays in the fragment (never sent in a URL). */
 export function entryLink(origin: string, code: string): string {
@@ -155,7 +157,10 @@ export function EntryCodeCard({
   );
 }
 
-/** The PM's site page: the entry QR code (A6d-1); devices and settings follow. */
+/**
+ * The PM's people page (人员): phones waiting for confirmation first, then the site QR code,
+ * the site location and field settings. Writers only; a reader never gets it (OD20).
+ */
 export function SitePage({
   api,
   project,
@@ -163,5 +168,11 @@ export function SitePage({
   api: ReportApi;
   project: Project;
 }) {
-  return <EntryCodeCard api={api} project={project} />;
+  return (
+    <>
+      <DevicesCard api={api} project={project} />
+      <EntryCodeCard api={api} project={project} />
+      <SettingsCards api={api} project={project} />
+    </>
+  );
 }
