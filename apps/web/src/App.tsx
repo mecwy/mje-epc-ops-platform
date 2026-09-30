@@ -536,7 +536,9 @@ function Workspace({
         )}
       </>
     );
-  } else if (h.error)
+  } else if (h.error && !h.stale)
+    // A locked day's failed read is explained by DayRecovery (worded by what the command did),
+    // with the last facts read-only below it; "Save failed" would contradict "not known".
     body = (
       <div className="banner err">
         {h.error === 'FORBIDDEN' ? t('forbidden') : t('saveFail')}
