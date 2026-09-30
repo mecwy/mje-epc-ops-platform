@@ -442,6 +442,7 @@ export const MESSAGES = {
     'Hora del dispositivo {t}',
   ],
   discard: ['放弃', 'Discard', 'Odbaci', 'Descartar'],
+  dismissRetained: ['忽略', 'Ignore', 'Zanemari', 'Ignorar'],
   doingToday: ['今天在做', 'In progress today', 'Danas u radu', 'En curso hoy'],
   draft: ['草稿', 'Draft', 'Nacrt', 'Borrador'],
   due: ['期限', 'Due', 'Rok', 'Fecha límite'],
@@ -459,6 +460,7 @@ export const MESSAGES = {
     'Plan je prazan',
     'El plan está vacío',
   ],
+  emptyValue: ['（空）', '(empty)', '(prazno)', '(vacío)'],
   escalate: ['上报', 'Escalate', 'Prijavi', 'Escalar'],
   escalateLong: [
     '上报总监和总经理',
@@ -2037,6 +2039,7 @@ export const MESSAGES = {
     'Indica el motivo',
   ],
   recordOne: ['记一项', 'Add a record', 'Dodaj zapis', 'Añadir registro'],
+  refill: ['重新填入', 'Fill in again', 'Unesi ponovo', 'Volver a rellenar'],
   remove: ['移除', 'Remove', 'Ukloni', 'Quitar'],
   reopen: ['重新打开', 'Reopen', 'Ponovo otvori', 'Reabrir'],
   reply: ['回复', 'Reply', 'Odgovori', 'Responder'],
@@ -2061,6 +2064,18 @@ export const MESSAGES = {
     'Restablecer datos TEST',
   ],
   resources: ['资源', 'Resources', 'Resursi', 'Recursos'],
+  retainedLine: [
+    '你输入的 {mine}，现在是 {now}',
+    'You typed {mine}; now {now}',
+    'Uneli ste {mine}; sada je {now}',
+    'Usted escribió {mine}; ahora es {now}',
+  ],
+  retainedTitle: [
+    '其他人已保存这一天；你未保存的输入没有写入，请逐项处理',
+    'Someone else saved this day; your unsaved input was not written. Handle each item',
+    'Neko drugi je sačuvao ovaj dan; vaš nesačuvani unos nije upisan. Obradite svaku stavku',
+    'Otra persona guardó este día; su entrada sin guardar no se escribió. Revise cada elemento',
+  ],
   retry: ['重试', 'Retry', 'Ponovi', 'Reintentar'],
   retryLocation: [
     '重新定位',
