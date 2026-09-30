@@ -925,6 +925,12 @@ export const MESSAGES = {
     'La confirmación del teléfono de {name} no obtuvo respuesta: ábrela para reintentar o descartar.',
   ],
   fm_yesterday: ['昨天', 'Yesterday', 'Juče', 'Ayer'],
+  fm_youTyped: [
+    '你填的是 {v}（未保存，因报量已被更新）',
+    'You had typed {v} (not saved: the report was updated)',
+    'Uneli ste {v} (nije sačuvano: izveštaj je ažuriran)',
+    'Habías escrito {v} (no guardado: el parte se actualizó)',
+  ],
   forbidden: ['没有权限', 'Not permitted', 'Nije dozvoljeno', 'No permitido'],
   foremanN: ['工头报 {n}', 'foreman {n}', 'poslovođa {n}', 'encargado {n}'],
   fromAlbum: ['从相册', 'From album', 'Iz galerije', 'De la galería'],

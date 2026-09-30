@@ -13,12 +13,13 @@ import { KindText } from './CheckInCard.js';
 import { ErrorText } from './ErrorText.js';
 import type { DeviceApi } from './field-api.js';
 import {
-  changedOnServer,
   checkDraft,
   draftFrom,
   qtyKind,
   reportDays,
+  sendReport,
   type Draft,
+  type ReportSend,
 } from './foreman-report.js';
 import { ProxyFlow, type ProxyPhase } from './proxy-flow.js';
 import { CrewCommands } from './crew-commands.js';
@@ -223,7 +224,7 @@ function ProxyStatus({ phase }: { phase: ProxyPhase }) {
  * member's phone and types its code; `expectedCurrentDeviceId` is the member's current phone
  * as the newest reading shows it when the command runs (an older view gets CONFIRM_STALE).
  */
-function ConfirmSheet({
+export function ConfirmSheet({
   commands,
   member,
   onClose,
@@ -233,35 +234,89 @@ function ConfirmSheet({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  // While this member's attempt runs or is unresolved, the code is the one sent, locked.
-  const unresolved = commands.isUnresolved(member.personId)
-    ? commands.unresolved
-    : null;
-  const current =
+  // This member's attempt while it runs or is unresolved: shown as sent, no input.
+  const owned =
     commands.current?.personId === member.personId ? commands.current : null;
-  const code = current?.code ?? typed;
-  const ok = CHALLENGE_CODE.test(code);
-  const run = async (what: 'confirm' | 'reject') => {
-    setBusy(true);
-    setError(null);
-    const r = unresolved
-      ? await commands.retry()
-      : await commands.run({ personId: member.personId, what, code });
-    setBusy(false);
+  const unresolved = owned !== null && commands.isUnresolved(member.personId);
+  const busy = commands.busy;
+  const settle = (r: { kind: string; code?: string }) => {
     if (r.kind === 'ok') onClose();
-    else setError(r.code);
-  };
-  const giveUp = () => {
-    commands.discard();
-    setError(null);
-    setTyped('');
+    else setError(r.code ?? null);
   };
   return (
     <Sheet title={t('fm_confirmPhone')} onClose={() => !busy && onClose()}>
       <p className="big">{member.displayName}</p>
+      {owned ? (
+        <>
+          <div className="kv">
+            <span>{t('pm_code')}</span>
+            <b className="num">{owned.code}</b>
+          </div>
+          {unresolved ? (
+            <div className="banner warn" role="alert">
+              {t('fm_attemptUnresolved')}{' '}
+              <ErrorText code={error ?? commands.error ?? 'NETWORK'} />
+            </div>
+          ) : (
+            <p className="muted small">{t('saving')}</p>
+          )}
+          {unresolved && (
+            <div className="row2">
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => {
+                  commands.discard();
+                  setError(null);
+                }}
+              >
+                {t('pm_giveUp')}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={() => void commands.retry().then(settle)}
+              >
+                {t('retry')}
+              </button>
+            </div>
+          )}
+        </>
+      ) : (
+        <CrewCodeEdit
+          // A fresh, empty code whenever an attempt's ownership ended.
+          key={commands.generation}
+          commands={commands}
+          error={error}
+          onRun={(what, code) => {
+            setError(null);
+            void commands
+              .run({ personId: member.personId, what, code })
+              .then(settle);
+          }}
+        />
+      )}
+    </Sheet>
+  );
+}
+
+function CrewCodeEdit({
+  commands,
+  error,
+  onRun,
+}: {
+  commands: CrewCommands;
+  error: string | null;
+  onRun: (what: 'confirm' | 'reject', code: string) => void;
+}) {
+  const { t } = useI18n();
+  const [code, setCode] = useState('');
+  const ok = CHALLENGE_CODE.test(code) && commands.canStart;
+  return (
+    <>
       <p className="para muted small">{t('pm_confirmHint')}</p>
       <label className="field">
         <span>{t('pm_code')}</span>
@@ -271,69 +326,43 @@ function ConfirmSheet({
           autoComplete="one-time-code"
           maxLength={6}
           value={code}
-          readOnly={current !== null}
-          aria-readonly={current !== null || undefined}
-          onChange={(e) => setTyped(e.target.value.replace(/\D/g, ''))}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
         />
       </label>
-      {unresolved && (
-        <div className="banner warn" role="alert">
-          {t('fm_attemptUnresolved')} <ErrorText code={error ?? 'NETWORK'} />
-        </div>
-      )}
-      {error && !unresolved && (
+      {error && (
         <div className="banner err" role="alert">
           <ErrorText code={error} />
         </div>
       )}
-      {unresolved ? (
-        <div className="row2">
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy}
-            onClick={giveUp}
-          >
-            {t('pm_giveUp')}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={busy}
-            onClick={() => void run(unresolved.what)}
-          >
-            {t('retry')}
-          </button>
-        </div>
-      ) : (
-        <div className="row2">
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy || !ok || !commands.canStart}
-            onClick={() => void run('reject')}
-          >
-            {t('pm_reject')}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || !ok || !commands.canStart}
-            onClick={() => void run('confirm')}
-          >
-            {t('pm_confirm')}
-          </button>
-        </div>
-      )}
-    </Sheet>
+      <div className="row2">
+        <button
+          type="button"
+          className="ghost"
+          disabled={!ok}
+          onClick={() => onRun('reject', code)}
+        >
+          {t('pm_reject')}
+        </button>
+        <button
+          type="button"
+          className="primary"
+          disabled={!ok}
+          onClick={() => onRun('confirm', code)}
+        >
+          {t('pm_confirm')}
+        </button>
+      </div>
+    </>
   );
 }
 
 /**
  * The foreman's quantity report (design §4): per item a decimal, an explicit 0, unknown,
- * n/a or blank (kept as blank), for the site's today or yesterday. Each send is a new
- * revision against `expectedRevision`; after REVISION_CONFLICT the latest values are shown
- * beside the draft and nothing is sent until the foreman sends again. No hours.
+ * n/a or blank (kept as blank), for the site's today or yesterday. Form state = the owned
+ * send's payload (AGENTS.md): while a send runs or is unresolved, only its rows are shown,
+ * read-only, with Retry / Give up. A send carries the revision it was edited from
+ * (expectedRevision); after REVISION_CONFLICT editing restarts from the latest revision, and
+ * each item where the refused draft differs shows what was typed. No hours.
  */
 export function ReportCard({
   api,
@@ -348,31 +377,39 @@ export function ReportCard({
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const days = reportDays(me.project.timezone, new Date());
   const [day, setDay] = useState(days[0]);
-  // Per site day, for the card's life: a send's session and its owned payload.
-  const sessions = useRef(
+  // Per site day, for the card's life: the read, its owned sends, the last refused draft.
+  const entries = useRef(
     new Map<
       string,
       {
         session: FieldSession<ForemanReportDto>;
         sends: OwnedCommands<ForemanReportDto, ReportSend>;
+        refused: ReportSend | null;
       }
     >(),
   );
-  let entry = sessions.current.get(day);
+  let entry = entries.current.get(day);
   if (!entry) {
     const session = new FieldSession<ForemanReportDto>(
       () => api.report(day),
       rerender,
       { onEnded },
     );
-    entry = { session, sends: new OwnedCommands(session) };
-    sessions.current.set(day, entry);
+    entry = { session, sends: new OwnedCommands(session), refused: null };
+    entries.current.set(day, entry);
   }
-  const s = entry.session;
-  const sends = entry.sends;
+  const e = entry;
+  const s = e.session;
   useEffect(() => {
     if (!s.data && !s.readError) void s.load();
   }, [s]);
+  const owned = e.sends.current;
+  const send = async (payload: ReportSend) => {
+    e.refused = null;
+    const r = await sendReport(e.sends, api, day, payload);
+    if (r.kind === 'rejected') e.refused = payload;
+    rerender();
+  };
   return (
     <section className="card">
       <h2 className="blk">{t('fm_reportTitle')}</h2>
@@ -390,15 +427,17 @@ export function ReportCard({
           </button>
         ))}
       </div>
-      {s.data ? (
+      {owned && s.data ? (
+        <OwnedReport data={s.data} sends={e.sends} payload={owned} />
+      ) : s.data ? (
         <ReportForm
-          key={day}
-          api={api}
-          session={s}
-          sends={sends}
+          // Edited from this read; restarts from the latest read whenever a send ends.
+          key={`${day}:${s.data.n}:${e.sends.generation}`}
           data={s.data}
-          day={day}
           timeZone={me.project.timezone}
+          sends={e.sends}
+          refused={e.refused}
+          onSend={(p) => void send(p)}
         />
       ) : s.readError ? (
         <>
@@ -416,96 +455,105 @@ export function ReportCard({
   );
 }
 
-/** A report send as sent: the draft and note. */
-interface ReportSend {
-  draft: Draft;
-  note: string;
-}
-function ReportForm({
-  api,
-  session,
-  sends,
-  data,
-  day,
-  timeZone,
-}: {
-  api: DeviceApi;
-  timeZone: string;
-  session: FieldSession<ForemanReportDto>;
-  sends: OwnedCommands<ForemanReportDto, ReportSend>;
-  data: ForemanReportDto;
-  day: string;
-}) {
-  const { t, label, locale } = useI18n();
-  // A send that runs or is unresolved is shown as sent (locked), also after a day switch.
-  const owned = sends.current;
-  const pending = sends.unresolved !== null;
-  // The draft and the server values it started from; a conflict moves only the base.
-  const [draft, setDraft] = useState<Draft>(
-    () => owned?.draft ?? draftFrom(data),
-  );
-  const [note, setNote] = useState(owned?.note ?? data.note);
-  const [base, setBase] = useState<Draft>(() => draftFrom(data));
-  const [changed, setChanged] = useState<string[]>([]);
-  const [invalid, setInvalid] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
-  const latest = draftFrom(data);
-  // While a send runs or is unresolved the form is locked: its retry resends what was sent.
-  const locked = session.busy || sends.owned;
-  const giveUp = () => {
-    sends.discard();
-    setError(null);
-    setDraft(draftFrom(data));
-    setNote(data.note);
-  };
-  const send = async () => {
-    setError(null);
-    setSent(false);
-    if (!pending) {
-      const check = checkDraft(data, draft);
-      if (!check.ok) return setInvalid(check.invalid);
-    }
-    setInvalid([]);
-    const r = pending
-      ? await sends.retry()
-      : await sends.run({ draft, note }, (d, key) => {
-          const rows = d ? checkDraft(d, draft) : null;
-          if (!d || !rows?.ok) return null;
-          const command = {
-            clientMutationId: key,
-            businessDate: day,
-            crewId: d.crewId,
-            // The revision this one replaces, from the newest reading when it runs.
-            expectedRevision: d.n,
-            rows: rows.rows,
-            note: note.trim(),
-            occurredAt: new Date().toISOString(),
-          };
-          return { key, send: () => api.submitReport(command) };
-        });
-    const now = session.data;
-    if (r.kind === 'ok') {
-      if (now) {
-        setBase(draftFrom(now));
-        setDraft(draftFrom(now));
-      }
-      setChanged([]);
-      setSent(true);
-      return;
-    }
-    setError(r.code);
-    if (r.code === 'REVISION_CONFLICT' && now) {
-      const fresh = draftFrom(now);
-      setChanged(changedOnServer(base, fresh));
-      setBase(fresh);
-    }
-  };
-  const shownQty = (raw: string) => {
+function useQtyText() {
+  const { t, locale } = useI18n();
+  return (raw: string) => {
     const k = qtyKind(raw);
     if (k === 'blank') return t('fm_blank');
     if (k === 'unknown' || k === 'na') return t(k);
     return fmtNum(raw, locale);
+  };
+}
+
+/** An owned send, shown as sent: its rows read-only, Retry (same rows, same key) / Give up. */
+export function OwnedReport({
+  data,
+  sends,
+  payload,
+}: {
+  data: ForemanReportDto;
+  sends: OwnedCommands<ForemanReportDto, ReportSend>;
+  payload: ReportSend;
+}) {
+  const { t, label } = useI18n();
+  const text = useQtyText();
+  const unresolved = sends.unresolved !== null;
+  const busy = sends.session.busy;
+  const labelOf = (k: string) => {
+    const it = data.items.find((i) => i.key === k);
+    return it ? label(it.label) : k;
+  };
+  return (
+    <>
+      {payload.rows.map((r) => (
+        <div className="kv" key={r.itemKey}>
+          <span>{labelOf(r.itemKey)}</span>
+          <span className="num">{text(r.qty)}</span>
+        </div>
+      ))}
+      {payload.note && <p className="para small">{payload.note}</p>}
+      {unresolved ? (
+        <div className="banner warn" role="alert">
+          {t('fm_sendUnresolved')}
+        </div>
+      ) : (
+        <p className="muted small">{t('saving')}</p>
+      )}
+      {unresolved && (
+        <div className="row2">
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => sends.discard()}
+          >
+            {t('pm_giveUp')}
+          </button>
+          <button
+            type="button"
+            className="primary big"
+            disabled={busy}
+            onClick={() => void sends.retry()}
+          >
+            {t('retry')}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function ReportForm({
+  data,
+  timeZone,
+  sends,
+  refused,
+  onSend,
+}: {
+  data: ForemanReportDto;
+  timeZone: string;
+  sends: OwnedCommands<ForemanReportDto, ReportSend>;
+  refused: ReportSend | null;
+  onSend: (p: ReportSend) => void;
+}) {
+  const { t, label, locale } = useI18n();
+  const text = useQtyText();
+  // Always edited from the latest read (this form restarts when a send ends).
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(data));
+  const [note, setNote] = useState(data.note);
+  const [invalid, setInvalid] = useState<string[]>([]);
+  const latest = draftFrom(data);
+  // After a refusal: the items where what was typed differs from the latest revision.
+  const typed = new Map(
+    (refused?.rows ?? [])
+      .filter((r) => (latest[r.itemKey] ?? '').trim() !== r.qty.trim())
+      .map((r) => [r.itemKey, r.qty]),
+  );
+  const submit = () => {
+    const check = checkDraft(data, draft);
+    if (!check.ok) return setInvalid(check.invalid);
+    setInvalid([]);
+    onSend({ rows: check.rows, note: note.trim(), editedFrom: data.n });
   };
   return (
     <>
@@ -517,12 +565,18 @@ function ReportForm({
             })
           : t('fm_notReported')}
       </p>
+      {sends.refusal && (
+        <div className="banner err" role="alert">
+          <ErrorText code={sends.refusal} />
+        </div>
+      )}
       {data.items.length === 0 && (
         <p className="muted small">{t('fm_noItems')}</p>
       )}
       {data.items.map((it) => {
         const v = draft[it.key] ?? '';
         const bad = invalid.includes(it.key);
+        const was = typed.get(it.key);
         return (
           <div key={it.key} className={`qline fmrow${bad ? ' bad' : ''}`}>
             <div className="blk-row">
@@ -534,17 +588,15 @@ function ReportForm({
                 value={v}
                 label={label(it.label)}
                 onChange={(x) => setDraft({ ...draft, [it.key]: x })}
-                disabled={locked}
               />
             </div>
             <TokenChips
               value={v}
-              disabled={locked}
               onSet={(x) => setDraft({ ...draft, [it.key]: x })}
             />
-            {changed.includes(it.key) && (
+            {was !== undefined && (
               <span className="warn-t small">
-                {t('fm_latest', { v: shownQty(latest[it.key] ?? '') })}
+                {t('fm_youTyped', { v: text(was) })}
               </span>
             )}
             {bad && (
@@ -561,42 +613,18 @@ function ReportForm({
           rows={2}
           maxLength={FOREMAN_NOTE_MAX}
           value={note}
-          disabled={locked}
           onChange={(e) => setNote(e.target.value)}
         />
       </label>
       <p className="muted small">{t('fm_reportNote')}</p>
-      {error && (
-        <div className="banner err" role="alert">
-          <ErrorText code={error} />
-        </div>
-      )}
-      {sent && <p className="ok-t">{t('fm_sent', { n: data.n })}</p>}
-      {pending && (
-        <div className="banner warn" role="alert">
-          {t('fm_sendUnresolved')}
-        </div>
-      )}
-      <div className="row2">
-        {pending && (
-          <button
-            type="button"
-            className="ghost"
-            disabled={session.busy}
-            onClick={giveUp}
-          >
-            {t('pm_giveUp')}
-          </button>
-        )}
-        <button
-          type="button"
-          className="primary big"
-          disabled={session.busy || data.items.length === 0}
-          onClick={() => void send()}
-        >
-          {pending ? t('retry') : t('fm_send')}
-        </button>
-      </div>
+      <button
+        type="button"
+        className="primary big"
+        disabled={!sends.canStart || data.items.length === 0}
+        onClick={submit}
+      >
+        {t('fm_send')}
+      </button>
     </>
   );
 }
