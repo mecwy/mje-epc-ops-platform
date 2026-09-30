@@ -1634,11 +1634,22 @@ try {
   // ================= idle deadline =================
   step('idle deadline');
   {
+    // Idle deadlines are judged by the database clock (design §5), so the waits below poll that
+    // clock against the persisted deadline; a host timer is not the same clock (a VM clock can
+    // lag the host), and a host sleep once let a request decide before the deadline (200).
+    const idleAt = async (id, days) =>
+      (
+        await owner.query(
+          `SELECT ("lastSeenAt" + $2 * interval '1 day')::text AS t FROM "FieldDevice" WHERE id=$1`,
+          [id, days],
+        )
+      ).rows[0].t;
     // (1) A authenticates just before lastSeenAt + 30 d, B just after; both FOR UPDATE, A first.
     await travel(
       `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '30 days'+interval '2500 milliseconds' WHERE id=$1`,
       [dev.w2.id],
     );
+    const w2Deadline = await idleAt(dev.w2.id, 30);
     // Both queue FOR UPDATE on the row and are released before the deadline, so both decide
     // before it (the decision time is taken after the lock); the first records its activity.
     let unlock = await holdRow(dev.w2.id);
@@ -1650,7 +1661,7 @@ try {
     const [ra, rb] = await Promise.all([A, B]);
     assert.deepEqual([ra.status, rb.status], [200, 200]);
     // After the original deadline the device is still live: A's activity moved it.
-    await sleep(3000);
+    await untilDb(w2Deadline);
     await expectStatus(me(dev.w2.token), 200);
     assert.equal((await row(dev.w2.id)).state, 'CONFIRMED');
     // (2) B (after the deadline) runs first and persists EXPIRED; A (before it) then sees it.
@@ -1661,7 +1672,7 @@ try {
     const releasePerson = await holdAdvisory(personKey(person.w3));
     const A2 = rotate(dev.w3.token, newToken(), 1);
     await advisoryWaiters(personKey(person.w3), 1);
-    await sleep(3000);
+    await untilDb(await idleAt(dev.w3.id, 30));
     // B's own transaction must commit EXPIRED before it answers (no deferred housekeeping).
     fieldOptions.housekeeping = false;
     await expectStatus(me(dev.w3.token), 401, 'DEVICE_ENDED');
@@ -1685,7 +1696,7 @@ try {
     unlock = await holdRow(dev.w7.id);
     const R = me(dev.w7.token);
     await rowWaiters(1);
-    await sleep(3000);
+    await untilDb(await idleAt(dev.w7.id, 29));
     await unlock();
     await expectStatus(R, 200);
     const advanced = await owner.query(
