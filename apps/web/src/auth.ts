@@ -40,7 +40,8 @@ class AuthCodeError extends Error {
  * fallback, see chooseInteraction); tokens stay in MSAL's session storage.
  */
 export class EntraAuth {
-  private popupOpen = false;
+  /** True from the start of any interaction of this page until it fails or returns. */
+  private interacting = false;
   private readonly expiredListeners = new Set<() => void>();
 
   private constructor(
@@ -117,20 +118,16 @@ export class EntraAuth {
    */
   async signIn(): Promise<AccountInfo | null> {
     const request = { scopes: [this.scope], prompt: 'select_account' };
-    this.beginInteraction();
-    if (this.env.interaction() === 'redirect') {
-      await this.client.loginRedirect(request);
-      return null;
-    }
-    this.popupOpen = true;
-    try {
+    return this.interaction(async () => {
+      if (this.env.interaction() === 'redirect') {
+        await this.client.loginRedirect(request);
+        return null;
+      }
       const result = await this.client.loginPopup(request);
       if (!result.account) throw new Error('LOGIN_REQUIRED');
       this.client.setActiveAccount(result.account);
       return result.account;
-    } finally {
-      this.popupOpen = false;
-    }
+    });
   }
 
   /** Silent renewal; when the user is needed it reports expiry and never opens a popup. */
@@ -152,8 +149,17 @@ export class EntraAuth {
 
   /** Sign in again after expiry: always a full-page redirect. */
   async renew(account: AccountInfo): Promise<void> {
-    this.beginInteraction();
-    await this.client.acquireTokenRedirect({ scopes: [this.scope], account });
+    await this.interaction(() =>
+      this.client.acquireTokenRedirect({ scopes: [this.scope], account }),
+    );
+  }
+
+  /**
+   * The page is showing again after it left for Microsoft (restored from the back-forward
+   * cache): that redirect is abandoned, so its lock may be cleared by the next attempt.
+   */
+  backForwardRestored() {
+    this.interacting = false;
   }
 
   /** Resolves true when the page is leaving (redirect), false when it should reload. */
@@ -166,11 +172,20 @@ export class EntraAuth {
     return true;
   }
 
-  /** A user-started attempt: refuse while our popup is open, else clear a stale lock. */
-  private beginInteraction() {
-    if (this.popupOpen) throw new AuthCodeError('interaction_in_progress');
+  /**
+   * One user-started attempt at a time. A lock is cleared only when no popup or redirect of
+   * this page is starting or open, so a live lock of this tab is never removed.
+   */
+  private async interaction<T>(run: () => Promise<T>): Promise<T> {
+    if (this.interacting) throw new AuthCodeError('interaction_in_progress');
     if (this.env.storage)
       clearStaleInteraction(this.env.storage, this.clientId);
+    this.interacting = true;
+    try {
+      return await run();
+    } finally {
+      this.interacting = false;
+    }
   }
 }
 

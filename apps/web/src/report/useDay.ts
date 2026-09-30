@@ -11,6 +11,11 @@ import { photoAsOf, setFact } from './model.js';
 import { restoreDecision, type DraftStash } from '../signin.js';
 
 export type { SaveState } from './draft.js';
+/** Where stashed drafts wait until their day is read (see ResumeKeeper). */
+export interface DraftRecovery {
+  draft(projectId: string, businessDate: string): DraftStash | null;
+  resolved(projectId: string, businessDate: string): void;
+}
 const AUTOSAVE_MS = 700;
 
 export class ActionAborted extends Error {
@@ -41,8 +46,8 @@ export function useDay(
   projectId: string,
   businessDate: string,
   onConflict: () => void,
-  /** Unsaved facts put aside before a sign-in redirect; each is re-applied on its first read. */
-  restore: readonly DraftStash[] = [],
+  /** Unsaved facts put aside before a sign-in redirect; each is reconciled on its first read. */
+  recovery?: DraftRecovery,
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const entries = useRef(new Map<string, Entry>());
@@ -50,9 +55,7 @@ export function useDay(
   const conflict = useRef(onConflict);
   conflict.current = onConflict;
   const key = `${projectId}:${businessDate}`;
-  const restoring = useRef(
-    new Map(restore.map((d) => [`${d.projectId}:${d.businessDate}`, d])),
-  );
+  const recover = useRef(recovery);
   const afterRestore = useRef<(e: Entry, o: FlushOutcome) => Promise<void>>(
     async () => {},
   );
@@ -110,11 +113,10 @@ export function useDay(
         e.day = d;
         e.frozen = content;
         e.error = null;
-        const k = `${s.projectId}:${s.businessDate}`;
-        const stash = restoring.current.get(k);
+        const stash = recover.current?.draft(s.projectId, s.businessDate);
         // Only against a read the session took (not refused by adopt), else wait for the next.
         if (stash && !s.dirty && s.version === d.version) {
-          restoring.current.delete(k);
+          recover.current?.resolved(s.projectId, s.businessDate);
           const decision = restoreDecision(stash, s);
           if (decision === 'apply' && s.edit(stash.facts))
             void s.flush().then((o) => afterRestore.current(e, o));

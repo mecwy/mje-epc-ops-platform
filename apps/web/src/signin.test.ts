@@ -1,13 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DayFactsDto } from '@mje/contracts';
 import {
   INTERACTION_KEY,
+  RESUME_LIMITS,
+  ResumeKeeper,
   chooseInteraction,
   clearStaleInteraction,
+  isFactsShape,
+  readResume,
+  renewal,
   restoreDecision,
   saveResume,
   signInFailure,
-  takeResume,
+  type DraftStash,
   type ResumeState,
 } from './signin.js';
 
@@ -21,12 +26,20 @@ function memoryStore(seed: Record<string, string> = {}) {
   };
 }
 
-const facts = (qty: Record<string, string>) =>
-  ({
-    weather: '',
-    qty,
-    narrative: { construction: '' },
-  }) as unknown as DayFactsDto;
+const facts = (qty: Record<string, string>): DayFactsDto => ({
+  weather: '',
+  temperature: '',
+  qty,
+  cumulative: {},
+  narrative: { construction: '', quality: '', safety: '' },
+  people: {},
+  presence: {},
+  machinery: {},
+  materials: {},
+  milestones: {},
+  noWork: null,
+  updated: {},
+});
 
 describe('chooseInteraction', () => {
   it('redirects on phones, in-app browsers and ordinary desktop tabs', () => {
@@ -110,44 +123,80 @@ describe('clearStaleInteraction', () => {
   });
 });
 
+const NOW = Date.UTC(2026, 8, 30, 8);
+const draft = (businessDate: string, qty = '12'): DraftStash => ({
+  projectId: 'p2',
+  businessDate,
+  version: 4,
+  facts: facts({ a: qty }),
+});
+const place = { projectId: 'p2', date: '2026-09-29', view: 'field' as const };
+
 describe('resume state', () => {
   const state: ResumeState = {
-    projectId: 'p2',
-    date: '2026-09-29',
-    view: 'field',
-    drafts: [
-      {
-        projectId: 'p2',
-        businessDate: '2026-09-29',
-        version: 4,
-        facts: facts({ a: '12' }),
-      },
-    ],
+    ...place,
+    drafts: [draft('2026-09-29')],
+    savedAt: NOW,
   };
-  it('restores project, date, view and drafts once', () => {
+  it('reads project, date, view and drafts without removing them', () => {
     const s = memoryStore();
     expect(saveResume(s, state)).toBe(true);
     expect([...s.data.keys()].join()).not.toMatch(/token|msal/i);
-    expect(takeResume(s)).toEqual(state);
-    expect(takeResume(s)).toBeNull();
+    expect(readResume(s, NOW)).toEqual(state);
+    expect(readResume(s, NOW)).toEqual(state);
   });
-  it('drops malformed state and malformed drafts', () => {
+  it('keeps unsaved text the server would refuse, drops malformed drafts', () => {
     const s = memoryStore();
-    s.setItem('mje-resume', '{not json');
-    expect(takeResume(s)).toBeNull();
-    saveResume(s, { ...state, view: 'admin' as 'field' });
-    expect(takeResume(s)).toBeNull();
+    const odd = draft('2026-09-28', '12,5 approx');
     saveResume(s, {
       ...state,
       drafts: [
         ...state.drafts,
-        { ...state.drafts[0]!, version: 1.5 },
-        { ...state.drafts[0]!, businessDate: 'today' },
+        odd,
+        { ...draft('2026-09-27'), version: 1.5 },
+        { ...draft('2026-09-26'), businessDate: 'today' },
+        { ...draft('2026-09-25'), facts: {} as DayFactsDto },
+        {
+          ...draft('2026-09-24'),
+          facts: { ...facts({}), qty: { a: 12 } } as unknown as DayFactsDto,
+        },
       ],
     });
-    expect(takeResume(s)?.drafts).toEqual(state.drafts);
+    expect(readResume(s, NOW)?.drafts).toEqual([...state.drafts, odd]);
   });
-  it('reports a store that cannot keep it', () => {
+  it('drops and removes malformed, too old, future or oversized state', () => {
+    const cases: [string, number][] = [
+      ['{not json', NOW],
+      [JSON.stringify({ ...state, view: 'admin' }), NOW],
+      [JSON.stringify({ ...state, savedAt: undefined }), NOW],
+      [JSON.stringify(state), NOW + RESUME_LIMITS.maxAgeMs + 1],
+      [JSON.stringify(state), NOW - 1],
+      [
+        JSON.stringify({
+          ...state,
+          drafts: Array.from({ length: RESUME_LIMITS.maxDrafts + 1 }, () =>
+            draft('2026-09-29'),
+          ),
+        }),
+        NOW,
+      ],
+      ['x'.repeat(RESUME_LIMITS.maxChars + 1), NOW],
+    ];
+    for (const [raw, now] of cases) {
+      const s = memoryStore({ 'mje-resume': raw });
+      expect(readResume(s, now)).toBeNull();
+      expect(s.data.size).toBe(0);
+    }
+  });
+  it('refuses to store more than the limits or into an unusable store', () => {
+    const s = memoryStore();
+    const many = Array.from({ length: RESUME_LIMITS.maxDrafts + 1 }, (_, i) =>
+      draft(`2026-08-${String((i % 28) + 1).padStart(2, '0')}`),
+    );
+    expect(saveResume(s, { ...state, drafts: many })).toBe(false);
+    const huge = draft('2026-09-29', 'x'.repeat(RESUME_LIMITS.maxChars));
+    expect(saveResume(s, { ...state, drafts: [huge] })).toBe(false);
+    expect(s.data.size).toBe(0);
     expect(saveResume(null, state)).toBe(false);
     const full = {
       ...memoryStore(),
@@ -156,7 +205,146 @@ describe('resume state', () => {
       },
     };
     expect(saveResume(full, state)).toBe(false);
-    expect(takeResume(null)).toBeNull();
+    expect(readResume(null, NOW)).toBeNull();
+  });
+  it('checks the facts shape', () => {
+    expect(isFactsShape(facts({ a: 'abc' }))).toBe(true);
+    expect(
+      isFactsShape({ ...facts({}), noWork: { reason: 'rain', note: '' } }),
+    ).toBe(true);
+    expect(isFactsShape({ ...facts({}), presence: { x: 'maybe' } })).toBe(
+      false,
+    );
+    expect(isFactsShape({ ...facts({}), narrative: null })).toBe(false);
+    expect(isFactsShape([])).toBe(false);
+  });
+});
+
+describe('ResumeKeeper', () => {
+  const stashed = (s: ReturnType<typeof memoryStore>, drafts: DraftStash[]) =>
+    saveResume(s, { ...place, drafts, savedAt: NOW });
+
+  it('keeps the stash through a cancelled sign-in and restores it after the retry', () => {
+    const s = memoryStore();
+    stashed(s, [draft('2026-09-29')]);
+    // Return 1: sign-in cancelled, the workspace never opens.
+    const cancelled = new ResumeKeeper(s, NOW + 1000);
+    expect(cancelled.state?.date).toBe('2026-09-29');
+    // Return 2: the retry succeeds.
+    const retried = new ResumeKeeper(s, NOW + 60_000);
+    retried.opened('p2');
+    expect(retried.state?.view).toBe('field');
+    expect(retried.draft('p2', '2026-09-29')).toEqual(draft('2026-09-29'));
+    retried.resolved('p2', '2026-09-29');
+    expect(s.data.size).toBe(0);
+  });
+
+  it('clears the place once the workspace opened when there is no draft', () => {
+    const s = memoryStore();
+    stashed(s, []);
+    const k = new ResumeKeeper(s, NOW);
+    expect(s.data.size).toBe(1);
+    k.opened('p2');
+    expect(s.data.size).toBe(0);
+  });
+
+  it('carries drafts of days not opened yet into the next renewal', () => {
+    const s = memoryStore();
+    stashed(s, [draft('2026-09-28'), draft('2026-09-29')]);
+    const k = new ResumeKeeper(s, NOW);
+    k.opened('p2');
+    k.resolved('p2', '2026-09-29'); // opened and applied; now unsaved in its session
+    const unsaved = [draft('2026-09-29', '13')];
+    expect(k.save(place, unsaved, NOW + 5000)).toBe(true);
+    const next = new ResumeKeeper(s, NOW + 10_000);
+    expect(next.state?.drafts).toEqual([draft('2026-09-28'), unsaved[0]]);
+    expect(next.state?.savedAt).toBe(NOW);
+  });
+
+  it("drops another project's drafts when the workspace opens", () => {
+    const s = memoryStore();
+    stashed(s, [
+      draft('2026-09-29'),
+      { ...draft('2026-09-29'), projectId: 'p9' },
+    ]);
+    const k = new ResumeKeeper(s, NOW);
+    k.opened('p2');
+    expect(k.pendingCount).toBe(1);
+    expect(readResume(s, NOW)?.drafts).toEqual([draft('2026-09-29')]);
+  });
+});
+
+describe('renewal', () => {
+  const deferred = () => {
+    let resolve = () => {};
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+
+  it('starts one flush, snapshot and redirect for repeated clicks', async () => {
+    const flush = deferred();
+    const steps = {
+      flush: vi.fn(() => flush.promise),
+      snapshot: vi.fn(() => true),
+      redirect: vi.fn(async () => {}),
+    };
+    const r = renewal(steps);
+    const first = r.start();
+    expect(r.busy).toBe(true); // taken before the flush
+    await expect(r.start()).resolves.toBe('busy');
+    flush.resolve();
+    await expect(first).resolves.toBe('done');
+    expect(steps.flush).toHaveBeenCalledOnce();
+    expect(steps.snapshot).toHaveBeenCalledOnce();
+    expect(steps.redirect).toHaveBeenCalledOnce();
+  });
+
+  it('allows a retry after a failed redirect or a back-forward return', async () => {
+    const leaving = deferred();
+    const redirect = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('user_cancelled'))
+      .mockImplementationOnce(() => leaving.promise)
+      .mockResolvedValue();
+    const r = renewal({
+      flush: async () => {},
+      snapshot: () => true,
+      redirect,
+    });
+    await expect(r.start()).rejects.toThrow('user_cancelled');
+    expect(r.busy).toBe(false);
+    void r.start(); // leaves for Microsoft; the page is frozen
+    await vi.waitFor(() => expect(redirect).toHaveBeenCalledTimes(2));
+    await expect(r.start()).resolves.toBe('busy');
+    r.reset(); // pageshow from the back-forward cache
+    await expect(r.start()).resolves.toBe('done');
+    expect(redirect).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not redirect when the unsaved state cannot be kept', async () => {
+    const redirect = vi.fn(async () => {});
+    const r = renewal({
+      flush: async () => {},
+      snapshot: () => false,
+      redirect,
+    });
+    await expect(r.start()).resolves.toBe('unsaved');
+    expect(redirect).not.toHaveBeenCalled();
+    expect(r.busy).toBe(false);
+  });
+
+  it('bounds the flush', async () => {
+    const redirect = vi.fn(async () => {});
+    const r = renewal({
+      flush: () => new Promise(() => {}),
+      snapshot: () => true,
+      redirect,
+      flushMs: 10,
+    });
+    await expect(r.start()).resolves.toBe('done');
+    expect(redirect).toHaveBeenCalledOnce();
   });
 });
 

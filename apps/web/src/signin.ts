@@ -110,63 +110,225 @@ export interface ResumeState {
   date: string;
   view: View;
   drafts: DraftStash[];
+  /** When the first redirect of this recovery put it aside (ms since epoch). */
+  savedAt: number;
 }
 
 const RESUME_KEY = 'mje-resume';
+/** Bounds on what a page load will take back: age, days and total size. */
+export const RESUME_LIMITS = {
+  maxAgeMs: 24 * 60 * 60 * 1000,
+  maxDrafts: 31,
+  maxChars: 512 * 1024,
+};
 const isDate = (v: unknown): v is string =>
   typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
-const isDraft = (v: unknown): v is DraftStash => {
-  const d = v as Partial<DraftStash> | null;
-  return (
-    typeof d === 'object' &&
-    d !== null &&
-    typeof d.projectId === 'string' &&
-    isDate(d.businessDate) &&
-    Number.isInteger(d.version) &&
-    typeof d.facts === 'object' &&
-    d.facts !== null
-  );
-};
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+const isMap = (v: unknown, ok: (x: unknown) => boolean) =>
+  isObj(v) && Object.values(v).length <= 500 && Object.values(v).every(ok);
+const isStr = (v: unknown) => typeof v === 'string';
 
-/** Returns false if it could not be stored (private mode, quota). */
+/**
+ * The shape of DayFactsDto, without the server's value rules: unsaved text that the server
+ * would still refuse (for example "12,5" or "abc" in a quantity) is the user's and is kept.
+ */
+export function isFactsShape(v: unknown): v is DayFactsDto {
+  if (!isObj(v)) return false;
+  const n = v['narrative'];
+  const w = v['noWork'];
+  return (
+    isStr(v['weather']) &&
+    isStr(v['temperature']) &&
+    isObj(n) &&
+    isStr(n['construction']) &&
+    isStr(n['quality']) &&
+    isStr(n['safety']) &&
+    ['qty', 'cumulative', 'people', 'machinery', 'materials', 'updated'].every(
+      (k) => isMap(v[k], isStr),
+    ) &&
+    isMap(
+      v['presence'],
+      (x) => x === 'present' || x === 'absent' || x === '',
+    ) &&
+    isMap(
+      v['milestones'],
+      (x) => isObj(x) && isStr(x['actual']) && isStr(x['note']),
+    ) &&
+    (w === null || (isObj(w) && isStr(w['reason']) && isStr(w['note'])))
+  );
+}
+const isDraft = (v: unknown): v is DraftStash =>
+  isObj(v) &&
+  typeof v['projectId'] === 'string' &&
+  isDate(v['businessDate']) &&
+  Number.isInteger(v['version']) &&
+  isFactsShape(v['facts']);
+const draftKey = (d: { projectId: string; businessDate: string }) =>
+  `${d.projectId}:${d.businessDate}`;
+
+/** Returns false if it could not be stored (private mode, quota, over the limits). */
 export function saveResume(storage: Store | null, state: ResumeState) {
+  if (!storage || state.drafts.length > RESUME_LIMITS.maxDrafts) return false;
+  const raw = JSON.stringify(state);
+  if (raw.length > RESUME_LIMITS.maxChars) return false;
   try {
-    storage?.setItem(RESUME_KEY, JSON.stringify(state));
-    return storage !== null;
+    storage.setItem(RESUME_KEY, raw);
+    return true;
   } catch {
     return false;
   }
 }
+export function clearResume(storage: Store | null) {
+  try {
+    storage?.removeItem(RESUME_KEY);
+  } catch {
+    /* nothing to keep */
+  }
+}
 
-/** Read and remove the state saved before the redirect; anything malformed is dropped. */
-export function takeResume(storage: Store | null): ResumeState | null {
+/**
+ * Read (not remove) the state saved before a redirect. Anything malformed, too old or too
+ * large is dropped and removed; a malformed draft is dropped on its own.
+ */
+export function readResume(
+  storage: Store | null,
+  now: number,
+): ResumeState | null {
   let raw: string | null;
   try {
     raw = storage?.getItem(RESUME_KEY) ?? null;
-    storage?.removeItem(RESUME_KEY);
   } catch {
     return null;
   }
   if (raw === null) return null;
-  try {
-    const s = JSON.parse(raw) as Partial<ResumeState> | null;
-    if (
-      !s ||
-      typeof s.projectId !== 'string' ||
-      !isDate(s.date) ||
-      (s.view !== 'field' && s.view !== 'report') ||
-      !Array.isArray(s.drafts)
-    )
-      return null;
-    return {
-      projectId: s.projectId,
-      date: s.date,
-      view: s.view,
-      drafts: s.drafts.filter(isDraft),
-    };
-  } catch {
+  let s: unknown = null;
+  if (raw.length <= RESUME_LIMITS.maxChars)
+    try {
+      s = JSON.parse(raw);
+    } catch {
+      s = null;
+    }
+  if (
+    !isObj(s) ||
+    typeof s['projectId'] !== 'string' ||
+    !isDate(s['date']) ||
+    (s['view'] !== 'field' && s['view'] !== 'report') ||
+    !Array.isArray(s['drafts']) ||
+    s['drafts'].length > RESUME_LIMITS.maxDrafts ||
+    typeof s['savedAt'] !== 'number' ||
+    !(s['savedAt'] <= now && now - s['savedAt'] <= RESUME_LIMITS.maxAgeMs)
+  ) {
+    clearResume(storage);
     return null;
   }
+  return {
+    projectId: s['projectId'],
+    date: s['date'],
+    view: s['view'],
+    drafts: s['drafts'].filter(isDraft),
+    savedAt: s['savedAt'],
+  };
+}
+
+/**
+ * Owns the resume state across sign-in round trips. The stored copy stays until every draft
+ * in it has been reconciled with its day, so a cancelled or failed sign-in, a reload or a
+ * second redirect before that point loses nothing.
+ */
+export class ResumeKeeper {
+  readonly state: ResumeState | null;
+  private readonly pending = new Map<string, DraftStash>();
+
+  constructor(
+    private readonly storage: Store | null,
+    now: number,
+  ) {
+    this.state = readResume(storage, now);
+    for (const d of this.state?.drafts ?? []) this.pending.set(draftKey(d), d);
+  }
+
+  /** The workspace opened on `projectId`: the view is restored; other projects' drafts go. */
+  opened(projectId: string) {
+    for (const [k, d] of this.pending)
+      if (d.projectId !== projectId) this.pending.delete(k);
+    this.persist();
+  }
+  get pendingCount() {
+    return this.pending.size;
+  }
+  /** The draft still waiting for its day, if any. */
+  draft(projectId: string, businessDate: string): DraftStash | null {
+    return this.pending.get(draftKey({ projectId, businessDate })) ?? null;
+  }
+  /** Its day was read and the draft applied, found saved, or refused as a conflict. */
+  resolved(projectId: string, businessDate: string) {
+    if (this.pending.delete(draftKey({ projectId, businessDate })))
+      this.persist();
+  }
+  /**
+   * Before another redirect: the current place, every unsaved day, and every draft not yet
+   * reconciled (an unsaved day wins over its older stashed draft).
+   */
+  save(
+    place: { projectId: string; date: string; view: View },
+    unsaved: DraftStash[],
+    now: number,
+  ): boolean {
+    const drafts = new Map(this.pending);
+    for (const d of unsaved) drafts.set(draftKey(d), d);
+    return saveResume(this.storage, {
+      ...place,
+      drafts: [...drafts.values()],
+      savedAt: this.pending.size && this.state ? this.state.savedAt : now,
+    });
+  }
+  private persist() {
+    if (!this.state || this.pending.size === 0) clearResume(this.storage);
+    else
+      saveResume(this.storage, {
+        ...this.state,
+        drafts: [...this.pending.values()],
+      });
+  }
+}
+
+/**
+ * One renewal at a time: the guard is taken synchronously on the first click, before the
+ * bounded flush, and held through the snapshot and the redirect start. It is released when
+ * the redirect call fails or returns, or by `reset()` when the page comes back from the
+ * back-forward cache.
+ */
+export function renewal(steps: {
+  flush: () => Promise<unknown>;
+  snapshot: () => boolean;
+  redirect: () => Promise<void>;
+  flushMs?: number;
+}) {
+  let busy = false;
+  return {
+    get busy() {
+      return busy;
+    },
+    reset() {
+      busy = false;
+    },
+    async start(): Promise<'busy' | 'unsaved' | 'done'> {
+      if (busy) return 'busy';
+      busy = true;
+      try {
+        await Promise.race([
+          steps.flush().catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, steps.flushMs ?? 1500)),
+        ]);
+        if (!steps.snapshot()) return 'unsaved';
+        await steps.redirect();
+        return 'done';
+      } finally {
+        busy = false;
+      }
+    },
+  };
 }
 
 const canonical = (v: unknown): string =>

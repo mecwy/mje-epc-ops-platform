@@ -26,10 +26,9 @@ import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { Sheet } from './ui.js';
 import {
-  saveResume,
+  ResumeKeeper,
+  renewal,
   signInFailure,
-  takeResume,
-  type ResumeState,
   type SignInFailure,
 } from './signin.js';
 
@@ -61,10 +60,13 @@ function useSession() {
   const [failure, setFailure] = useState<SignInFailure | null>(null);
   const [expired, setExpired] = useState(false);
   const [redirecting, setRedirecting] = useState(false);
+  const authRef = useRef<EntraAuth | null>(null);
   useEffect(() => {
     // Back from the Microsoft page may restore this page from the browser cache: allow a retry.
     const onShow = (e: PageTransitionEvent) => {
-      if (e.persisted) setRedirecting(false);
+      if (!e.persisted) return;
+      authRef.current?.backForwardRestored();
+      setRedirecting(false);
     };
     window.addEventListener('pageshow', onShow);
     return () => window.removeEventListener('pageshow', onShow);
@@ -80,6 +82,7 @@ function useSession() {
         await fetch('/api/auth-config', { cache: 'no-store' })
       ).json()) as AuthConfig;
       const auth = await EntraAuth.create(config);
+      authRef.current = auth;
       if (auth.redirectError) setFailure(signInFailure(auth.redirectError));
       auth.onExpired(() => setExpired(true));
       const account = auth.current();
@@ -141,8 +144,8 @@ function Workspace({
   session: Session;
   project: Project;
   signin: SignInState;
-  /** Where the user was before a sign-in redirect (this project only). */
-  resume: ResumeState | null;
+  /** What was put aside before a sign-in redirect. */
+  resume: ResumeKeeper;
 }) {
   const { t, label, locale } = useI18n();
   const [toast, setToast] = useState<string | null>(null);
@@ -159,12 +162,17 @@ function Workspace({
     () => reportApi(session.token, () => say(retryText.current)),
     [session, say],
   );
+  const [place] = useState(() =>
+    resume.state?.projectId === project.id ? resume.state : null,
+  );
   const [date, setDate] = useState(
-    () => resume?.date ?? siteToday(project.timezone),
+    () => place?.date ?? siteToday(project.timezone),
   );
   const [view, setView] = useState<'field' | 'report'>(
-    () => resume?.view ?? 'report',
+    () => place?.view ?? 'report',
   );
+  // The place is restored; drafts of other projects cannot be and are dropped.
+  useEffect(() => resume.opened(project.id), [resume, project.id]);
   const [fieldTab, setFieldTab] = useState<'today' | 'plan'>('today');
   const [task, setTask] = useState<null | 'fill' | 'check'>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -197,7 +205,7 @@ function Workspace({
     project.id,
     date,
     () => say(t('conflictReloaded')),
-    resume?.drafts,
+    resume,
   );
   const reloadDay = useCallback(() => void h.reload(), [h.reload]);
   const dayStamp = `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`;
@@ -301,25 +309,50 @@ function Workspace({
     }
   };
   // Before leaving for Microsoft: try to send pending edits (bounded; without a token they
-  // cannot land), then put aside what is still unsaved plus the project, day and view.
+  // cannot land), then put aside what is unsaved or not yet restored, plus the place.
+  const steps = useRef<Parameters<typeof renewal>[0]>({
+    flush: h.flush,
+    snapshot: () => false,
+    redirect: async () => {},
+  });
+  steps.current = {
+    flush: h.flush,
+    snapshot: () => {
+      const unsaved = h.unsaved();
+      const kept = resume.save(
+        { projectId: project.id, date, view },
+        unsaved,
+        Date.now(),
+      );
+      return kept || (unsaved.length === 0 && resume.pendingCount === 0);
+    },
+    redirect: async () => {
+      await session.renew?.();
+    },
+  };
+  const [renewer] = useState(() =>
+    renewal({
+      flush: () => steps.current.flush(),
+      snapshot: () => steps.current.snapshot(),
+      redirect: () => steps.current.redirect(),
+    }),
+  );
+  const [renewBusy, setRenewBusy] = useState(false);
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (!e.persisted) return;
+      renewer.reset();
+      setRenewBusy(false);
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, [renewer]);
   const renew = async () => {
-    if (!session.renew) return;
-    await Promise.race([
-      h.flush(),
-      new Promise((resolve) => setTimeout(resolve, 1500)),
-    ]);
-    const drafts = h.unsaved();
-    const kept = saveResume(sessionStore(), {
-      projectId: project.id,
-      date,
-      view,
-      drafts,
-    });
-    if (!kept && drafts.length) {
-      say(t('saveFail'));
-      return;
-    }
-    await session.renew();
+    setRenewBusy(true);
+    const outcome = await renewer.start();
+    if (outcome === 'busy') return;
+    setRenewBusy(false);
+    if (outcome === 'unsaved') say(t('saveFail'));
   };
   const goFill = (id: string) => {
     setFocus(id);
@@ -620,7 +653,7 @@ function Workspace({
               )}{' '}
               <button
                 type="button"
-                disabled={signin.redirecting}
+                disabled={signin.redirecting || renewBusy}
                 onClick={() => void renew()}
               >
                 {t('signInAgain')}
@@ -706,7 +739,7 @@ function FailureText({ failure }: { failure: SignInFailure }) {
 function Root() {
   const { t } = useI18n();
   const { session, needLogin, signIn, error, state } = useSession();
-  const [resume] = useState(() => takeResume(sessionStore()));
+  const [resume] = useState(() => new ResumeKeeper(sessionStore(), Date.now()));
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => {
@@ -753,14 +786,14 @@ function Root() {
   if (!session || !projects)
     return <main className="page muted">{t('loading')}</main>;
   const project =
-    projects.find((p) => p.id === resume?.projectId) ?? projects[0];
+    projects.find((p) => p.id === resume.state?.projectId) ?? projects[0];
   if (!project) return <main className="page">{t('noProject')}</main>;
   return (
     <Workspace
       session={session}
       project={project}
       signin={state}
-      resume={resume?.projectId === project.id ? resume : null}
+      resume={resume}
     />
   );
 }

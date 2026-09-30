@@ -139,3 +139,69 @@ describe('EntraAuth (redirect sign-in)', () => {
     expect(client.loginPopup).not.toHaveBeenCalled();
   });
 });
+
+describe('EntraAuth interaction lock', () => {
+  const lock = JSON.stringify({ clientId: 'app', type: 'signin' });
+
+  it('never clears the lock of a redirect this page is starting', async () => {
+    const s = store();
+    const client = fakeClient({
+      // MSAL sets its lock, navigates, and its promise stays pending while the page leaves.
+      loginRedirect: vi.fn(() => {
+        s.setItem(INTERACTION_KEY, lock);
+        return new Promise(() => {});
+      }),
+      acquireTokenRedirect: vi.fn(async () => {}),
+    });
+    const auth = await start(client, 'redirect', s);
+    void auth.signIn();
+    await expect(auth.signIn()).rejects.toMatchObject({
+      errorCode: 'interaction_in_progress',
+    });
+    await expect(auth.renew(account('a'))).rejects.toMatchObject({
+      errorCode: 'interaction_in_progress',
+    });
+    expect(s.data.get(INTERACTION_KEY)).toBe(lock);
+    expect(client.loginRedirect).toHaveBeenCalledOnce();
+    expect(client.acquireTokenRedirect).not.toHaveBeenCalled();
+  });
+
+  it('after a back-forward return, clears the abandoned lock and tries again', async () => {
+    const s = store();
+    const client = fakeClient({
+      loginRedirect: vi
+        .fn()
+        .mockImplementationOnce(() => {
+          s.setItem(INTERACTION_KEY, lock);
+          return new Promise(() => {});
+        })
+        .mockImplementationOnce(async () => {
+          expect(s.data.has(INTERACTION_KEY)).toBe(false);
+        }),
+    });
+    const auth = await start(client, 'redirect', s);
+    void auth.signIn();
+    auth.backForwardRestored();
+    await auth.signIn();
+    expect(client.loginRedirect).toHaveBeenCalledTimes(2);
+  });
+
+  it('after a failed redirect start, a retry is allowed', async () => {
+    const client = fakeClient({
+      acquireTokenRedirect: vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('x'), {
+            errorCode: 'no_network_connectivity',
+          }),
+        )
+        .mockResolvedValueOnce(undefined),
+    });
+    const auth = await start(client);
+    await expect(auth.renew(account('a'))).rejects.toMatchObject({
+      errorCode: 'no_network_connectivity',
+    });
+    await auth.renew(account('a'));
+    expect(client.acquireTokenRedirect).toHaveBeenCalledTimes(2);
+  });
+});
