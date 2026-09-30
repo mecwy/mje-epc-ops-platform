@@ -71,6 +71,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           // Photo bytes through the app's managed identity; no key or connection string.
           { name: 'BLOB_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
           { name: 'BLOB_EVIDENCE_CONTAINER', value: 'evidence' }
+          // The ingress appends the real client to X-Forwarded-For; cold starts add one internal hop
+          // from 100.64.0.0/10 after it. Trust only loopback and that range (see apps/api trust-proxy.ts).
+          { name: 'TRUST_PROXY_SUBNETS', value: 'loopback,100.64.0.0/10' }
         ]
         probes: [{
           type: 'Liveness'
