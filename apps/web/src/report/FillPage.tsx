@@ -764,7 +764,8 @@ export function CheckPage({
               <Icon.camera />
               <span className="grow">{t('photos')}</span>
               <span className="muted">
-                {photos.photos.length}
+                {/* Counted only from a complete list (PhotoSession.counts). */}
+                {photos.counts ? photos.counts.total : ''}
                 {photos.unlinked
                   ? ` · ${t('unlinkedN', { n: photos.unlinked })}`
                   : ''}

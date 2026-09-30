@@ -5,6 +5,8 @@ import {
   readerContent,
   readerDayState,
   readerPlan,
+  readerSnapshot,
+  withheldCoordinates,
 } from './reader-view.js';
 import { blankFacts, planRows, planStatus } from './report-rules.js';
 
@@ -40,6 +42,7 @@ const photo = (id: string, link: PhotoDto['link']): PhotoDto => ({
   deviceCapturedAt: null,
   file: { takenLocal: null, takenAt: null, gps: null },
   location: 'none',
+  coordinates: 'exact',
   hasThumbnail: false,
   receivedAt: '2026-10-05T08:00:00.000Z',
   uploadedByPersonId: 'TEST-person',
@@ -133,5 +136,81 @@ describe('reader view (OD18)', () => {
       ['a', { type: 'issue', id: 'TEST-issue' }, 0],
     ]);
     expect(frozenPhotoViews([], rows)).toEqual([]);
+  });
+});
+
+describe('reader view: whether a photo has a position, not where (OD20)', () => {
+  // Synthetic TEST positions (0.0000 / 0.0000), not a real site.
+  const device: PhotoDto = {
+    ...photo('d', { type: 'item', id: 'support' }),
+    source: 'camera',
+    capture: {
+      lat: '0.000000',
+      lon: '0.000000',
+      accuracyM: '12.00',
+      fixAt: '2026-10-05T08:00:00.000Z',
+    },
+    location: 'device',
+  };
+  const file: PhotoDto = {
+    ...photo('f', null),
+    file: {
+      takenLocal: '2026-10-05T09:15:30',
+      takenAt: null,
+      gps: { lat: '0.000000', lon: '0.000000' },
+    },
+    location: 'file',
+  };
+
+  it('keeps the position kind, accuracy and fix time; the coordinates are null and marked withheld', () => {
+    const before = structuredClone(device);
+    expect(withheldCoordinates(device)).toEqual({
+      ...device,
+      capture: {
+        lat: null,
+        lon: null,
+        accuracyM: '12.00',
+        fixAt: '2026-10-05T08:00:00.000Z',
+      },
+      coordinates: 'withheld',
+    });
+    expect(withheldCoordinates(file)).toEqual({
+      ...file,
+      file: { takenLocal: '2026-10-05T09:15:30', takenAt: null, gps: null },
+      location: 'file',
+      coordinates: 'withheld',
+    });
+    const none = withheldCoordinates(photo('n', null));
+    expect([none.location, none.capture, none.file.gps]).toEqual([
+      'none',
+      null,
+      null,
+    ]);
+    expect(device).toEqual(before); // the writer's object is not changed
+  });
+
+  it('every frozen photo view a reader gets is withheld', () => {
+    const views = frozenPhotoViews(
+      [asOf('d', { type: 'item', id: 'support' }), asOf('f', null)],
+      [device, file],
+    );
+    expect(views.map((p) => p.coordinates)).toEqual(['withheld', 'withheld']);
+    expect(JSON.stringify(views)).not.toContain('0.000000');
+  });
+
+  it("a revision snapshot's photos carry only the frozen fields; the stored snapshot is not changed", () => {
+    const frozen = asOf('d', { type: 'item', id: 'support' });
+    const stored = {
+      businessDate: '2026-10-05',
+      facts: blankFacts(),
+      // Whatever a snapshot might hold beyond the frozen fields never reaches a reader.
+      photos: [{ ...frozen, lat: '0.000000', capture: { lon: '0.000000' } }],
+    };
+    const copy = structuredClone(stored);
+    const shown = readerSnapshot(stored);
+    expect(shown).toEqual({ ...stored, photos: [frozen] });
+    expect(stored).toEqual(copy);
+    const noPhotos = { businessDate: '2026-10-05' };
+    expect(readerSnapshot(noPhotos)).toBe(noPhotos);
   });
 });

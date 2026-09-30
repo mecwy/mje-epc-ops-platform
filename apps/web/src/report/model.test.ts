@@ -119,6 +119,7 @@ describe('report view model', () => {
       deviceCapturedAt: '2026-10-01T08:00:00.000Z',
       file: { takenLocal: null, takenAt: null, gps: null },
       location: 'device',
+      coordinates: 'exact',
       hasThumbnail: true,
       receivedAt: '2026-10-01T08:00:01.000Z',
       uploadedByPersonId: 'TEST',
