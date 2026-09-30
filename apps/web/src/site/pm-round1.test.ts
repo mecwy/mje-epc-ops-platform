@@ -17,13 +17,11 @@ import {
 } from '../report/ForemanLine.js';
 import { setFact } from '../report/model.js';
 import { DAY, P, dayServer, open, view, workspace } from './pm-day.fixture.js';
-import { ProxySheet } from './CheckIns.js';
 import { PmOwnedBar } from './OwnedBar.js';
-import * as Sessions from './site-sessions.js';
 import { SiteSessions } from './site-sessions.js';
 
 /*
- * #40 Codex round 1 (L5): orderings with delayed writes and reads and changing totals, driving
+ * #40 Codex round 1 (L5), P1–P3 (P4 and P5 are in pm-selfcheck.test.ts): orderings with delayed writes and reads and changing totals, driving
  * the real handlers. Buttons are taken from the real components' rendered element trees (the
  * very onClick functions a tap calls), never re-implemented.
  */
@@ -285,83 +283,4 @@ describe('#40 round 1 P3: the reader bar settles an adoption through the flow', 
         expect(html).toMatch(/you saw 10/i);
       expect(html).not.toMatch(/got no answer/);
     });
-});
-
-describe('#40 round 1 P4: a reader keeps the QR change result', () => {
-  it('unanswered, then Retry refused READ_ONLY → the bar keeps a row: may already have been recorded', async () => {
-    const pm = pmSessions();
-    await pm.sessions.entry.load();
-    pm.plan.push(new ApiError('NETWORK', 0), new ApiError('READ_ONLY', 403));
-    await pm.sessions.entry.act(() => {
-      const c = { projectId: P, clientMutationId: 'k-rotate' };
-      return { key: c.clientMutationId, send: () => pm.api.rotateEntryCode(c) };
-    });
-    const owners = { site: pm.sessions, adoptDays: () => [] };
-    const before = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
-      owners,
-      itemLabel: () => '',
-    });
-    expect(before.html).toMatch(/Changing the QR code/);
-    await click(before.buttons, /^Retry$/);
-    const after = wrap(
-      createElement(PmOwnedBar, {
-        owners: owners as never,
-        itemLabel: () => '',
-      }),
-    );
-    expect(after).toMatch(/Changing the QR code/);
-    expect(after).toMatch(
-      /no longer have write access to this project\. The earlier send may already have been recorded/,
-    );
-  });
-});
-
-describe('#40 round 1 P5: a backdated PM proxy is owned by the day it is for', () => {
-  it('sent from 2 October for 1 October, answer lost → opening 1 October shows it (no new form), Retry resends it', async () => {
-    const pm = pmSessions();
-    await pm.sessions.roster.load();
-    await pm.sessions.settings.load();
-    const command = {
-      projectId: P,
-      personId: 'w',
-      businessDate: '2026-10-01',
-      occurredAt: null,
-      source: 'FOREMAN_REPORTED' as const,
-      reason: 'TEST reason',
-      actorFix: null,
-    };
-    pm.plan.push(new ApiError('NETWORK', 0));
-    // What the sheet's Check in does (startProxy). At d/de15032 the sheet ran the command on
-    // the owner of the page's date (2 October), as below.
-    const start =
-      (Sessions as Partial<typeof Sessions>).startProxy ??
-      ((s: SiteSessions, api: typeof pm.api, c: typeof command) =>
-        s.checkIns(DAY).proxy.run(c as never, (_d, key) => {
-          const body = { ...c, clientMutationId: key };
-          return { key, send: () => api.pmProxy(body) };
-        }));
-    await start(pm.sessions, pm.api as never, command as never);
-    for (const date of ['2026-10-01', DAY]) {
-      const html = wrap(
-        createElement(ProxySheet, {
-          api: pm.api as never,
-          project,
-          sessions: pm.sessions,
-          date,
-          onClose: () => {},
-        }),
-      );
-      expect(html).not.toMatch(/<select/);
-      expect(html).toContain('TEST worker');
-      expect(html).toMatch(/Give up/);
-    }
-    // The bar names the day it is for.
-    const bar = wrap(
-      createElement(PmOwnedBar, {
-        owners: { site: pm.sessions, adoptDays: () => [] } as never,
-        itemLabel: () => '',
-      }),
-    );
-    expect(bar).toMatch(/PM check-in for TEST worker \(Thu 1 October\)/);
-  });
 });

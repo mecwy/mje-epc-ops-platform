@@ -1,4 +1,9 @@
-import { createElement, type FunctionComponent } from 'react';
+import {
+  createElement,
+  type FunctionComponent,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type {
@@ -16,13 +21,14 @@ import { I18nProvider } from '../i18n.js';
 import { AdoptFlow } from '../report/foreman-adopt.js';
 import { ForemanLine, PmFieldContext } from '../report/ForemanLine.js';
 import { ProxySheet } from './CheckIns.js';
+import { PmOwnedBar } from './OwnedBar.js';
 import { ActionSheet, DevicesCard } from './Devices.js';
 import { EntryCodeCard } from './SitePage.js';
 import { SettingsCards } from './Settings.js';
-import { saveSettings, SiteSessions } from './site-sessions.js';
+import { saveSettings, SiteSessions, startProxy } from './site-sessions.js';
 
 /*
- * #40 self-check (L5) against the #36/#37/#39 rules, on every PM write surface: the PM proxy
+ * #40 self-check (L5) and round 1 (P4 QR result in the reader bar, P5 proxy owned by its day) against the #36/#37/#39 rules, on every PM write surface: the PM proxy
  * sheet, the foreman-total adoption line, the field settings card and the device sheet and
  * list. (1) An unsettled code reads as an unknown outcome, first send and Retry. (2) A refusal
  * the server makes before replaying (FORBIDDEN / READ_ONLY from the project-writer check,
@@ -42,7 +48,7 @@ const project: Project = {
   timezone: 'Europe/Belgrade',
   access: 'write',
 };
-const wrap = (el: ReturnType<typeof createElement>) =>
+const wrap = (el: ReactNode) =>
   renderToString(createElement(I18nProvider, null, el));
 const FORBIDDEN_WORDING =
   /did not succeed|nothing was saved|not saved|No connection; your entry is kept/;
@@ -152,9 +158,9 @@ function pmApi() {
       devices: async () => [device],
       fieldSettings: async () => settingsDto,
       roster: async () => roster,
-      checkIns: async () => ({
+      checkIns: async (_p: string, d: string) => ({
         projectId: P,
-        businessDate: DAY,
+        businessDate: d,
         seqBoundary: null,
         summary: { present: 0, self: 0, proxy: 0, flagged: 0 },
         checkIns: [],
@@ -166,8 +172,66 @@ function pmApi() {
       rejectDevice: write,
       revokeDevice: write,
       adoptForeman: write,
+      rotateEntryCode: write,
     },
   };
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+/** The buttons of a component's own render (their text and onClick), plus its HTML. */
+function buttonsOf(
+  C: FunctionComponent<never>,
+  props: object,
+  provide: (el: ReactElement) => ReactElement = (el) => el,
+) {
+  const out: {
+    text: string;
+    onClick: (() => unknown) | undefined;
+    disabled: boolean | undefined;
+  }[] = [];
+  const textOf = (n: unknown): string =>
+    typeof n === 'string' || typeof n === 'number'
+      ? String(n)
+      : Array.isArray(n)
+        ? n.map(textOf).join('')
+        : n && typeof n === 'object' && 'props' in n
+          ? textOf((n as { props: { children?: unknown } }).props.children)
+          : '';
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (!n || typeof n !== 'object' || !('props' in n)) return;
+    const el = n as { type: unknown; props: Record<string, unknown> };
+    if (el.type === 'button')
+      out.push({
+        text: textOf(el.props.children),
+        onClick: el.props.onClick as () => unknown,
+        disabled: el.props.disabled as boolean | undefined,
+      });
+    walk(el.props.children);
+  };
+  // Called inside a render, so the component's hooks run as in the page.
+  const Capture = () => {
+    const tree = (C as unknown as (p: object) => ReactElement)(props);
+    walk(tree);
+    return tree;
+  };
+  const html = wrap(provide(createElement(Capture)));
+  return { html, buttons: out };
+}
+const click = async (
+  b: { text: string; onClick: (() => unknown) | undefined }[],
+  text: RegExp,
+) => {
+  const btn = b.find((x) => text.test(x.text));
+  expect(btn, `button ${text}`).toBeDefined();
+  await btn!.onClick?.();
+  await tick();
+};
+
+/** People-page sessions over the same PM api. */
+function pmSessions() {
+  const a = pmApi();
+  return { ...a, sessions: new SiteSessions(a.api as never, P) };
 }
 
 type Surface = 'proxy' | 'adopt' | 'settings' | 'device';
@@ -512,5 +576,76 @@ describe('#40 self-check: a PM refusal after a lost request (transport resend) i
     } finally {
       globalThis.fetch = real;
     }
+  });
+});
+
+describe('#40 round 1 P4: a reader keeps the QR change result', () => {
+  it('unanswered, then Retry refused READ_ONLY → the bar keeps a row: may already have been recorded', async () => {
+    const pm = pmSessions();
+    await pm.sessions.entry.load();
+    pm.plan.push(new ApiError('NETWORK', 0), new ApiError('READ_ONLY', 403));
+    await pm.sessions.entry.act(() => {
+      const c = { projectId: P, clientMutationId: 'k-rotate' };
+      return { key: c.clientMutationId, send: () => pm.api.rotateEntryCode(c) };
+    });
+    const owners = { site: pm.sessions, adoptDays: () => [] };
+    const before = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners,
+      itemLabel: () => '',
+    });
+    expect(before.html).toMatch(/Changing the QR code/);
+    await click(before.buttons, /^Retry$/);
+    const after = wrap(
+      createElement(PmOwnedBar, {
+        owners: owners as never,
+        itemLabel: () => '',
+      }),
+    );
+    expect(after).toMatch(/Changing the QR code/);
+    expect(after).toMatch(
+      /no longer have write access to this project\. The earlier send may already have been recorded/,
+    );
+  });
+});
+
+describe('#40 round 1 P5: a backdated PM proxy is owned by the day it is for', () => {
+  it('sent from 2 October for 1 October, answer lost → opening 1 October shows it (no new form), Retry resends it', async () => {
+    const pm = pmSessions();
+    await pm.sessions.roster.load();
+    await pm.sessions.settings.load();
+    const command = {
+      projectId: P,
+      personId: 'w',
+      businessDate: '2026-10-01',
+      occurredAt: null,
+      source: 'FOREMAN_REPORTED' as const,
+      reason: 'TEST reason',
+      actorFix: null,
+    };
+    pm.plan.push(new ApiError('NETWORK', 0));
+    // What the sheet's Check in does.
+    await startProxy(pm.sessions, pm.api as never, command as never);
+    for (const date of ['2026-10-01', DAY]) {
+      const html = wrap(
+        createElement(ProxySheet, {
+          api: pm.api as never,
+          project,
+          sessions: pm.sessions,
+          date,
+          onClose: () => {},
+        }),
+      );
+      expect(html).not.toMatch(/<select/);
+      expect(html).toContain('TEST worker');
+      expect(html).toMatch(/Give up/);
+    }
+    // The bar names the day it is for.
+    const bar = wrap(
+      createElement(PmOwnedBar, {
+        owners: { site: pm.sessions, adoptDays: () => [] } as never,
+        itemLabel: () => '',
+      }),
+    );
+    expect(bar).toMatch(/PM check-in for TEST worker \(Thu 1 October\)/);
   });
 });
