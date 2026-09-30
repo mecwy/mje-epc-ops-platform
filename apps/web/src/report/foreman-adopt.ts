@@ -158,18 +158,18 @@ export class AdoptFlow {
       action,
       await this.owned.run(
         action,
-        (_d, key) => ({
-          key,
-          send: () =>
-            this.ctx.api.adoptForeman({
-              projectId: this.ctx.projectId,
-              businessDate: this.ctx.businessDate,
-              clientMutationId: key,
-              item,
-              expectedVersion: action.expectedVersion,
-              basis: action.basis,
-            }),
-        }),
+        (_d, key) => {
+          // Fixed once: a Retry under this key sends the same body (AGENTS.md).
+          const command: ForemanAdoptCommand = {
+            projectId: this.ctx.projectId,
+            businessDate: this.ctx.businessDate,
+            clientMutationId: key,
+            item,
+            expectedVersion: action.expectedVersion,
+            basis: action.basis,
+          };
+          return { key, send: () => this.ctx.api.adoptForeman(command) };
+        },
         false,
       ),
     );

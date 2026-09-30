@@ -7,6 +7,8 @@ import type { FieldSession, Outcome } from './session.js';
 /** A foreman's confirm or reject as sent: whose phone, which decision, which code. */
 export interface CrewAttempt {
   personId: string;
+  /** The name shown when the attempt started (kept if the person later leaves the crew). */
+  name: string;
   what: 'confirm' | 'reject';
   code: string;
 }

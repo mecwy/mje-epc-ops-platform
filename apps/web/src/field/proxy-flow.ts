@@ -47,6 +47,8 @@ const REUSE_MS = 90_000;
 export class ProxyFlow {
   /** Whose check-in is running, unresolved or refused last, and how it stands. */
   person: string | null = null;
+  /** That person's name when the check-in started (kept if they later leave the crew). */
+  personName = '';
   phase: ProxyPhase = { kind: 'idle' };
   readonly queue: FieldSession<null>;
   /** A fix good enough for the whole crew (≤ 100 m, ≤ 2 min old) is reused. */
@@ -144,8 +146,9 @@ export class ProxyFlow {
     return r.fix;
   }
 
-  async checkIn(personId: string): Promise<void> {
+  async checkIn(personId: string, name: string): Promise<void> {
     if (!this.canStart(personId)) return;
+    this.personName = name;
     const fix = await this.fixNow(personId);
     if (!fix) return;
     const now = this.d.now();

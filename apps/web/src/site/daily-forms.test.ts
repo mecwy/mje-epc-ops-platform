@@ -69,10 +69,11 @@ describe('A6d-4 follows the rule: form state = the owned command payload', () =>
       reason: 'TEST reason',
       actorFix: null,
     };
-    await day.proxy.run(command, (_d, key) => ({
-      key,
-      send: () => api.pmProxy({ ...command, clientMutationId: key }),
-    }));
+    // As ProxySheet builds it: the body is fixed once for its key.
+    await day.proxy.run(command, (_d, key) => {
+      const body = { ...command, clientMutationId: key };
+      return { key, send: () => api.pmProxy(body) };
+    });
     const html = wrap(
       createElement(ProxySheet, {
         api: api as never,
@@ -88,7 +89,7 @@ describe('A6d-4 follows the rule: form state = the owned command payload', () =>
     expect(html).toMatch(/whole day/);
     await day.proxy.retry();
     expect(sent).toHaveLength(2);
-    expect(sent[1]).toEqual(sent[0]);
+    expect(JSON.stringify(sent[1])).toBe(JSON.stringify(sent[0]));
   });
 
   it('an unresolved adoption shows the total it sent, not the current one', async () => {

@@ -16,15 +16,15 @@ import {
   checkDraft,
   draftFrom,
   qtyKind,
+  ReportDay,
   reportDays,
-  sendReport,
+  reportPayload,
   type Draft,
   type ReportSend,
 } from './foreman-report.js';
 import { ProxyFlow, type ProxyPhase } from './proxy-flow.js';
 import { CrewCommands } from './crew-commands.js';
-import { OwnedCommands } from './owned-commands.js';
-import { FieldSession } from './session.js';
+import type { FieldSession } from './session.js';
 
 function localStore(): Storage | null {
   try {
@@ -51,15 +51,13 @@ export function CrewCard({
   session: FieldSession<FieldMeDto>;
   onEnded: (code: string) => void;
 }) {
-  const { t, locale } = useI18n();
   const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const tz = me.project.timezone;
   const [flow] = useState(
     () =>
       new ProxyFlow({
         api,
         deviceId: me.device.deviceId,
-        timeZone: tz,
+        timeZone: me.project.timezone,
         storage: localStore(),
         locate: () => locate(navigator.geolocation),
         now: () => Date.now(),
@@ -71,26 +69,72 @@ export function CrewCard({
   const [confirming, setConfirming] = useState<Member | null>(null);
   // Kept with the card (mounted for the page's life): an unresolved decision keeps its key.
   const [commands] = useState(() => new CrewCommands(session, api));
+  return (
+    <CrewList
+      me={me}
+      commands={commands}
+      flow={flow}
+      confirming={confirming}
+      onConfirming={setConfirming}
+    />
+  );
+}
+
+/** The crew list with each member's controls, and any owned attempt's controls. */
+export function CrewList({
+  me,
+  commands,
+  flow,
+  confirming,
+  onConfirming,
+}: {
+  me: FieldMeDto;
+  commands: CrewCommands;
+  flow: ProxyFlow;
+  confirming: Member | null;
+  onConfirming: (m: Member | null) => void;
+}) {
+  const { t, locale } = useI18n();
+  const tz = me.project.timezone;
   const crew = me.foreman;
-  const unresolvedName = commands.unresolved
-    ? (crew?.members.find((m) => m.personId === commands.unresolved?.personId)
-        ?.displayName ?? '—')
-    : null;
+  const unresolvedName = commands.unresolved?.name ?? null;
   if (!crew) return null;
+  // An owned attempt (confirmation or check-in) keeps its row, and so its Retry / Give up,
+  // after its person has left the crew: the server decides the retry.
+  const inCrew = (id: string) => crew.members.some((m) => m.personId === id);
+  const gone: Member[] = [];
+  const keep = (personId: string, displayName: string) => {
+    if (!inCrew(personId) && !gone.some((g) => g.personId === personId))
+      gone.push({
+        personId,
+        displayName,
+        currentDeviceId: null,
+        pendingDevices: 0,
+      });
+  };
+  if (commands.current) keep(commands.current.personId, commands.current.name);
+  if (flow.person && flow.queue.pending) keep(flow.person, flow.personName);
+  const rows = [...crew.members, ...gone];
+  // A sheet for someone who has left stays open only while their attempt is owned.
+  const open =
+    confirming &&
+    (inCrew(confirming.personId) ||
+      commands.current?.personId === confirming.personId)
+      ? confirming
+      : null;
   return (
     <section className="card">
       <h2 className="blk">{t('fm_crewTitle', { crew: crew.crewName })}</h2>
-      {unresolvedName && !confirming && (
+      {unresolvedName && !open && (
         <div className="banner warn" role="alert">
           {t('fm_unresolvedFor', { name: unresolvedName })}
         </div>
       )}
-      {crew.members.length === 0 && (
-        <p className="muted small">{t('fm_crewEmpty')}</p>
-      )}
+      {rows.length === 0 && <p className="muted small">{t('fm_crewEmpty')}</p>}
       <ul className="plainlist">
-        {crew.members.map((m) => {
+        {rows.map((m) => {
           const self = m.personId === me.person.id;
+          const left = !inCrew(m.personId);
           const done = flow.doneFor(m.personId);
           const mine = flow.person === m.personId;
           return (
@@ -98,11 +142,13 @@ export function CrewCard({
               <span className="grow">
                 <b>{m.displayName}</b>
                 <span className="muted small">
-                  {m.pendingDevices > 0
-                    ? t('fm_phonesWaiting', { n: m.pendingDevices })
-                    : m.currentDeviceId
-                      ? t('fm_phoneOk')
-                      : t('fm_noPhone')}
+                  {left
+                    ? t('fm_leftCrew')
+                    : m.pendingDevices > 0
+                      ? t('fm_phonesWaiting', { n: m.pendingDevices })
+                      : m.currentDeviceId
+                        ? t('fm_phoneOk')
+                        : t('fm_noPhone')}
                 </span>
                 {done && (
                   <span className="ok-t small">
@@ -119,14 +165,14 @@ export function CrewCard({
               {!self && (
                 <span className="chips">
                   {(m.pendingDevices > 0 ||
-                    commands.isUnresolved(m.personId)) && (
+                    commands.current?.personId === m.personId) && (
                     <button
                       type="button"
                       className="pill accent"
                       disabled={
                         !commands.canStart && !commands.isUnresolved(m.personId)
                       }
-                      onClick={() => setConfirming(m)}
+                      onClick={() => onConfirming(m)}
                     >
                       {t('fm_confirmPhone')}
                     </button>
@@ -141,12 +187,15 @@ export function CrewCard({
                       {t('retry')}
                     </button>
                   ) : (
-                    !done && (
+                    !done &&
+                    !left && (
                       <button
                         type="button"
                         className="pill"
                         disabled={!flow.canStart(m.personId)}
-                        onClick={() => void flow.checkIn(m.personId)}
+                        onClick={() =>
+                          void flow.checkIn(m.personId, m.displayName)
+                        }
                       >
                         {t('fm_checkInFor')}
                       </button>
@@ -159,11 +208,11 @@ export function CrewCard({
         })}
       </ul>
       <p className="muted small">{t('fm_proxyNote')}</p>
-      {confirming && (
+      {open && (
         <ConfirmSheet
           commands={commands}
-          member={confirming}
-          onClose={() => setConfirming(null)}
+          member={open}
+          onClose={() => onConfirming(null)}
         />
       )}
     </section>
@@ -294,7 +343,12 @@ export function ConfirmSheet({
           onRun={(what, code) => {
             setError(null);
             void commands
-              .run({ personId: member.personId, what, code })
+              .run({
+                personId: member.personId,
+                name: member.displayName,
+                what,
+                code,
+              })
               .then(settle);
           }}
         />
@@ -377,39 +431,17 @@ export function ReportCard({
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const days = reportDays(me.project.timezone, new Date());
   const [day, setDay] = useState(days[0]);
-  // Per site day, for the card's life: the read, its owned sends, the last refused draft.
-  const entries = useRef(
-    new Map<
-      string,
-      {
-        session: FieldSession<ForemanReportDto>;
-        sends: OwnedCommands<ForemanReportDto, ReportSend>;
-        refused: ReportSend | null;
-      }
-    >(),
-  );
+  // Per site day, for the card's life: the read, its owned sends, the last refused payload.
+  const entries = useRef(new Map<string, ReportDay>());
   let entry = entries.current.get(day);
   if (!entry) {
-    const session = new FieldSession<ForemanReportDto>(
-      () => api.report(day),
-      rerender,
-      { onEnded },
-    );
-    entry = { session, sends: new OwnedCommands(session), refused: null };
+    entry = new ReportDay(api, day, rerender, onEnded);
     entries.current.set(day, entry);
   }
   const e = entry;
-  const s = e.session;
   useEffect(() => {
-    if (!s.data && !s.readError) void s.load();
-  }, [s]);
-  const owned = e.sends.current;
-  const send = async (payload: ReportSend) => {
-    e.refused = null;
-    const r = await sendReport(e.sends, api, day, payload);
-    if (r.kind === 'rejected') e.refused = payload;
-    rerender();
-  };
+    if (!e.session.data && !e.session.readError) void e.session.load();
+  }, [e]);
   return (
     <section className="card">
       <h2 className="blk">{t('fm_reportTitle')}</h2>
@@ -427,32 +459,48 @@ export function ReportCard({
           </button>
         ))}
       </div>
-      {owned && s.data ? (
-        <OwnedReport data={s.data} sends={e.sends} payload={owned} />
-      ) : s.data ? (
-        <ReportForm
-          // Edited from this read; restarts from the latest read whenever a send ends.
-          key={`${day}:${s.data.n}:${e.sends.generation}`}
-          data={s.data}
-          timeZone={me.project.timezone}
-          sends={e.sends}
-          refused={e.refused}
-          onSend={(p) => void send(p)}
-        />
-      ) : s.readError ? (
-        <>
-          <div className="banner err" role="alert">
-            <ErrorText code={s.readError} />
-          </div>
-          <button type="button" className="ghost" onClick={() => void s.load()}>
-            {t('retry')}
-          </button>
-        </>
-      ) : (
-        <p className="muted">{t('loading')}</p>
-      )}
+      <ReportDayBody report={e} timeZone={me.project.timezone} />
     </section>
   );
+}
+
+/** One day's report: the owned send as sent, or the form edited from the latest read. */
+export function ReportDayBody({
+  report,
+  timeZone,
+}: {
+  report: ReportDay;
+  timeZone: string;
+}) {
+  const { t } = useI18n();
+  const s = report.session;
+  const owned = report.sends.current;
+  if (owned && s.data)
+    return <OwnedReport data={s.data} report={report} payload={owned} />;
+  if (s.data)
+    return (
+      <ReportForm
+        // Edited from this read; restarts from the latest read whenever a send ends.
+        key={`${report.day}:${s.data.crewId}:${s.data.n}:${report.sends.generation}`}
+        data={s.data}
+        timeZone={timeZone}
+        sends={report.sends}
+        refused={report.refused}
+        onSend={(p) => void report.send(p)}
+      />
+    );
+  if (s.readError)
+    return (
+      <>
+        <div className="banner err" role="alert">
+          <ErrorText code={s.readError} />
+        </div>
+        <button type="button" className="ghost" onClick={() => void s.load()}>
+          {t('retry')}
+        </button>
+      </>
+    );
+  return <p className="muted">{t('loading')}</p>;
 }
 
 function useQtyText() {
@@ -468,17 +516,17 @@ function useQtyText() {
 /** An owned send, shown as sent: its rows read-only, Retry (same rows, same key) / Give up. */
 export function OwnedReport({
   data,
-  sends,
+  report,
   payload,
 }: {
   data: ForemanReportDto;
-  sends: OwnedCommands<ForemanReportDto, ReportSend>;
+  report: ReportDay;
   payload: ReportSend;
 }) {
   const { t, label } = useI18n();
   const text = useQtyText();
-  const unresolved = sends.unresolved !== null;
-  const busy = sends.session.busy;
+  const unresolved = report.sends.unresolved !== null;
+  const busy = report.session.busy;
   const labelOf = (k: string) => {
     const it = data.items.find((i) => i.key === k);
     return it ? label(it.label) : k;
@@ -505,7 +553,7 @@ export function OwnedReport({
             type="button"
             className="ghost"
             disabled={busy}
-            onClick={() => sends.discard()}
+            onClick={() => report.discard()}
           >
             {t('pm_giveUp')}
           </button>
@@ -513,7 +561,8 @@ export function OwnedReport({
             type="button"
             className="primary big"
             disabled={busy}
-            onClick={() => void sends.retry()}
+            // The same settlement as a first send (ReportDay): a conflict keeps the hints.
+            onClick={() => void report.retry()}
           >
             {t('retry')}
           </button>
@@ -532,7 +581,7 @@ export function ReportForm({
 }: {
   data: ForemanReportDto;
   timeZone: string;
-  sends: OwnedCommands<ForemanReportDto, ReportSend>;
+  sends: ReportDay['sends'];
   refused: ReportSend | null;
   onSend: (p: ReportSend) => void;
 }) {
@@ -543,9 +592,13 @@ export function ReportForm({
   const [note, setNote] = useState(data.note);
   const [invalid, setInvalid] = useState<string[]>([]);
   const latest = draftFrom(data);
-  // After a refusal: the items where what was typed differs from the latest revision.
+  // After a refusal: the items where what was typed differs from the latest revision (only
+  // for the same crew and day; a draft for another crew is never shown as this crew's).
+  const same =
+    refused?.crewId === data.crewId &&
+    refused.businessDate === data.businessDate;
   const typed = new Map(
-    (refused?.rows ?? [])
+    (same ? refused.rows : [])
       .filter((r) => (latest[r.itemKey] ?? '').trim() !== r.qty.trim())
       .map((r) => [r.itemKey, r.qty]),
   );
@@ -553,7 +606,7 @@ export function ReportForm({
     const check = checkDraft(data, draft);
     if (!check.ok) return setInvalid(check.invalid);
     setInvalid([]);
-    onSend({ rows: check.rows, note: note.trim(), editedFrom: data.n });
+    onSend(reportPayload(data, check.rows, note.trim()));
   };
   return (
     <>

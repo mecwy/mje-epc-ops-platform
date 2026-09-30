@@ -109,6 +109,11 @@ export class FieldSession<D> {
     this.notify();
   }
 
+  /** Whether this device has ended (latched for the life of this session). */
+  get ended(): boolean {
+    return this.endedCode !== null;
+  }
+
   get needsRetry() {
     return this.pending !== null || this.error === 'STALE';
   }
@@ -187,7 +192,11 @@ export class FieldSession<D> {
       }
       this.pending = null;
       this.error = code;
-      if (ENDED.has(code)) this.options.onEnded?.(code);
+      // The command's own answer ends the device: latched here, whatever the rereads get.
+      if (ENDED.has(code)) {
+        this.end(code);
+        this.options.onEnded?.(code);
+      }
       if (reread) {
         // A refusal may mean the view is old (a conflict): the next command waits for a reread.
         this.writtenAt = this.reads;

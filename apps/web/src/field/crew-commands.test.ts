@@ -137,15 +137,26 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     const h = harness();
     await h.session.load();
     expect(
-      await h.commands.run({ personId: W, what: 'confirm', code: WRONG }),
+      await h.commands.run({
+        personId: W,
+        name: 'TEST',
+        what: 'confirm',
+        code: WRONG,
+      }),
     ).toMatchObject({
       kind: 'rejected',
       code: 'CHALLENGE_INVALID',
     });
     expect(h.commands.unresolved).toBeNull();
     expect(
-      (await h.commands.run({ personId: W, what: 'confirm', code: RIGHT }))
-        .kind,
+      (
+        await h.commands.run({
+          personId: W,
+          name: 'TEST',
+          what: 'confirm',
+          code: RIGHT,
+        })
+      ).kind,
     ).toBe('ok');
     expect(h.log).toEqual([`K1 ${WRONG} ok`, `K2 ${RIGHT} ok`]);
   });
@@ -154,10 +165,16 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     const h = harness();
     await h.session.load();
     h.manualReads();
-    const first = h.commands.run({ personId: W, what: 'confirm', code: WRONG });
+    const first = h.commands.run({
+      personId: W,
+      name: 'TEST',
+      what: 'confirm',
+      code: WRONG,
+    });
     await tick();
     const second = h.commands.run({
       personId: W,
+      name: 'TEST',
       what: 'confirm',
       code: RIGHT,
     });
@@ -171,7 +188,12 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     expect(out.kind).toBe('failed');
     expect(h.log).toHaveLength(1);
     // Pressed again once the reread landed: sent with the correct code.
-    const third = h.commands.run({ personId: W, what: 'confirm', code: RIGHT });
+    const third = h.commands.run({
+      personId: W,
+      name: 'TEST',
+      what: 'confirm',
+      code: RIGHT,
+    });
     await tick();
     h.reads[1]?.settle(me);
     expect((await third).kind).toBe('ok');
@@ -182,7 +204,12 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     const h = harness();
     await h.session.load();
     h.manualReads();
-    const first = h.commands.run({ personId: W, what: 'confirm', code: WRONG });
+    const first = h.commands.run({
+      personId: W,
+      name: 'TEST',
+      what: 'confirm',
+      code: WRONG,
+    });
     for (let i = 0; i < 3; i++) {
       await tick();
       h.reads[i]!.settle(new ApiError('NETWORK', 0));
@@ -190,6 +217,7 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     expect((await first).kind).toBe('rejected');
     const second = h.commands.run({
       personId: W,
+      name: 'TEST',
       what: 'confirm',
       code: RIGHT,
     });
@@ -206,23 +234,42 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     await h.session.load();
     h.plan.push('retry');
     expect(
-      (await h.commands.run({ personId: W, what: 'confirm', code: WRONG }))
-        .kind,
+      (
+        await h.commands.run({
+          personId: W,
+          name: 'TEST',
+          what: 'confirm',
+          code: WRONG,
+        })
+      ).kind,
     ).toBe('failed');
     expect(h.commands.unresolved).toEqual({
       personId: W,
+      name: 'TEST',
       what: 'confirm',
       code: WRONG,
     });
     // Nothing new can start (another member, or this member with another code).
     expect(h.commands.canStart).toBe(false);
     expect(
-      (await h.commands.run({ personId: W, what: 'confirm', code: RIGHT }))
-        .kind,
+      (
+        await h.commands.run({
+          personId: W,
+          name: 'TEST',
+          what: 'confirm',
+          code: RIGHT,
+        })
+      ).kind,
     ).toBe('failed');
     expect(
-      (await h.commands.run({ personId: W2, what: 'confirm', code: RIGHT }))
-        .kind,
+      (
+        await h.commands.run({
+          personId: W2,
+          name: 'TEST',
+          what: 'confirm',
+          code: RIGHT,
+        })
+      ).kind,
     ).toBe('failed');
     expect(h.log).toHaveLength(1);
     // Retry: the command that was sent (and shown, locked) is resent under its key.
@@ -232,8 +279,14 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     expect(h.log).toEqual([`K1 ${WRONG} retry`, `K1 ${WRONG} ok`]);
     // Now the correct code goes out under a new key.
     expect(
-      (await h.commands.run({ personId: W, what: 'confirm', code: RIGHT }))
-        .kind,
+      (
+        await h.commands.run({
+          personId: W,
+          name: 'TEST',
+          what: 'confirm',
+          code: RIGHT,
+        })
+      ).kind,
     ).toBe('ok');
     expect(h.log[2]).toBe(`K2 ${RIGHT} ok`);
   });
@@ -242,14 +295,25 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     const h = harness();
     await h.session.load();
     h.plan.push('lost');
-    await h.commands.run({ personId: W, what: 'confirm', code: WRONG });
+    await h.commands.run({
+      personId: W,
+      name: 'TEST',
+      what: 'confirm',
+      code: WRONG,
+    });
     expect(h.commands.isUnresolved(W)).toBe(true);
     h.commands.discard();
     await tick();
     expect(h.commands.canStart).toBe(true);
     expect(
-      (await h.commands.run({ personId: W, what: 'confirm', code: RIGHT }))
-        .kind,
+      (
+        await h.commands.run({
+          personId: W,
+          name: 'TEST',
+          what: 'confirm',
+          code: RIGHT,
+        })
+      ).kind,
     ).toBe('ok');
     expect(h.log).toEqual([`K1 ${WRONG} lost`, `K2 ${RIGHT} ok`]);
   });
@@ -259,28 +323,45 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     await h.session.load();
     h.manualReads();
     // A refused attempt whose rereads fail: the next attempt needs a recovery read.
-    const first = h.commands.run({ personId: W, what: 'confirm', code: WRONG });
+    const first = h.commands.run({
+      personId: W,
+      name: 'TEST',
+      what: 'confirm',
+      code: WRONG,
+    });
     for (let i = 0; i < 3; i++) {
       await tick();
       h.reads[i]!.settle(new ApiError('NETWORK', 0));
     }
     await first;
     h.plan.push('lost');
-    const a = h.commands.run({ personId: W, what: 'confirm', code: RIGHT });
+    const a = h.commands.run({
+      personId: W,
+      name: 'TEST',
+      what: 'confirm',
+      code: RIGHT,
+    });
     await tick();
     // While A waits for its recovery read, B cannot start (nothing sent for B, ever).
     expect(h.commands.canStart).toBe(false);
     expect(h.commands.current).toEqual({
       personId: W,
+      name: 'TEST',
       what: 'confirm',
       code: RIGHT,
     });
-    const b = h.commands.run({ personId: W2, what: 'confirm', code: WRONG });
+    const b = h.commands.run({
+      personId: W2,
+      name: 'TEST',
+      what: 'confirm',
+      code: WRONG,
+    });
     h.reads[3]!.settle(me);
     expect((await b).kind).toBe('failed');
     expect((await a).kind).toBe('failed');
     expect(h.commands.unresolved).toEqual({
       personId: W,
+      name: 'TEST',
       what: 'confirm',
       code: RIGHT,
     });

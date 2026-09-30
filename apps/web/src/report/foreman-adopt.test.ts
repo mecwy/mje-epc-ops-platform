@@ -184,7 +184,8 @@ describe('the PM adopts exactly the total seen (AdoptFlow)', () => {
     expect(h.sent).toHaveLength(1);
     const again = h.flow.retry();
     await tick();
-    expect(h.sent[1]!.c).toEqual(h.sent[0]!.c);
+    // Same key = byte-identical body (#39 round 1 finding 2).
+    expect(JSON.stringify(h.sent[1]!.c)).toBe(JSON.stringify(h.sent[0]!.c));
     h.sent[1]!.settle();
     expect((await again).kind).toBe('ok');
   });

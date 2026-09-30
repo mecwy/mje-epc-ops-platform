@@ -323,10 +323,11 @@ function ProxyEdit({
       },
     );
     if (!check.ok) return setProblem(check.problem);
-    const r = await cmds.run(check.command, (_d, key) => ({
-      key,
-      send: () => api.pmProxy({ ...check.command, clientMutationId: key }),
-    }));
+    const r = await cmds.run(check.command, (_d, key) => {
+      // Fixed once: a Retry under this key sends the same body (AGENTS.md).
+      const command = { ...check.command, clientMutationId: key };
+      return { key, send: () => api.pmProxy(command) };
+    });
     // A lost answer: the sheet now shows the owned payload (ProxySheet).
     if (r.kind === 'ok') onClose();
     else if (r.kind === 'rejected') setError(r.code);

@@ -49,6 +49,8 @@ export const FIELD_ERRORS = {
   REVISION_CONFLICT: 'fe_revisionConflict',
   NUMBER_INVALID: 'numberInvalid',
   ITEM_NOT_FOUND: 'fe_itemNotFound',
+  // client-only: a report typed for another crew or day is never sent (C57)
+  CREW_CHANGED: 'fe_crewChanged',
   // adoption (report store) and the shared transport codes
   FOREMAN_TOTAL_CHANGED: 'fe_totalChanged',
   ADOPT_NOT_COMPLETE: 'fe_adoptIncomplete',

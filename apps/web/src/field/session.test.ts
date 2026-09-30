@@ -201,6 +201,8 @@ describe('FieldSession (IssueSession pattern)', () => {
     const first = session.load();
     reads[0]!.settle(1);
     await first;
+    // A read started before the command's answer lands after it.
+    const older = session.load();
     const r = session.act(
       () => ({
         key: 'K',
@@ -210,10 +212,12 @@ describe('FieldSession (IssueSession pattern)', () => {
     );
     expect((await r).kind).toBe('rejected');
     expect(ended).toEqual(['DEVICE_ENDED']);
-    const older = session.load();
-    session.end('DEVICE_ENDED');
+    // Latched by the command's own answer (#39 round 1): no read brings the device back.
+    expect(session.ended).toBe(true);
     reads[1]!.settle(2);
     expect(await older).toBe(false);
+    expect(await session.load()).toBe(false);
+    expect(reads).toHaveLength(2);
     expect(session.readError).toBe('DEVICE_ENDED');
     expect(session.data).toBe(1);
   });
