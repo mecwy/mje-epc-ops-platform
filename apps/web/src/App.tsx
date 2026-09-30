@@ -27,6 +27,17 @@ import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
 import { SiteSessions } from './site/site-sessions.js';
+import { useSessions } from './site/use-sessions.js';
+import { AdoptFlow } from './report/foreman-adopt.js';
+import { PmFieldContext, type PmField } from './report/ForemanLine.js';
+import { ROLE_KEYS, dec, decText } from '@mje/domain/rules';
+import type { DayFactsDto } from '@mje/contracts';
+
+/** The report's declared people total (never computed from check-ins); null if none. */
+function declaredHeadcount(f: DayFactsDto): string | null {
+  const n = ROLE_KEYS.map((r) => dec(f.people[r])).filter((x) => x !== null);
+  return n.length ? decText(n.reduce((a, b) => a + b, 0n)) : null;
+}
 import { Sheet } from './ui.js';
 import {
   ResumeKeeper,
@@ -220,6 +231,50 @@ function Workspace({
   // The People page's sessions live as long as the workspace (like the issue and plan
   // sessions): leaving the tab keeps an unresolved command and its key.
   const [siteSessions] = useState(() => new SiteSessions(api, project.id));
+  useSessions(siteSessions);
+  // Check-ins beside the headcount (writers only; a reader never gets them, OD20).
+  useEffect(() => {
+    if (canWrite) void siteSessions.checkIns(date).list.load();
+  }, [canWrite, siteSessions, date]);
+  // The PM's explicit adoption of foreman totals, one flow per day for the workspace's life.
+  const [, rerenderAdopt] = useReducer((n: number) => n + 1, 0);
+  const latestDay = useRef(h);
+  latestDay.current = h;
+  const adopts = useRef(new Map<string, AdoptFlow>());
+  const adoptFor = (d: string) => {
+    let flow = adopts.current.get(d);
+    if (!flow) {
+      flow = new AdoptFlow(
+        {
+          api,
+          projectId: project.id,
+          businessDate: d,
+          flush: () => latestDay.current.flush(),
+          current: () => {
+            const day = latestDay.current.day;
+            return day && day.businessDate === d
+              ? { foreman: day.foreman ?? null, version: day.version }
+              : null;
+          },
+          reload: () => latestDay.current.reload(),
+        },
+        rerenderAdopt,
+      );
+      adopts.current.set(d, flow);
+    }
+    return flow;
+  };
+  const pmField: PmField | null =
+    canWrite && h.day
+      ? {
+          foreman: h.day.foreman ?? null,
+          adopt: adoptFor(date),
+          canWrite,
+          dayState: h.day.state,
+          timeZone: project.timezone,
+          checkIns: siteSessions.checkIns(date).list.data?.summary ?? null,
+        }
+      : null;
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
@@ -456,7 +511,15 @@ function Workspace({
     ) : null;
   let body;
   if (view === 'site' && canWrite && !task)
-    body = <SitePage api={api} project={project} sessions={siteSessions} />;
+    body = (
+      <SitePage
+        api={api}
+        project={project}
+        sessions={siteSessions}
+        date={date}
+        headcount={h.facts ? declaredHeadcount(h.facts) : null}
+      />
+    );
   else if (viewing && view === 'report' && !task) {
     const meta = day?.revisions.find((r) => r.n === viewing.n) ?? null;
     body = (
@@ -562,51 +625,53 @@ function Workspace({
 
   if (task && day && h.facts && cov)
     return (
-      <PhotoHost env={photoEnv}>
-        {nav}
-        <div className="content">
-          {task === 'fill' ? (
-            <FillPage
-              h={h}
-              day={day}
-              cov={cov}
-              focus={focus}
-              onFocused={() => setFocus(null)}
-              onBack={() => {
-                void h.flush();
-                setTask(null);
-              }}
-              onCheck={() => {
-                void h.flush();
-                setTask('check');
-              }}
-              onPlan={() => {
-                void h.flush();
-                setTask(null);
-                setView('field');
-                setFieldTab('plan');
-              }}
-              onSubmit={() => void submit()}
-              busy={busy}
-              tomorrowText={tomorrowText}
-              issues={issues}
-              canWrite={canWrite}
-            />
-          ) : (
-            <CheckPage
-              h={h}
-              day={day}
-              cov={cov}
-              busy={busy}
-              onBack={() => setTask('fill')}
-              onFocus={goFill}
-              onSubmit={() => void submit()}
-              photos={photos}
-            />
-          )}
-        </div>
-        <Toast text={toast} />
-      </PhotoHost>
+      <PmFieldContext.Provider value={pmField}>
+        <PhotoHost env={photoEnv}>
+          {nav}
+          <div className="content">
+            {task === 'fill' ? (
+              <FillPage
+                h={h}
+                day={day}
+                cov={cov}
+                focus={focus}
+                onFocused={() => setFocus(null)}
+                onBack={() => {
+                  void h.flush();
+                  setTask(null);
+                }}
+                onCheck={() => {
+                  void h.flush();
+                  setTask('check');
+                }}
+                onPlan={() => {
+                  void h.flush();
+                  setTask(null);
+                  setView('field');
+                  setFieldTab('plan');
+                }}
+                onSubmit={() => void submit()}
+                busy={busy}
+                tomorrowText={tomorrowText}
+                issues={issues}
+                canWrite={canWrite}
+              />
+            ) : (
+              <CheckPage
+                h={h}
+                day={day}
+                cov={cov}
+                busy={busy}
+                onBack={() => setTask('fill')}
+                onFocus={goFill}
+                onSubmit={() => void submit()}
+                photos={photos}
+              />
+            )}
+          </div>
+          <Toast text={toast} />
+        </PhotoHost>
+      </PmFieldContext.Provider>
     );
 
   // The current photos, to link them; the report itself shows what the day froze.
@@ -619,119 +684,121 @@ function Workspace({
       <PhotosRow />
     ) : null;
   return (
-    <PhotoHost env={photoEnv}>
-      {nav}
-      <div className="content">
-        <header className="bar">
-          <div className="bar-title">
-            <span className="bar-sub">
-              {project.name}
-              {!canWrite && ` · ${t('readOnly')}`}
-            </span>
-            <label className="bar-date">
-              <span>{fmtDay(date, locale)}</span>
-              <input
-                type="date"
-                value={date}
-                aria-label={t('date')}
-                onChange={(e) => e.target.value && setDate(e.target.value)}
-              />
-            </label>
-          </div>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('prevDay')}
-            onClick={() => setDate(shift(date, -1))}
-          >
-            <Icon.left />
-          </button>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('nextDay')}
-            onClick={() => setDate(shift(date, 1))}
-          >
-            <Icon.right />
-          </button>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('more')}
-            onClick={() => setSheet('menu')}
-          >
-            <Icon.more />
-          </button>
-        </header>
-        <main className={`page view-${view}`}>
-          {signin.expired && (
-            <div className="banner err" role="alert">
-              {signin.failure ? (
-                <FailureText failure={signin.failure} />
-              ) : (
-                t('signInExpired')
-              )}{' '}
-              <button
-                type="button"
-                disabled={signin.redirecting || renewBusy}
-                onClick={() => void renew()}
-              >
-                {t('signInAgain')}
-              </button>
+    <PmFieldContext.Provider value={pmField}>
+      <PhotoHost env={photoEnv}>
+        {nav}
+        <div className="content">
+          <header className="bar">
+            <div className="bar-title">
+              <span className="bar-sub">
+                {project.name}
+                {!canWrite && ` · ${t('readOnly')}`}
+              </span>
+              <label className="bar-date">
+                <span>{fmtDay(date, locale)}</span>
+                <input
+                  type="date"
+                  value={date}
+                  aria-label={t('date')}
+                  onChange={(e) => e.target.value && setDate(e.target.value)}
+                />
+              </label>
             </div>
-          )}
-          {body}
-          {correctEntry}
-          {photosRow && !viewing ? photosRow : null}
-          {manageIssues && !viewing ? manageIssues : null}
-        </main>
-      </div>
-      {sheet === 'menu' && (
-        <MenuSheet
-          onClose={() => setSheet(null)}
-          canCorrect={canWrite && day?.state === 'submitted'}
-          canCancel={canWrite && day?.state === 'correcting'}
-          revisions={day?.revisions ?? []}
-          timeZone={project.timezone}
-          onCorrect={() => setSheet('correct')}
-          onView={openVersion}
-          onCancel={() => {
-            setSheet(null);
-            void run(h.cancelCorrection);
-          }}
-          onSignOut={session.signOut}
-        />
-      )}
-      {sheet === 'noWork' && (
-        <NoWorkSheet
-          onClose={() => setSheet(null)}
-          onSubmit={async (reason, note) => {
-            await run(() => h.noWork(reason, note), t('submittedToast'));
-          }}
-        />
-      )}
-      {replyTo && (
-        <ReplySheet
-          handle={issues}
-          issueId={replyTo}
-          onClose={() => setReplyTo(null)}
-        />
-      )}
-      {sheet === 'issues' && day && (
-        <Sheet title={t('manageIssues')} onClose={() => setSheet(null)}>
-          <FillIssues handle={issues} items={day.items} canWrite={canWrite} />
-        </Sheet>
-      )}
-      {sheet === 'correct' && (
-        <CorrectionSheet
-          onClose={() => setSheet(null)}
-          onStart={async (reason) => {
-            if (await run(() => h.startCorrection(reason))) setTask('fill');
-          }}
-        />
-      )}
-      <Toast text={toast} />
-    </PhotoHost>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('prevDay')}
+              onClick={() => setDate(shift(date, -1))}
+            >
+              <Icon.left />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('nextDay')}
+              onClick={() => setDate(shift(date, 1))}
+            >
+              <Icon.right />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('more')}
+              onClick={() => setSheet('menu')}
+            >
+              <Icon.more />
+            </button>
+          </header>
+          <main className={`page view-${view}`}>
+            {signin.expired && (
+              <div className="banner err" role="alert">
+                {signin.failure ? (
+                  <FailureText failure={signin.failure} />
+                ) : (
+                  t('signInExpired')
+                )}{' '}
+                <button
+                  type="button"
+                  disabled={signin.redirecting || renewBusy}
+                  onClick={() => void renew()}
+                >
+                  {t('signInAgain')}
+                </button>
+              </div>
+            )}
+            {body}
+            {correctEntry}
+            {photosRow && !viewing ? photosRow : null}
+            {manageIssues && !viewing ? manageIssues : null}
+          </main>
+        </div>
+        {sheet === 'menu' && (
+          <MenuSheet
+            onClose={() => setSheet(null)}
+            canCorrect={canWrite && day?.state === 'submitted'}
+            canCancel={canWrite && day?.state === 'correcting'}
+            revisions={day?.revisions ?? []}
+            timeZone={project.timezone}
+            onCorrect={() => setSheet('correct')}
+            onView={openVersion}
+            onCancel={() => {
+              setSheet(null);
+              void run(h.cancelCorrection);
+            }}
+            onSignOut={session.signOut}
+          />
+        )}
+        {sheet === 'noWork' && (
+          <NoWorkSheet
+            onClose={() => setSheet(null)}
+            onSubmit={async (reason, note) => {
+              await run(() => h.noWork(reason, note), t('submittedToast'));
+            }}
+          />
+        )}
+        {replyTo && (
+          <ReplySheet
+            handle={issues}
+            issueId={replyTo}
+            onClose={() => setReplyTo(null)}
+          />
+        )}
+        {sheet === 'issues' && day && (
+          <Sheet title={t('manageIssues')} onClose={() => setSheet(null)}>
+            <FillIssues handle={issues} items={day.items} canWrite={canWrite} />
+          </Sheet>
+        )}
+        {sheet === 'correct' && (
+          <CorrectionSheet
+            onClose={() => setSheet(null)}
+            onStart={async (reason) => {
+              if (await run(() => h.startCorrection(reason))) setTask('fill');
+            }}
+          />
+        )}
+        <Toast text={toast} />
+      </PhotoHost>
+    </PmFieldContext.Provider>
   );
 }
 

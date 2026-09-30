@@ -7,6 +7,7 @@ import { Icon } from '../icons.js';
 import { NumInput, TokenChips } from '../ui.js';
 import type { MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
+import { CheckInsBeside, ForemanLine } from './ForemanLine.js';
 import {
   activeWork,
   byKind,
@@ -93,6 +94,7 @@ function QtyRow({
         disabled={locked}
         onSet={(v) => h.edit(`qty.${it.key}`, v)}
       />
+      <ForemanLine itemKey={it.key} />
       {!compact && (dec(q) !== null || cur) && (
         <>
           {/* The declared cumulative is always visible and editable; the suggestion sits apart. */}
@@ -590,7 +592,8 @@ export function FillPage({
                     <h2 className="blk">{t('resources')}</h2>
                     <span className="small">
                       {t('peopleTotal')}{' '}
-                      <b className="num">{any ? decText(total) : '—'}</b>
+                      <b className="num">{any ? decText(total) : '—'}</b>{' '}
+                      <CheckInsBeside />
                     </span>
                   </div>
                   <div className="grid2">

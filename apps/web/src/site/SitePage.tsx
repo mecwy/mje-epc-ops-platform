@@ -4,6 +4,7 @@ import { useI18n } from '../i18n.js';
 import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
 import { fmtStamp } from '../report/format.js';
+import { CheckInsCard } from './CheckIns.js';
 import { DevicesCard } from './Devices.js';
 import { encodeQr, qrPath } from './qr.js';
 import { SettingsCards } from './Settings.js';
@@ -208,14 +209,25 @@ export function SitePage({
   api,
   project,
   sessions,
+  date,
+  headcount,
 }: {
   api: ReportApi;
   project: Project;
   sessions: SiteSessions;
+  date: string;
+  headcount: string | null;
 }) {
   return (
     <>
       <DevicesCard sessions={sessions} project={project} />
+      <CheckInsCard
+        api={api}
+        project={project}
+        sessions={sessions}
+        date={date}
+        headcount={headcount}
+      />
       <EntryCodeCard sessions={sessions} project={project} api={api} />
       <SettingsCards sessions={sessions} project={project} api={api} />
     </>

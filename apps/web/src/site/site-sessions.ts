@@ -1,5 +1,8 @@
 import type {
+  CheckInListDto,
   EntryCodeDto,
+  PmProxyCheckInCommand,
+  RosterDto,
   FieldDeviceDto,
   FieldSettingsCommand,
   FieldSettingsDto,
@@ -21,6 +24,9 @@ type SiteApi = Pick<
   | 'fieldSettings'
   | 'setFieldSettings'
   | 'setSiteReference'
+  | 'roster'
+  | 'checkIns'
+  | 'pmProxy'
 >;
 
 export type DeviceAction =
@@ -126,8 +132,13 @@ export class SiteSessions {
     FormSave<SettingsValue>
   >;
 
-  constructor(api: SiteApi, projectId: string) {
-    const notify = () => this.listeners.forEach((fn) => fn());
+  private readonly notify = () => this.listeners.forEach((fn) => fn());
+  constructor(
+    private readonly api: SiteApi,
+    private readonly projectId: string,
+  ) {
+    const notify = this.notify;
+    this.roster = new FieldSession(() => api.roster(projectId), notify);
     this.entry = new FieldSession(() => api.entryCode(projectId), notify);
     this.devices = new DeviceCommands(api, projectId, notify);
     this.site = new FieldSession(() => api.fieldSettings(projectId), notify);
@@ -137,6 +148,27 @@ export class SiteSessions {
     );
     this.siteSave = new OwnedCommands(this.site);
     this.settingsSave = new OwnedCommands(this.settings);
+  }
+  readonly roster: FieldSession<RosterDto>;
+  private readonly days = new Map<
+    string,
+    {
+      list: FieldSession<CheckInListDto>;
+      proxy: OwnedCommands<CheckInListDto, ProxyAction>;
+    }
+  >();
+  /** A site day's check-ins and PM proxies, kept for the workspace's life. */
+  checkIns(businessDate: string) {
+    let d = this.days.get(businessDate);
+    if (!d) {
+      const list = new FieldSession<CheckInListDto>(
+        () => this.api.checkIns(this.projectId, businessDate),
+        this.notify,
+      );
+      d = { list, proxy: new OwnedCommands(list) };
+      this.days.set(businessDate, d);
+    }
+    return d;
   }
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn);
@@ -229,3 +261,6 @@ export function saveSettings(
     return { key, send: () => api.setFieldSettings(c) };
   });
 }
+
+/** A PM proxy check-in as sent (its command, shown locked while unresolved). */
+export type ProxyAction = Omit<PmProxyCheckInCommand, 'clientMutationId'>;
