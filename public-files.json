@@ -154,6 +154,8 @@
   "scripts/check-i18n.mjs",
   "scripts/check-public.mjs",
   "scripts/check-web-bundle.mjs",
+  "scripts/cloud-add-member.mjs",
+  "scripts/cloud-add-member.test.mjs",
   "scripts/cloud-bootstrap.mjs",
   "scripts/cloud-bootstrap.test.mjs",
   "scripts/cloud-migrate.mjs",
