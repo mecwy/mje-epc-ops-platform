@@ -22,6 +22,7 @@ import {
 } from './foreman-report.js';
 import { ProxyFlow, type ProxyPhase } from './proxy-flow.js';
 import { CrewCommands } from './crew-commands.js';
+import { OwnedCommands } from './owned-commands.js';
 import { FieldSession } from './session.js';
 
 function localStore(): Storage | null {
@@ -235,11 +236,13 @@ function ConfirmSheet({
   const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // While this member's attempt is unresolved, the code is the one sent and cannot change.
+  // While this member's attempt runs or is unresolved, the code is the one sent, locked.
   const unresolved = commands.isUnresolved(member.personId)
     ? commands.unresolved
     : null;
-  const code = unresolved?.code ?? typed;
+  const current =
+    commands.current?.personId === member.personId ? commands.current : null;
+  const code = current?.code ?? typed;
   const ok = CHALLENGE_CODE.test(code);
   const run = async (what: 'confirm' | 'reject') => {
     setBusy(true);
@@ -268,8 +271,8 @@ function ConfirmSheet({
           autoComplete="one-time-code"
           maxLength={6}
           value={code}
-          readOnly={unresolved !== null}
-          aria-readonly={unresolved !== null || undefined}
+          readOnly={current !== null}
+          aria-readonly={current !== null || undefined}
           onChange={(e) => setTyped(e.target.value.replace(/\D/g, ''))}
         />
       </label>
@@ -345,19 +348,28 @@ export function ReportCard({
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const days = reportDays(me.project.timezone, new Date());
   const [day, setDay] = useState(days[0]);
-  const sessions = useRef(new Map<string, FieldSession<ForemanReportDto>>());
-  let session = sessions.current.get(day);
-  if (!session) {
-    session = new FieldSession<ForemanReportDto>(
+  // Per site day, for the card's life: a send's session and its owned payload.
+  const sessions = useRef(
+    new Map<
+      string,
+      {
+        session: FieldSession<ForemanReportDto>;
+        sends: OwnedCommands<ForemanReportDto, ReportSend>;
+      }
+    >(),
+  );
+  let entry = sessions.current.get(day);
+  if (!entry) {
+    const session = new FieldSession<ForemanReportDto>(
       () => api.report(day),
       rerender,
-      {
-        onEnded,
-      },
+      { onEnded },
     );
-    sessions.current.set(day, session);
+    entry = { session, sends: new OwnedCommands(session) };
+    sessions.current.set(day, entry);
   }
-  const s = session;
+  const s = entry.session;
+  const sends = entry.sends;
   useEffect(() => {
     if (!s.data && !s.readError) void s.load();
   }, [s]);
@@ -383,6 +395,7 @@ export function ReportCard({
           key={day}
           api={api}
           session={s}
+          sends={sends}
           data={s.data}
           day={day}
           timeZone={me.project.timezone}
@@ -403,9 +416,15 @@ export function ReportCard({
   );
 }
 
+/** A report send as sent: the draft and note. */
+interface ReportSend {
+  draft: Draft;
+  note: string;
+}
 function ReportForm({
   api,
   session,
+  sends,
   data,
   day,
   timeZone,
@@ -413,40 +432,46 @@ function ReportForm({
   api: DeviceApi;
   timeZone: string;
   session: FieldSession<ForemanReportDto>;
+  sends: OwnedCommands<ForemanReportDto, ReportSend>;
   data: ForemanReportDto;
   day: string;
 }) {
   const { t, label, locale } = useI18n();
+  // A send that runs or is unresolved is shown as sent (locked), also after a day switch.
+  const owned = sends.current;
+  const pending = sends.unresolved !== null;
   // The draft and the server values it started from; a conflict moves only the base.
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(data));
-  const [note, setNote] = useState(data.note);
+  const [draft, setDraft] = useState<Draft>(
+    () => owned?.draft ?? draftFrom(data),
+  );
+  const [note, setNote] = useState(owned?.note ?? data.note);
   const [base, setBase] = useState<Draft>(() => draftFrom(data));
   const [changed, setChanged] = useState<string[]>([]);
   const [invalid, setInvalid] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const latest = draftFrom(data);
-  // While a send is unresolved the form is locked: its retry resends exactly what was sent.
-  const locked = session.busy || session.pending !== null;
+  // While a send runs or is unresolved the form is locked: its retry resends what was sent.
+  const locked = session.busy || sends.owned;
   const giveUp = () => {
-    session.discard();
+    sends.discard();
     setError(null);
-    void session.load();
+    setDraft(draftFrom(data));
+    setNote(data.note);
   };
   const send = async () => {
     setError(null);
     setSent(false);
-    if (!session.pending) {
+    if (!pending) {
       const check = checkDraft(data, draft);
       if (!check.ok) return setInvalid(check.invalid);
     }
     setInvalid([]);
-    const r = session.pending
-      ? await session.retry()
-      : await session.act((d) => {
+    const r = pending
+      ? await sends.retry()
+      : await sends.run({ draft, note }, (d, key) => {
           const rows = d ? checkDraft(d, draft) : null;
           if (!d || !rows?.ok) return null;
-          const key = crypto.randomUUID();
           const command = {
             clientMutationId: key,
             businessDate: day,
@@ -547,13 +572,13 @@ function ReportForm({
         </div>
       )}
       {sent && <p className="ok-t">{t('fm_sent', { n: data.n })}</p>}
-      {session.pending && (
+      {pending && (
         <div className="banner warn" role="alert">
           {t('fm_sendUnresolved')}
         </div>
       )}
       <div className="row2">
-        {session.pending && (
+        {pending && (
           <button
             type="button"
             className="ghost"
@@ -569,7 +594,7 @@ function ReportForm({
           disabled={session.busy || data.items.length === 0}
           onClick={() => void send()}
         >
-          {session.pending ? t('retry') : t('fm_send')}
+          {pending ? t('retry') : t('fm_send')}
         </button>
       </div>
     </>

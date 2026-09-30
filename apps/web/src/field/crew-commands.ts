@@ -1,6 +1,7 @@
 import type { FieldMeDto } from '@mje/contracts';
 import type { DeviceApi } from './field-api.js';
 import { crewDecision } from './foreman-report.js';
+import { OwnedCommands } from './owned-commands.js';
 import type { FieldSession, Outcome } from './session.js';
 
 /** A foreman's confirm or reject as sent: whose phone, which decision, which code. */
@@ -11,38 +12,44 @@ export interface CrewAttempt {
 }
 
 /**
- * The foreman's confirm/reject commands (design §2, C2) with the identity of an unresolved
- * one. A retry resends the command exactly as it was sent: same person, decision, code and
- * key. So while one is unresolved the code cannot be edited (a retry would silently send the
- * old code and its answer would be shown against the new one) and no other member's decision
- * can start; the foreman either retries it or gives it up, then types again.
+ * The foreman's confirm/reject commands (design §2, C2). A retry resends the command exactly
+ * as it was sent (same person, decision, code and key), so the attempt owns its command from
+ * the moment it starts (OwnedCommands): while it runs or is unresolved its code is shown and
+ * cannot be edited, and no other member's decision can start. The foreman either retries it
+ * or gives it up, then types again. A correct code is therefore never answered with the
+ * decision of an earlier, unresolved attempt.
  */
 export class CrewCommands {
-  unresolved: CrewAttempt | null = null;
+  private readonly owned: OwnedCommands<FieldMeDto, CrewAttempt>;
 
   constructor(
-    private readonly session: FieldSession<FieldMeDto>,
+    session: FieldSession<FieldMeDto>,
     private readonly api: Pick<DeviceApi, 'confirmCrew' | 'rejectCrew'>,
-    private readonly newKey: () => string = () => crypto.randomUUID(),
-  ) {}
+    newKey: () => string = () => crypto.randomUUID(),
+  ) {
+    this.owned = new OwnedCommands(session, newKey);
+  }
 
   get busy() {
-    return this.session.busy;
+    return this.owned.session.busy;
   }
-  /** A new decision may start only when nothing is unresolved. */
+  /** The attempt kept for an unchanged retry (settled without an answer). */
+  get unresolved(): CrewAttempt | null {
+    return this.owned.unresolved;
+  }
+  /** The attempt running or unresolved: its code is what the sheet shows. */
+  get current(): CrewAttempt | null {
+    return this.owned.current;
+  }
   get canStart() {
-    return this.unresolved === null && !this.session.busy;
+    return this.owned.canStart;
   }
-  /** Whether this attempt's command is the unresolved one (its sheet offers the retry). */
   isUnresolved(personId: string) {
     return this.unresolved?.personId === personId;
   }
 
-  async run(a: CrewAttempt): Promise<Outcome<unknown>> {
-    if (!this.canStart)
-      return { kind: 'failed', code: this.session.error ?? 'NETWORK' };
-    const key = this.newKey();
-    const r = await this.session.act((me) => {
+  run(a: CrewAttempt): Promise<Outcome<unknown>> {
+    return this.owned.run(a, (me, key) => {
       const d = crewDecision(me, a.personId, a.code, key, a.what);
       if (!d) return null;
       return {
@@ -53,22 +60,12 @@ export class CrewCommands {
             : this.api.rejectCrew(d.command),
       };
     });
-    this.unresolved = r.kind === 'failed' && this.session.pending ? a : null;
-    return r;
   }
-  /** Resend the unresolved attempt unchanged. */
-  async retry(): Promise<Outcome<unknown>> {
-    const r = await this.session.retry();
-    if (!this.session.pending) this.unresolved = null;
-    return r;
+  retry(): Promise<Outcome<unknown>> {
+    return this.owned.retry();
   }
-  /**
-   * Give up the unresolved attempt. It may still have reached the server (a wrong code then
-   * counts once); the crew list is read again before anything else is sent.
-   */
+  /** Give up the unresolved attempt (a wrong code may then have counted once); reread. */
   discard() {
-    this.session.discard();
-    this.unresolved = null;
-    void this.session.load();
+    this.owned.discard();
   }
 }

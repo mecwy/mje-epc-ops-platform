@@ -253,4 +253,42 @@ describe('foreman confirm: a correct code is never answered with an earlier deci
     ).toBe('ok');
     expect(h.log).toEqual([`K1 ${WRONG} lost`, `K2 ${RIGHT} ok`]);
   });
+
+  it('an attempt started during a recovery read owns its command at once; another member cannot claim it', async () => {
+    const h = harness();
+    await h.session.load();
+    h.manualReads();
+    // A refused attempt whose rereads fail: the next attempt needs a recovery read.
+    const first = h.commands.run({ personId: W, what: 'confirm', code: WRONG });
+    for (let i = 0; i < 3; i++) {
+      await tick();
+      h.reads[i]!.settle(new ApiError('NETWORK', 0));
+    }
+    await first;
+    h.plan.push('lost');
+    const a = h.commands.run({ personId: W, what: 'confirm', code: RIGHT });
+    await tick();
+    // While A waits for its recovery read, B cannot start (nothing sent for B, ever).
+    expect(h.commands.canStart).toBe(false);
+    expect(h.commands.current).toEqual({
+      personId: W,
+      what: 'confirm',
+      code: RIGHT,
+    });
+    const b = h.commands.run({ personId: W2, what: 'confirm', code: WRONG });
+    h.reads[3]!.settle(me);
+    expect((await b).kind).toBe('failed');
+    expect((await a).kind).toBe('failed');
+    expect(h.commands.unresolved).toEqual({
+      personId: W,
+      what: 'confirm',
+      code: RIGHT,
+    });
+    expect(h.log.slice(1)).toEqual([`K2 ${RIGHT} lost`]);
+    const r = h.commands.retry();
+    await tick();
+    h.reads.at(-1)?.settle(me);
+    expect((await r).kind).toBe('ok');
+    expect(h.log.at(-1)).toBe(`K2 ${RIGHT} ok`);
+  });
 });
