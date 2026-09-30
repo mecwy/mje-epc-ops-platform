@@ -4,6 +4,7 @@ import {
   type DeviceRecord,
   type EndedReason,
 } from './device-store.js';
+import { ENDED } from './session.js';
 
 /**
  * The device page's states (design §2 lifecycle as the browser sees it). Pure functions so
@@ -50,9 +51,6 @@ export type DeviceView =
   /** Not answered (offline, busy, rate limited): the device is kept; the user retries. */
   | { kind: 'unreachable'; code: string };
 
-/** Codes by which the server says this token is no longer a device. */
-const ENDED = new Set(['DEVICE_ENDED', 'FIELD_AUTH_REQUIRED']);
-
 /**
  * What the device page shows from its newest `me` and the last read's error. An ended answer
  * wins over an older good reading; a transient failure keeps showing the last reading.
@@ -79,4 +77,9 @@ export function deviceView(
 export function codeFromHash(hash: string): string | null {
   const m = /^#e=([A-Za-z0-9_-]{22})$/.exec(hash);
   return m ? m[1]! : null;
+}
+
+/** Unregister is offered for any live device, pending too (a wrong name picked by mistake). */
+export function canRelease(view: DeviceView): boolean {
+  return view.kind === 'pending' || view.kind === 'home';
 }

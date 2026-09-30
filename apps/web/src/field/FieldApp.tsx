@@ -9,13 +9,15 @@ import { DeviceStore, newToken, type DeviceRecord } from './device-store.js';
 import { ErrorText } from './ErrorText.js';
 import { deviceApi, type DeviceApi } from './field-api.js';
 import {
+  canRelease,
   codeFromHash,
   deviceView,
   startScreen,
   type FieldScreen,
   type Result,
 } from './flow.js';
-import { FieldSession } from './session.js';
+import { ENDED, FieldSession } from './session.js';
+import { releaseDevice } from './release.js';
 import { CheckInCard } from './CheckInCard.js';
 
 function storage(kind: 'local' | 'session'): Storage | null {
@@ -328,6 +330,19 @@ function DevicePage({
       }, rerender),
   );
   useEffect(() => void session.load(), [session]);
+  // The site day can change and the device can be revoked while the page stays open:
+  // re-render every minute, and read the device again when the page comes back.
+  useEffect(() => {
+    const tick = setInterval(rerender, 60_000);
+    const back = () => {
+      if (document.visibilityState === 'visible') void session.load();
+    };
+    document.addEventListener('visibilitychange', back);
+    return () => {
+      clearInterval(tick);
+      document.removeEventListener('visibilitychange', back);
+    };
+  }, [session]);
   const view = deviceView(
     session.data,
     session.readError,
@@ -339,26 +354,35 @@ function DevicePage({
     // The server no longer accepts this token: it is useless and is dropped.
     if (ended) store.remove(record.projectId, record.token);
   }, [ended, store, record]);
+  // Unregister has its own command queue: a retry never resends another kind of command.
+  const [releases] = useState(
+    () => new FieldSession<null>(async () => null, rerender),
+  );
   const [releasing, setReleasing] = useState(false);
   const release = async () => {
-    const key = crypto.randomUUID();
-    const r = await session.act(
-      () => ({ key, send: () => api.release(key) }),
-      false,
-    );
     if (
-      r.kind === 'ok' ||
-      (r.kind === 'rejected' && r.code === 'DEVICE_ENDED')
+      (await releaseDevice(releases, api, () => crypto.randomUUID())) === 'gone'
     ) {
       store.remove(record.projectId, record.token);
       setReleasing(false);
       onGone();
     }
   };
+  const endDevice = (code: string) => session.end(code);
   const today = siteToday(session.data?.project.timezone ?? 'UTC');
   const title = session.data?.person.displayName ?? record.displayName;
   const sub = session.data?.project.name ?? record.projectName;
 
+  // Pending and confirmed phones can both be unregistered (a wrong name picked by mistake).
+  const releaseButton = canRelease(view) && (
+    <button
+      type="button"
+      className="textbtn center"
+      onClick={() => setReleasing(true)}
+    >
+      {t('fd_release')}
+    </button>
+  );
   let body;
   if (view.kind === 'loading') body = <p className="muted">{t('loading')}</p>;
   else if (view.kind === 'unreachable')
@@ -392,7 +416,17 @@ function DevicePage({
       </section>
     );
   } else if (view.kind === 'pending')
-    body = <PendingCard api={api} me={view.me} reload={() => session.load()} />;
+    body = (
+      <>
+        <PendingCard
+          api={api}
+          me={view.me}
+          reload={() => session.load()}
+          onEnded={endDevice}
+        />
+        {releaseButton}
+      </>
+    );
   else
     body = (
       <>
@@ -406,14 +440,8 @@ function DevicePage({
             <span>{view.me.crew?.name ?? t('fd_noCrew')}</span>
           </div>
         </section>
-        <CheckInCard api={api} me={view.me} session={session} />
-        <button
-          type="button"
-          className="textbtn center"
-          onClick={() => setReleasing(true)}
-        >
-          {t('fd_release')}
-        </button>
+        <CheckInCard api={api} me={view.me} onEnded={endDevice} />
+        {releaseButton}
       </>
     );
   return (
@@ -421,20 +449,23 @@ function DevicePage({
       <Bar title={title} sub={sub} />
       <main className="page">{body}</main>
       {releasing && (
-        <Sheet title={t('fd_release')} onClose={() => setReleasing(false)}>
+        <Sheet
+          title={t('fd_release')}
+          onClose={() => !releases.busy && setReleasing(false)}
+        >
           <p className="para">{t('fd_releaseWarn')}</p>
-          {session.error && (
+          {releases.error && (
             <div className="banner err" role="alert">
-              <ErrorText code={session.error} />
+              <ErrorText code={releases.error} />
             </div>
           )}
           <button
             type="button"
             className="primary wide danger"
-            disabled={session.busy}
-            onClick={() => void (session.pending ? session.retry() : release())}
+            disabled={releases.busy}
+            onClick={() => void release()}
           >
-            {t('fd_releaseConfirm')}
+            {releases.pending ? t('retry') : t('fd_releaseConfirm')}
           </button>
         </Sheet>
       )}
@@ -450,10 +481,12 @@ function PendingCard({
   api,
   me,
   reload,
+  onEnded,
 }: {
   api: DeviceApi;
   me: FieldMeDto;
   reload: () => Promise<boolean>;
+  onEnded: (code: string) => void;
 }) {
   const { t, locale } = useI18n();
   const [challenge, setChallenge] = useState<{
@@ -482,7 +515,9 @@ function PendingCard({
       setChallenge(await api.challenge());
       setNow(Date.now());
     } catch (e) {
-      setError(e instanceof ApiError ? e.code : 'REQUEST_FAILED');
+      const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
+      setError(code);
+      if (ENDED.has(code)) onEnded(code);
     } finally {
       setBusy(false);
     }
