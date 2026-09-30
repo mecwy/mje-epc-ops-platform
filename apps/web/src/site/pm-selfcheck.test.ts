@@ -184,9 +184,9 @@ async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
       api: a.api,
       projectId: P,
       businessDate: DAY,
-      flush: async () => 'ok',
+      hold: async () => 'ok',
       current: () => ({ foreman: view('10'), version: 3 }),
-      reload: async () => {},
+      release: async () => {},
     },
     () => {},
   );
@@ -364,9 +364,9 @@ describe('#40 self-check: a reader keeps the owned attempts (owners outlive writ
         api: a.api,
         projectId: P,
         businessDate: DAY,
-        flush: async () => 'ok',
+        hold: async () => 'ok',
         current: () => ({ foreman: view('10'), version: 3 }),
-        reload: async () => {},
+        release: async () => {},
       },
       () => {},
     );

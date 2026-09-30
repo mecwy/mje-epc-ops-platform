@@ -242,14 +242,14 @@ function Workspace({
   const latestDay = useRef(h);
   latestDay.current = h;
   pm.day = {
-    flush: () => latestDay.current.flush(),
+    hold: (d) => latestDay.current.hold(d),
     current: (d) => {
       const day = latestDay.current.day;
       return day && day.businessDate === d
         ? { foreman: day.foreman ?? null, version: day.version }
         : null;
     },
-    reload: () => latestDay.current.reload(),
+    release: (d) => latestDay.current.release(d),
   };
   const adoptFor = (d: string) => pm.adoptFor(d);
   const pmField: PmField | null =

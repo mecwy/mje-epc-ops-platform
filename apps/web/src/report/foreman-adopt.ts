@@ -96,11 +96,16 @@ export interface AdoptContext {
   api: { adoptForeman: (c: ForemanAdoptCommand) => Promise<unknown> };
   projectId: string;
   businessDate: string;
-  /** Save typed facts first; anything but 'ok' stops the adoption. */
-  flush: () => Promise<string>;
-  /** The newest foreman view and day version after the flush. */
+  /**
+   * Hold the day for the adoption (useDay `hold`): everything typed is saved first, then the
+   * day's facts are read-only until `release`. Anything but 'ok' stops the adoption (the day
+   * is then free again).
+   */
+  hold: () => Promise<string>;
+  /** The newest foreman view and day version (after the hold's save). */
   current: () => { foreman: ForemanDayView | null; version: number } | null;
-  reload: () => Promise<unknown>;
+  /** Read the day again (facts, version, foreman view) and free it for editing. */
+  release: () => Promise<unknown>;
 }
 export type AdoptResult =
   | Outcome<unknown>
@@ -117,10 +122,16 @@ export class AdoptFlow {
   readonly owned: OwnedCommands<null, AdoptAction>;
   /** item → the total the PM saw when it changed under them. */
   changed: Record<string, string | null> = {};
+  /**
+   * The adoption before its command exists (saving typed facts, holding the day) and after it
+   * is answered (the day read again): owned for the whole lifecycle, so nothing else starts
+   * and the day stays read-only until the refresh has landed.
+   */
+  phase: { item: string; value: string } | null = null;
 
   constructor(
     private readonly ctx: AdoptContext,
-    notify: () => void,
+    private readonly notify: () => void,
     newKey?: () => string,
   ) {
     this.owned = new OwnedCommands(
@@ -128,31 +139,61 @@ export class AdoptFlow {
       newKey,
     );
   }
+  /** A new adoption may start only when nothing is running, unresolved or settling. */
+  get canStart(): boolean {
+    return this.owned.canStart && this.phase === null;
+  }
+  /** The item and total being adopted (any stage), if any. */
+  get active(): { item: string; value: string } | null {
+    return this.owned.current ?? this.phase;
+  }
+  private setPhase(p: { item: string; value: string } | null) {
+    this.phase = p;
+    this.notify();
+  }
 
   async adopt(
     item: string,
     shown: { basis: ForemanBasisDto; value: string },
   ): Promise<AdoptResult> {
-    if (!this.owned.canStart) return { kind: 'failed', code: 'BUSY' };
-    const flushed = await this.ctx.flush();
-    if (flushed !== 'ok') return { kind: 'failed', code: 'STALE' };
-    const now = this.ctx.current();
-    const live = now?.foreman?.items[item];
-    if (
-      !now?.foreman ||
-      !live ||
-      live.value !== shown.value ||
-      !sameBasis(now.foreman.basis, shown.basis)
-    ) {
-      this.changed = { ...this.changed, [item]: shown.value };
-      return { kind: 'changed' };
+    if (!this.canStart) return { kind: 'failed', code: 'BUSY' };
+    // Owned from the first moment: the save of typed facts and the hold are part of it.
+    this.setPhase({ item, value: shown.value });
+    try {
+      const held = await this.ctx.hold();
+      if (held !== 'ok')
+        return {
+          kind: 'failed',
+          code: held === 'conflict' ? 'VERSION_CONFLICT' : 'STALE',
+        };
+      const now = this.ctx.current();
+      const live = now?.foreman?.items[item];
+      if (
+        !now?.foreman ||
+        !live ||
+        live.value !== shown.value ||
+        !sameBasis(now.foreman.basis, shown.basis)
+      ) {
+        this.changed = { ...this.changed, [item]: shown.value };
+        await this.ctx.release();
+        return { kind: 'changed' };
+      }
+      return await this.send(item, shown, now.version);
+    } finally {
+      this.setPhase(null);
     }
+  }
+  private async send(
+    item: string,
+    shown: { basis: ForemanBasisDto; value: string },
+    version: number,
+  ): Promise<AdoptResult> {
     delete this.changed[item];
     const action: AdoptAction = {
       item,
       basis: shown.basis,
       value: shown.value,
-      expectedVersion: now.version,
+      expectedVersion: version,
     };
     return this.settle(
       action,
@@ -174,26 +215,42 @@ export class AdoptFlow {
       ),
     );
   }
-  /** Resend the unresolved adoption unchanged. */
+  /** Resend the unresolved adoption unchanged (the day stays held meanwhile). */
   async retry(): Promise<AdoptResult> {
     const a = this.owned.unresolved;
     if (!a) return { kind: 'failed', code: 'NOT_FOUND' };
-    return this.settle(a, await this.owned.retry());
+    try {
+      return await this.settle(a, await this.owned.retry());
+    } finally {
+      this.setPhase(null);
+    }
   }
-  discard() {
+  /** Give up the unresolved adoption (it may still have been applied): read the day, free it. */
+  async discard(): Promise<void> {
+    const a = this.owned.unresolved;
+    if (!a) return;
     this.owned.discard();
-    void this.ctx.reload();
+    this.setPhase({ item: a.item, value: a.value });
+    try {
+      await this.ctx.release();
+    } finally {
+      this.setPhase(null);
+    }
   }
 
+  /**
+   * One settlement for a first send and a Retry: an unanswered adoption keeps the day held
+   * (read-only) for its Retry; any answer reads the day again, still owned, then frees it.
+   */
   private async settle(
     a: AdoptAction,
     r: Outcome<unknown>,
   ): Promise<AdoptResult> {
-    if (r.kind === 'failed') return r;
+    if (r.kind === 'failed' && this.owned.current) return r;
+    this.setPhase({ item: a.item, value: a.value });
     if (r.kind === 'rejected' && r.code === 'FOREMAN_TOTAL_CHANGED')
       this.changed = { ...this.changed, [a.item]: a.value };
-    // Adopted or refused: the day (facts, version, foreman view) is read again.
-    await this.ctx.reload();
+    await this.ctx.release();
     return r;
   }
 }

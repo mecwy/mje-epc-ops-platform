@@ -184,6 +184,30 @@ export class SiteSessions {
     }
     return d;
   }
+  /** The site day of the last PM proxy started (its result is shown in the sheet). */
+  lastProxyDay: string | null = null;
+  /**
+   * The PM proxy running or unresolved, keyed by the day it is for (its command's
+   * businessDate, not the page's date). One at a time across days.
+   */
+  ownedProxy(): {
+    day: string;
+    proxy: OwnedCommands<CheckInListDto, ProxyAction>;
+  } | null {
+    for (const [day, d] of this.days)
+      if (d.proxy.current) return { day, proxy: d.proxy };
+    return null;
+  }
+  /** The proxy owner a sheet shows: the owned one, else the last one started, else this day's. */
+  proxySheetOwner(pageDate: string) {
+    const owned = this.ownedProxy();
+    return (
+      owned ?? {
+        day: this.lastProxyDay ?? pageDate,
+        proxy: this.checkIns(this.lastProxyDay ?? pageDate).proxy,
+      }
+    );
+  }
   /** Every site day read so far, with its proxy owner (for the owned-actions bar). */
   proxyDays(): [
     string,
@@ -290,3 +314,23 @@ export function saveSettings(
 
 /** A PM proxy check-in as sent (its command, shown locked while unresolved). */
 export type ProxyAction = Omit<PmProxyCheckInCommand, 'clientMutationId'>;
+
+/**
+ * Start a PM proxy, owned by the day it is for (its businessDate, not the page's date): that
+ * day's list is what it rereads, opening that day shows it, and the bar names that day. One at
+ * a time across days; null when one is already owned.
+ */
+export function startProxy(
+  sessions: SiteSessions,
+  api: Pick<SiteApi, 'pmProxy'>,
+  command: ProxyAction,
+): Promise<Outcome<unknown>> | null {
+  if (sessions.ownedProxy()) return null;
+  const cmds = sessions.checkIns(command.businessDate).proxy;
+  sessions.lastProxyDay = command.businessDate;
+  return cmds.run(command, (_d, key) => {
+    // Fixed once: a Retry under this key sends the same body (AGENTS.md).
+    const body = { ...command, clientMutationId: key };
+    return { key, send: () => api.pmProxy(body) };
+  });
+}

@@ -46,28 +46,29 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
   // Only a failure before anything was sent (typed facts not saved, busy); an adoption's own
   // outcome comes from its owner (AdoptFlow), the same for a first send and a Retry.
   const [problem, setProblem] = useState<string | null>(null);
-  if (!pm?.foreman) return null;
-  const f = pm.foreman;
-  const v = itemView(f, itemKey);
-  if (!v || v.crews.length === 0) return null;
-  const block = adoptBlock(v, pm);
-  const flow = pm.adopt;
-  const seen = flow?.changed[itemKey];
-  // This item's adoption while it runs or is unresolved: shown as sent (C51).
-  const owned =
-    flow?.owned.current?.item === itemKey ? flow.owned.current : null;
-  const unresolved = owned !== null && flow?.owned.unresolved !== null;
+  const flow = pm?.adopt ?? null;
+  // This item's adoption at any stage (saving typed facts, sending, unresolved, reading the
+  // day again): shown as sent (C51), whatever the live total is now.
+  const active = flow?.active?.item === itemKey ? flow.active : null;
+  const unresolved = flow !== null && flow.owned.unresolved?.item === itemKey;
   const busy = flow?.owned.session.busy ?? false;
   const refused =
     flow &&
-    !owned &&
+    !active &&
     flow.owned.refused?.item === itemKey &&
     flow.owned.refusal &&
     flow.owned.refusal !== 'FOREMAN_TOTAL_CHANGED'
       ? { code: flow.owned.refusal, uncertain: flow.owned.refusalUncertain }
       : null;
-  const total =
-    v.status === 'COMPLETE' && v.value !== null
+  const f = pm?.foreman ?? null;
+  const found = f ? itemView(f, itemKey) : null;
+  const v = found && found.crews.length > 0 ? found : null;
+  const seen = flow?.changed[itemKey];
+  if (!pm || (!v && !active && !refused && seen === undefined)) return null;
+  const block = v ? adoptBlock(v, pm) : 'notComplete';
+  const total = !v
+    ? null
+    : v.status === 'COMPLETE' && v.value !== null
       ? t('fa_total', { v: fmtNum(v.value, locale) })
       : v.status === 'ALL_NA'
         ? t('fa_allNa')
@@ -77,44 +78,50 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
             ? t('fa_atLeast', { v: fmtNum(v.atLeast, locale) })
             : t('fa_partial');
   const use = async () => {
-    if (!flow || v.value === null) return;
+    if (!flow || !f || !v || v.value === null) return;
     setProblem(null);
-    const r = unresolved
-      ? await flow.retry()
-      : await flow.adopt(itemKey, { basis: f.basis, value: v.value });
-    if (r.kind === 'failed' && !flow.owned.current) setProblem(r.code);
+    const r = await flow.adopt(itemKey, { basis: f.basis, value: v.value });
+    if (r.kind === 'failed' && !flow.active) setProblem(r.code);
+  };
+  // The owned payload is resent as it is, whether or not the live total is adoptable now.
+  const retry = async () => {
+    if (!flow) return;
+    setProblem(null);
+    await flow.retry();
   };
   return (
     <div className="fline">
-      <button
-        type="button"
-        className="plain fline-h"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <span className={v.status === 'COMPLETE' ? 'ok-t' : 'warn-t'}>
-          {total}
-        </span>
-        {v.adopted && (
-          <span className="muted small">
-            {' '}
-            ·{' '}
-            {t('fa_adopted', {
-              v: fmtNum(v.adopted.value, locale),
-              t: fmtStamp(v.adopted.at, locale, pm.timeZone),
-            })}
+      {v && (
+        <button
+          type="button"
+          className="plain fline-h"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <span className={v.status === 'COMPLETE' ? 'ok-t' : 'warn-t'}>
+            {total}
           </span>
-        )}
-      </button>
+          {v.adopted && (
+            <span className="muted small">
+              {' '}
+              ·{' '}
+              {t('fa_adopted', {
+                v: fmtNum(v.adopted.value, locale),
+                t: fmtStamp(v.adopted.at, locale, pm.timeZone),
+              })}
+            </span>
+          )}
+        </button>
+      )}
       {seen !== undefined && (
         <div className="banner warn" role="alert">
           {t('fa_changed', {
             was: seen === null ? '—' : fmtNum(seen, locale),
-            now: v.value === null ? '—' : fmtNum(v.value, locale),
+            now: !v || v.value === null ? '—' : fmtNum(v.value, locale),
           })}
         </div>
       )}
-      {open && (
+      {open && v && (
         <ul className="plainlist small">
           {v.crews.map((c) => {
             const key = CREW_STATUS[c.status];
@@ -138,7 +145,7 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
           })}
         </ul>
       )}
-      {f.expectedCrewsChanged && (
+      {f?.expectedCrewsChanged && (
         <p className="muted small">{t('fa_crewsChanged')}</p>
       )}
       {problem && (
@@ -151,11 +158,11 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
           <ErrorText code={refused.code} write uncertain={refused.uncertain} />
         </div>
       )}
-      {owned && (
+      {active && (
         <div className="banner warn" role="alert">
           {unresolved ? (
             <>
-              {t('fa_adoptUnresolved', { v: fmtNum(owned.value, locale) })}{' '}
+              {t('fa_adoptUnresolved', { v: fmtNum(active.value, locale) })}{' '}
               <ErrorText code={flow?.owned.session.error ?? 'NETWORK'} write />
             </>
           ) : (
@@ -163,13 +170,13 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
           )}
         </div>
       )}
-      {flow && owned && unresolved && (
+      {flow && active && unresolved && (
         <span className="chips">
           <button
             type="button"
             className="pill"
             disabled={busy}
-            onClick={() => flow.discard()}
+            onClick={() => void flow.discard()}
           >
             {t('pm_giveUp')}
           </button>
@@ -177,23 +184,23 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
             type="button"
             className="pill accent"
             disabled={busy}
-            onClick={() => void use()}
+            onClick={() => void retry()}
           >
             {t('retry')}
           </button>
         </span>
       )}
-      {flow && !owned && block === null && (
+      {flow && v && !active && block === null && (
         <button
           type="button"
           className="pill accent"
-          disabled={busy || !flow.owned.canStart}
+          disabled={busy || !flow.canStart}
           onClick={() => void use()}
         >
           {t('adoptN', { n: fmtNum(v.value ?? '', locale) })}
         </button>
       )}
-      {block === 'notComplete' && pm.canWrite && (
+      {v && block === 'notComplete' && pm.canWrite && (
         <p className="muted small">{t('fa_notAdoptable')}</p>
       )}
     </div>

@@ -254,6 +254,42 @@ export function useDay(
     [key, read, settleAfter],
   );
 
+  /**
+   * Hold a day for a command owned outside it (a foreman adoption, C62): everything typed is
+   * saved first, then the day refuses edits (read-only) until `release`. A failed save frees
+   * it again and is settled like any other (a conflict reloads it and says so).
+   */
+  const hold = useCallback(
+    async (date: string): Promise<FlushOutcome> => {
+      const e = entryFor(projectId, date);
+      if (date === businessDate && timer.current) clearTimeout(timer.current);
+      e.busy = true;
+      rerender();
+      const outcome = await e.session.hold();
+      if (outcome !== 'ok') {
+        await settleAfter(e, outcome);
+        e.busy = false;
+        rerender();
+      }
+      return outcome;
+    },
+    [entryFor, projectId, businessDate, settleAfter],
+  );
+  /** Read a held day again (nothing was typed meanwhile) and free it for editing. */
+  const release = useCallback(
+    async (date: string) => {
+      const e = entryFor(projectId, date);
+      try {
+        await read(e, true);
+      } finally {
+        e.session.release();
+        e.busy = false;
+        rerender();
+      }
+    },
+    [entryFor, projectId, read],
+  );
+
   const e = entries.current.get(key);
   const s = e?.session;
   // Only a day read for this very date is shown; never another day's content.
@@ -280,6 +316,8 @@ export function useDay(
     error: e?.error ?? null,
     edit,
     flush,
+    hold,
+    release,
     /** Every day of this workspace with facts the server has not acknowledged. */
     unsaved: (): DraftStash[] =>
       [...entries.current.values()]

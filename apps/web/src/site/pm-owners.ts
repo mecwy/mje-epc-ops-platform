@@ -4,11 +4,13 @@ import { SiteSessions } from './site-sessions.js';
 
 /** The report day the adoption flows act on; the workspace binds its day handle to it. */
 export interface DayBinding {
-  flush: () => Promise<string>;
+  /** Save the day's typed facts, then hold it read-only (useDay `hold`). */
+  hold: (businessDate: string) => Promise<string>;
   current: (
     businessDate: string,
   ) => { foreman: ForemanDayView | null; version: number } | null;
-  reload: () => Promise<unknown>;
+  /** Read the day again and free it (useDay `release`). */
+  release: (businessDate: string) => Promise<unknown>;
 }
 
 /**
@@ -41,9 +43,9 @@ export class PmOwners {
           api: this.api,
           projectId: this.projectId,
           businessDate,
-          flush: () => this.day?.flush() ?? Promise.resolve('STALE'),
+          hold: () => this.day?.hold(businessDate) ?? Promise.resolve('STALE'),
           current: () => this.day?.current(businessDate) ?? null,
-          reload: () => this.day?.reload() ?? Promise.resolve(),
+          release: () => this.day?.release(businessDate) ?? Promise.resolve(),
         },
         () => this.site.changed(),
         this.newKey,

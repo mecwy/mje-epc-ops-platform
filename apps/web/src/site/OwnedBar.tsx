@@ -89,6 +89,19 @@ export function PmOwnedBar({
       retry: () => void s.entry.retry(),
       giveUp: () => s.entry.discard(),
     });
+  // The QR change's result once answered (a refusal after an unanswered attempt may still
+  // have been recorded): kept as a row, never dropped when the command settles.
+  else if (s.entry.error && s.entry.error !== 'STALE')
+    rows.push({
+      key: 'entry',
+      what: t('pm_actRotate'),
+      running: false,
+      unresolved: false,
+      code: s.entry.error,
+      uncertain: s.entry.errorUncertain,
+      retry: () => {},
+      giveUp: () => {},
+    });
   for (const [day, d] of s.proxyDays()) {
     const r = ownedRow(`proxy:${day}`, d.proxy, (a) =>
       t('pm_actProxy', { name: nameOf(a.personId), day: fmtDay(day, locale) }),
@@ -96,10 +109,24 @@ export function PmOwnedBar({
     if (r) rows.push(r);
   }
   for (const [day, flow] of owners.adoptDays()) {
-    const r = ownedRow(`adopt:${day}`, flow.owned, (a) =>
-      t('pm_actAdopt', { item: itemLabel(a.item), day: fmtDay(day, locale) }),
-    );
-    if (r) rows.push(r);
+    const o = flow.owned;
+    const a = flow.active ?? (o.refusal ? o.refused : null);
+    if (!a) continue;
+    // Retry and Give up through the flow itself: one settlement with the writer's line (the
+    // day is read again, "you saw X, now Y" is kept, the day is freed).
+    rows.push({
+      key: `adopt:${day}`,
+      what: t('pm_actAdopt', {
+        item: itemLabel(a.item),
+        day: fmtDay(day, locale),
+      }),
+      running: flow.active !== null && (o.session.busy || !o.current),
+      unresolved: o.unresolved !== null,
+      code: o.current ? o.session.error : flow.active ? null : o.refusal,
+      uncertain: o.current ? true : o.refusalUncertain,
+      retry: () => void flow.retry(),
+      giveUp: () => void flow.discard(),
+    });
   }
   if (rows.length === 0) return null;
   return (

@@ -14,7 +14,7 @@ import { FlagChips, KindText } from '../field/CheckInCard.js';
 import { fmtDay, fmtTime, siteToday } from '../report/format.js';
 import { locate } from '../report/geo.js';
 import { checkProxy, membersOfDay, proxyDays } from './proxy-rules.js';
-import type { SiteSessions } from './site-sessions.js';
+import { startProxy, type SiteSessions } from './site-sessions.js';
 import { useSessions } from './use-sessions.js';
 
 const SOURCE_LABEL = {
@@ -98,7 +98,9 @@ export function CheckInsCard({
         </ul>
       )}
       <button type="button" className="ghost" onClick={() => setProxying(true)}>
-        {day.proxy.unresolved ? t('ci_proxyUnresolved') : t('ci_proxy')}
+        {sessions.ownedProxy()?.proxy.unresolved
+          ? t('ci_proxyUnresolved')
+          : t('ci_proxy')}
       </button>
       {proxying && (
         <ProxySheet
@@ -168,7 +170,8 @@ export function ProxySheet(props: {
   onClose: () => void;
 }) {
   const { t, locale } = useI18n();
-  const cmds = props.sessions.checkIns(props.date).proxy;
+  // The owner of the day the proxy is for (its businessDate), whatever page date is open.
+  const cmds = props.sessions.proxySheetOwner(props.date).proxy;
   const sent = cmds.current;
   if (!sent)
     return (
@@ -272,7 +275,8 @@ function ProxyEdit({
   const today = siteToday(tz);
   const days = sessions.settings.data?.settings.pmProxyDays ?? 7;
   const allowed = proxyDays(today, days);
-  const cmds = sessions.checkIns(date).proxy;
+  // A new proxy may start only when none is owned, for any day.
+  const owned = sessions.ownedProxy();
   const [businessDate, setDate] = useState(
     allowed.includes(date) ? date : today,
   );
@@ -291,7 +295,8 @@ function ProxyEdit({
     void sessions.roster.load();
     if (!sessions.settings.data) void sessions.settings.load();
   }, [sessions]);
-  const locked = !cmds.canStart;
+  const locked =
+    owned !== null || !sessions.checkIns(businessDate).proxy.canStart;
   const people = sessions.roster.data
     ? membersOfDay(sessions.roster.data, businessDate, tz)
     : [];
@@ -302,7 +307,7 @@ function ProxyEdit({
     const r = await locate(navigator.geolocation);
     setLocating(false);
     // A fix that arrives once a proxy is owned is dropped (this form is not shown then).
-    if (cmds.owned) return;
+    if (sessions.ownedProxy()) return;
     if (!r.fix) {
       const key =
         r.reason === 'denied'
@@ -330,11 +335,10 @@ function ProxyEdit({
       },
     );
     if (!check.ok) return setProblem(check.problem);
-    const r = await cmds.run(check.command, (_d, key) => {
-      // Fixed once: a Retry under this key sends the same body (AGENTS.md).
-      const command = { ...check.command, clientMutationId: key };
-      return { key, send: () => api.pmProxy(command) };
-    });
+    // Owned by the day it is for (startProxy): opening that day shows it.
+    const started = startProxy(sessions, api, check.command);
+    if (!started) return;
+    const r = await started;
     // A lost answer: the sheet now shows the owned payload (ProxySheet).
     if (r.kind === 'ok') onClose();
     else if (r.kind === 'rejected')
@@ -353,7 +357,7 @@ function ProxyEdit({
   return (
     <Sheet
       title={t('ci_proxy')}
-      onClose={() => !cmds.session.busy && onClose()}
+      onClose={() => !owned?.proxy.session.busy && onClose()}
     >
       <label className="field">
         <span>{t('ci_date', { n: days })}</span>

@@ -36,6 +36,8 @@ export class DraftSession {
   private generation = 0;
   /** True while an action (submit, correction, no-work) runs: edits are refused. */
   locked = false;
+  /** True while a command owned outside the day (a foreman adoption) holds it: edits refused. */
+  private holding = false;
 
   constructor(
     readonly projectId: string,
@@ -58,7 +60,7 @@ export class DraftSession {
   }
   /** Returns false (and changes nothing) while an action holds the session. */
   edit(facts: DayFactsDto): boolean {
-    if (this.locked) return false;
+    if (this.locked || this.holding) return false;
     this.facts = facts;
     this.generation++;
     this.blocked = false;
@@ -87,6 +89,27 @@ export class DraftSession {
     this.pending = null;
     this.blocked = false;
     this.set('idle');
+  }
+
+  /** Whether edits are refused now (an action or a hold). */
+  get frozen(): boolean {
+    return this.locked || this.holding;
+  }
+  /**
+   * Hold the day for a command owned outside it (a foreman adoption, C62): edits are refused
+   * from this moment, then everything typed is saved. 'ok' leaves the day held until
+   * `release()`; anything else frees it at once.
+   */
+  async hold(): Promise<FlushOutcome> {
+    this.holding = true;
+    this.notify();
+    const outcome = await this.settle();
+    if (outcome !== 'ok') this.release();
+    return outcome;
+  }
+  release() {
+    this.holding = false;
+    this.notify();
   }
 
   flush(): Promise<FlushOutcome> {
