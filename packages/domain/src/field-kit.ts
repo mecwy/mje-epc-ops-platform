@@ -40,7 +40,13 @@ export type FieldErrorCode =
   | 'ROSTER_TIME_INVALID'
   | 'CREW_ENDED'
   | 'CREW_NOT_EMPTY'
-  | 'CREW_CODE_TAKEN';
+  | 'CREW_CODE_TAKEN'
+  // foreman reports and adoption (A6c)
+  | 'REVISION_CONFLICT'
+  | 'NUMBER_INVALID'
+  | 'ITEM_NOT_FOUND'
+  | 'TOO_LATE'
+  | 'TIME_ORDER_INVALID';
 export class FieldError extends Error {
   constructor(public readonly code: FieldErrorCode) {
     super(code);

@@ -17,6 +17,7 @@ import {
   AlphaStore,
   FieldError,
   FieldStore,
+  ForemanStore,
   IssueStore,
   PhotoStore,
   ReportError,
@@ -29,6 +30,10 @@ import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
 import { FieldController, FieldTokenGuard } from './field.controller.js';
 import { FieldAdminController } from './field-admin.controller.js';
+import {
+  ForemanAdoptController,
+  ForemanFieldController,
+} from './foreman.controller.js';
 import {
   TokenVerifier,
   type TokenConfiguration,
@@ -56,6 +61,7 @@ const FIELD_STATUS: Partial<Record<string, number>> = {
   NOT_FOUND: 404,
   ENTRY_CODE_INVALID: 404,
   PERSON_NOT_ROSTERED: 404,
+  ITEM_NOT_FOUND: 404,
   RATE_LIMITED: 429,
   RETRY: 503,
 };
@@ -134,6 +140,8 @@ export interface AlphaRuntime {
   photoStore?: PhotoStore;
   /** Field roster, devices and entry (A6a); served only together with the report slice. */
   fieldStore?: FieldStore;
+  /** Foreman quantity reports (A6c); served only together with the field slice. */
+  foremanStore?: ForemanStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
@@ -162,6 +170,9 @@ export async function createApp(alpha?: AlphaRuntime) {
       ...(alpha?.reportStore && alpha.fieldStore
         ? [FieldController, FieldAdminController]
         : []),
+      ...(alpha?.reportStore && alpha.fieldStore && alpha.foremanStore
+        ? [ForemanFieldController, ForemanAdoptController]
+        : []),
     ],
     providers: alpha
       ? [
@@ -181,6 +192,9 @@ export async function createApp(alpha?: AlphaRuntime) {
                 { provide: FieldStore, useValue: alpha.fieldStore },
                 FieldTokenGuard,
               ]
+            : []),
+          ...(alpha.reportStore && alpha.fieldStore && alpha.foremanStore
+            ? [{ provide: ForemanStore, useValue: alpha.foremanStore }]
             : []),
         ]
       : [],

@@ -384,6 +384,7 @@ model Person {
   FieldPersonConfirm_person             FieldPersonConfirm[]    @relation("FieldPersonConfirm_person")
   FieldDeviceEvent_person               FieldDeviceEvent[]      @relation("FieldDeviceEvent_person")
   FieldDeviceEvent_actorPerson          FieldDeviceEvent[]      @relation("FieldDeviceEvent_actorPerson")
+  ForemanReportRevision_byPerson        ForemanReportRevision[] @relation("ForemanReportRevision_byPerson")
 
   @@unique([orgId, id])
 }
@@ -419,6 +420,7 @@ model LoginAccount {
   entryCodeRetires     FieldEntryCode[]   @relation("FieldEntryCode_retiredBy")
   deviceConfirms       FieldDevice[]      @relation("FieldDevice_confirmedByAccount")
   fieldDeviceEvents    FieldDeviceEvent[] @relation("FieldDeviceEvent_actorAccount")
+  foremanAdoptions     ForemanAdoption[]  @relation("ForemanAdoption_byAccount")
 
   @@unique([orgId, id])
   @@unique([orgId, entraTenantId, entraObjectId])
@@ -1237,22 +1239,23 @@ model PlanDraft {
 }
 
 model ReportItem {
-  id                String       @id @db.Uuid
-  orgId             String       @db.Uuid
-  org               Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  projectId         String       @db.Uuid
-  project           Project      @relation("ReportItem_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  id                String            @id @db.Uuid
+  orgId             String            @db.Uuid
+  org               Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId         String            @db.Uuid
+  project           Project           @relation("ReportItem_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   /// 'work' | 'machinery' | 'material' (CHECK constraint in SQL)
   kind              String
   key               String
   label             String
-  unit              String       @default("")
-  designQty         String       @default("")
-  openingCumulative String       @default("")
-  sortOrder         Int          @default(0)
-  active            Boolean      @default(true)
-  updatedAt         DateTime     @default(now()) @db.Timestamptz(6)
-  updatedBy         String       @db.Uuid
+  unit              String            @default("")
+  designQty         String            @default("")
+  openingCumulative String            @default("")
+  sortOrder         Int               @default(0)
+  active            Boolean           @default(true)
+  updatedAt         DateTime          @default(now()) @db.Timestamptz(6)
+  updatedBy         String            @db.Uuid
+  foremanAdoptions  ForemanAdoption[] @relation("ForemanAdoption_item")
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, kind, key])
@@ -1260,19 +1263,20 @@ model ReportItem {
 
 // ---------- A6a field roster, devices and entry (triggers, partial indexes, RLS in SQL) ----------
 model Crew {
-  id          String           @id @db.Uuid
-  orgId       String           @db.Uuid
-  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  projectId   String           @db.Uuid
-  project     Project          @relation("Crew_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  code        String
-  name        String
-  activeFrom  DateTime         @default(now()) @db.Timestamptz(6)
+  id             String           @id @db.Uuid
+  orgId          String           @db.Uuid
+  org            Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId      String           @db.Uuid
+  project        Project          @relation("Crew_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  code           String
+  name           String
+  activeFrom     DateTime         @default(now()) @db.Timestamptz(6)
   /// Set once (trigger); the crew is never deleted.
-  activeUntil DateTime?        @db.Timestamptz(6)
-  createdBy   String           @db.Uuid
-  creator     LoginAccount     @relation("Crew_createdBy", fields: [orgId, createdBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  assignments CrewAssignment[] @relation("CrewAssignment_crew")
+  activeUntil    DateTime?        @db.Timestamptz(6)
+  createdBy      String           @db.Uuid
+  creator        LoginAccount     @relation("Crew_createdBy", fields: [orgId, createdBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  assignments    CrewAssignment[] @relation("CrewAssignment_crew")
+  foremanReports ForemanReport[]  @relation("ForemanReport_crew")
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, id])
@@ -1372,6 +1376,7 @@ model FieldDevice {
   challenges           FieldConfirmChallenge[] @relation("FieldConfirmChallenge_device")
   events               FieldDeviceEvent[]      @relation("FieldDeviceEvent_device")
   actorEvents          FieldDeviceEvent[]      @relation("FieldDeviceEvent_actorDevice")
+  foremanRevisions     ForemanReportRevision[] @relation("ForemanReportRevision_byDevice")
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, id])
@@ -1461,4 +1466,64 @@ model FieldThrottle {
 model FieldThrottleSalt {
   day  DateTime @id @db.Date
   salt String
+}
+
+// ---------- A6c foreman quantity reports and adoption (triggers, CHECKs, RLS in SQL) ----------
+/// One header per (project, business day, crew); currentN moves forward by one (trigger).
+model ForemanReport {
+  id           String                  @id @db.Uuid
+  orgId        String                  @db.Uuid
+  projectId    String                  @db.Uuid
+  crewId       String                  @db.Uuid
+  crew         Crew                    @relation("ForemanReport_crew", fields: [orgId, projectId, crewId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  businessDate DateTime                @db.Date
+  currentN     Int
+  createdAt    DateTime                @default(now()) @db.Timestamptz(6)
+  revisions    ForemanReportRevision[] @relation("ForemanReportRevision_report")
+
+  @@unique([orgId, projectId, id])
+  @@unique([orgId, projectId, businessDate, crewId])
+}
+
+/// A foreman's claim of quantities (insert-only); rows [{itemKey, qty}], no hours.
+model ForemanReportRevision {
+  id           String        @id @db.Uuid
+  orgId        String        @db.Uuid
+  projectId    String        @db.Uuid
+  reportId     String        @db.Uuid
+  report       ForemanReport @relation("ForemanReportRevision_report", fields: [orgId, projectId, reportId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  n            Int
+  rows         Json
+  note         String
+  byPersonId   String        @db.Uuid
+  byPerson     Person        @relation("ForemanReportRevision_byPerson", fields: [orgId, byPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  byDeviceId   String        @db.Uuid
+  byDevice     FieldDevice   @relation("ForemanReportRevision_byDevice", fields: [orgId, projectId, byDeviceId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  occurredAt   DateTime      @db.Timestamptz(6)
+  receivedAt   DateTime      @db.Timestamptz(6)
+  recordedAt   DateTime      @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+  siteTimezone String
+  daySeq       BigInt
+
+  @@unique([orgId, reportId, n])
+}
+
+/// The PM's explicit adoption of a COMPLETE foreman total, with its exact basis (append-only).
+model ForemanAdoption {
+  id           String       @id @db.Uuid
+  orgId        String       @db.Uuid
+  projectId    String       @db.Uuid
+  businessDate DateTime     @db.Date
+  /// Always 'work' (CHECK); part of the same-project item FK.
+  itemKind     String       @default("work")
+  itemKey      String
+  item         ReportItem   @relation("ForemanAdoption_item", fields: [orgId, projectId, itemKind, itemKey], references: [orgId, projectId, kind, key], onDelete: Restrict, onUpdate: NoAction)
+  value        Decimal      @db.Decimal(20, 6)
+  basis        Json
+  daySeq       BigInt
+  byAccountId  String       @db.Uuid
+  byAccount    LoginAccount @relation("ForemanAdoption_byAccount", fields: [orgId, byAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdAt    DateTime     @default(now()) @db.Timestamptz(6)
+
+  @@index([orgId, projectId, businessDate], map: "ForemanAdoption_day_idx")
 }
