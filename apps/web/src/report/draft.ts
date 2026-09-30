@@ -103,9 +103,15 @@ export class DraftSession {
   async hold(): Promise<FlushOutcome> {
     this.holding = true;
     this.notify();
-    const outcome = await this.settle();
-    if (outcome !== 'ok') this.release();
-    return outcome;
+    try {
+      const outcome = await this.settle();
+      if (outcome !== 'ok') this.release();
+      return outcome;
+    } catch (err) {
+      // Nothing may stay held by a pre-save that threw.
+      this.release();
+      throw err;
+    }
   }
   release() {
     this.holding = false;

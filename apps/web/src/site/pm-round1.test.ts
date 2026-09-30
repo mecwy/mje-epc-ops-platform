@@ -6,23 +6,17 @@ import {
 } from 'react';
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type {
-  DayFactsDto,
-  FieldSettingsDto,
-  ForemanAdoptCommand,
-  RosterDto,
-  SaveFactsCommand,
-} from '@mje/contracts';
+import type { FieldSettingsDto, RosterDto } from '@mje/contracts';
 import { ApiError, type ForemanDayView, type Project } from '../api.js';
 import { I18nProvider } from '../i18n.js';
-import { DraftSession } from '../report/draft.js';
-import { AdoptFlow } from '../report/foreman-adopt.js';
+import type { AdoptFlow } from '../report/foreman-adopt.js';
 import {
   ForemanLine,
   PmFieldContext,
   type PmField,
 } from '../report/ForemanLine.js';
 import { setFact } from '../report/model.js';
+import { DAY, P, dayServer, open, view, workspace } from './pm-day.fixture.js';
 import { ProxySheet } from './CheckIns.js';
 import { PmOwnedBar } from './OwnedBar.js';
 import * as Sessions from './site-sessions.js';
@@ -35,8 +29,6 @@ import { SiteSessions } from './site-sessions.js';
  */
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
-const P = '11111111-1111-4111-8111-111111111111';
-const DAY = '2026-10-02';
 const project: Project = {
   id: P,
   name: 'TEST',
@@ -97,172 +89,6 @@ const click = async (
   await tick();
 };
 
-const view = (
-  value: string | null,
-  status: 'COMPLETE' | 'PARTIAL' = 'COMPLETE',
-  crews = true,
-): ForemanDayView => ({
-  rosterVersion: 1,
-  expectedCrews: crews
-    ? [{ crewId: 'c', code: 'A', name: 'TEST A', hasForeman: true }]
-    : [],
-  revisions: [],
-  items: crews
-    ? {
-        support: {
-          status,
-          value,
-          atLeast: null,
-          crews: { c: { status: 'VALUE', qty: value, expected: true } },
-        },
-      }
-    : {},
-  adoptions: [],
-  basis: {
-    rosterVersion: 1,
-    expectedCrews: crews ? ['c'] : [],
-    revisions: [{ crewId: 'c', n: 1 }],
-  },
-  expectedCrewsChanged: null,
-});
-
-const blank = (): DayFactsDto => ({
-  weather: '',
-  temperature: '',
-  qty: {},
-  cumulative: {},
-  narrative: { construction: '', quality: '', safety: '' },
-  people: {},
-  presence: {},
-  machinery: {},
-  materials: {},
-  milestones: {},
-  noWork: null,
-  updated: {},
-});
-
-type Gate = { hold: boolean; waiting: (() => void)[] };
-const gate = (): Gate => ({ hold: false, waiting: [] });
-const pass = async (g: Gate) => {
-  if (g.hold) await new Promise<void>((r) => g.waiting.push(r));
-};
-const open = (g: Gate) => {
-  g.hold = false;
-  g.waiting.splice(0).forEach((r) => r());
-};
-
-/**
- * A fake report server with one day: saves and adoptions check the version and bump it; an
- * adoption sets the item's quantity. Saves, adoptions and reads can be held (delayed).
- */
-function dayServer() {
-  let version = 1;
-  let facts = blank();
-  const save = gate();
-  const adopt = gate();
-  const read = gate();
-  const adoptPlan: (ApiError | 'lost')[] = [];
-  const adoptLog: string[] = [];
-  let reads = 0;
-  return {
-    save,
-    adopt,
-    read,
-    adoptPlan,
-    adoptLog,
-    reads: () => reads,
-    facts: () => facts,
-    version: () => version,
-    saveFacts: async (c: SaveFactsCommand) => {
-      await pass(save);
-      if (c.expectedVersion !== version)
-        throw new ApiError('VERSION_CONFLICT', 409);
-      facts = c.facts;
-      version++;
-      return { businessDate: DAY, version, state: 'draft' } as never;
-    },
-    adoptForeman: async (c: ForemanAdoptCommand) => {
-      adoptLog.push(JSON.stringify(c));
-      await pass(adopt);
-      const a = adoptPlan.shift();
-      if (a instanceof ApiError) throw a;
-      if (c.expectedVersion !== version) {
-        if (a === 'lost') throw new ApiError('NETWORK', 0);
-        throw new ApiError('VERSION_CONFLICT', 409);
-      }
-      facts = { ...facts, qty: { ...facts.qty, [c.item]: '10' } };
-      version++;
-      if (a === 'lost') throw new ApiError('NETWORK', 0);
-      return {};
-    },
-    readDay: async () => {
-      reads++;
-      await pass(read);
-      return { version, facts };
-    },
-  };
-}
-
-/**
- * The day as the workspace drives it: a DraftSession (the real one), the typing path of
- * useDay (`edit` refused while the day is held or busy), its autosave (flush; a conflict
- * reloads, as useDay's settleAfter does), and the hold / release useDay gives the adoption.
- */
-function workspaceDay(sv: ReturnType<typeof dayServer>) {
-  const s = new DraftSession(P, DAY, 0, blank(), sv.saveFacts, () => {});
-  let busy = false;
-  let conflicts = 0;
-  const reload = async (replace: boolean) => {
-    const g = s.editGeneration;
-    const d = await sv.readDay();
-    if (replace) s.reset(d.version, d.facts);
-    else s.adopt(d, g);
-  };
-  const autosave = async () => {
-    const o = await s.flush();
-    if (o === 'conflict') {
-      conflicts++;
-      await reload(true);
-    }
-    return o;
-  };
-  const held = s as unknown as {
-    hold?: () => Promise<string>;
-    release?: () => void;
-  };
-  return {
-    s,
-    conflicts: () => conflicts,
-    type: (workers: string) =>
-      busy ? false : s.edit(setFact(s.facts, 'people.workers', workers)),
-    autosave,
-    ctx: {
-      api: { adoptForeman: sv.adoptForeman },
-      projectId: P,
-      businessDate: DAY,
-      current: () => ({ foreman: view('10'), version: s.version }),
-      // useDay.hold / release (this change) …
-      hold: async () => {
-        busy = true;
-        const o = held.hold ? await held.hold() : await s.settle();
-        if (o !== 'ok') busy = false;
-        return o;
-      },
-      release: async () => {
-        try {
-          await reload(true);
-        } finally {
-          held.release?.();
-          busy = false;
-        }
-      },
-      // … and useDay.flush / reload, which the adoption called before it.
-      flush: () => autosave(),
-      reload: () => reload(false),
-    },
-  };
-}
-
 describe("#40 round 1 P1: an adoption and the day's typing are one lifecycle (no typed value lost)", () => {
   const cases = [
     { stage: 'while the typed facts are being saved', outcome: 'ok' },
@@ -278,10 +104,10 @@ describe("#40 round 1 P1: an adoption and the day's typing are one lifecycle (no
   for (const c of cases)
     it(`typed 7 ${c.stage} · ${c.outcome}`, async () => {
       const sv = dayServer();
-      const day = workspaceDay(sv);
-      day.s.reset(sv.version(), sv.facts());
-      expect(day.type('5')).toBe(true); // typed before "Use 10", not yet saved
-      const flow = new AdoptFlow(day.ctx as never, () => {});
+      const w = workspace(sv);
+      await w.load();
+      expect(w.type('5')).toBe(true); // typed before "Use 10", not yet saved
+      const flow = w.flow();
       if (c.stage === 'while the typed facts are being saved')
         sv.save.hold = true;
       if (c.stage === 'while the adoption is in flight') sv.adopt.hold = true;
@@ -299,8 +125,9 @@ describe("#40 round 1 P1: an adoption and the day's typing are one lifecycle (no
       if (c.stage === 'while the adoption is unresolved') await use;
       // The PM types 7 at this stage; a stashed draft (sign-in recovery, reconcileDraft) is
       // applied to the session directly at the same moment.
-      const accepted = day.type('7');
-      const restored = day.s.edit(setFact(day.s.facts, 'people.helpers', '3'));
+      const accepted = w.type('7');
+      const s = w.entry().session;
+      const restored = s.edit(setFact(s.facts, 'people.helpers', '3'));
       // The stage ends; the adoption finishes; autosave runs as the page would.
       open(sv.save);
       open(sv.adopt);
@@ -309,19 +136,19 @@ describe("#40 round 1 P1: an adoption and the day's typing are one lifecycle (no
       else if (c.outcome === 'retry ok') await flow.retry();
       else await flow.discard();
       await tick();
-      await day.autosave();
+      await w.autosave();
       // Never lost silently: an accepted 7 reaches the server. It must not be accepted while
       // the day is held; afterwards typing works again and is saved.
       if (accepted) expect(sv.facts().people.workers).toBe('7');
       if (restored) expect(sv.facts().people.helpers).toBe('3');
       expect(accepted).toBe(false);
       expect(restored).toBe(false);
-      expect(day.conflicts()).toBe(0);
+      expect(w.conflicts()).toBe(0);
       expect(sv.facts().people.workers).toBe('5');
       if (c.outcome === 'ok' || c.outcome === 'retry ok')
         expect(sv.facts().qty.support).toBe('10');
-      expect(day.type('7')).toBe(true);
-      await day.autosave();
+      expect(w.type('7')).toBe(true);
+      await w.autosave();
       expect(sv.facts().people.workers).toBe('7');
     });
 });
@@ -341,9 +168,9 @@ describe('#40 round 1 P2: an unresolved adoption is retried whatever the live to
   for (const now of ['PARTIAL (no value)', 'expected crews gone'] as const)
     it(`live total ${now}: the owned payload is shown and Retry resends it`, async () => {
       const sv = dayServer();
-      const day = workspaceDay(sv);
-      day.s.reset(sv.version(), sv.facts());
-      const flow = new AdoptFlow(day.ctx as never, () => {});
+      const w = workspace(sv);
+      await w.load();
+      const flow = w.flow();
       sv.adoptPlan.push('lost');
       await flow.adopt('support', { basis: view('10').basis, value: '10' });
       const live =
@@ -364,7 +191,9 @@ describe('#40 round 1 P2: an unresolved adoption is retried whatever the live to
       await click(buttons, /^Retry$/);
       await tick();
       expect(sv.adoptLog).toHaveLength(2);
-      expect(sv.adoptLog[1]).toBe(sv.adoptLog[0]);
+      expect(JSON.stringify(sv.adoptLog[1])).toBe(
+        JSON.stringify(sv.adoptLog[0]),
+      );
     });
 });
 
@@ -423,9 +252,9 @@ describe('#40 round 1 P3: the reader bar settles an adoption through the flow', 
   for (const answer of ['FOREMAN_TOTAL_CHANGED', 'give up'] as const)
     it(`bar Retry → ${answer}: the flow's own settlement (day read again, "you saw X")`, async () => {
       const sv = dayServer();
-      const day = workspaceDay(sv);
-      day.s.reset(sv.version(), sv.facts());
-      const flow = new AdoptFlow(day.ctx as never, () => {});
+      const w = workspace(sv);
+      await w.load();
+      const flow = w.flow();
       sv.adoptPlan.push('lost');
       await flow.adopt('support', { basis: view('10').basis, value: '10' });
       const pm = pmSessions();

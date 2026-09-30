@@ -31,7 +31,7 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
-import { PmOwnerRegistry } from './site/pm-owners.js';
+import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/ForemanLine.js';
@@ -237,20 +237,10 @@ function Workspace({
   useEffect(() => {
     if (canWrite) void siteSessions.checkIns(date).list.load();
   }, [canWrite, siteSessions, date]);
-  // The PM's explicit adoption of foreman totals, one flow per day (PmOwners): the flows act
-  // on this workspace's day handle, bound here on every render.
-  const latestDay = useRef(h);
-  latestDay.current = h;
-  pm.day = {
-    hold: (d) => latestDay.current.hold(d),
-    current: (d) => {
-      const day = latestDay.current.day;
-      return day && day.businessDate === d
-        ? { foreman: day.foreman ?? null, version: day.version }
-        : null;
-    },
-    release: (d) => latestDay.current.release(d),
-  };
+  // The PM's explicit adoption of foreman totals, one flow per day (PmOwners). Its day binding
+  // is made once per project against the workspace's day store: every lock and read goes to
+  // that project's own day entry, never to whatever day the page shows later.
+  pm.day ??= pmDayBinding(h.store, project.id);
   const adoptFor = (d: string) => pm.adoptFor(d);
   const pmField: PmField | null =
     canWrite && h.day
@@ -325,6 +315,11 @@ function Workspace({
     } catch (e) {
       // A conflict has already reloaded the day and told the user.
       if (e instanceof ActionAborted && e.outcome === 'conflict') return false;
+      // Another command holds the day's lock (an adoption, say): nothing was sent.
+      if (e instanceof ActionAborted && e.outcome === 'busy') {
+        say(t('dayBusy'));
+        return false;
+      }
       const code =
         e instanceof ActionAborted
           ? e.outcome === 'invalid'
@@ -718,6 +713,19 @@ function Workspace({
             </button>
           </header>
           <main className={`page view-${view}`}>
+            {h.stale && (
+              // A change was saved but the day could not be read again: editing waits for it.
+              <div className="banner warn" role="alert">
+                {t('dayRereadFailed')}{' '}
+                <button
+                  type="button"
+                  className="textbtn"
+                  onClick={() => void h.reloadLocked()}
+                >
+                  {t('pm_reload')}
+                </button>
+              </div>
+            )}
             {!canWrite && (
               // Write access went away while a PM attempt was owned: its Retry / Give up stay.
               <PmOwnedBar

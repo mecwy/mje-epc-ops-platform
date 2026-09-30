@@ -102,10 +102,11 @@ function harness(initial: ForemanDayView) {
       },
       projectId: 'p',
       businessDate: '2026-10-02',
-      hold: async () => flushOutcome,
+      hold: async () => ({ outcome: flushOutcome, version: day.version }),
       current: () => day,
       release: async () => {
         reloads++;
+        return true;
       },
     },
     () => {},

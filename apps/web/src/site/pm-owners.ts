@@ -1,16 +1,39 @@
 import type { ForemanDayView, ReportApi } from '../api.js';
+import type { DayStore } from '../report/day-store.js';
 import { AdoptFlow } from '../report/foreman-adopt.js';
 import { SiteSessions } from './site-sessions.js';
 
-/** The report day the adoption flows act on; the workspace binds its day handle to it. */
+/** A project's report days as the adoption flows act on them (pmDayBinding). */
 export interface DayBinding {
-  /** Save the day's typed facts, then hold it read-only (useDay `hold`). */
-  hold: (businessDate: string) => Promise<string>;
+  /** Take the day's lock for `owner` and save what was typed (DayStore.hold). */
+  hold: (
+    businessDate: string,
+    owner: string,
+  ) => Promise<{ outcome: string; version: number }>;
   current: (
     businessDate: string,
   ) => { foreman: ForemanDayView | null; version: number } | null;
-  /** Read the day again and free it (useDay `release`). */
-  release: (businessDate: string) => Promise<unknown>;
+  /** Release `owner`'s lock after a landed read (DayStore.release). */
+  release: (businessDate: string, owner: string) => Promise<boolean>;
+}
+
+/**
+ * The binding of one project's days in the workspace's DayStore: every call goes to that
+ * project's own day entry (captured here), never to whatever day the page shows now, so
+ * switching projects or dates cannot release or read another day.
+ */
+export function pmDayBinding(store: DayStore, projectId: string): DayBinding {
+  return {
+    hold: (date, owner) => store.hold(store.entry(projectId, date), owner),
+    current: (date) => {
+      const e = store.entry(projectId, date);
+      return e.day && e.day.businessDate === date
+        ? { foreman: e.day.foreman ?? null, version: e.session.version }
+        : null;
+    },
+    release: (date, owner) =>
+      store.release(store.entry(projectId, date), owner),
+  };
 }
 
 /**
@@ -43,9 +66,12 @@ export class PmOwners {
           api: this.api,
           projectId: this.projectId,
           businessDate,
-          hold: () => this.day?.hold(businessDate) ?? Promise.resolve('STALE'),
+          hold: (owner) =>
+            this.day?.hold(businessDate, owner) ??
+            Promise.resolve({ outcome: 'failed', version: 0 }),
           current: () => this.day?.current(businessDate) ?? null,
-          release: () => this.day?.release(businessDate) ?? Promise.resolve(),
+          release: (owner) =>
+            this.day?.release(businessDate, owner) ?? Promise.resolve(false),
         },
         () => this.site.changed(),
         this.newKey,

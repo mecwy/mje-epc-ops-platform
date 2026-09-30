@@ -398,6 +398,18 @@ export const MESSAGES = {
     'Datum je pre poslednjeg zatvaranja ili ponovnog otvaranja',
     'La fecha es anterior al último cierre o reapertura',
   ],
+  dayBusy: [
+    '这一天正有另一项操作未完成（例如采用工头合计），这次没有发送。请先完成或放弃那一项。',
+    'Another change to this day is still open (a foreman total being used, say); nothing was sent. Finish or give that one up first.',
+    'Za ovaj dan je druga izmena još otvorena (npr. korišćenje zbira poslovođa); ništa nije poslato. Prvo je završite ili odustanite od nje.',
+    'Hay otro cambio de este día aún abierto (por ejemplo, el uso del total de encargados); no se envió nada. Termínalo o descártalo primero.',
+  ],
+  dayRereadFailed: [
+    '修改已保存，但这一天没能重新读取。重新读取成功前不能编辑。',
+    'The change was saved, but the day could not be read again. Editing waits until it has been read.',
+    'Izmena je sačuvana, ali dan nije mogao ponovo da se učita. Izmene čekaju dok se ne učita.',
+    'El cambio se guardó, pero el día no se pudo volver a leer. La edición espera hasta que se lea.',
+  ],
   demoCheckin: [
     '演示：工人签到',
     'Demo: worker check-in',

@@ -97,16 +97,20 @@ export interface AdoptContext {
   projectId: string;
   businessDate: string;
   /**
-   * Hold the day for the adoption (useDay `hold`): everything typed is saved first, then the
-   * day's facts are read-only until `release`. Anything but 'ok' stops the adoption (the day
-   * is then free again).
+   * Take the day's one mutation lock for `owner` (DayStore.hold via pmDayBinding): everything
+   * typed is saved first; 'ok' returns the version of that save (the held session's own),
+   * which the adoption sends. Anything else ('busy' included) stops the adoption.
    */
-  hold: () => Promise<string>;
-  /** The newest foreman view and day version (after the hold's save). */
+  hold: (owner: string) => Promise<{ outcome: string; version: number }>;
+  /** The newest foreman view of the day (and its session's version). */
   current: () => { foreman: ForemanDayView | null; version: number } | null;
-  /** Read the day again (facts, version, foreman view) and free it for editing. */
-  release: () => Promise<unknown>;
+  /**
+   * Release the lock held by `owner`: read the day again and free it once that read has
+   * landed. False while the read fails (the day stays locked and offers a reload).
+   */
+  release: (owner: string) => Promise<boolean>;
 }
+let adoptTokens = 0;
 export type AdoptResult =
   | Outcome<unknown>
   /** The total or its basis changed before sending: shown, nothing sent. */
@@ -159,13 +163,22 @@ export class AdoptFlow {
     if (!this.canStart) return { kind: 'failed', code: 'BUSY' };
     // Owned from the first moment: the save of typed facts and the hold are part of it.
     this.setPhase({ item, value: shown.value });
+    const token = `adopt:${this.ctx.projectId}:${this.ctx.businessDate}:${++adoptTokens}`;
+    let held = false;
     try {
-      const held = await this.ctx.hold();
-      if (held !== 'ok')
+      const h = await this.ctx.hold(token);
+      if (h.outcome !== 'ok')
         return {
           kind: 'failed',
-          code: held === 'conflict' ? 'VERSION_CONFLICT' : 'STALE',
+          code:
+            h.outcome === 'busy'
+              ? 'BUSY'
+              : h.outcome === 'conflict'
+                ? 'VERSION_CONFLICT'
+                : 'STALE',
         };
+      held = true;
+      this.token = token;
       const now = this.ctx.current();
       const live = now?.foreman?.items[item];
       if (
@@ -175,13 +188,28 @@ export class AdoptFlow {
         !sameBasis(now.foreman.basis, shown.basis)
       ) {
         this.changed = { ...this.changed, [item]: shown.value };
-        await this.ctx.release();
+        held = false;
+        await this.releaseDay();
         return { kind: 'changed' };
       }
-      return await this.send(item, shown, now.version);
+      // The version of the held session's own save (typed facts saved just now included).
+      const r = await this.send(item, shown, h.version);
+      held = false;
+      return r;
+    } catch (err) {
+      // A throw anywhere after the hold (building the command, say) frees the day again.
+      if (held) await this.releaseDay();
+      throw err;
     } finally {
       this.setPhase(null);
     }
+  }
+  /** The owner token of the day lock this flow holds, if any. */
+  private token: string | null = null;
+  private async releaseDay() {
+    const t = this.token;
+    this.token = null;
+    if (t) await this.ctx.release(t);
   }
   private async send(
     item: string,
@@ -232,7 +260,7 @@ export class AdoptFlow {
     this.owned.discard();
     this.setPhase({ item: a.item, value: a.value });
     try {
-      await this.ctx.release();
+      await this.releaseDay();
     } finally {
       this.setPhase(null);
     }
@@ -250,7 +278,7 @@ export class AdoptFlow {
     this.setPhase({ item: a.item, value: a.value });
     if (r.kind === 'rejected' && r.code === 'FOREMAN_TOTAL_CHANGED')
       this.changed = { ...this.changed, [a.item]: a.value };
-    await this.ctx.release();
+    await this.releaseDay();
     return r;
   }
 }

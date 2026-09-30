@@ -123,9 +123,9 @@ describe('A6d-4 follows the rule: form state = the owned command payload', () =>
         },
         projectId: P,
         businessDate: '2026-10-02',
-        hold: async () => 'ok',
+        hold: async () => ({ outcome: 'ok', version: 3 }),
         current: () => ({ foreman: current, version: 3 }),
-        release: async () => {},
+        release: async () => true,
       },
       () => {},
     );
