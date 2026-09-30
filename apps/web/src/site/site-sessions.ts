@@ -50,6 +50,14 @@ export class DeviceCommands {
   get unresolved(): DeviceAction | null {
     return this.owned.unresolved;
   }
+  /** The action running or unresolved: what its sheet shows (read-only). */
+  get current(): DeviceAction | null {
+    return this.owned.current;
+  }
+  /** Moves whenever an action's ownership ends (an edit sheet restarts from empty). */
+  get generation(): number {
+    return this.owned.generation;
+  }
   /** A new action may start only when no action is running or unresolved. */
   get canStart() {
     return this.owned.canStart;
@@ -209,7 +217,6 @@ export function saveSiteReference(
   editedFrom: FieldSettingsDto,
   value: SiteValue,
 ): Promise<Outcome<unknown>> {
-  if (commands.unresolved) return commands.retry();
   return commands.run({ editedFrom, value }, (_d, key) => {
     const c = siteReferenceCommand(projectId, editedFrom, value, key);
     return { key, send: () => api.setSiteReference(c) };
@@ -223,7 +230,6 @@ export function saveSettings(
   editedFrom: FieldSettingsDto,
   value: SettingsValue,
 ): Promise<Outcome<unknown>> {
-  if (commands.unresolved) return commands.retry();
   return commands.run({ editedFrom, value }, (_d, key) => {
     const c = settingsCommand(projectId, editedFrom, value, key);
     return { key, send: () => api.setFieldSettings(c) };

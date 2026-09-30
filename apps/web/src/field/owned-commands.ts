@@ -12,6 +12,10 @@ import type { Command, FieldSession, Outcome } from './session.js';
  */
 export class OwnedCommands<D, A> {
   private owner: { action: A; key: string } | null = null;
+  /** Moves every time ownership ends: an edit form keyed by it restarts from the latest read. */
+  generation = 0;
+  /** The last definite refusal of an owned command (shown after the form restarts). */
+  refusal: string | null = null;
 
   constructor(
     readonly session: FieldSession<D>,
@@ -53,9 +57,9 @@ export class OwnedCommands<D, A> {
     const key = this.newKey();
     // Claimed now, before any await: nothing else can start or adopt this command.
     this.owner = { action, key };
+    this.refusal = null;
     const r = await this.session.act((data) => build(data, key), reread);
-    if (!(r.kind === 'failed' && this.session.pending?.key === key))
-      this.owner = null;
+    this.settle(r, key);
     return r;
   }
   /** Resend the unresolved action's own command, unchanged. */
@@ -64,14 +68,25 @@ export class OwnedCommands<D, A> {
     if (!o || this.session.pending?.key !== o.key)
       return { kind: 'failed', code: 'NOT_FOUND' };
     const r = await this.session.retry<R>();
-    if (this.session.pending?.key !== o.key) this.owner = null;
+    this.settle(r, o.key);
     return r;
   }
   /** Give up the unresolved action (it may still have been applied); the data is reread. */
   discard() {
     if (this.session.busy) return;
     this.session.discard();
-    this.owner = null;
+    this.release();
     void this.session.load();
+  }
+  private settle(r: Outcome<unknown>, key: string) {
+    if (r.kind === 'failed' && this.session.pending?.key === key) return;
+    if (r.kind === 'rejected') this.refusal = r.code;
+    this.release();
+  }
+  private release() {
+    if (this.owner === null) return;
+    this.owner = null;
+    this.generation++;
+    this.session.changed();
   }
 }
