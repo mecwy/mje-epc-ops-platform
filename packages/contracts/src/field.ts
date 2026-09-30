@@ -154,6 +154,11 @@ export interface DeviceDecisionDto {
   personId: string;
   state: 'CONFIRMED' | 'REJECTED';
 }
+/** The project's active entry code as its PM reads it (A6d, C11); null = none yet. */
+export interface EntryCodeDto {
+  code: string | null;
+  createdAt: string | null;
+}
 export interface RotateResultDto {
   generation: number;
 }

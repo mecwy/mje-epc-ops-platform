@@ -59,6 +59,11 @@ export class FieldAdminController {
     return command;
   }
 
+  /** The active entry code for the PM's QR page (A6d). */
+  @Get('entry-code')
+  async entryCode(@Req() request: Request, @Query('projectId') id: unknown) {
+    return this.store.entryCode(await this.identity(request), projectId(id));
+  }
   @Get('roster')
   async roster(@Req() request: Request, @Query('projectId') id: unknown) {
     return this.store.roster(await this.identity(request), projectId(id));

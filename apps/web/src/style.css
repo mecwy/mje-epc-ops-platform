@@ -965,7 +965,7 @@ figure .phbtn .ph {
   height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--tabs, 4), minmax(0, 1fr));
   background: var(--surface);
   border-top: 1px solid var(--line);
 }
@@ -1496,8 +1496,74 @@ label.ghost.off {
 .primary.danger {
   background: var(--err);
 }
+.code {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+svg.qr {
+  width: min(280px, 100%);
+  height: auto;
+  align-self: center;
+}
+.print-only {
+  display: none;
+}
+@media print {
+  /* Only a poster print (the People page's Print button) hides everything but the poster. */
+  body.print-poster .noprint,
+  body.print-poster .page > :not(.qr-poster) {
+    display: none !important;
+  }
+  body.print-poster .content {
+    margin: 0;
+  }
+  .qr-poster {
+    border: 0;
+    align-items: center;
+    text-align: center;
+  }
+  .qr-poster .print-only {
+    display: block;
+  }
+  svg.qr {
+    width: 12cm;
+  }
+}
 #app > main.page {
   max-width: 640px;
   margin: 0 auto;
   padding-bottom: 32px;
+}
+.qr-poster .kv {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+/* PM people page (A6d-2) */
+.devrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 10px 0;
+}
+.devrow > .grow {
+  flex: 1 1 180px;
+  gap: 2px;
+}
+.devrow > .chips,
+.devrow > .pill {
+  margin-left: auto;
+}
+input.codein {
+  font-size: 28px;
+  letter-spacing: 6px;
+  text-align: center;
+}
+.row2.wrap2 {
+  flex-wrap: wrap;
+}
+.row2.wrap2 > * {
+  flex: 1 1 140px;
+}
+ul.plainlist:not(.card) {
+  padding: 0;
 }
