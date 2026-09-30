@@ -1,9 +1,15 @@
 import type {
+  ChallengeConfirmCommand,
   ChallengeDto,
+  ChallengeRejectCommand,
   CheckInCommand,
   CheckInResultDto,
+  DeviceDecisionDto,
   EntryDto,
   FieldMeDto,
+  ForemanReportCommand,
+  ForemanReportDto,
+  ProxyCheckInCommand,
   SelfieUploadDto,
 } from '@mje/contracts';
 import { ApiError, responseCode } from '../api.js';
@@ -136,6 +142,37 @@ export function deviceApi(token: () => string | null) {
           f.append('selfie', image, 'selfie');
           return f;
         },
+      }),
+    /** Foreman: confirm or reject a crew member's pending phone by its code (design §2). */
+    confirmCrew: (c: ChallengeConfirmCommand) =>
+      fieldRequest<DeviceDecisionDto>('devices/confirm', {
+        token: tok(),
+        key: c.clientMutationId,
+        body: () => c,
+      }),
+    rejectCrew: (c: ChallengeRejectCommand) =>
+      fieldRequest<DeviceDecisionDto>('devices/reject', {
+        token: tok(),
+        key: c.clientMutationId,
+        body: () => c,
+      }),
+    /** Foreman proxy: the foreman's own fix and clock; `build` refreshes deviceSentAt. */
+    proxyCheckIn: (key: string, build: () => ProxyCheckInCommand) =>
+      fieldRequest<CheckInResultDto>('checkin/proxy', {
+        token: tok(),
+        key,
+        body: build,
+      }),
+    report: (businessDate: string) =>
+      fieldRequest<ForemanReportDto>(
+        `report?businessDate=${encodeURIComponent(businessDate)}`,
+        { token: tok() },
+      ),
+    submitReport: (c: ForemanReportCommand) =>
+      fieldRequest<unknown>('report', {
+        token: tok(),
+        key: c.clientMutationId,
+        body: () => c,
       }),
   };
 }

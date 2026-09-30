@@ -19,6 +19,7 @@ import {
 import { ENDED, FieldSession } from './session.js';
 import { releaseDevice } from './release.js';
 import { CheckInCard } from './CheckInCard.js';
+import { CrewCard, ReportCard } from './ForemanPanel.js';
 
 function storage(kind: 'local' | 'session'): Storage | null {
   try {
@@ -369,6 +370,8 @@ function DevicePage({
     }
   };
   const endDevice = (code: string) => session.end(code);
+  // A foreman's page has three parts: own check-in, the crew, the quantity report.
+  const [tab, setTab] = useState<'me' | 'crew' | 'report'>('me');
   const today = siteToday(session.data?.project.timezone ?? 'UTC');
   const title = session.data?.person.displayName ?? record.displayName;
   const sub = session.data?.project.name ?? record.projectName;
@@ -440,7 +443,49 @@ function DevicePage({
             <span>{view.me.crew?.name ?? t('fd_noCrew')}</span>
           </div>
         </section>
-        <CheckInCard api={api} me={view.me} onEnded={endDevice} />
+        {view.me.foreman && (
+          <div className="seg" role="tablist">
+            {(['me', 'crew', 'report'] as const).map((k) => {
+              const key =
+                k === 'me'
+                  ? 'fm_tabMe'
+                  : k === 'crew'
+                    ? 'fm_tabCrew'
+                    : 'fm_tabReport';
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === k}
+                  className={tab === k ? 'on' : ''}
+                  onClick={() => setTab(k)}
+                >
+                  {t(key)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {/* Kept mounted: an unresolved command and its retry survive a tab switch. */}
+        <div hidden={Boolean(view.me.foreman) && tab !== 'me'}>
+          <CheckInCard api={api} me={view.me} onEnded={endDevice} />
+        </div>
+        {view.me.foreman && (
+          <>
+            <div hidden={tab !== 'crew'}>
+              <CrewCard
+                api={api}
+                me={view.me}
+                session={session}
+                onEnded={endDevice}
+              />
+            </div>
+            <div hidden={tab !== 'report'}>
+              <ReportCard api={api} me={view.me} onEnded={endDevice} />
+            </div>
+          </>
+        )}
         {releaseButton}
       </>
     );
