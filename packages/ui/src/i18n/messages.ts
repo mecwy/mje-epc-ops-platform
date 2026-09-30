@@ -523,6 +523,7 @@ export const MESSAGES = {
     'Selfi otpremljen; ide uz prijavu',
     'Selfi subido; se adjunta al fichaje',
   ],
+  fd_selfieRemove: ['不用自拍', 'No selfie', 'Bez selfija', 'Sin selfi'],
   fd_selfieRetake: [
     '重拍自拍',
     'Retake selfie',
@@ -534,6 +535,12 @@ export const MESSAGES = {
     'Selfie upload not confirmed.',
     'Otpremanje selfija nije potvrđeno.',
     'Subida del selfi no confirmada.',
+  ],
+  fd_selfieUploading: [
+    '自拍上传中…',
+    'Uploading selfie…',
+    'Otpremanje selfija…',
+    'Subiendo selfi…',
   ],
   fd_showCode: [
     '显示确认码',
@@ -553,6 +560,18 @@ export const MESSAGES = {
     'The total is not complete (missing, unknown or no value) and cannot be used; you can type a value.',
     'Zbir nije potpun (nedostaje, nepoznato ili bez vrednosti) i ne može se preuzeti; možete uneti vrednost.',
     'El total no está completo (falta, desconocido o sin valor) y no se puede usar; puedes escribir un valor.',
+  ],
+  fe_assignmentClosed: [
+    '这条安排已经结束，不能再改。',
+    'This assignment has already ended and cannot be changed.',
+    'Ova raspodela je već završena i ne može se menjati.',
+    'Esta asignación ya terminó y no se puede cambiar.',
+  ],
+  fe_assignmentOverlap: [
+    '此人在该时间已在另一个班组（或已是该组工头），请先结束原来的安排。',
+    'This person is already in a crew (or already its foreman) at that time; end the earlier assignment first.',
+    'Ova osoba je u to vreme već u ekipi (ili već njen poslovođa); prvo završite raniju raspodelu.',
+    'Esta persona ya está en una cuadrilla (o ya es su encargado) en ese momento; termina primero la asignación anterior.',
   ],
   fe_authRequired: [
     '这部手机未登记或登记已失效，请重新扫码。',
@@ -577,6 +596,24 @@ export const MESSAGES = {
     'The phones of this person changed meanwhile; the list was refreshed. Check and confirm again.',
     'Telefoni ove osobe su se u međuvremenu promenili; spisak je osvežen. Proverite i ponovo potvrdite.',
     'Los teléfonos de esta persona cambiaron; la lista se actualizó. Comprueba y confirma de nuevo.',
+  ],
+  fe_crewCodeTaken: [
+    '这个班组代码已被使用，请换一个。',
+    'This crew code is already used; choose another.',
+    'Ova oznaka ekipe je već zauzeta; izaberite drugu.',
+    'Este código de cuadrilla ya se usa; elige otro.',
+  ],
+  fe_crewEnded: [
+    '这个班组已结束。',
+    'This crew has ended.',
+    'Ova ekipa je završena.',
+    'Esta cuadrilla ha terminado.',
+  ],
+  fe_crewNotEmpty: [
+    '班组还有人员安排延续到结束时间之后，请先结束这些安排。',
+    'The crew still has assignments that reach past its end; end them first.',
+    'Ekipa još ima raspodele koje traju posle njenog kraja; prvo ih završite.',
+    'La cuadrilla aún tiene asignaciones que pasan de su fin; termínalas primero.',
   ],
   fe_dayMismatch: [
     '日期与工地当时的日期不一致，请刷新后重试。',
@@ -674,6 +711,12 @@ export const MESSAGES = {
     'Previše pokušaja; sačekajte malo i pokušajte ponovo.',
     'Demasiados intentos; espera un poco y vuelve a intentarlo.',
   ],
+  fe_readOnly: [
+    '只读权限：只有项目经理可以修改。',
+    'Read-only access: only the project manager can change this.',
+    'Samo čitanje: ovo može da menja samo rukovodilac projekta.',
+    'Solo lectura: solo el jefe de proyecto puede cambiarlo.',
+  ],
   fe_reasonRequired: [
     '请填写原因（非今天或没有现场定位时必填）。',
     'Enter a reason (required for another day or without an on-site location).',
@@ -692,11 +735,11 @@ export const MESSAGES = {
     'Ovaj izveštaj je upravo ažuriran; učitana je najnovija verzija. Proverite i ponovo pošaljite.',
     'Este parte se acaba de actualizar; se cargó la última versión. Comprueba y envía de nuevo.',
   ],
-  fe_roster: [
-    '名单已变化或不允许此变更，请刷新后核对。',
-    'The roster changed or this change is not allowed; refresh and check.',
-    'Spisak se promenio ili ova izmena nije dozvoljena; osvežite i proverite.',
-    'La lista cambió o este cambio no está permitido; actualiza y comprueba.',
+  fe_rosterTime: [
+    '时间不对：名单变更不能倒填，也不能早于安排或班组的开始。',
+    'The time is not allowed: roster changes cannot be backdated or come before the assignment or crew starts.',
+    'Vreme nije dozvoljeno: izmene spiska ne mogu unazad niti pre početka raspodele ili ekipe.',
+    'La hora no está permitida: los cambios de lista no pueden ser retroactivos ni anteriores al inicio de la asignación o de la cuadrilla.',
   ],
   fe_selfConfirm: [
     '不能确认自己的手机。',

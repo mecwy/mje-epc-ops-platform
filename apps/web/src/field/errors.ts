@@ -4,7 +4,8 @@ import type { MessageKey } from '@mje/ui';
  * Every field, check-in, binding, roster, foreman and adoption code the API returns (the
  * domain's FieldErrorCode plus the report codes adopt uses), each with its own user message.
  * The error body carries only a code; the message never repeats a name, code or coordinate.
- * errors.test.ts checks this table against the domain's FieldErrorCode at compile time.
+ * errors.test.ts checks this table against the domain's FieldErrorCode at compile time and
+ * that no two codes share a message (INVALID_JSON is INVALID_INPUT's transport form).
  */
 export const FIELD_ERRORS = {
   FIELD_AUTH_REQUIRED: 'fe_authRequired',
@@ -24,12 +25,12 @@ export const FIELD_ERRORS = {
   CONFIRM_STALE: 'fe_confirmStale',
   VERSION_CONFLICT: 'conflictReloaded',
   IDEMPOTENCY_KEY_REUSED: 'fe_keyReused',
-  ASSIGNMENT_OVERLAP: 'fe_roster',
-  ASSIGNMENT_CLOSED: 'fe_roster',
-  ROSTER_TIME_INVALID: 'fe_roster',
-  CREW_ENDED: 'fe_roster',
-  CREW_NOT_EMPTY: 'fe_roster',
-  CREW_CODE_TAKEN: 'fe_roster',
+  ASSIGNMENT_OVERLAP: 'fe_assignmentOverlap',
+  ASSIGNMENT_CLOSED: 'fe_assignmentClosed',
+  ROSTER_TIME_INVALID: 'fe_rosterTime',
+  CREW_ENDED: 'fe_crewEnded',
+  CREW_NOT_EMPTY: 'fe_crewNotEmpty',
+  CREW_CODE_TAKEN: 'fe_crewCodeTaken',
   PROXY_NOT_ALLOWED: 'proxyNotAllowed',
   FEATURE_OFF: 'fe_featureOff',
   FIX_TIME_INVALID: 'fe_fixTime',
@@ -52,7 +53,7 @@ export const FIELD_ERRORS = {
   FOREMAN_TOTAL_CHANGED: 'fe_totalChanged',
   ADOPT_NOT_COMPLETE: 'fe_adoptIncomplete',
   LOCKED: 'locked',
-  READ_ONLY: 'forbidden',
+  READ_ONLY: 'fe_readOnly',
   LOGIN_REQUIRED: 'signInExpired',
   INVALID_INPUT: 'fe_invalid',
   INVALID_JSON: 'fe_invalid',

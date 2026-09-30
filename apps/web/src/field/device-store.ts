@@ -54,11 +54,17 @@ function valid(r: unknown): r is DeviceRecord {
 /** Storage can be missing or throw (private mode); the page then works for this visit only. */
 export class DeviceStore {
   private memory: DeviceRecord[] = [];
+  /**
+   * Set once a write fails (for example a full quota): from then on this visit keeps its own
+   * copy, so a token just generated is never lost by rereading older storage (a bind retry
+   * must resend the same token).
+   */
+  private writeFailed = false;
   constructor(private readonly storage: Storage | null) {
     this.memory = this.read();
   }
   private read(): DeviceRecord[] {
-    if (!this.storage) return this.memory;
+    if (!this.storage || this.writeFailed) return this.memory;
     try {
       const raw = this.storage.getItem(KEY);
       const list: unknown = raw ? JSON.parse(raw) : [];
@@ -72,7 +78,7 @@ export class DeviceStore {
     try {
       this.storage?.setItem(KEY, JSON.stringify(list));
     } catch {
-      /* kept in memory for this visit */
+      this.writeFailed = true;
     }
   }
   /** Most recently written first. */

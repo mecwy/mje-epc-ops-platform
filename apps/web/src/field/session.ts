@@ -12,6 +12,9 @@ export const UNSETTLED = new Set([
   'RATE_LIMITED',
 ]);
 
+/** Codes by which the server says this device token is no longer a device. */
+export const ENDED = new Set(['DEVICE_ENDED', 'FIELD_AUTH_REQUIRED']);
+
 /** A command as it is sent: the key and event are fixed when it is built. */
 export interface Command<R> {
   key: string;
@@ -27,7 +30,10 @@ export type Outcome<R> =
  * commands run one at a time from a queue; each is built when it runs, from the newest read;
  * an unsettled command is kept with its key and resent unchanged by retry(); after a write,
  * the next command waits until a read started after that write has landed. Reads are
- * ticketed, so an older response never overwrites a newer one.
+ * ticketed: an older response, successful or failed, never overwrites a newer one; freshness
+ * after a write counts successful reads only. A command refused because the device ended is
+ * reported through `onEnded`, so the device page ends even when the refusal came from a
+ * command rather than a read.
  */
 export class FieldSession<D> {
   data: D | null = null;
@@ -38,13 +44,17 @@ export class FieldSession<D> {
   error: string | null = null;
   pending: (Command<unknown> & { reread: boolean }) | null = null;
   private reads = 0;
+  /** Ticket of the newest response applied (success or failure). */
   private applied = 0;
+  /** Ticket of the newest successful read applied. */
+  private dataAt = 0;
   private writtenAt = 0;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly read: () => Promise<D>,
     private readonly notify: () => void,
+    private readonly options: { onEnded?: (code: string) => void } = {},
   ) {}
 
   async load(): Promise<boolean> {
@@ -53,12 +63,14 @@ export class FieldSession<D> {
       const d = await this.read();
       if (ticket <= this.applied) return false;
       this.applied = ticket;
+      this.dataAt = ticket;
       this.data = d;
       this.readError = null;
       return true;
     } catch (e) {
-      if (ticket > this.applied)
-        this.readError = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
+      if (ticket <= this.applied) return false;
+      this.applied = ticket;
+      this.readError = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
       return false;
     } finally {
       this.notify();
@@ -67,9 +79,19 @@ export class FieldSession<D> {
 
   /** True once a read started after the last write has been applied (bounded rereads). */
   private async fresh(): Promise<boolean> {
-    for (let i = 0; i < 3 && this.applied <= this.writtenAt; i++)
+    for (let i = 0; i < 3 && this.dataAt <= this.writtenAt; i++)
       await this.load();
-    return this.applied > this.writtenAt;
+    return this.dataAt > this.writtenAt;
+  }
+
+  /**
+   * The device has ended (a command, or another view, was refused with DEVICE_ENDED): record it
+   * as the newest reading, so no older response still in flight can bring the device back.
+   */
+  end(code: string) {
+    this.applied = ++this.reads;
+    this.readError = code;
+    this.notify();
   }
 
   get needsRetry() {
@@ -145,6 +167,7 @@ export class FieldSession<D> {
       }
       this.pending = null;
       this.error = code;
+      if (ENDED.has(code)) this.options.onEnded?.(code);
       if (reread) {
         // A refusal may mean the view is old (a conflict): the next command waits for a reread.
         this.writtenAt = this.reads;

@@ -6,7 +6,7 @@ import {
   newToken,
   type DeviceRecord,
 } from './device-store.js';
-import { codeFromHash, deviceView, startScreen } from './flow.js';
+import { canRelease, codeFromHash, deviceView, startScreen } from './flow.js';
 
 const P = '11111111-1111-4111-8111-111111111111';
 const Q = '22222222-2222-4222-8222-222222222222';
@@ -198,5 +198,34 @@ describe('device store', () => {
     const blocked = new DeviceStore(throwing);
     blocked.put(record(P));
     expect(blocked.get(P)?.projectId).toBe(P);
+  });
+  it('#8 keeps a record for the visit when storage can be read but not written (quota)', () => {
+    const backing = memoryStorage();
+    backing.setItem('mje-field-devices', JSON.stringify([record(Q)]));
+    const quota = {
+      ...backing,
+      getItem: (k: string) => backing.getItem(k),
+      setItem: () => {
+        throw new Error('QuotaExceededError');
+      },
+    } as Storage;
+    const store = new DeviceStore(quota);
+    const fresh = record(P, { token: token(7), deviceId: null });
+    store.put(fresh);
+    // A lost bind answer is retried with the same token, never a new one.
+    expect(store.get(P)?.token).toBe(token(7));
+    expect(store.all().map((r) => r.projectId)).toEqual([P, Q]);
+    store.remove(P, token(7));
+    expect(store.get(P)).toBeNull();
+  });
+});
+
+describe('unregister is offered for every live device (#5)', () => {
+  it('pending and confirmed, not ended or unreachable', () => {
+    const r = record(P);
+    expect(canRelease(deviceView(me('PENDING'), null, r, now))).toBe(true);
+    expect(canRelease(deviceView(me('CONFIRMED'), null, r, now))).toBe(true);
+    expect(canRelease(deviceView(null, 'DEVICE_ENDED', r, now))).toBe(false);
+    expect(canRelease(deviceView(null, 'NETWORK', r, now))).toBe(false);
   });
 });

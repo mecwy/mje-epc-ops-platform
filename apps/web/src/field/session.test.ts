@@ -154,4 +154,67 @@ describe('FieldSession (IssueSession pattern)', () => {
     expect((await session.act(() => null)).kind).toBe('rejected');
     expect(sent).toHaveLength(0);
   });
+
+  it('#3 an older successful read never overwrites a newer failed one (ended device)', async () => {
+    const { session, reads } = harness();
+    const a = session.load();
+    const b = session.load();
+    reads[1]!.settle(new ApiError('DEVICE_ENDED', 401));
+    await b;
+    reads[0]!.settle(1);
+    expect(await a).toBe(false);
+    expect(session.readError).toBe('DEVICE_ENDED');
+    expect(session.data).toBeNull();
+  });
+
+  it('#3 a failed read does not count as the fresh read a command waits for after a write', async () => {
+    const { session, reads, sent, command } = harness();
+    void session.load();
+    reads[0]!.settle(1);
+    await tick();
+    const w = session.act((v) => command(`v${v}`, () => ({})));
+    await tick();
+    sent[0]!.settle();
+    await tick();
+    reads[1]!.settle(new ApiError('NETWORK', 0));
+    await tick();
+    // Still waiting: a second reread is under way; the stale value 1 is not used.
+    reads[2]!.settle(2);
+    expect((await w).kind).toBe('ok');
+    const next = session.act((v) => command(`v${v}`, () => ({})));
+    await tick();
+    expect(sent[1]!.key).toBe('v2');
+    sent[1]!.settle();
+    await tick();
+    reads[3]!.settle(3);
+    await next;
+  });
+
+  it('#2 a command refused because the device ended is reported; end() fences older reads', async () => {
+    const ended: string[] = [];
+    const reads: { settle: (v: number) => void }[] = [];
+    const session = new FieldSession<number>(
+      () => new Promise((resolve) => reads.push({ settle: resolve })),
+      () => {},
+      { onEnded: (c) => ended.push(c) },
+    );
+    const first = session.load();
+    reads[0]!.settle(1);
+    await first;
+    const r = session.act(
+      () => ({
+        key: 'K',
+        send: () => Promise.reject(new ApiError('DEVICE_ENDED', 401)),
+      }),
+      false,
+    );
+    expect((await r).kind).toBe('rejected');
+    expect(ended).toEqual(['DEVICE_ENDED']);
+    const older = session.load();
+    session.end('DEVICE_ENDED');
+    reads[1]!.settle(2);
+    expect(await older).toBe(false);
+    expect(session.readError).toBe('DEVICE_ENDED');
+    expect(session.data).toBe(1);
+  });
 });

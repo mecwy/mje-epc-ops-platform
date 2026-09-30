@@ -24,26 +24,19 @@ describe('field error messages', () => {
       for (const text of row) expect(text.trim(), code).not.toBe('');
     }
   });
-  it('gives the check-in refusals distinct, specific messages', () => {
-    const refusals: KnownFieldCode[] = [
-      'GEOFENCE_OUTSIDE',
-      'LOCATION_TOO_COARSE',
-      'SITE_NOT_CONFIGURED',
-      'FIX_TIME_INVALID',
-      'TIME_ORDER_INVALID',
-      'DEVICE_CLOCK_SKEW',
-      'TOO_LATE',
-      'BUSINESS_DAY_MISMATCH',
-      'ALREADY_CHECKED_IN',
-      'DEVICE_PENDING',
-      'DEVICE_ENDED',
-      'SELFIE_EXPIRED',
-      'FEATURE_OFF',
-    ];
-    const keys = refusals.map((c) => fieldErrorKey(c));
-    expect(new Set(keys).size).toBe(refusals.length);
+  it('gives every code its own message (INVALID_JSON is the transport form of INVALID_INPUT)', () => {
+    const byKey = new Map<string, string[]>();
+    for (const code of Object.keys(FIELD_ERRORS)) {
+      const key = fieldErrorKey(code);
+      byKey.set(key, [...(byKey.get(key) ?? []), code]);
+    }
+    const shared = [...byKey.values()].filter((codes) => codes.length > 1);
+    expect(shared).toEqual([['INVALID_INPUT', 'INVALID_JSON']]);
     expect(translate('en', fieldErrorKey('GEOFENCE_OUTSIDE'))).toMatch(
       /outside the site area/,
+    );
+    expect(translate('en', fieldErrorKey('CREW_CODE_TAKEN'))).toMatch(
+      /crew code/,
     );
   });
   it('never shows a raw or unknown code', () => {
