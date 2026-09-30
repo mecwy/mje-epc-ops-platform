@@ -14,7 +14,8 @@ import { CrewCommands } from './crew-commands.js';
 import type { DeviceRecord } from './device-store.js';
 import { deviceView } from './flow.js';
 import { CrewList, ReportDayBody } from './ForemanPanel.js';
-import { ReportDay, reportPayload } from './foreman-report.js';
+import { ReportDay, ReportDays, reportPayload } from './foreman-report.js';
+import { deviceApi } from './field-api.js';
 import { ProxyFlow } from './proxy-flow.js';
 import { FieldSession } from './session.js';
 
@@ -26,12 +27,22 @@ const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const DAY = '2026-10-02';
 const TZ = 'Europe/Belgrade';
 
-type Mode = 'ok' | 'lost' | 'retry' | 'hold' | 'hold-lost';
+type Mode =
+  | 'ok'
+  | 'lost'
+  | 'retry'
+  | 'hold'
+  | 'hold-lost'
+  | 'hold-before'
+  | 'lost-before';
 /**
- * A fake report server with the A6c semantics: a send for a crew the foreman does not lead
- * now is refused; a stale revision gets REVISION_CONFLICT; a key's first answer is stored and
- * a same-key resend replays it only when its body is identical (else IDEMPOTENCY_KEY_REUSED).
- * RETRY (503) commits nothing. Reads can fail or be held. Every request is logged.
+ * A fake report server in the order of foreman-store.ts `submitReport`: (1) authority now: a
+ * crew the foreman does not lead now is NOT_FOREMAN, before any replay (never stored);
+ * (2) idempotency: a stored success is replayed for an identical body, a different body under
+ * the key is IDEMPOTENCY_KEY_REUSED; (3) a stale revision is REVISION_CONFLICT (a thrown
+ * refusal is rolled back, not stored, so a same-key resend is judged again); else commit and
+ * store. RETRY (503) commits nothing. `hold-before`/`lost-before` pause or lose the request
+ * before the decision; `hold`/`hold-lost` after it. Reads can fail or be held.
  */
 function reportServer() {
   let crew = A;
@@ -45,7 +56,7 @@ function reportServer() {
   const held: (() => void)[] = [];
   const plan: Mode[] = [];
   const log: ForemanReportCommand[] = [];
-  const stored = new Map<string, { body: string; code: string | null }>();
+  const stored = new Map<string, string>();
   const dto = (): ForemanReportDto => ({
     crewId: crew,
     crewName: crew === A ? 'TEST crew A' : 'TEST crew B',
@@ -57,6 +68,17 @@ function reportServer() {
     receivedAt: null,
     items: [{ key: 'support', label: 'TEST support', unit: 'set' }],
   });
+  const decide = (c: ForemanReportCommand): string | null => {
+    if (c.crewId !== crew) return 'NOT_FOREMAN';
+    const body = JSON.stringify(c);
+    const prior = stored.get(c.clientMutationId);
+    if (prior !== undefined)
+      return prior === body ? null : 'IDEMPOTENCY_KEY_REUSED';
+    if (c.expectedRevision !== rev[c.crewId]!.n) return 'REVISION_CONFLICT';
+    rev[c.crewId] = { n: rev[c.crewId]!.n + 1, qty: c.rows[0]!.qty };
+    stored.set(c.clientMutationId, body);
+    return null;
+  };
   const api = {
     report: async () => {
       if (holdReads) await new Promise<void>((r) => readHolds.push(r));
@@ -67,26 +89,9 @@ function reportServer() {
       log.push(c);
       const mode = plan.shift() ?? 'ok';
       if (mode === 'retry') throw new ApiError('RETRY', 503);
-      const body = JSON.stringify(c);
-      const prior = stored.get(c.clientMutationId);
-      let code: string | null;
-      if (prior) {
-        if (prior.body !== body)
-          throw new ApiError('IDEMPOTENCY_KEY_REUSED', 409);
-        code = prior.code;
-      } else {
-        if (c.crewId !== crew) code = 'NOT_FOREMAN';
-        else if (c.expectedRevision !== rev[c.crewId]!.n)
-          code = 'REVISION_CONFLICT';
-        else {
-          rev[c.crewId] = {
-            n: rev[c.crewId]!.n + 1,
-            qty: c.rows[0]!.qty,
-          };
-          code = null;
-        }
-        stored.set(c.clientMutationId, { body, code });
-      }
+      if (mode === 'lost-before') throw new ApiError('NETWORK', 0);
+      if (mode === 'hold-before') await new Promise<void>((r) => held.push(r));
+      const code = decide(c);
       if (mode === 'hold' || mode === 'hold-lost')
         await new Promise<void>((r) => held.push(r));
       if (mode === 'lost' || mode === 'hold-lost')
@@ -161,58 +166,107 @@ describe('#39 round 1 finding 1 (P1): a report is bound to the crew and day it w
     expect(html).not.toMatch(/You had typed/);
   });
 
-  // L5: when the move happens × what the first answer is × remount. Invariant: every request
-  // carries crew A and the typed 12; crew B's report never changes; crew B's form never shows
-  // crew A's typed value as its own.
-  for (const move of ['whileSending', 'beforeRetry'] as const)
-    for (const first of ['ok', 'lost', 'conflict'] as const)
-      it(`moved ${move} · first answer ${first} · remount`, async () => {
-        const r = rig();
-        await r.day.session.load();
-        const draft = r.typed('12'); // typed on crew A, revision 1
-        if (first === 'conflict') r.sv.other('11');
-        // whileSending: the answer is held while the foreman is moved (then given or lost);
-        // beforeRetry: the answer is lost, the foreman is moved, then Retry.
-        r.sv.plan.push(
-          move === 'whileSending'
-            ? first === 'lost'
-              ? 'hold-lost'
-              : 'hold'
-            : 'lost',
-        );
-        const send = r.day.send(draft);
-        await tick();
-        await tick();
-        if (move === 'whileSending') {
-          r.sv.moveTo(B);
-          r.sv.held.shift()!();
-        }
-        let out = await send;
-        if (move === 'beforeRetry' || first === 'lost') {
-          expect(out.kind).toBe('failed');
-          r.sv.moveTo(B);
-          await r.day.session.load(); // crew B's report is read meanwhile
-          r.advance(60_000);
-          out = await r.day.retry();
-        }
-        expect(out.kind).toBe(first === 'conflict' ? 'rejected' : 'ok');
-        await r.day.session.load();
-        for (const html of [r.body(), r.body()]) {
-          expect(html).toContain('value="30"');
-          expect(html).not.toMatch(/You had typed/);
-        }
-        // Every request: crew A's typed 12, one key, one body.
-        expect(r.sv.log.length).toBeGreaterThan(0);
-        expect(
-          r.sv.log.every(
-            (c) =>
-              JSON.stringify(c) === JSON.stringify(r.sv.log[0]) &&
-              c.crewId === A &&
-              c.rows[0]!.qty === '12',
-          ),
-        ).toBe(true);
-        expect(r.sv.rev[B]).toEqual({ n: 1, qty: '30' });
-      });
+  // L5: when the foreman is moved to crew B relative to the server's decision × whether the
+  // answer arrives × what the decision was × remount. In every case: every request is crew A's
+  // typed 12 under one key and one body; crew B's report never changes; ownership ends; crew
+  // B's form never shows crew A's value as typed; and a refusal after an unanswered attempt
+  // says the earlier send may already have been recorded (the server re-checks authority
+  // before replaying, so NOT_FOREMAN on a resend does not mean nothing was stored).
+  const cases = [
+    // moved before the server decided
+    {
+      name: 'before decision · answer given',
+      first: 'hold-before',
+      decided: 'NOT_FOREMAN',
+      retried: false,
+      stored: false,
+    },
+    {
+      name: 'before decision · answer lost',
+      first: 'lost-before',
+      decided: null,
+      retried: true,
+      stored: false,
+    },
+    // moved after the server decided
+    {
+      name: 'after decision (stored) · answer given',
+      first: 'hold',
+      decided: 'ok',
+      retried: false,
+      stored: true,
+    },
+    {
+      name: 'after decision (stored) · answer lost',
+      first: 'hold-lost',
+      decided: null,
+      retried: true,
+      stored: true,
+    },
+    {
+      name: 'after decision (conflict) · answer given',
+      first: 'hold',
+      decided: 'REVISION_CONFLICT',
+      retried: false,
+      stored: false,
+      conflict: true,
+    },
+    {
+      name: 'after decision (conflict) · answer lost',
+      first: 'hold-lost',
+      decided: null,
+      retried: true,
+      stored: false,
+      conflict: true,
+    },
+  ] as const;
+  for (const c of cases)
+    it(`moved ${c.name} · remount`, async () => {
+      const r = rig();
+      await r.day.session.load();
+      const draft = r.typed('12'); // typed on crew A, revision 1
+      if ('conflict' in c) r.sv.other('11');
+      const nA = r.sv.rev[A]!.n;
+      r.sv.plan.push(c.first);
+      const send = r.day.send(draft);
+      await tick();
+      await tick();
+      r.sv.moveTo(B);
+      if (c.first !== 'lost-before') r.sv.held.shift()!();
+      let out = await send;
+      if (c.retried) {
+        expect(out.kind).toBe('failed');
+        await r.day.session.load(); // crew B's report is read meanwhile
+        r.advance(60_000);
+        out = await r.day.retry();
+        // Authority is judged before any replay: the resend is refused, not replayed.
+        expect(out).toMatchObject({ kind: 'rejected', code: 'NOT_FOREMAN' });
+      } else if (c.decided === 'ok') expect(out.kind).toBe('ok');
+      else expect(out).toMatchObject({ kind: 'rejected', code: c.decided });
+      expect(r.day.sends.current).toBeNull(); // ownership ended; nothing resent by itself
+      await r.day.session.load();
+      for (const html of [r.body(), r.body()]) {
+        expect(html).toContain('value="30"');
+        expect(html).not.toMatch(/You had typed/);
+        if (c.retried) {
+          expect(html).toMatch(/may already have been recorded/);
+          expect(html).toMatch(/Nothing is sent again/);
+        } else expect(html).not.toMatch(/may already have been recorded/);
+      }
+      expect(r.sv.log.length).toBe(c.retried ? 2 : 1);
+      expect(
+        r.sv.log.every(
+          (x) =>
+            JSON.stringify(x) === JSON.stringify(r.sv.log[0]) &&
+            x.crewId === A &&
+            x.rows[0]!.qty === '12',
+        ),
+      ).toBe(true);
+      expect(r.sv.rev[B]).toEqual({ n: 1, qty: '30' });
+      expect(r.sv.rev[A]!.n).toBe(c.stored ? nA + 1 : nA);
+      // And the outcome says so: uncertain exactly when an earlier attempt went unanswered.
+      expect(out.kind === 'rejected' && out.uncertain === true).toBe(c.retried);
+    });
 
   it('the day is bound too: a payload for another day is refused on the phone', async () => {
     const r = rig();
@@ -462,5 +516,227 @@ describe('#39 round 1 finding 5: an owned attempt keeps its controls after its p
     expect(html).toMatch(/No longer in your crew/);
     const row = html.slice(html.indexOf('TEST W1'));
     expect(row.slice(0, row.indexOf('</li>'))).toMatch(/>Retry</);
+  });
+
+  // #39 round 2 finding 1: Give up for an owned crew check-in (C57 promised it).
+  for (const left of [true, false])
+    it(`round 2: an unresolved crew check-in (${left ? 'person left' : 'still in the crew'}) can be given up; then another member can start`, async () => {
+      const flow = proxyFlow(() => Promise.reject(new ApiError('NETWORK', 0)));
+      await flow.checkIn(W1, 'TEST W1');
+      expect(flow.phase.kind).toBe('unsettled');
+      const me = meWith(left ? [W2] : [W1, W2]);
+      const session = new FieldSession<FieldMeDto>(
+        async () => me,
+        () => {},
+      );
+      await session.load();
+      const commands = new CrewCommands(session, {
+        confirmCrew: async () => ({}) as never,
+        rejectCrew: async () => ({}) as never,
+      });
+      const rowOf = (html: string, name: string) => {
+        const at = html.indexOf(name);
+        if (at < 0) return '';
+        const rest = html.slice(at);
+        return rest.slice(0, rest.indexOf('</li>'));
+      };
+      const before = list(me, commands, flow);
+      expect(rowOf(before, 'TEST W1')).toMatch(/>Give up</);
+      expect(rowOf(before, 'TEST W1')).toMatch(/>Retry</);
+      // The warning is kept: giving up does not undo a check-in that may have been stored.
+      expect(rowOf(before, 'TEST W1')).toMatch(
+        /may already have been recorded/,
+      );
+      expect(flow.canStart(W2)).toBe(false);
+      flow.discard(); // what Give up calls
+      expect(flow.canStart(W2)).toBe(true);
+      const after = list(me, commands, flow);
+      if (left) expect(after).not.toContain('TEST W1');
+      expect(rowOf(after, 'TEST W2')).toMatch(
+        /<button type="button" class="pill">Check in</,
+      );
+    });
+
+  // #39 round 2 finding 2: authority is re-checked before a replay (checkin-store.ts): a
+  // resend refused as PROXY_NOT_ALLOWED after an unanswered attempt may have been recorded.
+  for (const earlier of ['unanswered', 'none'] as const)
+    it(`round 2: crew check-in refused PROXY_NOT_ALLOWED after ${earlier === 'none' ? 'no earlier attempt' : 'an unanswered attempt'}`, async () => {
+      const answers = [
+        ...(earlier === 'unanswered' ? [new ApiError('NETWORK', 0)] : []),
+        new ApiError('PROXY_NOT_ALLOWED', 409),
+      ];
+      const flow = proxyFlow(() => Promise.reject(answers.shift()));
+      await flow.checkIn(W1, 'TEST W1');
+      if (earlier === 'unanswered') {
+        expect(flow.phase.kind).toBe('unsettled');
+        await flow.retry();
+      }
+      expect(flow.phase).toMatchObject({
+        kind: 'refused',
+        code: 'PROXY_NOT_ALLOWED',
+      });
+      const me = meWith([W2]); // W1 left the crew
+      const session = new FieldSession<FieldMeDto>(
+        async () => me,
+        () => {},
+      );
+      await session.load();
+      const commands = new CrewCommands(session, {
+        confirmCrew: async () => ({}) as never,
+        rejectCrew: async () => ({}) as never,
+      });
+      for (const html of [list(me, commands, flow), list(me, commands, flow)]) {
+        expect(html).toContain('TEST W1');
+        if (earlier === 'unanswered') {
+          expect(html).toMatch(
+            /earlier check-in may already have been recorded/,
+          );
+          expect(html).toMatch(/Nothing is sent again/);
+        } else {
+          expect(html).toMatch(/Only the crew foreman can check in others/);
+          expect(html).not.toMatch(/may already have been recorded/);
+        }
+      }
+      expect(flow.canStart(W2)).toBe(true);
+      expect(
+        flow.phase.kind === 'refused' && flow.phase.uncertain === true,
+      ).toBe(earlier === 'unanswered');
+    });
+
+  it('round 2: a confirmation refused NOT_FOREMAN on Retry after its person left is named, "may already have been recorded"', async () => {
+    let me = meWith([W1, W2]);
+    const session = new FieldSession<FieldMeDto>(
+      async () => me,
+      () => {},
+    );
+    await session.load();
+    const answers = [
+      new ApiError('NETWORK', 0),
+      new ApiError('NOT_FOREMAN', 403),
+    ];
+    const sent: string[] = [];
+    const commands = new CrewCommands(session, {
+      confirmCrew: async (c) => {
+        sent.push(JSON.stringify(c));
+        throw answers.shift();
+      },
+      rejectCrew: async () => ({}) as never,
+    });
+    await commands.run({
+      personId: W1,
+      name: 'TEST W1',
+      what: 'confirm',
+      code: '111111',
+    });
+    me = meWith([W2]);
+    await session.load();
+    const flow = proxyFlow(async () => ({}) as never);
+    const r = await commands.retry();
+    expect(r).toMatchObject({ kind: 'rejected', code: 'NOT_FOREMAN' });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe(sent[0]);
+    expect(commands.current).toBeNull();
+    expect(commands.canStart).toBe(true);
+    // The sheet has closed (its person left and nothing is owned); the card names the attempt.
+    for (const html of [
+      list(me, commands, flow),
+      list(me, commands, flow, member(W1)),
+    ]) {
+      expect(html).toContain('TEST W1');
+      expect(html).toMatch(/earlier send may already have been recorded/);
+      expect(html).not.toContain('<dialog');
+    }
+    expect(r.kind === 'rejected' && r.uncertain).toBe(true);
+  });
+});
+
+describe('#39 round 2: an answer after a lost transport attempt is uncertain too', () => {
+  for (const lostFirst of [true, false])
+    it(`the real device API: NOT_FOREMAN ${lostFirst ? 'after a lost request (transport resend)' : 'on the first request'}`, async () => {
+      const real = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls++;
+        if (lostFirst && calls === 1) throw new TypeError('network');
+        return new Response(JSON.stringify({ code: 'NOT_FOREMAN' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+      try {
+        const sv = reportServer();
+        const day = new ReportDay(
+          {
+            report: sv.api.report,
+            submitReport: deviceApi(() => 'fd1.TEST').submitReport,
+          },
+          DAY,
+          () => {},
+          () => {},
+        );
+        await day.session.load();
+        const r = await day.send(
+          reportPayload(
+            day.session.data!,
+            [{ itemKey: 'support', qty: '12' }],
+            '',
+          ),
+        );
+        expect(calls).toBe(lostFirst ? 2 : 1);
+        expect(r).toMatchObject({ kind: 'rejected', code: 'NOT_FOREMAN' });
+        const html = wrap(
+          createElement(ReportDayBody, { report: day, timeZone: TZ }),
+        );
+        if (lostFirst)
+          expect(html).toMatch(/earlier send may already have been recorded/);
+        else {
+          expect(html).toMatch(
+            /Only the current foreman of the crew can do this/,
+          );
+          expect(html).not.toMatch(/may already have been recorded/);
+        }
+        expect(r.kind === 'rejected' && r.uncertain === true).toBe(lostFirst);
+      } finally {
+        globalThis.fetch = real;
+      }
+    });
+});
+
+describe("#39 round 2 (not verified in round 1): day switch keeps each day's owned send", () => {
+  it('today owned (lost) → yesterday → today again: the same payload, read-only, and Retry resends it', async () => {
+    const sv = reportServer();
+    let keys = 0;
+    const days = new ReportDays(
+      sv.api,
+      () => {},
+      () => {},
+      undefined,
+      () => `k${++keys}`,
+    );
+    const today = days.get(DAY);
+    await today.session.load();
+    sv.plan.push('lost');
+    await today.send(
+      reportPayload(
+        today.session.data!,
+        [{ itemKey: 'support', qty: '12' }],
+        '',
+      ),
+    );
+    const render = (d: ReturnType<ReportDays['get']>) =>
+      wrap(createElement(ReportDayBody, { report: d, timeZone: TZ }));
+    expect(render(days.get(DAY))).not.toContain('<input');
+    const yesterday = days.get('2026-10-01');
+    expect(yesterday).not.toBe(today);
+    await yesterday.session.load();
+    expect(render(yesterday)).toContain('<input');
+    expect(render(yesterday)).not.toMatch(/No answer was received/);
+    const back = days.get(DAY);
+    expect(back).toBe(today);
+    const html = render(back);
+    expect(html).not.toContain('<input');
+    expect(html).toContain('>12<');
+    expect(await back.retry()).toMatchObject({ kind: 'ok' });
+    expect(sv.log.map((c) => c.clientMutationId)).toEqual(['k1', 'k1']);
   });
 });

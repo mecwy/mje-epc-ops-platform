@@ -24,6 +24,8 @@ export class FieldApiError extends ApiError {
     code: string,
     status: number,
     public readonly existing: Existing | null = null,
+    /** This answer came after an earlier attempt of the same request was lost. */
+    public readonly afterLostAttempt = false,
   ) {
     super(code, status);
   }
@@ -89,6 +91,7 @@ export async function fieldRequest<T>(
         responseCode(response.status, text),
         response.status,
         existingOf(text),
+        attempt > 0,
       );
     }
     return (await response.json()) as T;

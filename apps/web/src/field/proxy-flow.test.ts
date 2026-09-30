@@ -135,7 +135,11 @@ describe('foreman crew check-in (ProxyFlow)', () => {
     await tick();
     h.sent[0]!.settle(new FieldApiError('GEOFENCE_OUTSIDE', 409));
     await a;
-    expect(h.flow.phase).toEqual({ kind: 'refused', code: 'GEOFENCE_OUTSIDE' });
+    expect(h.flow.phase).toEqual({
+      kind: 'refused',
+      code: 'GEOFENCE_OUTSIDE',
+      uncertain: false,
+    });
     const before = h.locates();
     void h.flow.checkIn(W1, 'TEST');
     await tick();

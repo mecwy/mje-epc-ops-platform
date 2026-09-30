@@ -54,6 +54,16 @@ export class CrewCommands {
   get generation() {
     return this.owned.generation;
   }
+  /** The last refused attempt, its code, and whether it may have been recorded anyway. */
+  get refused(): CrewAttempt | null {
+    return this.owned.refused;
+  }
+  get refusal(): string | null {
+    return this.owned.refusal;
+  }
+  get refusalUncertain(): boolean {
+    return this.owned.refusalUncertain;
+  }
   isUnresolved(personId: string) {
     return this.unresolved?.personId === personId;
   }

@@ -21,7 +21,7 @@ export type ProxyPhase =
   | { kind: 'coarse'; accuracyM: string }
   | { kind: 'stale' }
   | { kind: 'sending' }
-  | { kind: 'refused'; code: string }
+  | { kind: 'refused'; code: string; uncertain: boolean }
   | { kind: 'unsettled'; code: string };
 
 export interface ProxyDeps {
@@ -178,6 +178,17 @@ export class ProxyFlow {
       ),
     );
   }
+  /**
+   * Give up the unresolved check-in (it may already have been recorded): stop resending it,
+   * so another member can be checked in. Nothing is sent; the phone only forgets the attempt.
+   */
+  discard() {
+    const personId = this.person;
+    if (!personId || !this.queue.pending || this.busy) return;
+    this.queue.discard();
+    this.eventDay = null;
+    this.set(personId, { kind: 'idle' });
+  }
   /** Resend the unresolved check-in unchanged. */
   async retry(): Promise<void> {
     const personId = this.person;
@@ -215,6 +226,10 @@ export class ProxyFlow {
       r.code === 'FIX_TIME_INVALID'
     )
       this.fix = null;
-    this.set(personId, { kind: 'refused', code: r.code });
+    this.set(personId, {
+      kind: 'refused',
+      code: r.code,
+      uncertain: r.uncertain,
+    });
   }
 }

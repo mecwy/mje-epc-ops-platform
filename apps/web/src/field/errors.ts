@@ -65,6 +65,26 @@ export const FIELD_ERRORS = {
 } as const satisfies Record<string, MessageKey>;
 export type KnownFieldCode = keyof typeof FIELD_ERRORS;
 
+/**
+ * Refusals the server makes before it replays a key's stored answer (authority is re-checked
+ * first, C57): after an earlier attempt of the same command went unanswered, such a refusal
+ * does not mean nothing was recorded, so it gets its own message and nothing is resent.
+ */
+export const REFUSED_BEFORE_REPLAY = {
+  NOT_FOREMAN: 'fe_notForemanMaybeRecorded',
+  PROXY_NOT_ALLOWED: 'fe_proxyMaybeRecorded',
+} as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
+
+/** The message for a refusal, told apart when an earlier attempt may have been recorded. */
+export function refusalKey(
+  code: string | null | undefined,
+  uncertain: boolean,
+): MessageKey {
+  return uncertain && code && Object.hasOwn(REFUSED_BEFORE_REPLAY, code)
+    ? REFUSED_BEFORE_REPLAY[code as keyof typeof REFUSED_BEFORE_REPLAY]
+    : fieldErrorKey(code);
+}
+
 /** The message for any code; an unknown code gets the generic failure, never its raw text. */
 export function fieldErrorKey(code: string | null | undefined): MessageKey {
   return code && Object.hasOwn(FIELD_ERRORS, code)
