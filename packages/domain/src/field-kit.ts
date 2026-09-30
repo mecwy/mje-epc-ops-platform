@@ -62,6 +62,11 @@ export interface Limit {
    * create a bucket (unbounded rows from one caller); the IP bucket still counts every request.
    */
   onlyActiveEntryCode?: boolean;
+  /**
+   * The value is a device token hash: count per pending device (bucket = its id), and only when
+   * such a device exists, so bogus tokens never create buckets.
+   */
+  pendingDeviceToken?: boolean;
 }
 export const LIMITS = {
   entryIp: (ip: string): Limit => salted('entry-ip', ip, 600, 300),
@@ -74,8 +79,14 @@ export const LIMITS = {
     ...salted('bind-code', code, 3600, 300),
     onlyActiveEntryCode: true,
   }),
-  challenge: (tokenHash: string): Limit =>
-    salted('challenge', tokenHash, 3600, 10),
+  challenge: (tokenHash: string): Limit => ({
+    name: 'challenge',
+    value: tokenHash,
+    windowSec: 3600,
+    max: 10,
+    salted: false,
+    pendingDeviceToken: true,
+  }),
   unknownToken: (ip: string): Limit => salted('unknown-token', ip, 600, 60),
   /** Failed confirms per confirmer (device or account id); counted after the commit. */
   failedConfirms: (actorId: string): Limit => ({
@@ -133,6 +144,21 @@ export class FieldThrottle {
     await c.query("SELECT set_config('app.entry_code', '', true)");
     return r.rowCount === 1;
   }
+  /** The pending device holding this token hash, if any (non-locking lookup policy read). */
+  private async pendingDevice(
+    c: PoolClient,
+    tokenHash: string,
+  ): Promise<string | null> {
+    await c.query("SELECT set_config('app.device_token_hash', $1, true)", [
+      tokenHash,
+    ]);
+    const r = await c.query<{ id: string }>(
+      `SELECT id FROM "FieldDevice" WHERE "tokenHash"=$1 AND state='PENDING'`,
+      [tokenHash],
+    );
+    await c.query("SELECT set_config('app.device_token_hash', '', true)");
+    return r.rows[0]?.id ?? null;
+  }
   /** Counts the request in every bucket first, so a refused request still counts. */
   async hit(limits: Limit[]): Promise<void> {
     const over = await this.tx(async (c) => {
@@ -148,9 +174,16 @@ export class FieldThrottle {
         );
       }
       const keyed = [];
-      for (const l of limits)
-        if (!l.onlyActiveEntryCode || (await this.activeEntryCode(c, l.value)))
-          keyed.push({ l, bucket: await this.bucket(c, l) });
+      for (const l of limits) {
+        if (l.onlyActiveEntryCode && !(await this.activeEntryCode(c, l.value)))
+          continue;
+        if (l.pendingDeviceToken) {
+          const deviceId = await this.pendingDevice(c, l.value);
+          if (deviceId) keyed.push({ l, bucket: `${l.name}:${deviceId}` });
+          continue;
+        }
+        keyed.push({ l, bucket: await this.bucket(c, l) });
+      }
       keyed.sort((a, b) => (a.bucket < b.bucket ? -1 : 1));
       let exceeded = false;
       for (const { l, bucket } of keyed) {

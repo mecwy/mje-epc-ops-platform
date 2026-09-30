@@ -258,7 +258,7 @@ try {
   const workersA = ['pm', 'exec', 'pm2', 'f1', 'f2', 'f3', 'f4', 'fx', 'wx'];
   for (let i = 1; i <= 8; i++) workersA.push(`w${i}`);
   for (let i = 1; i <= 40; i++) workersA.push(`o${i}`);
-  workersA.push('a2only', 'unrostered');
+  workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1');
   for (const k of workersA) await addPerson(k, orgA);
   for (const k of ['pmB', 'wb']) await addPerson(k, orgB);
   const accounts = {};
@@ -529,6 +529,25 @@ try {
   const rotate = (token, newTok, expectedGeneration) =>
     fpost('/device/rotate', token, { newToken: newTok, expectedGeneration });
   const me = (token, opts) => fget('/me', token, opts);
+  /** Every device of the project as the PM list returns it, following the cursor. */
+  async function allDevices(bearer = pm, projectId = projectA) {
+    const out = [];
+    let cursor = null;
+    for (let page = 0; page < 100; page++) {
+      const body = await expectStatus(
+        pget(
+          `/devices?projectId=${projectId}${cursor ? `&cursor=${cursor}` : ''}`,
+          bearer,
+        ),
+        200,
+      );
+      if (Array.isArray(body)) return body; // an unpaged list
+      out.push(...body.devices);
+      if (!body.nextCursor) return out;
+      cursor = body.nextCursor;
+    }
+    throw new Error('device list did not end');
+  }
   async function onboard(personId, opts = {}) {
     const b = await bind(personId, opts);
     assert.equal(b.status, 200, JSON.stringify(b.body));
@@ -789,9 +808,10 @@ try {
     200,
   );
   await expectStatus(
-    change(
-      Array.from({ length: 40 }, (_, i) => open(C.C5, person[`o${i + 1}`])),
-    ),
+    change([
+      ...Array.from({ length: 40 }, (_, i) => open(C.C5, person[`o${i + 1}`])),
+      ...['r1', 'r2', 'p1'].map((k) => open(C.C5, person[k])),
+    ]),
     200,
   );
   {
@@ -879,7 +899,9 @@ try {
     );
     await expectStatus(change([close(assignment(person.unrostered))]), 200);
     // The trigger alone serializes overlapping inserts that bypass the roster lock: the second
-    // waits on the person lock, then sees the first and fails (23P01).
+    // waits on the person lock, then sees the first and fails (23P01). The raw intervals start a
+    // second ahead: the database clock is not monotonic across transactions (the TEST VM's clock
+    // can step back), and "now" right after the close above must not reach back into it.
     // Both clients go through the lock registry, so a failure here can never leave one held.
     const t1 = await withTimeout(owner.connect(), 5_000, 'owner connect');
     const releaseT1 = registerHeld(t1, 'ROLLBACK', []);
@@ -889,7 +911,7 @@ try {
       const insert = (c, crewId) =>
         c.query(
           `INSERT INTO "CrewAssignment"(id,"orgId","projectId","crewId","personId",role,"validFrom","createdBy")
-          VALUES($1,$2,$3,$4,$5,'MEMBER',now(),$6)`,
+          VALUES($1,$2,$3,$4,$5,'MEMBER',now() + interval '1 second',$6)`,
           [
             randomUUID(),
             orgA,
@@ -911,7 +933,7 @@ try {
       assert.equal(await second, '23P01');
       await t2.query('ROLLBACK');
       await owner.query(
-        `UPDATE "CrewAssignment" SET "validUntil"=now(), "closedBy"=$2 WHERE "personId"=$1 AND "validUntil" IS NULL`,
+        `UPDATE "CrewAssignment" SET "validUntil"="validFrom", "closedBy"=$2 WHERE "personId"=$1 AND "validUntil" IS NULL`,
         [person.unrostered, accounts.pm],
       );
     } finally {
@@ -1030,10 +1052,7 @@ try {
       'CHALLENGE_INVALID',
     );
     dev.w1 = { token: b.token, id: b.body.deviceId, rejected: a };
-    const list = await expectStatus(
-      pget(`/devices?projectId=${projectA}`, pm),
-      200,
-    );
+    const list = await allDevices();
     const shown = list.find((d) => d.id === dev.w1.id);
     assert.deepEqual(shown.confirmedBy, {
       kind: 'FOREMAN',
@@ -1428,22 +1447,60 @@ try {
   // ================= revoke vs rotate; release =================
   step('revoke vs rotate; release');
   {
+    // Both orders forced: the requests queue on the person lock in the order they arrive, and
+    // Postgres grants a lock's waiters in queue order.
+    const lineUp = async (personId, first, second) => {
+      const release = await holdAdvisory(personKey(personId));
+      const a = first();
+      await advisoryWaiters(personKey(personId), 1);
+      const b = second();
+      await advisoryWaiters(personKey(personId), 2);
+      await release();
+      return Promise.all([a, b]);
+    };
+    // Rotate first: the rotation lands, then the revoke ends the rotated device.
     dev.w4 = await onboard(person.w4, { foreman: dev.f4.token });
-    const release = await holdAdvisory(personKey(person.w4));
     const N = newToken();
-    const rot = rotate(dev.w4.token, N, 1);
-    const rev = pmDevice('revoke', dev.w4.id, 2);
-    await advisoryWaiters(personKey(person.w4), 2);
-    await release();
-    const [a, b] = await Promise.all([rot, rev]);
-    assert.equal(b.status, 200, JSON.stringify(b.body));
-    assert.ok(
-      a.status === 200 || (a.status === 401 && a.body.code === 'DEVICE_ENDED'),
-      JSON.stringify(a),
+    const [rotated, revoked] = await lineUp(
+      person.w4,
+      () => rotate(dev.w4.token, N, 1),
+      () => pmDevice('revoke', dev.w4.id, 2),
     );
-    await expectStatus(me(dev.w4.token), 401);
-    await expectStatus(me(N), 401);
-    assert.equal((await row(dev.w4.id)).state, 'REVOKED');
+    assert.deepEqual([rotated.status, rotated.body], [200, { generation: 2 }]);
+    assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+    await expectStatus(me(dev.w4.token), 401, 'FIELD_AUTH_REQUIRED');
+    await expectStatus(me(N), 401, 'DEVICE_ENDED');
+    await expectStatus(rotate(dev.w4.token, N, 1), 401, 'DEVICE_ENDED');
+    assert.deepEqual(
+      [(await row(dev.w4.id)).state, (await row(dev.w4.id)).generation],
+      ['REVOKED', 2],
+    );
+    // Revoke first: the rotation then sees REVOKED; its new token was never accepted.
+    dev.r1 = await onboard(person.r1);
+    const N2 = newToken();
+    const [revokedFirst, rotatedAfter] = await lineUp(
+      person.r1,
+      () => pmDevice('revoke', dev.r1.id, 2),
+      () => rotate(dev.r1.token, N2, 1),
+    );
+    assert.equal(revokedFirst.status, 200, JSON.stringify(revokedFirst.body));
+    assert.deepEqual(
+      [rotatedAfter.status, rotatedAfter.body.code],
+      [401, 'DEVICE_ENDED'],
+    );
+    await expectStatus(me(dev.r1.token), 401, 'DEVICE_ENDED');
+    await expectStatus(me(N2), 401, 'FIELD_AUTH_REQUIRED');
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "FieldTokenHash" WHERE hash=$1`,
+        [sha(N2)],
+      ),
+      0,
+    );
+    assert.deepEqual(
+      [(await row(dev.r1.id)).state, (await row(dev.r1.id)).generation],
+      ['REVOKED', 1],
+    );
     dev.w6 = await onboard(person.w6, { foreman: dev.f4.token });
     const key = randomUUID();
     const released = await expectStatus(
@@ -1468,7 +1525,7 @@ try {
       'INVALID_INPUT',
     );
     pass(
-      `revoke vs rotate lined up on the person lock (this run: rotate ${a.status}): the revoke always lands and neither the old nor the new token works afterwards; release ends the own device (REVOKED/RELEASED) and a replay re-authenticates (DEVICE_ENDED); a key that differs from clientMutationId is INVALID_INPUT`,
+      `revoke vs rotate in both forced orders on the person lock: rotate first → 200 (generation 2), then the revoke ends it (old token FIELD_AUTH_REQUIRED, new one DEVICE_ENDED); revoke first → the rotation gets DEVICE_ENDED and its new token was never accepted (not registered, FIELD_AUTH_REQUIRED); release ends the own device (REVOKED/RELEASED) and a replay re-authenticates (DEVICE_ENDED); a key that differs from clientMutationId is INVALID_INPUT`,
     );
   }
 
@@ -1601,10 +1658,7 @@ try {
     assert.equal((await row(dev.o2.id)).memberUntil, null);
     await expectStatus(me(dev.o1.token), 200);
     await untilDb(E);
-    const listed = await expectStatus(
-      pget(`/devices?projectId=${projectA}`, pm),
-      200,
-    );
+    const listed = await allDevices();
     const o1 = listed.find((d) => d.id === dev.o1.id);
     assert.deepEqual([o1.state, o1.effectiveState], ['CONFIRMED', 'EXPIRED']);
     await expectStatus(me(dev.o1.token), 401, 'DEVICE_ENDED');
@@ -1626,8 +1680,25 @@ try {
     assert.deepEqual([t.state, t.endReason], ['REVOKED', 'UNASSIGNED']);
     assert.equal((await row(pending3.body.deviceId)).state, 'REJECTED');
     await expectStatus(me(dev.o3.token), 401, 'DEVICE_ENDED');
+    // Pending devices whose membership ended do not hold bind slots: three pending binds, a
+    // scheduled end at E, a reassignment after E, and a new bind, with no request by the old
+    // devices in between (they are still stored PENDING).
+    const olds = [];
+    for (let k = 0; k < 3; k++) olds.push(await bind(person.p1));
+    assert.ok(olds.every((b) => b.status === 200));
+    await expectStatus(bind(person.p1), 409, 'TOO_MANY_PENDING');
+    const Ep = await dbFuture(4000);
+    await expectStatus(change([close(assignment(person.p1), Ep)]), 200);
+    await untilDb(Ep);
+    await expectStatus(change([open(C.C5, person.p1)]), 200);
+    for (const b of olds)
+      assert.equal((await row(b.body.deviceId)).state, 'PENDING');
+    dev.p1 = await onboard(person.p1);
+    await expectStatus(me(dev.p1.token), 200);
+    for (const b of olds)
+      assert.equal((await row(b.body.deviceId)).endReason, 'SUPERSEDED');
     pass(
-      'a transfer in one transaction keeps the device; split over two it ends (REVOKED/UNASSIGNED) and a reassignment never revives it; a scheduled end at E works before E and fails after E with no request in between (PM list shows EXPIRED meanwhile), stays failed after a reassignment, and its elapsed memberUntil never moves; a scheduled transfer added before E keeps the device; immediate termination revokes the confirmed and rejects the pending device',
+      'pending devices whose membership ended (still stored PENDING) do not block a new bind after reassignment, and are superseded when it is confirmed; a transfer in one transaction keeps the device; split over two it ends (REVOKED/UNASSIGNED) and a reassignment never revives it; a scheduled end at E works before E and fails after E with no request in between (PM list shows EXPIRED meanwhile), stays failed after a reassignment, and its elapsed memberUntil never moves; a scheduled transfer added before E keeps the device; immediate termination revokes the confirmed and rejects the pending device',
     );
   }
 
@@ -1998,6 +2069,23 @@ try {
       rowsAfter - rowsBefore <= 2,
       `${rowsAfter - rowsBefore} new throttle rows`,
     );
+    // Bogus device tokens on the challenge route, far beyond the unknown-token limit of their
+    // IP: the IP gate refuses them first and no challenge bucket is made for a non-device.
+    const tokenRowsBefore = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    const bogus = await burst(600, () =>
+      fpost('/device/challenge', newToken(), {}, { ip: '10.6.0.3' }),
+    );
+    assert.ok(bogus.every((x) => x.status === 401 || x.status === 429));
+    assert.ok(bogus.filter((x) => x.status === 429).length >= 500);
+    const tokenRowsAfter = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    assert.ok(
+      tokenRowsAfter - tokenRowsBefore <= 2,
+      `${tokenRowsAfter - tokenRowsBefore} new throttle rows from bogus challenge tokens`,
+    );
     // The same for binds: guessed codes never create bind-code buckets.
     const bindRowsBefore = await count(
       `SELECT count(*)::int AS n FROM "FieldThrottle"`,
@@ -2026,7 +2114,56 @@ try {
     for (const { bucket } of buckets.rows)
       assert.match(bucket, /^[a-z-]+:([0-9a-f]{64}|[0-9a-f-]{36})$/);
     pass(
-      'throttles: entry 300/10 min per IP and 600/10 min per code, bind 150/h per IP and 300/h per code (refused requests count), challenge 10/h per device, 60 unknown tokens/10 min per IP (then a valid token from that IP too), 30 failed confirms/h per confirmer (then the right code too) → 429; 37 people behind one NAT onboard without a 429; 2000 distinct invalid entry codes (and 200 invalid bind codes) from one IP add at most 2 throttle rows each, never a bucket per guessed code; buckets hold only salted hashes or ids',
+      'throttles: entry 300/10 min per IP and 600/10 min per code, bind 150/h per IP and 300/h per code (refused requests count), challenge 10/h per device, 60 unknown tokens/10 min per IP (then a valid token from that IP too), 30 failed confirms/h per confirmer (then the right code too) → 429; 37 people behind one NAT onboard without a 429; 2000 distinct invalid entry codes, 200 invalid bind codes and 600 bogus challenge tokens from one IP add at most 2 throttle rows each, never a bucket per guess; buckets hold only salted hashes or ids',
+    );
+  }
+
+  // ================= PM device list reaches every device =================
+  step('PM device list reaches every device');
+  {
+    // 501 newer historical rows (synthetic TEST rows, ended) put an older confirmed device
+    // beyond the first 500 rows of the list.
+    await owner.query(
+      `INSERT INTO "FieldDevice"(id,"orgId","projectId","personId",state,"tokenHash","pendingUntil","expiresAt","lastSeenAt","endedAt","endReason")
+      SELECT gen_random_uuid(), $1, $2, $3, 'REJECTED', encode(sha256(convert_to(gen_random_uuid()::text, 'UTF8')), 'hex'),
+        now(), now() + interval '1 day', now(), now(), 'REJECTED'
+      FROM generate_series(1, 501)`,
+      [orgA, projectA, person.w5],
+    );
+    const firstPage = await expectStatus(
+      pget(`/devices?projectId=${projectA}&limit=500`, pm),
+      200,
+    );
+    const firstRows = Array.isArray(firstPage) ? firstPage : firstPage.devices;
+    assert.ok(firstRows.length <= 500);
+    assert.ok(
+      !firstRows.some((d) => d.id === dev.f3.id),
+      'expected behind 500 rows',
+    );
+    const everything = await allDevices();
+    const target = everything.find((d) => d.id === dev.f3.id);
+    assert.ok(
+      target,
+      'an older confirmed device is reachable through the list',
+    );
+    assert.equal(target.state, 'CONFIRMED');
+    assert.equal(new Set(everything.map((d) => d.id)).size, everything.length);
+    assert.equal(
+      everything.length,
+      await count(
+        `SELECT count(*)::int AS n FROM "FieldDevice" WHERE "projectId"=$1`,
+        [projectA],
+      ),
+    );
+    await expectStatus(pmDevice('revoke', target.id, target.version), 200);
+    await expectStatus(me(dev.f3.token), 401, 'DEVICE_ENDED');
+    await expectStatus(
+      pget(`/devices?projectId=${projectA}&cursor=not-a-cursor`, pm),
+      400,
+      'INVALID_INPUT',
+    );
+    pass(
+      `the PM device list pages with a cursor (at most 500 per page, newest first): an older confirmed device behind 501 newer rows is not on the first page, is found by following the cursor (${everything.length} devices, each exactly once, all of the project) and is revoked; a malformed cursor is INVALID_INPUT`,
     );
   }
 

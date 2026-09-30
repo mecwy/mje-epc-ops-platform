@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   InvalidReportInput,
+  encodeDeviceCursor,
+  parseDeviceListQuery,
   fieldBearer,
   parseBindCommand,
   parseChallengeConfirmCommand,
@@ -107,5 +109,38 @@ describe('roster commands', () => {
       expect(() => parseRosterChangesCommand({ ...base, changes })).toThrow(
         InvalidReportInput,
       );
+  });
+});
+
+describe('PM device list query', () => {
+  const projectId = '4f7c1a52-3d7e-4c21-9e1a-2b3c4d5e6f70';
+  const deviceId = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+  it('round-trips a cursor at microsecond precision and bounds the page size', () => {
+    const cursor = encodeDeviceCursor('2026-09-30T01:02:03.123456Z', deviceId);
+    expect(cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(parseDeviceListQuery({ projectId, cursor, limit: '500' })).toEqual({
+      projectId,
+      after: { createdAt: '2026-09-30T01:02:03.123456Z', id: deviceId },
+      limit: 500,
+    });
+    expect(
+      parseDeviceListQuery({ projectId, cursor: undefined, limit: undefined }),
+    ).toEqual({ projectId, after: null, limit: 200 });
+    for (const limit of ['0', '501', '-1', '1.5', 'x'])
+      expect(() =>
+        parseDeviceListQuery({ projectId, cursor: undefined, limit }),
+      ).toThrow(InvalidReportInput);
+  });
+  it('refuses a malformed or tampered cursor', () => {
+    for (const cursor of [
+      'not-a-cursor',
+      encodeDeviceCursor('2026-09-30T01:02:03Z', deviceId),
+      encodeDeviceCursor('2026-09-30T01:02:03.123456Z', 'x'),
+      encodeDeviceCursor('2026-09-30T01:02:03.123456Z', `${deviceId}|x`),
+      '%%%',
+    ])
+      expect(() =>
+        parseDeviceListQuery({ projectId, cursor, limit: undefined }),
+      ).toThrow(InvalidReportInput);
   });
 });

@@ -15,6 +15,7 @@ import { FieldStore } from '@mje/domain';
 import {
   InvalidReportInput,
   parseCreateCrewCommand,
+  parseDeviceListQuery,
   parseEndCrewCommand,
   parsePmConfirmCommand,
   parsePmDeviceCommand,
@@ -63,8 +64,17 @@ export class FieldAdminController {
     return this.store.roster(await this.identity(request), projectId(id));
   }
   @Get('devices')
-  async devices(@Req() request: Request, @Query('projectId') id: unknown) {
-    return this.store.devices(await this.identity(request), projectId(id));
+  async devices(
+    @Req() request: Request,
+    @Query('projectId') id: unknown,
+    @Query('cursor') cursor: unknown,
+    @Query('limit') limit: unknown,
+  ) {
+    const identity = await this.identity(request);
+    return this.store.devices(
+      identity,
+      parseDeviceListQuery({ projectId: id, cursor, limit }),
+    );
   }
   @Post('crews')
   @HttpCode(200)

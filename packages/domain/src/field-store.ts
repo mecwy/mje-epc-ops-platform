@@ -8,16 +8,19 @@
  */
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { encodeDeviceCursor } from '@mje/contracts';
 import type {
   BindCommand,
   ChallengeConfirmCommand,
   ChallengeDto,
   CreateCrewCommand,
   DeviceDecisionDto,
+  DeviceListQuery,
   EndCrewCommand,
   EntryCommand,
   EntryDto,
   FieldDeviceDto,
+  FieldDeviceListDto,
   FieldMeDto,
   PmConfirmCommand,
   PmDeviceCommand,
@@ -189,9 +192,12 @@ export class FieldStore {
       if (!run.rows[0]!.member) throw new FieldError('PERSON_NOT_ROSTERED');
       const pending = await client.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM "FieldDevice" WHERE "orgId"=$1 AND "projectId"=$2 AND "personId"=$3
-          AND state='PENDING' AND "pendingUntil" > now()`,
+          AND state='PENDING' AND "pendingUntil" > now() AND "expiresAt" > now()
+          AND ("memberUntil" IS NULL OR "memberUntil" > now())`,
         [orgId, projectId, cmd.personId],
       );
+      // Only pending devices that are still live by every deadline hold a slot; one whose
+      // membership ended is already refused by its timestamps even while stored PENDING.
       if (pending.rows[0]!.n >= MAX_PENDING_PER_PERSON)
         throw new FieldError('TOO_MANY_PENDING');
       const id = randomUUID();
@@ -317,6 +323,9 @@ export class FieldStore {
 
   /** A new 6-digit code for the pending browser to show; its previous one is superseded. */
   async challenge(ip: string, tokenHash: string): Promise<ChallengeDto> {
+    // The IP gate first; the per-device bucket exists only for a real pending device.
+    if (await this.throttle.full(LIMITS.unknownToken(ip)))
+      throw new FieldError('RATE_LIMITED');
     await this.throttle.hit([LIMITS.challenge(tokenHash)]);
     return fieldTransaction(
       this.pool,
@@ -810,10 +819,15 @@ export class FieldStore {
       return readRoster(client, actor.orgId, projectId);
     });
   }
+  /**
+   * One page of the project's devices, newest first (keyset on exact creation time and id), so
+   * every device, however old, is reachable by following `nextCursor`.
+   */
   async devices(
     identity: Identity,
-    projectId: string,
-  ): Promise<FieldDeviceDto[]> {
+    query: DeviceListQuery,
+  ): Promise<FieldDeviceListDto> {
+    const { projectId, after, limit } = query;
     return this.pm(identity, projectId, async (client, actor) => {
       const r = await client.query<
         DeviceRow & {
@@ -823,15 +837,31 @@ export class FieldStore {
           confirmedAt: Date | null;
           confirmedByPersonId: string | null;
           confirmedByDeviceId: string | null;
+          createdAtKey: string;
         }
       >(
         `SELECT ${DEVICE_COLUMNS}, now() AS now, p."displayName", d."endReason", d."confirmedAt",
-          d."confirmedByPersonId", d."confirmedByDeviceId"
+          d."confirmedByPersonId", d."confirmedByDeviceId",
+          to_char(d."createdAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAtKey"
         FROM "FieldDevice" d JOIN "Person" p ON p."orgId"=d."orgId" AND p.id=d."personId"
-        WHERE d."orgId"=$1 AND d."projectId"=$2 ORDER BY d."createdAt" DESC, d.id LIMIT 500`,
-        [actor.orgId, projectId],
+        WHERE d."orgId"=$1 AND d."projectId"=$2
+          AND ($3::timestamptz IS NULL OR (d."createdAt", d.id) < ($3::timestamptz, $4::uuid))
+        ORDER BY d."createdAt" DESC, d.id DESC LIMIT $5`,
+        [
+          actor.orgId,
+          projectId,
+          after?.createdAt ?? null,
+          after?.id ?? null,
+          limit + 1,
+        ],
       );
-      return r.rows.map((d) => ({
+      const page = r.rows.slice(0, limit);
+      const last = page.at(-1);
+      const nextCursor =
+        r.rows.length > limit && last
+          ? encodeDeviceCursor(last.createdAtKey, last.id)
+          : null;
+      const devices = page.map((d): FieldDeviceDto => ({
         id: d.id,
         personId: d.personId,
         displayName: d.displayName,
@@ -851,6 +881,7 @@ export class FieldStore {
         expiresAt: d.expiresAt.toISOString(),
         memberUntil: iso(d.memberUntil),
       }));
+      return { devices, nextCursor };
     });
   }
   /** Revoke (CONFIRMED → REVOKED, PENDING → REJECTED) or reject (PENDING) one device row. */

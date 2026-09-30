@@ -165,6 +165,19 @@ export interface FieldDeviceDto {
   expiresAt: string;
   memberUntil: string | null;
 }
+/** One page of the PM device list, newest first; follow `nextCursor` until it is null. */
+export interface FieldDeviceListDto {
+  devices: FieldDeviceDto[];
+  nextCursor: string | null;
+}
+export interface DeviceListQuery {
+  projectId: string;
+  /** Position after the last row of the previous page (exact creation time and id). */
+  after: { createdAt: string; id: string } | null;
+  limit: number;
+}
+export const DEVICE_PAGE_MAX = 500;
+export const DEVICE_PAGE_DEFAULT = 200;
 export interface CrewDto {
   id: string;
   code: string;
@@ -348,4 +361,46 @@ export function parseRosterChangesCommand(v: unknown): RosterChangesCommand {
   if (new Set(closes).size !== closes.length)
     throw new InvalidReportInput('changes');
   return { ...rosterBase(o), changes };
+}
+
+/** Microsecond UTC instant as the device list cursor carries it. */
+const CURSOR_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+/** The opaque cursor after a row: base64url of `<createdAt µs>|<id>`. */
+export function encodeDeviceCursor(createdAt: string, id: string): string {
+  return btoa(`${createdAt}|${id}`)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+export function parseDeviceListQuery(q: {
+  projectId: unknown;
+  cursor: unknown;
+  limit: unknown;
+}): DeviceListQuery {
+  const projectId = id(q.projectId, 'projectId');
+  let limit = DEVICE_PAGE_DEFAULT;
+  if (q.limit !== undefined) {
+    const n =
+      typeof q.limit === 'string' && /^\d{1,4}$/.test(q.limit)
+        ? Number(q.limit)
+        : NaN;
+    if (!(n >= 1 && n <= DEVICE_PAGE_MAX))
+      throw new InvalidReportInput('limit');
+    limit = n;
+  }
+  let after: DeviceListQuery['after'] = null;
+  if (q.cursor !== undefined) {
+    const raw = pattern(q.cursor, /^[A-Za-z0-9_-]{1,120}$/, 'cursor', 120);
+    let decoded: string;
+    try {
+      decoded = atob(raw.replace(/-/g, '+').replace(/_/g, '/'));
+    } catch {
+      throw new InvalidReportInput('cursor');
+    }
+    const [createdAt, deviceId, rest] = decoded.split('|');
+    if (rest !== undefined || !createdAt || !CURSOR_TIME.test(createdAt))
+      throw new InvalidReportInput('cursor');
+    after = { createdAt, id: id(deviceId, 'cursor') };
+  }
+  return { projectId, after, limit };
 }
