@@ -42,7 +42,10 @@ export class OwnedCommands<D, A> {
   }
   get canStart(): boolean {
     return (
-      this.owner === null && this.session.pending === null && !this.session.busy
+      this.owner === null &&
+      this.session.pending === null &&
+      !this.session.busy &&
+      !this.session.ended
     );
   }
 

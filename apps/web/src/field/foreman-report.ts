@@ -7,9 +7,9 @@ import type {
 } from '@mje/contracts';
 import { dec, isToken } from '@mje/domain/rules';
 import { shift, siteToday } from '../report/format.js';
-import type { DeviceApi } from './field-api.js';
-import type { OwnedCommands } from './owned-commands.js';
-import type { Outcome } from './session.js';
+import { FieldApiError, type DeviceApi } from './field-api.js';
+import { OwnedCommands } from './owned-commands.js';
+import { FieldSession, type Outcome } from './session.js';
 
 /** item key → quantity as typed: a decimal, 'unknown', 'na' or '' (blank). */
 export type Draft = Record<string, string>;
@@ -107,38 +107,114 @@ export function crewDecision(
     : { kind: 'reject', command: { clientMutationId: key, personId, code } };
 }
 
-/** A report send as sent: its rows (blanks kept), note and the revision it was edited from. */
+/**
+ * A report send as sent: the crew and site day it was typed for, its rows (blanks kept), note
+ * and the revision it was edited from. All of them come from the read the draft was edited
+ * from; no later read re-binds any of them.
+ */
 export interface ReportSend {
+  crewId: string;
+  businessDate: string;
   rows: { itemKey: string; qty: string }[];
   note: string;
   editedFrom: number;
 }
+/** The payload for rows and a note typed on `data` (the read the form was edited from). */
+export function reportPayload(
+  data: ForemanReportDto,
+  rows: ReportSend['rows'],
+  note: string,
+): ReportSend {
+  return {
+    crewId: data.crewId,
+    businessDate: data.businessDate,
+    rows,
+    note,
+    editedFrom: data.n,
+  };
+}
+
 /**
- * Send a report as edited (AGENTS.md: form state = the owned command's payload): the command
- * carries the revision the draft was edited from, never a newer one read later, so a stale
- * draft gets REVISION_CONFLICT instead of replacing a revision the foreman has not seen.
+ * Send a report as edited (AGENTS.md: form state = the owned command's payload). The command
+ * carries the crew, day and revision the draft was edited for, never ones read later: a stale
+ * draft gets REVISION_CONFLICT, and a draft typed for another crew or day (the foreman was
+ * moved while a recovery read was pending) is refused on the phone as CREW_CHANGED and never
+ * sent. Every field, occurredAt included, is fixed once when the command is built, so a Retry
+ * under the same key sends the same body and the server replays the stored answer.
  */
 export function sendReport(
   sends: OwnedCommands<ForemanReportDto, ReportSend>,
   api: Pick<DeviceApi, 'submitReport'>,
-  businessDate: string,
   payload: ReportSend,
   now: () => Date = () => new Date(),
 ): Promise<Outcome<unknown>> {
   return sends.run(payload, (d, key) => {
     if (!d) return null;
-    return {
-      key,
-      send: () =>
-        api.submitReport({
-          clientMutationId: key,
-          businessDate,
-          crewId: d.crewId,
-          expectedRevision: payload.editedFrom,
-          rows: payload.rows,
-          note: payload.note,
-          occurredAt: now().toISOString(),
-        }),
+    if (d.crewId !== payload.crewId || d.businessDate !== payload.businessDate)
+      return {
+        key,
+        send: () => Promise.reject(new FieldApiError('CREW_CHANGED', 0)),
+      };
+    const command: ForemanReportCommand = {
+      clientMutationId: key,
+      businessDate: payload.businessDate,
+      crewId: payload.crewId,
+      expectedRevision: payload.editedFrom,
+      rows: payload.rows,
+      note: payload.note,
+      occurredAt: now().toISOString(),
     };
+    return { key, send: () => api.submitReport(command) };
   });
+}
+
+/**
+ * One site day of the foreman's report, for the card's life: the read, its owned sends and
+ * the last refused payload. A first send and a Retry settle through the same path, so a
+ * conflict reached either way keeps what was typed for the "you had typed" hints.
+ */
+export class ReportDay {
+  readonly session: FieldSession<ForemanReportDto>;
+  readonly sends: OwnedCommands<ForemanReportDto, ReportSend>;
+  /** The payload of the last definite refusal (shown beside the latest read). */
+  refused: ReportSend | null = null;
+
+  constructor(
+    private readonly api: Pick<DeviceApi, 'report' | 'submitReport'>,
+    readonly day: string,
+    private readonly notify: () => void,
+    onEnded: (code: string) => void,
+    private readonly now: () => Date = () => new Date(),
+    newKey?: () => string,
+  ) {
+    this.session = new FieldSession<ForemanReportDto>(
+      () => api.report(day),
+      notify,
+      { onEnded },
+    );
+    this.sends = new OwnedCommands(this.session, newKey);
+  }
+  async send(payload: ReportSend): Promise<Outcome<unknown>> {
+    this.refused = null;
+    return this.settle(
+      payload,
+      await sendReport(this.sends, this.api, payload, this.now),
+    );
+  }
+  /** Resend the unresolved send unchanged (same body, same key). */
+  async retry(): Promise<Outcome<unknown>> {
+    const payload = this.sends.unresolved;
+    if (!payload) return { kind: 'failed', code: 'NOT_FOUND' };
+    this.refused = null;
+    return this.settle(payload, await this.sends.retry());
+  }
+  discard() {
+    this.refused = null;
+    this.sends.discard();
+  }
+  private settle(payload: ReportSend, r: Outcome<unknown>) {
+    if (r.kind === 'rejected') this.refused = payload;
+    this.notify();
+    return r;
+  }
 }

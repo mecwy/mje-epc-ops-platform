@@ -82,7 +82,7 @@ const ok = (over: Partial<CheckInResultDto> = {}): CheckInResultDto => ({
 describe('foreman crew check-in (ProxyFlow)', () => {
   it("sends the member with the foreman's own fix, reuses a fresh fix for the next member", async () => {
     const h = harness();
-    const a = h.flow.checkIn(W1);
+    const a = h.flow.checkIn(W1, 'TEST');
     await tick();
     expect(h.sent[0]!.body.personId).toBe(W1);
     expect(parseProxyCheckInCommand(h.sent[0]!.body)).toEqual(h.sent[0]!.body);
@@ -90,26 +90,26 @@ describe('foreman crew check-in (ProxyFlow)', () => {
     await a;
     expect(h.flow.doneFor(W1)?.kind).toBe('FOREMAN_PROXY');
     h.setClock(Date.parse('2026-10-02T08:01:00.000Z'));
-    const b = h.flow.checkIn(W2);
+    const b = h.flow.checkIn(W2, 'TEST');
     await tick();
     expect(h.locates()).toBe(1);
     h.sent[1]!.settle(ok());
     await b;
     // Past 90 s the phone locates again (T1 allows at most 2 minutes).
     h.setClock(Date.parse('2026-10-02T08:02:00.000Z'));
-    void h.flow.checkIn('33333333-3333-4333-8333-333333333333');
+    void h.flow.checkIn('33333333-3333-4333-8333-333333333333', 'TEST');
     await tick();
     expect(h.locates()).toBe(2);
   });
   it('one member at a time: an unresolved check-in is resent unchanged before anyone else', async () => {
     const h = harness();
-    const a = h.flow.checkIn(W1);
+    const a = h.flow.checkIn(W1, 'TEST');
     await tick();
     h.sent[0]!.settle(new FieldApiError('NETWORK', 0));
     await a;
     expect(h.flow.phase.kind).toBe('unsettled');
     expect(h.flow.canStart(W2)).toBe(false);
-    await h.flow.checkIn(W2);
+    await h.flow.checkIn(W2, 'TEST');
     expect(h.sent).toHaveLength(1);
     h.setClock(Date.parse('2026-10-02T08:10:00.000Z'));
     const r = h.flow.retry();
@@ -127,23 +127,23 @@ describe('foreman crew check-in (ProxyFlow)', () => {
   it('a coarse fix is not sent; a fence refusal drops the cached fix', async () => {
     const h = harness();
     h.setAccuracy('150.00');
-    await h.flow.checkIn(W1);
+    await h.flow.checkIn(W1, 'TEST');
     expect(h.flow.phase).toEqual({ kind: 'coarse', accuracyM: '150.00' });
     expect(h.sent).toHaveLength(0);
     h.setAccuracy('20.00');
-    const a = h.flow.checkIn(W1);
+    const a = h.flow.checkIn(W1, 'TEST');
     await tick();
     h.sent[0]!.settle(new FieldApiError('GEOFENCE_OUTSIDE', 409));
     await a;
     expect(h.flow.phase).toEqual({ kind: 'refused', code: 'GEOFENCE_OUTSIDE' });
     const before = h.locates();
-    void h.flow.checkIn(W1);
+    void h.flow.checkIn(W1, 'TEST');
     await tick();
     expect(h.locates()).toBe(before + 1);
   });
   it('ALREADY_CHECKED_IN shows the existing check-in; an ended device reaches the page', async () => {
     const h = harness();
-    const a = h.flow.checkIn(W1);
+    const a = h.flow.checkIn(W1, 'TEST');
     await tick();
     h.sent[0]!.settle(
       new FieldApiError('ALREADY_CHECKED_IN', 409, {
@@ -157,7 +157,7 @@ describe('foreman crew check-in (ProxyFlow)', () => {
       kind: 'SELF',
       flags: [],
     });
-    const b = h.flow.checkIn(W2);
+    const b = h.flow.checkIn(W2, 'TEST');
     await tick();
     h.sent[1]!.settle(new FieldApiError('DEVICE_ENDED', 401));
     await b;
@@ -165,7 +165,7 @@ describe('foreman crew check-in (ProxyFlow)', () => {
   });
   it("forgets yesterday's results after the site's midnight", async () => {
     const h = harness(Date.parse('2026-10-02T21:50:00.000Z'));
-    const a = h.flow.checkIn(W1);
+    const a = h.flow.checkIn(W1, 'TEST');
     await tick();
     h.sent[0]!.settle(ok());
     await a;

@@ -597,6 +597,12 @@ export const MESSAGES = {
     'Telefoni ove osobe su se u međuvremenu promenili; spisak je osvežen. Proverite i ponovo potvrdite.',
     'Los teléfonos de esta persona cambiaron; la lista se actualizó. Comprueba y confirma de nuevo.',
   ],
+  fe_crewChanged: [
+    '你已被调到另一个班组：这份报量是为原班组填写的，没有发送。请在当前班组的报量里重新填写。',
+    'You were moved to another crew: this report was typed for your previous crew and was not sent. Fill in the report for your current crew.',
+    'Premešteni ste u drugu ekipu: ovaj izveštaj je unet za prethodnu ekipu i nije poslat. Popunite izveštaj za trenutnu ekipu.',
+    'Te han cambiado de cuadrilla: este parte se escribió para tu cuadrilla anterior y no se envió. Rellena el parte de tu cuadrilla actual.',
+  ],
   fe_crewCodeTaken: [
     '这个班组代码已被使用，请换一个。',
     'This crew code is already used; choose another.',
@@ -842,6 +848,12 @@ export const MESSAGES = {
     'Mi cuadrilla · {crew}',
   ],
   fm_latest: ['最新：{v}', 'Latest: {v}', 'Najnovije: {v}', 'Último: {v}'],
+  fm_leftCrew: [
+    '已不在你的班组（上次操作仍可重试或放弃）',
+    'No longer in your crew (the last attempt can still be retried or given up)',
+    'Više nije u vašoj ekipi (poslednji pokušaj se i dalje može ponoviti ili odbaciti)',
+    'Ya no está en tu cuadrilla (el último intento aún se puede reintentar o descartar)',
+  ],
   fm_noItems: [
     '本项目没有可报的工作项',
     'This project has no work items to report',

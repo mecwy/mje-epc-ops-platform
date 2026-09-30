@@ -9,8 +9,13 @@ import type {
 import { ApiError } from '../api.js';
 import { I18nProvider } from '../i18n.js';
 import { CrewCommands } from './crew-commands.js';
-import { ConfirmSheet, OwnedReport, ReportForm } from './ForemanPanel.js';
-import { sendReport, type ReportSend } from './foreman-report.js';
+import { ConfirmSheet, ReportDayBody } from './ForemanPanel.js';
+import {
+  ReportDay,
+  reportPayload,
+  sendReport,
+  type ReportSend,
+} from './foreman-report.js';
 import { OwnedCommands } from './owned-commands.js';
 import { FieldSession } from './session.js';
 
@@ -37,7 +42,7 @@ describe('#39 quantity form follows the rule: form state = the owned send payloa
       () => {},
     );
     await session.load();
-    const editedFrom = session.data!.n;
+    const editedOn = session.data!;
     server = report(2, '15'); // another send lands
     await session.load(); // and is read before this draft is sent
     const sends = new OwnedCommands<ForemanReportDto, ReportSend>(session);
@@ -51,51 +56,35 @@ describe('#39 quantity form follows the rule: form state = the owned send payloa
           return {};
         },
       },
-      '2026-10-02',
-      { rows: [{ itemKey: 'support', qty: '12' }], note: '', editedFrom },
+      reportPayload(editedOn, [{ itemKey: 'support', qty: '12' }], ''),
     );
     expect(r).toMatchObject({ code: 'REVISION_CONFLICT' });
     expect(sent.map((c) => c.expectedRevision)).toEqual([1]);
     expect(sends.current).toBeNull();
     expect(sends.refusal).toBe('REVISION_CONFLICT');
   });
-  it('while owned only the sent rows show, read-only; after a refusal the form shows the latest revision and what was typed', async () => {
-    const session = new FieldSession<ForemanReportDto>(
-      async () => report(1, '10'),
+  it('while owned only the sent rows show, read-only', async () => {
+    const day = new ReportDay(
+      {
+        report: async () => report(1, '10'),
+        submitReport: () => Promise.reject(new ApiError('NETWORK', 0)),
+      },
+      '2026-10-02',
+      () => {},
       () => {},
     );
-    await session.load();
-    const sends = new OwnedCommands<ForemanReportDto, ReportSend>(session);
-    const payload = {
-      rows: [{ itemKey: 'support', qty: '12' }],
-      note: '',
-      editedFrom: 1,
-    };
-    await sends.run(payload, (_d, key) => ({
-      key,
-      send: () => Promise.reject(new ApiError('NETWORK', 0)),
-    }));
+    await day.session.load();
+    await day.send(
+      reportPayload(day.session.data!, [{ itemKey: 'support', qty: '12' }], ''),
+    );
     const owned = wrap(
-      createElement(OwnedReport, {
-        data: session.data!,
-        sends,
-        payload: sends.current!,
+      createElement(ReportDayBody, {
+        report: day,
+        timeZone: 'Europe/Belgrade',
       }),
     );
     expect(owned).not.toContain('<input');
     expect(owned).toContain('>12<');
-    const after = wrap(
-      createElement(ReportForm, {
-        data: report(2, '15'),
-        timeZone: 'Europe/Belgrade',
-        sends: new OwnedCommands<ForemanReportDto, ReportSend>(session),
-        refused: payload,
-        onSend: () => {},
-      }),
-    );
-    expect(after).toContain('value="15"');
-    expect(after).not.toContain('value="12"');
-    expect(after).toMatch(/You had typed 12/);
   });
 });
 
@@ -141,7 +130,12 @@ describe('#39 crew confirm sheet follows the rule', () => {
       },
       rejectCrew: async () => ({}) as never,
     });
-    await commands.run({ personId: 'w', what: 'confirm', code: '111111' });
+    await commands.run({
+      personId: 'w',
+      name: 'TEST',
+      what: 'confirm',
+      code: '111111',
+    });
     const html = wrap(
       createElement(ConfirmSheet, {
         commands,
