@@ -51,7 +51,10 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
   const block = adoptBlock(v, pm);
   const flow = pm.adopt;
   const seen = flow?.changed[itemKey];
-  const unresolved = flow?.owned.unresolved?.item === itemKey;
+  // This item's adoption while it runs or is unresolved: shown as sent (C51).
+  const owned =
+    flow?.owned.current?.item === itemKey ? flow.owned.current : null;
+  const unresolved = owned !== null && flow?.owned.unresolved !== null;
   const busy = flow?.owned.session.busy ?? false;
   const total =
     v.status === 'COMPLETE' && v.value !== null
@@ -133,16 +136,41 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
           <ErrorText code={error} />
         </div>
       )}
-      {flow && (block === null || unresolved) && (
+      {owned && (
+        <div className="banner warn" role="alert">
+          {unresolved
+            ? t('fa_adoptUnresolved', { v: fmtNum(owned.value, locale) })
+            : t('saving')}
+        </div>
+      )}
+      {flow && owned && unresolved && (
+        <span className="chips">
+          <button
+            type="button"
+            className="pill"
+            disabled={busy}
+            onClick={() => flow.discard()}
+          >
+            {t('pm_giveUp')}
+          </button>
+          <button
+            type="button"
+            className="pill accent"
+            disabled={busy}
+            onClick={() => void use()}
+          >
+            {t('retry')}
+          </button>
+        </span>
+      )}
+      {flow && !owned && block === null && (
         <button
           type="button"
           className="pill accent"
-          disabled={busy || (!unresolved && !flow.owned.canStart)}
+          disabled={busy || !flow.owned.canStart}
           onClick={() => void use()}
         >
-          {unresolved
-            ? t('retry')
-            : t('adoptN', { n: fmtNum(v.value ?? '', locale) })}
+          {t('adoptN', { n: fmtNum(v.value ?? '', locale) })}
         </button>
       )}
       {block === 'notComplete' && pm.canWrite && (

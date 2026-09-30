@@ -449,6 +449,12 @@ export const MESSAGES = {
     'preuzeto {v} ({t})',
     'usado {v} ({t})',
   ],
+  fa_adoptUnresolved: [
+    '采用 {v} 未收到结果：重试会原样再发，或放弃。',
+    'Using {v} got no answer: Retry sends it again unchanged, or give it up.',
+    'Preuzimanje {v} bez odgovora: ponovni pokušaj ga šalje nepromenjeno, ili odustanite.',
+    'Usar {v} no obtuvo respuesta: reintentar lo envía sin cambios, o descártalo.',
+  ],
   fa_allNa: [
     '工头：全部不适用',
     'Foremen: all n/a',

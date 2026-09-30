@@ -157,15 +157,10 @@ function CheckInRow({ c, tz }: { c: CheckInRowDto; tz: string }) {
  * A PM proxy check-in (design §3, C23): a person on the roster that day, a date within the
  * lookback, an optional time (none = the whole day, DAY precision, never invented), the
  * source, and a reason when required. The PM may attach their own location; it is stored as
- * the actor's and never as the worker's. An unresolved send is shown as sent, locked.
+ * the actor's and never as the worker's. Form state = the owned command's payload (C51):
+ * while a proxy is running or unresolved only that payload is shown, read-only.
  */
-function ProxySheet({
-  api,
-  project,
-  sessions,
-  date,
-  onClose,
-}: {
+export function ProxySheet(props: {
   api: ReportApi;
   project: Project;
   sessions: SiteSessions;
@@ -173,38 +168,134 @@ function ProxySheet({
   onClose: () => void;
 }) {
   const { t, locale } = useI18n();
+  const cmds = props.sessions.checkIns(props.date).proxy;
+  const sent = cmds.current;
+  const [error, setError] = useState<string | null>(null);
+  if (!sent)
+    return (
+      <ProxyEdit key={cmds.generation} {...props} refusal={cmds.refusal} />
+    );
+  const tz = props.project.timezone;
+  const unresolved = cmds.unresolved !== null;
+  const busy = cmds.session.busy;
+  const name =
+    props.sessions.roster.data?.assignments.find(
+      (a) => a.personId === sent.personId,
+    )?.displayName ?? '—';
+  const sourceKey = SOURCE_LABEL[sent.source];
+  return (
+    <Sheet title={t('ci_proxy')} onClose={() => !busy && props.onClose()}>
+      <div className="kv">
+        <span>{t('ci_person')}</span>
+        <span>{name}</span>
+      </div>
+      <div className="kv">
+        <span>{t('date')}</span>
+        <span>{fmtDay(sent.businessDate, locale)}</span>
+      </div>
+      <div className="kv">
+        <span>{t('ci_time')}</span>
+        <span>
+          {sent.occurredAt
+            ? fmtTime(sent.occurredAt, locale, tz)
+            : t('ci_wholeDay')}
+        </span>
+      </div>
+      <div className="kv">
+        <span>{t('ci_source')}</span>
+        <span>{t(sourceKey)}</span>
+      </div>
+      {sent.reason && <p className="para small">{sent.reason}</p>}
+      {sent.actorFix && <p className="muted small">{t('ci_fixNote')}</p>}
+      {unresolved ? (
+        <div className="banner warn" role="alert">
+          {t('pm_saveUnresolved')} <ErrorText code={cmds.session.error} />
+        </div>
+      ) : (
+        <p className="muted small">{t('saving')}</p>
+      )}
+      {error && (
+        <div className="banner err" role="alert">
+          <ErrorText code={error} />
+        </div>
+      )}
+      {unresolved && (
+        <div className="row2">
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => cmds.discard()}
+          >
+            {t('pm_giveUp')}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() =>
+              void cmds.retry().then((r) => {
+                if (r.kind === 'ok') props.onClose();
+                else if (r.kind === 'rejected') setError(r.code);
+              })
+            }
+          >
+            {t('retry')}
+          </button>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+function ProxyEdit({
+  api,
+  project,
+  sessions,
+  date,
+  onClose,
+  refusal,
+}: {
+  api: ReportApi;
+  project: Project;
+  sessions: SiteSessions;
+  date: string;
+  onClose: () => void;
+  refusal: string | null;
+}) {
+  const { t, locale } = useI18n();
   const tz = project.timezone;
   const today = siteToday(tz);
   const days = sessions.settings.data?.settings.pmProxyDays ?? 7;
   const allowed = proxyDays(today, days);
   const cmds = sessions.checkIns(date).proxy;
-  const sent = cmds.current;
   const [businessDate, setDate] = useState(
-    sent?.businessDate ?? (allowed.includes(date) ? date : today),
+    allowed.includes(date) ? date : today,
   );
-  const [personId, setPerson] = useState(sent?.personId ?? '');
-  const [time, setTime] = useState(
-    sent?.occurredAt ? fmtTime(sent.occurredAt, 'en-GB', tz) : '',
-  );
-  const [source, setSource] = useState<ProxySource>(
-    sent?.source ?? 'OBSERVED_ON_SITE',
-  );
-  const [reason, setReason] = useState(sent?.reason ?? '');
-  const [fix, setFix] = useState<FixInput | null>(sent?.actorFix ?? null);
+  const [personId, setPerson] = useState('');
+  const [time, setTime] = useState('');
+  const [source, setSource] = useState<ProxySource>('OBSERVED_ON_SITE');
+  const [reason, setReason] = useState('');
+  const [fix, setFix] = useState<FixInput | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(refusal);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {
     void sessions.roster.load();
     if (!sessions.settings.data) void sessions.settings.load();
   }, [sessions]);
-  const locked = cmds.owned;
+  const locked = !cmds.canStart;
   const people = sessions.roster.data
     ? membersOfDay(sessions.roster.data, businessDate, tz)
     : [];
+  const [locating, setLocating] = useState(false);
   const takeFix = async () => {
     setNote(null);
+    setLocating(true);
     const r = await locate(navigator.geolocation);
+    setLocating(false);
+    // A fix that arrives once a proxy is owned is dropped (this form is not shown then).
+    if (cmds.owned) return;
     if (!r.fix) {
       const key =
         r.reason === 'denied'
@@ -221,12 +312,6 @@ function ProxySheet({
   const send = async () => {
     setError(null);
     setProblem(null);
-    if (cmds.unresolved) {
-      const r = await cmds.retry();
-      if (r.kind === 'ok') onClose();
-      else setError(r.code);
-      return;
-    }
     const check = checkProxy(
       { personId, businessDate, time, source, reason, actorFix: fix },
       {
@@ -242,12 +327,9 @@ function ProxySheet({
       key,
       send: () => api.pmProxy({ ...check.command, clientMutationId: key }),
     }));
+    // A lost answer: the sheet now shows the owned payload (ProxySheet).
     if (r.kind === 'ok') onClose();
-    else setError(r.code);
-  };
-  const giveUp = () => {
-    cmds.discard();
-    setError(null);
+    else if (r.kind === 'rejected') setError(r.code);
   };
   const problemKey =
     problem === 'person'
@@ -336,7 +418,7 @@ function ProxySheet({
       <button
         type="button"
         className="ghost"
-        disabled={locked}
+        disabled={locked || locating}
         onClick={() => void takeFix()}
       >
         {fix ? t('ci_fixAgain') : t('ci_attachFix')}
@@ -347,36 +429,19 @@ function ProxySheet({
           {t(problemKey)}
         </div>
       )}
-      {cmds.unresolved && (
-        <div className="banner warn" role="alert">
-          {t('pm_saveUnresolved')} <ErrorText code={cmds.session.error} />
-        </div>
-      )}
-      {error && !cmds.unresolved && (
+      {error && (
         <div className="banner err" role="alert">
           <ErrorText code={error} />
         </div>
       )}
-      <div className="row2">
-        {cmds.unresolved && (
-          <button
-            type="button"
-            className="ghost"
-            disabled={cmds.session.busy}
-            onClick={giveUp}
-          >
-            {t('pm_giveUp')}
-          </button>
-        )}
-        <button
-          type="button"
-          className="primary"
-          disabled={cmds.session.busy || (cmds.owned && !cmds.unresolved)}
-          onClick={() => void send()}
-        >
-          {cmds.unresolved ? t('retry') : t('ci_send')}
-        </button>
-      </div>
+      <button
+        type="button"
+        className="primary"
+        disabled={locked || locating}
+        onClick={() => void send()}
+      >
+        {t('ci_send')}
+      </button>
     </Sheet>
   );
 }

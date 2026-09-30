@@ -111,6 +111,7 @@
   "apps/web/src/site/Devices.tsx",
   "apps/web/src/site/Settings.tsx",
   "apps/web/src/site/SitePage.tsx",
+  "apps/web/src/site/daily-forms.test.ts",
   "apps/web/src/site/device-orderings.test.ts",
   "apps/web/src/site/proxy-rules.test.ts",
   "apps/web/src/site/proxy-rules.ts",
