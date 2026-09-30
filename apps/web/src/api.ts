@@ -23,8 +23,6 @@ import type {
   PhotoLinkDto,
   PhotoSourceDto,
   UnlinkPhotoCommand,
-  EntryCodeDto,
-  RotateEntryCodeCommand,
 } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
@@ -404,10 +402,6 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
         `/api/report/photos/${encodeURIComponent(photoId)}${which === 'thumbnail' ? '/thumbnail' : ''}`,
         await token(),
       ),
-    entryCode: (projectId: string) =>
-      get<EntryCodeDto>('field/entry-code', { projectId }),
-    rotateEntryCode: (c: RotateEntryCodeCommand) =>
-      post<{ code: string; active: boolean }>('field/entry-code/rotate', c),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',

@@ -17,7 +17,6 @@ import type {
   DeviceDecisionDto,
   DeviceListQuery,
   EndCrewCommand,
-  EntryCodeDto,
   EntryCommand,
   EntryDto,
   FieldDeviceDto,
@@ -1039,22 +1038,6 @@ export class FieldStore {
         [actor.orgId, entryCodeId],
       );
       return { code: r.rows[0]!.code, active: r.rows[0]!.retiredAt === null };
-    });
-  }
-  /** The active entry code for its PM (the QR page); never audited, like the rotation. */
-  async entryCode(
-    identity: Identity,
-    projectId: string,
-  ): Promise<EntryCodeDto> {
-    return this.pm(identity, projectId, async (client, actor) => {
-      const r = await client.query<{ code: string; createdAt: Date }>(
-        `SELECT code, "createdAt" FROM "FieldEntryCode" WHERE "orgId"=$1 AND "projectId"=$2 AND "retiredAt" IS NULL`,
-        [actor.orgId, projectId],
-      );
-      const row = r.rows[0];
-      return row
-        ? { code: row.code, createdAt: row.createdAt.toISOString() }
-        : { code: null, createdAt: null };
     });
   }
   async roster(identity: Identity, projectId: string): Promise<RosterDto> {

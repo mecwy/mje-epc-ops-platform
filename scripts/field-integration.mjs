@@ -830,11 +830,6 @@ try {
       key,
     );
   {
-    // A6d: the PM's QR page reads the active code; none before the first rotation.
-    assert.deepEqual(
-      await expectStatus(pget(`/entry-code?projectId=${projectA}`, pm), 200),
-      { code: null, createdAt: null },
-    );
     const k = randomUUID();
     const first = await expectStatus(rotateEntry(projectA, pm, k), 200);
     const replay = await expectStatus(rotateEntry(projectA, pm, k), 200);
@@ -868,23 +863,6 @@ try {
     );
     await expectStatus(rotateEntry(projectA, exec), 403, 'READ_ONLY');
     await expectStatus(rotateEntry(projectA2, pm), 403, 'FORBIDDEN');
-    // The read serves only the active code, to the project's PM only.
-    const current = await expectStatus(
-      pget(`/entry-code?projectId=${projectA}`, pm),
-      200,
-    );
-    assert.equal(current.code, second.code);
-    assert.ok(Date.parse(current.createdAt) > 0);
-    await expectStatus(
-      pget(`/entry-code?projectId=${projectA}`, exec),
-      403,
-      'READ_ONLY',
-    );
-    await expectStatus(
-      pget(`/entry-code?projectId=${projectA2}`, pm),
-      403,
-      'FORBIDDEN',
-    );
     // An empty roster still validates the code; a wrong code is refused either way.
     const empty = await expectStatus(
       fpost('/entry', null, { code: entryCode[projectA2] }),
@@ -906,7 +884,7 @@ try {
     );
     assert.equal(audits.rows.length, 4);
     pass(
-      'entry code: PM rotation is idempotent (replay returns the same code, one row), the previous code stops working, a reader gets READ_ONLY and another project FORBIDDEN; the PM read returns null before the first code and then only the active one (reader READ_ONLY, other project FORBIDDEN); an empty roster still validates the code, a wrong one is ENTRY_CODE_INVALID',
+      'entry code: PM rotation is idempotent (replay returns the same code, one row), the previous code stops working, a reader gets READ_ONLY and another project FORBIDDEN; an empty roster still validates the code, a wrong one is ENTRY_CODE_INVALID',
     );
   }
 
@@ -5282,9 +5260,7 @@ try {
         continue;
       }
       const mayCarryCode = path === '/api/field/device/challenge';
-      const mayCarryEntry =
-        path === '/api/report/field/entry-code/rotate' ||
-        path.startsWith('/api/report/field/entry-code?');
+      const mayCarryEntry = path === '/api/report/field/entry-code/rotate';
       if (!mayCarryCode)
         for (const c of secret.codes)
           assert.ok(
@@ -5324,7 +5300,7 @@ try {
           'process output carried a secret, name or coordinate',
         );
     pass(
-      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} (ALREADY_CHECKED_IN adds only the existing time and kind) with no code, entry code, name or coordinate; challenge codes only in the challenge response and entry codes only in the PM rotation and read responses; audit, event (including refused check-ins) and idempotency rows and all process output carry none of them, nor any coordinate`,
+      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} (ALREADY_CHECKED_IN adds only the existing time and kind) with no code, entry code, name or coordinate; challenge codes only in the challenge response and entry codes only in the rotation response; audit, event (including refused check-ins) and idempotency rows and all process output carry none of them, nor any coordinate`,
     );
   }
 

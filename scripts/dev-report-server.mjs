@@ -273,12 +273,16 @@ if (!roster.crews.length) {
     radiusM: 500,
   });
 }
-let entry = await fieldStore.entryCode(pmIdentity, project);
-if (!entry.code)
-  entry = await fieldStore.rotateEntryCode(pmIdentity, {
-    projectId: project,
-    clientMutationId: randomUUID(),
-  });
+const active = await q(
+  'SELECT code FROM "FieldEntryCode" WHERE "projectId"=$1 AND "retiredAt" IS NULL',
+  [project],
+);
+const entry = active.rowCount
+  ? active.rows[0]
+  : await fieldStore.rotateEntryCode(pmIdentity, {
+      projectId: project,
+      clientMutationId: randomUUID(),
+    });
 const app = await createApp({
   auth,
   verifier,

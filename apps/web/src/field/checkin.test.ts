@@ -59,9 +59,10 @@ describe('check-in rules on the phone', () => {
     const a2 = attempt(key, e, at('2026-10-03T09:00:00.000Z'));
     expect(a1.deviceSentAt).toBe(e.occurredAt);
     expect(a2.deviceSentAt).toBe('2026-10-03T09:00:00.000Z');
-    const { deviceSentAt: _1, ...event1 } = a1;
-    const { deviceSentAt: _2, ...event2 } = a2;
-    expect(event1).toEqual(event2);
+    expect({ ...a1, deviceSentAt: null }).toEqual({
+      ...a2,
+      deviceSentAt: null,
+    });
     // The command is exactly what the server's contract accepts.
     expect(parseCheckInCommand(a2)).toEqual(a2);
   });

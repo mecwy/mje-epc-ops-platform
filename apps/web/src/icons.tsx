@@ -97,17 +97,6 @@ export const Icon = {
         <polyline points="21 15 16 10 5 21" />
       </>,
     ),
-  site: () =>
-    svg(
-      22,
-      1.9,
-      <>
-        <rect x="3" y="3" width="7" height="7" rx="1" />
-        <rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" />
-        <path d="M14 14h3v3h-3zM20 14v1M14 20h1M18 18h3v3" />
-      </>,
-    ),
   pin: () =>
     svg(
       12,
