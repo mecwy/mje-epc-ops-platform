@@ -13,12 +13,16 @@ import type {
   RosterDto,
 } from '@mje/contracts';
 import {
+  DEVICE_COLUMNS,
   FieldError,
+  assertClockCurrent,
   endDevice,
   personLocks,
   rosterLock,
+  type DeviceRow,
   type EventActor,
 } from './field-kit.js';
+import { expiryReason } from './field-rules.js';
 import { audit, type Actor } from './store-kit.js';
 
 /** Rows of a role that contain now (half-open). */
@@ -74,6 +78,8 @@ async function beginRosterWrite(
   await rosterLock(client, orgId, projectId);
   if ((await rosterVersion(client, orgId, projectId)) !== expected)
     throw new FieldError('VERSION_CONFLICT');
+  // Nothing is judged or written with a clock behind time already observed (design §5).
+  await assertClockCurrent(client, orgId, projectId);
 }
 async function bumpRoster(
   client: PoolClient,
@@ -81,8 +87,9 @@ async function bumpRoster(
   projectId: string,
 ) {
   const r = await client.query<{ version: number }>(
-    `INSERT INTO "ProjectRoster"(id,"orgId","projectId",version) VALUES($1,$2,$3,1)
-    ON CONFLICT ("orgId","projectId") DO UPDATE SET version="ProjectRoster".version+1, "updatedAt"=now()
+    `INSERT INTO "ProjectRoster"(id,"orgId","projectId",version,"clockHighWater") VALUES($1,$2,$3,1,now())
+    ON CONFLICT ("orgId","projectId") DO UPDATE SET version="ProjectRoster".version+1, "updatedAt"=now(),
+      "clockHighWater"=GREATEST(COALESCE("ProjectRoster"."clockHighWater", now()), now())
     RETURNING version`,
     [randomUUID(), orgId, projectId],
   );
@@ -102,7 +109,7 @@ async function timeOk(
 }
 
 /**
- * Recomputes `memberUntil` of the persons' live devices (already locked FOR UPDATE) from the
+ * Persists the deadlines that have already passed, then recomputes `memberUntil` of the persons' live devices (already locked FOR UPDATE) from the
  * final interval set. Nobody who is a member now: the devices end at once (CONFIRMED →
  * REVOKED, PENDING → REJECTED, reason UNASSIGNED). An elapsed `memberUntil` is never moved.
  */
@@ -114,6 +121,17 @@ export async function recomputeDevices(
   actor: EventActor,
 ) {
   for (const personId of personIds) {
+    // A deadline this roster write can see has passed is persisted first: the device becomes
+    // terminal, so no later write (or a clock that steps back) can revive or extend it.
+    const live = await client.query<DeviceRow & { now: Date }>(
+      `SELECT ${DEVICE_COLUMNS}, now() AS now FROM "FieldDevice" d
+      WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')`,
+      [orgId, projectId, personId],
+    );
+    for (const d of live.rows) {
+      const lapsed = expiryReason(d, d.now);
+      if (lapsed) await endDevice(client, d, 'EXPIRED', lapsed, actor);
+    }
     const r = await client.query<{
       id: string;
       state: 'PENDING' | 'CONFIRMED';

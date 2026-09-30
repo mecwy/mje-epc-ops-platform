@@ -113,6 +113,7 @@
   "packages/domain/prisma/migrations/202609290002_issues/migration.sql",
   "packages/domain/prisma/migrations/202609300001_photos/migration.sql",
   "packages/domain/prisma/migrations/202610010001_field_roster_devices/migration.sql",
+  "packages/domain/prisma/migrations/202610020001_field_clock_high_water/migration.sql",
   "packages/domain/prisma/migrations/migration_lock.toml",
   "packages/domain/prisma/schema.prisma",
   "packages/domain/src/alpha-store.ts",

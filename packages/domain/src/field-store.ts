@@ -46,6 +46,7 @@ import {
   DEVICE_COLUMNS,
   FieldError,
   FieldThrottle,
+  assertClockCurrent,
   LIMITS,
   deviceEvent,
   endDevice,
@@ -185,6 +186,7 @@ export class FieldStore {
         throw new FieldError('TOKEN_CONFLICT');
       }
       await personLocks(client, orgId, projectId, [cmd.personId]);
+      await assertClockCurrent(client, orgId, projectId);
       const run = await client.query<{ member: boolean }>(
         `SELECT member FROM field_member_run($1,$2,$3,now())`,
         [orgId, projectId, cmd.personId],
@@ -664,6 +666,8 @@ export class FieldStore {
     actor: EventActor,
   ): Promise<Outcome<DeviceDecisionDto>> {
     const personId = cmd.personId;
+    // Challenge and device deadlines are judged here: never with a clock that stepped back.
+    await assertClockCurrent(client, orgId, projectId);
     const devices = await client.query<DeviceRow & { now: Date }>(
       `SELECT ${DEVICE_COLUMNS}, now() AS now FROM "FieldDevice" d
       WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')

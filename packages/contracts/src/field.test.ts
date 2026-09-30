@@ -115,6 +115,19 @@ describe('roster commands', () => {
 describe('PM device list query', () => {
   const projectId = '4f7c1a52-3d7e-4c21-9e1a-2b3c4d5e6f70';
   const deviceId = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+  it('accepts real edge instants: a leap day and the last microsecond of a day', () => {
+    for (const t of [
+      '2028-02-29T00:00:00.000000Z',
+      '2026-12-31T23:59:59.999999Z',
+    ])
+      expect(
+        parseDeviceListQuery({
+          projectId,
+          cursor: encodeDeviceCursor(t, deviceId),
+          limit: undefined,
+        }).after,
+      ).toEqual({ createdAt: t, id: deviceId });
+  });
   it('round-trips a cursor at microsecond precision and bounds the page size', () => {
     const cursor = encodeDeviceCursor('2026-09-30T01:02:03.123456Z', deviceId);
     expect(cursor).toMatch(/^[A-Za-z0-9_-]+$/);
@@ -135,6 +148,12 @@ describe('PM device list query', () => {
     for (const cursor of [
       'not-a-cursor',
       encodeDeviceCursor('2026-09-30T01:02:03Z', deviceId),
+      // impossible calendar dates and clock times, with a valid six-digit fraction
+      encodeDeviceCursor('2026-02-30T01:02:03.123456Z', deviceId),
+      encodeDeviceCursor('2026-13-01T01:02:03.123456Z', deviceId),
+      encodeDeviceCursor('2026-09-30T24:00:00.000000Z', deviceId),
+      encodeDeviceCursor('2026-09-30T23:60:00.000000Z', deviceId),
+      encodeDeviceCursor('2026-09-30T23:59:60.000000Z', deviceId),
       encodeDeviceCursor('2026-09-30T01:02:03.123456Z', 'x'),
       encodeDeviceCursor('2026-09-30T01:02:03.123456Z', `${deviceId}|x`),
       '%%%',

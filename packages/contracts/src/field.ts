@@ -5,7 +5,15 @@
  * project is the device's. Only bind (token) and rotate (newToken) carry a secret in the body.
  */
 import { isRealTimestamp } from './report.js';
-import { InvalidReportInput, id, obj, oneOf, str, version } from './parse.js';
+import {
+  InvalidReportInput,
+  id,
+  isRealDate,
+  obj,
+  oneOf,
+  str,
+  version,
+} from './parse.js';
 
 /** `fd1.` + base64url of 32 random bytes, generated on the device. */
 export const FIELD_TOKEN = /^fd1\.[A-Za-z0-9_-]{43}$/;
@@ -365,6 +373,12 @@ export function parseRosterChangesCommand(v: unknown): RosterChangesCommand {
 
 /** Microsecond UTC instant as the device list cursor carries it. */
 const CURSOR_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+/** Shape, calendar date and clock fields (no leap second), keeping all six fraction digits. */
+function realCursorTime(t: string): boolean {
+  if (!CURSOR_TIME.test(t) || !isRealDate(t.slice(0, 10))) return false;
+  const [hh, mm, ss] = t.slice(11, 19).split(':').map(Number);
+  return hh! <= 23 && mm! <= 59 && ss! <= 59;
+}
 /** The opaque cursor after a row: base64url of `<createdAt µs>|<id>`. */
 export function encodeDeviceCursor(createdAt: string, id: string): string {
   return btoa(`${createdAt}|${id}`)
@@ -398,7 +412,7 @@ export function parseDeviceListQuery(q: {
       throw new InvalidReportInput('cursor');
     }
     const [createdAt, deviceId, rest] = decoded.split('|');
-    if (rest !== undefined || !createdAt || !CURSOR_TIME.test(createdAt))
+    if (rest !== undefined || !createdAt || !realCursorTime(createdAt))
       throw new InvalidReportInput('cursor');
     after = { createdAt, id: id(deviceId, 'cursor') };
   }

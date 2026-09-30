@@ -258,7 +258,7 @@ try {
   const workersA = ['pm', 'exec', 'pm2', 'f1', 'f2', 'f3', 'f4', 'fx', 'wx'];
   for (let i = 1; i <= 8; i++) workersA.push(`w${i}`);
   for (let i = 1; i <= 40; i++) workersA.push(`o${i}`);
-  workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1');
+  workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1', 'c1');
   for (const k of workersA) await addPerson(k, orgA);
   for (const k of ['pmB', 'wb']) await addPerson(k, orgB);
   const accounts = {};
@@ -373,7 +373,27 @@ try {
 
   // ---------- HTTP helpers ----------
   const responses = [];
-  async function http(path, { method, bearer, body, key, ip = DEFAULT_IP }) {
+  /**
+   * The client contract for 503 RETRY (design §5, §6): repeat the same request, with the same
+   * key. The TEST VM's database clock can step back between two requests; the fail-closed
+   * clock policy answers RETRY until it catches up. Bounded, counted and reported at the end;
+   * switched off where a test expects the 503.
+   */
+  const retry = { on: true, repeated: 0 };
+  async function http(path, options) {
+    const until = Date.now() + 10_000;
+    for (;;) {
+      const r = await httpOnce(path, options);
+      if (!retry.on || r.status !== 503 || r.body?.code !== 'RETRY') return r;
+      if (Date.now() > until) return r;
+      retry.repeated++;
+      await sleep(200);
+    }
+  }
+  async function httpOnce(
+    path,
+    { method, bearer, body, key, ip = DEFAULT_IP },
+  ) {
     const headers = { 'X-Forwarded-For': ip };
     if (bearer) headers.Authorization = `Bearer ${bearer}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -810,7 +830,7 @@ try {
   await expectStatus(
     change([
       ...Array.from({ length: 40 }, (_, i) => open(C.C5, person[`o${i + 1}`])),
-      ...['r1', 'r2', 'p1'].map((k) => open(C.C5, person[k])),
+      ...['r1', 'r2', 'p1', 'c1'].map((k) => open(C.C5, person[k])),
     ]),
     200,
   );
@@ -1691,14 +1711,80 @@ try {
     await expectStatus(change([close(assignment(person.p1), Ep)]), 200);
     await untilDb(Ep);
     await expectStatus(change([open(C.C5, person.p1)]), 200);
-    for (const b of olds)
-      assert.equal((await row(b.body.deviceId)).state, 'PENDING');
+    // The reassignment is a roster write touching p1: it persists the elapsed ends it sees.
+    for (const b of olds) {
+      const old = await row(b.body.deviceId);
+      assert.deepEqual([old.state, old.endReason], ['EXPIRED', 'UNASSIGNED']);
+    }
     dev.p1 = await onboard(person.p1);
     await expectStatus(me(dev.p1.token), 200);
-    for (const b of olds)
-      assert.equal((await row(b.body.deviceId)).endReason, 'SUPERSEDED');
     pass(
-      'pending devices whose membership ended (still stored PENDING) do not block a new bind after reassignment, and are superseded when it is confirmed; a transfer in one transaction keeps the device; split over two it ends (REVOKED/UNASSIGNED) and a reassignment never revives it; a scheduled end at E works before E and fails after E with no request in between (PM list shows EXPIRED meanwhile), stays failed after a reassignment, and its elapsed memberUntil never moves; a scheduled transfer added before E keeps the device; immediate termination revokes the confirmed and rejects the pending device',
+      'pending devices whose membership ended are persisted EXPIRED(UNASSIGNED) by the reassigning roster write (no request by them) and do not block a new bind; a transfer in one transaction keeps the device; split over two it ends (REVOKED/UNASSIGNED) and a reassignment never revives it; a scheduled end at E works before E and fails after E with no request in between (PM list shows EXPIRED meanwhile), stays failed after a reassignment, and its elapsed memberUntil never moves; a scheduled transfer added before E keeps the device; immediate termination revokes the confirmed and rejects the pending device',
+    );
+  }
+
+  // ================= clock regression fails closed =================
+  step('clock regression fails closed');
+  {
+    // A confirmed device whose membership ends at E, 30 minutes ahead. Then the database clock
+    // steps back an hour behind time already observed in the project (simulated: the project's
+    // high-water mark is set an hour ahead). In that world E has passed.
+    dev.c1 = await onboard(person.c1);
+    const E = await dbFuture(30 * 60_000);
+    await expectStatus(change([close(assignment(person.c1), E)]), 200);
+    assert.equal((await row(dev.c1.id)).memberUntil.toISOString(), E);
+    const mark = async () =>
+      (
+        await owner.query(
+          `SELECT "clockHighWater" AS m FROM "ProjectRoster" WHERE "projectId"=$1`,
+          [projectA],
+        )
+      ).rows[0].m;
+    // Field requests advance the mark (at most once a second), never past the clock.
+    await expectStatus(me(dev.c1.token), 200);
+    const observed = await mark();
+    assert.ok(observed && Date.now() - observed.getTime() < 60_000);
+    await travel(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = now() + interval '1 hour' WHERE "projectId"=$1`,
+      [projectA],
+    );
+    retry.on = false;
+    try {
+      // Authentication does not treat the device as live again: fail closed.
+      await expectStatus(me(dev.c1.token), 503, 'RETRY');
+      // A roster change cannot extend the membership end judged by the stepped-back clock.
+      await expectStatus(
+        change([open(C.C5, person.c1, 'MEMBER', E)]),
+        503,
+        'RETRY',
+      );
+      const after = await row(dev.c1.id);
+      assert.deepEqual(
+        [after.state, after.memberUntil.toISOString()],
+        ['CONFIRMED', E],
+      );
+      // Bind and PM confirm judge deadlines too.
+      await expectStatus(bind(person.w5), 503, 'RETRY');
+      await expectStatus(pmConfirm(person.w5, '123456'), 503, 'RETRY');
+    } finally {
+      retry.on = true;
+      // The clock catches up.
+      await travel(
+        `UPDATE "ProjectRoster" SET "clockHighWater" = now() WHERE "projectId"=$1`,
+        [projectA],
+      );
+    }
+    await expectStatus(me(dev.c1.token), 200);
+    // The mark never moves back, even for the owner.
+    await assert.rejects(
+      owner.query(
+        `UPDATE "ProjectRoster" SET "clockHighWater" = "clockHighWater" - interval '1 second' WHERE "projectId"=$1`,
+        [projectA],
+      ),
+      /never moves back/,
+    );
+    pass(
+      'clock regression fails closed: with the database clock an hour behind time already observed in the project, a device whose membership ended in between is not authenticated (503 RETRY), a roster change cannot extend that elapsed membership end (503, nothing written), bind and PM confirm refuse too; once the clock catches up everything proceeds; field requests advance the per-project high-water mark, which never moves back',
     );
   }
 
@@ -2162,8 +2248,17 @@ try {
       400,
       'INVALID_INPUT',
     );
+    // A well-formed cursor with an impossible date is a 400 too, never a database error.
+    const impossible = Buffer.from(
+      `2026-02-30T01:02:03.123456Z|${target.id}`,
+    ).toString('base64url');
+    await expectStatus(
+      pget(`/devices?projectId=${projectA}&cursor=${impossible}`, pm),
+      400,
+      'INVALID_INPUT',
+    );
     pass(
-      `the PM device list pages with a cursor (at most 500 per page, newest first): an older confirmed device behind 501 newer rows is not on the first page, is found by following the cursor (${everything.length} devices, each exactly once, all of the project) and is revoked; a malformed cursor is INVALID_INPUT`,
+      `the PM device list pages with a cursor (at most 500 per page, newest first): an older confirmed device behind 501 newer rows is not on the first page, is found by following the cursor (${everything.length} devices, each exactly once, all of the project) and is revoked; a malformed cursor, or one with an impossible date, is INVALID_INPUT`,
     );
   }
 
@@ -2366,7 +2461,7 @@ try {
   }
 
   console.log(
-    `Field roster/devices/entry HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Check-in, foreman reports and the field web UI are later slices.`,
+    `Field roster/devices/entry HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. Check-in, foreman reports and the field web UI are later slices.`,
   );
   step('done');
 } catch (error) {

@@ -490,6 +490,8 @@ export async function fieldTransaction<T>(
       throw new FieldError('DEVICE_ENDED');
     }
     const d = a.auth.device;
+    if (deferred)
+      await advanceClock(pool, d.orgId, d.projectId).catch(() => undefined);
     if (
       deferred &&
       a.mode === 'SHARE' &&
@@ -594,6 +596,8 @@ async function attemptOnce<T>(
       await finish(false);
       return { kind: 'ended', observed: null };
     }
+    // Design §5: never judge a deadline with a clock that is behind time already observed.
+    await assertClockCurrent(client, row.orgId, row.projectId);
     const reason = expiryReason(row, now);
     if (reason) {
       if (mode === 'UPDATE') {
@@ -666,6 +670,40 @@ async function housekeeping(
   } finally {
     client.release();
   }
+}
+/**
+ * Clock regression fails closed (design §5): refuses with RETRY while the database clock is
+ * behind the project's high-water mark of time already observed. `clock_timestamp()`, not
+ * `now()`: every mark comes from a committed transaction, so only a clock that stepped back is
+ * behind it, never a merely long-running transaction.
+ */
+export async function assertClockCurrent(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+) {
+  const r = await client.query<{ behind: boolean }>(
+    `SELECT clock_timestamp() < "clockHighWater" AS behind FROM "ProjectRoster" WHERE "orgId"=$1 AND "projectId"=$2`,
+    [orgId, projectId],
+  );
+  if (r.rows[0]?.behind) throw new FieldError('RETRY');
+}
+/**
+ * Advances the project's high-water mark after a request, at most about once a second (one
+ * guarded UPDATE, lock_timeout 1 s, skipped on contention), so the row never becomes hot.
+ */
+export async function advanceClock(
+  pool: Pool,
+  orgId: string,
+  projectId: string,
+) {
+  await housekeeping(pool, orgId, async (c) => {
+    await c.query(
+      `UPDATE "ProjectRoster" SET "clockHighWater"=now()
+      WHERE "orgId"=$1 AND "projectId"=$2 AND ("clockHighWater" IS NULL OR "clockHighWater" < now() - interval '1 second')`,
+      [orgId, projectId],
+    );
+  });
 }
 /**
  * Records the activity of a FOR SHARE request: one guarded UPDATE holding no other lock.
