@@ -8,6 +8,7 @@ import {
 } from '../api.js';
 import { DraftSession, type FlushOutcome } from './draft.js';
 import { photoAsOf, setFact } from './model.js';
+import { restoreDecision, type DraftStash } from '../signin.js';
 
 export type { SaveState } from './draft.js';
 const AUTOSAVE_MS = 700;
@@ -40,6 +41,8 @@ export function useDay(
   projectId: string,
   businessDate: string,
   onConflict: () => void,
+  /** Unsaved facts put aside before a sign-in redirect; each is re-applied on its first read. */
+  restore: readonly DraftStash[] = [],
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const entries = useRef(new Map<string, Entry>());
@@ -47,6 +50,12 @@ export function useDay(
   const conflict = useRef(onConflict);
   conflict.current = onConflict;
   const key = `${projectId}:${businessDate}`;
+  const restoring = useRef(
+    new Map(restore.map((d) => [`${d.projectId}:${d.businessDate}`, d])),
+  );
+  const afterRestore = useRef<(e: Entry, o: FlushOutcome) => Promise<void>>(
+    async () => {},
+  );
 
   const entryFor = useCallback(
     (pid: string, date: string): Entry => {
@@ -101,6 +110,16 @@ export function useDay(
         e.day = d;
         e.frozen = content;
         e.error = null;
+        const k = `${s.projectId}:${s.businessDate}`;
+        const stash = restoring.current.get(k);
+        // Only against a read the session took (not refused by adopt), else wait for the next.
+        if (stash && !s.dirty && s.version === d.version) {
+          restoring.current.delete(k);
+          const decision = restoreDecision(stash, s);
+          if (decision === 'apply' && s.edit(stash.facts))
+            void s.flush().then((o) => afterRestore.current(e, o));
+          else if (decision === 'conflict') conflict.current();
+        }
       } catch (err) {
         if (ticket === e.reads)
           e.error = err instanceof ApiError ? err.code : 'REQUEST_FAILED';
@@ -119,6 +138,7 @@ export function useDay(
     },
     [read],
   );
+  afterRestore.current = settleAfter;
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -231,6 +251,16 @@ export function useDay(
     error: e?.error ?? null,
     edit,
     flush,
+    /** Every day of this workspace with facts the server has not acknowledged. */
+    unsaved: (): DraftStash[] =>
+      [...entries.current.values()]
+        .filter((x) => x.session.dirty)
+        .map(({ session: d }) => ({
+          projectId: d.projectId,
+          businessDate: d.businessDate,
+          version: d.version,
+          facts: d.facts,
+        })),
     reload: () => (e ? read(e, false) : Promise.resolve()),
     submit: () => act((v) => api.submit({ ...base(), expectedVersion: v })),
     noWork: (reason: NoWorkReason, note: string) =>

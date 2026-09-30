@@ -25,17 +25,54 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { Sheet } from './ui.js';
+import {
+  saveResume,
+  signInFailure,
+  takeResume,
+  type ResumeState,
+  type SignInFailure,
+} from './signin.js';
 
-type Session = { token: () => Promise<string>; signOut: (() => void) | null };
+type Session = {
+  token: () => Promise<string>;
+  signOut: (() => void) | null;
+  /** Sign in again by full-page redirect once the token cannot be renewed silently. */
+  renew: (() => Promise<void>) | null;
+};
+/** Sign-in state the workspace shows: expiry, a running redirect, the last failure. */
+interface SignInState {
+  expired: boolean;
+  redirecting: boolean;
+  failure: SignInFailure | null;
+}
+
+function sessionStore(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 function useSession() {
   const [session, setSession] = useState<Session | null>(null);
   const [needLogin, setNeedLogin] = useState<EntraAuth | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<SignInFailure | null>(null);
+  const [expired, setExpired] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
+  useEffect(() => {
+    // Back from the Microsoft page may restore this page from the browser cache: allow a retry.
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setRedirecting(false);
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, []);
   useEffect(() => {
     const dev = devToken();
     if (dev) {
-      setSession({ token: async () => dev, signOut: null });
+      setSession({ token: async () => dev, signOut: null, renew: null });
       return;
     }
     (async () => {
@@ -43,26 +80,43 @@ function useSession() {
         await fetch('/api/auth-config', { cache: 'no-store' })
       ).json()) as AuthConfig;
       const auth = await EntraAuth.create(config);
+      if (auth.redirectError) setFailure(signInFailure(auth.redirectError));
+      auth.onExpired(() => setExpired(true));
       const account = auth.current();
       if (account) setSession(fromAccount(auth, account));
       else setNeedLogin(auth);
     })().catch(() => setError('AUTH_NOT_CONFIGURED'));
   }, []);
+  /** One interaction at a time; a redirect normally leaves the page before it resolves. */
+  const interact = async (go: () => Promise<void>) => {
+    setFailure(null);
+    setRedirecting(true);
+    try {
+      await go();
+    } catch (e) {
+      setFailure(signInFailure(e));
+    } finally {
+      setRedirecting(false);
+    }
+  };
   const fromAccount = (auth: EntraAuth, account: AccountInfo): Session => ({
     token: () => auth.token(account),
     signOut: () =>
-      void auth.signOut(account).then(() => window.location.reload()),
+      void auth.signOut(account).then((leaving) => {
+        if (!leaving) window.location.reload();
+      }),
+    renew: () => interact(() => auth.renew(account)),
   });
-  const signIn = async () => {
-    if (!needLogin) return;
-    try {
-      setSession(fromAccount(needLogin, await needLogin.signIn()));
+  const signIn = () =>
+    interact(async () => {
+      if (!needLogin) return;
+      const account = await needLogin.signIn();
+      if (!account) return; // leaving for Microsoft
+      setSession(fromAccount(needLogin, account));
       setNeedLogin(null);
-    } catch {
-      setError('LOGIN_FAILED');
-    }
-  };
-  return { session, needLogin: Boolean(needLogin), signIn, error };
+    });
+  const state: SignInState = { expired, redirecting, failure };
+  return { session, needLogin: Boolean(needLogin), signIn, error, state };
 }
 
 function Toast({ text }: { text: string | null }) {
@@ -81,9 +135,14 @@ function Toast({ text }: { text: string | null }) {
 function Workspace({
   session,
   project,
+  signin,
+  resume,
 }: {
   session: Session;
   project: Project;
+  signin: SignInState;
+  /** Where the user was before a sign-in redirect (this project only). */
+  resume: ResumeState | null;
 }) {
   const { t, label, locale } = useI18n();
   const [toast, setToast] = useState<string | null>(null);
@@ -100,8 +159,12 @@ function Workspace({
     () => reportApi(session.token, () => say(retryText.current)),
     [session, say],
   );
-  const [date, setDate] = useState(() => siteToday(project.timezone));
-  const [view, setView] = useState<'field' | 'report'>('report');
+  const [date, setDate] = useState(
+    () => resume?.date ?? siteToday(project.timezone),
+  );
+  const [view, setView] = useState<'field' | 'report'>(
+    () => resume?.view ?? 'report',
+  );
   const [fieldTab, setFieldTab] = useState<'today' | 'plan'>('today');
   const [task, setTask] = useState<null | 'fill' | 'check'>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -129,7 +192,13 @@ function Workspace({
     }
     return session;
   };
-  const h = useDay(api, project.id, date, () => say(t('conflictReloaded')));
+  const h = useDay(
+    api,
+    project.id,
+    date,
+    () => say(t('conflictReloaded')),
+    resume?.drafts,
+  );
   const reloadDay = useCallback(() => void h.reload(), [h.reload]);
   const dayStamp = `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`;
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
@@ -230,6 +299,27 @@ function Workspace({
       setTask(null);
       setView('report');
     }
+  };
+  // Before leaving for Microsoft: try to send pending edits (bounded; without a token they
+  // cannot land), then put aside what is still unsaved plus the project, day and view.
+  const renew = async () => {
+    if (!session.renew) return;
+    await Promise.race([
+      h.flush(),
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]);
+    const drafts = h.unsaved();
+    const kept = saveResume(sessionStore(), {
+      projectId: project.id,
+      date,
+      view,
+      drafts,
+    });
+    if (!kept && drafts.length) {
+      say(t('saveFail'));
+      return;
+    }
+    await session.renew();
   };
   const goFill = (id: string) => {
     setFocus(id);
@@ -521,6 +611,22 @@ function Workspace({
           </button>
         </header>
         <main className={`page view-${view}`}>
+          {signin.expired && (
+            <div className="banner err" role="alert">
+              {signin.failure ? (
+                <FailureText failure={signin.failure} />
+              ) : (
+                t('signInExpired')
+              )}{' '}
+              <button
+                type="button"
+                disabled={signin.redirecting}
+                onClick={() => void renew()}
+              >
+                {t('signInAgain')}
+              </button>
+            </div>
+          )}
           {body}
           {correctEntry}
           {photosRow && !viewing ? photosRow : null}
@@ -587,9 +693,20 @@ function useMedia(query: string) {
   return match;
 }
 
+function FailureText({ failure }: { failure: SignInFailure }) {
+  const { t } = useI18n();
+  return (
+    <>
+      {t(failure.key)}
+      {failure.code && ` (${failure.code})`}
+    </>
+  );
+}
+
 function Root() {
   const { t } = useI18n();
-  const { session, needLogin, signIn, error } = useSession();
+  const { session, needLogin, signIn, error, state } = useSession();
+  const [resume] = useState(() => takeResume(sessionStore()));
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => {
@@ -601,35 +718,51 @@ function Root() {
         setFailed(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
       );
   }, [session]);
-  if (error || failed)
+  // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
+  const renewing = Boolean(session?.renew && state.expired && !projects);
+  if (needLogin || renewing)
     return (
       <main className="page">
-        <div className="banner err">
-          {failed === 'FORBIDDEN'
-            ? t('noProject')
-            : error === 'LOGIN_FAILED'
-              ? t('signInFailed')
-              : t('saveFail')}
-        </div>
-      </main>
-    );
-  if (needLogin)
-    return (
-      <main className="page">
+        {(state.failure || renewing) && (
+          <div className="banner err" role="alert">
+            {state.failure ? (
+              <FailureText failure={state.failure} />
+            ) : (
+              t('signInExpired')
+            )}
+          </div>
+        )}
         <button
           type="button"
           className="primary big"
-          onClick={() => void signIn()}
+          disabled={state.redirecting}
+          onClick={() => void (renewing ? session?.renew?.() : signIn())}
         >
           {t('signIn')}
         </button>
       </main>
     );
+  if (error || failed)
+    return (
+      <main className="page">
+        <div className="banner err">
+          {failed === 'FORBIDDEN' ? t('noProject') : t('saveFail')}
+        </div>
+      </main>
+    );
   if (!session || !projects)
     return <main className="page muted">{t('loading')}</main>;
-  const project = projects[0];
+  const project =
+    projects.find((p) => p.id === resume?.projectId) ?? projects[0];
   if (!project) return <main className="page">{t('noProject')}</main>;
-  return <Workspace session={session} project={project} />;
+  return (
+    <Workspace
+      session={session}
+      project={project}
+      signin={state}
+      resume={resume?.projectId === project.id ? resume : null}
+    />
+  );
 }
 
 export function App() {
