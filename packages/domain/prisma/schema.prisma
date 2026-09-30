@@ -139,6 +139,15 @@ model Organization {
   idempotencyRecordRows        IdempotencyRecord[]
   outboxEventRows              OutboxEvent[]
   auditLogRows                 AuditLog[]
+  crewRows                     Crew[]
+  projectRosterRows            ProjectRoster[]
+  crewAssignmentRows           CrewAssignment[]
+  fieldEntryCodeRows           FieldEntryCode[]
+  fieldDeviceRows              FieldDevice[]
+  fieldTokenHashRows           FieldTokenHash[]
+  fieldConfirmChallengeRows    FieldConfirmChallenge[]
+  fieldPersonConfirmRows       FieldPersonConfirm[]
+  fieldDeviceEventRows         FieldDeviceEvent[]
 }
 
 model Company {
@@ -196,36 +205,42 @@ model Opportunity {
 }
 
 model Project {
-  id                                      String             @id @default(uuid()) @db.Uuid
-  orgId                                   String             @db.Uuid
-  org                                     Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                               DateTime           @default(now()) @db.Timestamptz(6)
-  updatedAt                               DateTime           @updatedAt @db.Timestamptz(6)
-  updatedBy                               String             @db.Uuid
-  version                                 Int                @default(1)
+  id                                      String               @id @default(uuid()) @db.Uuid
+  orgId                                   String               @db.Uuid
+  org                                     Organization         @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                               DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt                               DateTime             @updatedAt @db.Timestamptz(6)
+  updatedBy                               String               @db.Uuid
+  version                                 Int                  @default(1)
   code                                    String
   name                                    String
   timezone                                String
   status                                  String
-  customerId                              String?            @db.Uuid
-  customer                                Customer?          @relation("Project_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  opportunityId                           String?            @db.Uuid
-  opportunity                             Opportunity?       @relation("Project_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  ProjectSite_projectId                   ProjectSite[]      @relation("ProjectSite_projectId")
-  ContractScope_projectId                 ContractScope[]    @relation("ContractScope_projectId")
-  WorkPackage_projectId                   WorkPackage[]      @relation("WorkPackage_projectId")
-  Membership_projectId                    Membership[]       @relation("Membership_projectId")
-  PersonAssignment_projectId              PersonAssignment[] @relation("PersonAssignment_projectId")
-  WorkforcePlan_projectId                 WorkforcePlan[]    @relation("WorkforcePlan_projectId")
-  ReportingBundle_titleProjectCandidateId ReportingBundle[]  @relation("ReportingBundle_titleProjectCandidateId")
-  DailyTask_projectId                     DailyTask[]        @relation("DailyTask_projectId")
-  Issue_projectId                         Issue[]            @relation("Issue_projectId")
-  DailyClose_projectId                    DailyClose[]       @relation("DailyClose_projectId")
-  PlanVersion_project                     PlanVersion[]      @relation("PlanVersion_project")
-  PlanDraft_project                       PlanDraft[]        @relation("PlanDraft_project")
-  ReportItem_project                      ReportItem[]       @relation("ReportItem_project")
-  LagDismissal_project                    LagDismissal[]     @relation("LagDismissal_project")
-  PhotoEvidence_project                   PhotoEvidence[]    @relation("PhotoEvidence_project")
+  customerId                              String?              @db.Uuid
+  customer                                Customer?            @relation("Project_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  opportunityId                           String?              @db.Uuid
+  opportunity                             Opportunity?         @relation("Project_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ProjectSite_projectId                   ProjectSite[]        @relation("ProjectSite_projectId")
+  ContractScope_projectId                 ContractScope[]      @relation("ContractScope_projectId")
+  WorkPackage_projectId                   WorkPackage[]        @relation("WorkPackage_projectId")
+  Membership_projectId                    Membership[]         @relation("Membership_projectId")
+  PersonAssignment_projectId              PersonAssignment[]   @relation("PersonAssignment_projectId")
+  WorkforcePlan_projectId                 WorkforcePlan[]      @relation("WorkforcePlan_projectId")
+  ReportingBundle_titleProjectCandidateId ReportingBundle[]    @relation("ReportingBundle_titleProjectCandidateId")
+  DailyTask_projectId                     DailyTask[]          @relation("DailyTask_projectId")
+  Issue_projectId                         Issue[]              @relation("Issue_projectId")
+  DailyClose_projectId                    DailyClose[]         @relation("DailyClose_projectId")
+  PlanVersion_project                     PlanVersion[]        @relation("PlanVersion_project")
+  PlanDraft_project                       PlanDraft[]          @relation("PlanDraft_project")
+  ReportItem_project                      ReportItem[]         @relation("ReportItem_project")
+  LagDismissal_project                    LagDismissal[]       @relation("LagDismissal_project")
+  PhotoEvidence_project                   PhotoEvidence[]      @relation("PhotoEvidence_project")
+  Crew_project                            Crew[]               @relation("Crew_project")
+  ProjectRoster_project                   ProjectRoster[]      @relation("ProjectRoster_project")
+  FieldEntryCode_project                  FieldEntryCode[]     @relation("FieldEntryCode_project")
+  FieldDevice_project                     FieldDevice[]        @relation("FieldDevice_project")
+  FieldPersonConfirm_project              FieldPersonConfirm[] @relation("FieldPersonConfirm_project")
+  FieldDeviceEvent_project                FieldDeviceEvent[]   @relation("FieldDeviceEvent_project")
 
   @@unique([orgId, id])
   @@unique([orgId, code])
@@ -335,33 +350,40 @@ model WorkPackage {
 }
 
 model Person {
-  id                                    String                 @id @default(uuid()) @db.Uuid
-  orgId                                 String                 @db.Uuid
-  org                                   Organization           @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                             DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt                             DateTime               @updatedAt @db.Timestamptz(6)
-  updatedBy                             String                 @db.Uuid
-  version                               Int                    @default(1)
+  id                                    String                  @id @default(uuid()) @db.Uuid
+  orgId                                 String                  @db.Uuid
+  org                                   Organization            @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                             DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt                             DateTime                @updatedAt @db.Timestamptz(6)
+  updatedBy                             String                  @db.Uuid
+  version                               Int                     @default(1)
   displayName                           String
-  identityStatus                        String                 @default("PROVISIONAL")
+  identityStatus                        String                  @default("PROVISIONAL")
   // No government ID originals or face templates in this sketch.
-  employerId                            String?                @db.Uuid
-  employer                              Company?               @relation("Person_employerId", fields: [orgId, employerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  LoginAccount_personId                 LoginAccount[]         @relation("LoginAccount_personId")
-  PersonAlias_personId                  PersonAlias[]          @relation("PersonAlias_personId")
-  PersonAssignment_personId             PersonAssignment[]     @relation("PersonAssignment_personId")
-  AttendanceClaim_personId              AttendanceClaim[]      @relation("AttendanceClaim_personId")
-  PresenceVerification_reviewerPersonId PresenceVerification[] @relation("PresenceVerification_reviewerPersonId")
-  PresenceVerification_subjectPersonId  PresenceVerification[] @relation("PresenceVerification_subjectPersonId")
-  LaborEntry_personId                   LaborEntry[]           @relation("LaborEntry_personId")
-  Inspection_inspectorPersonId          Inspection[]           @relation("Inspection_inspectorPersonId")
-  Acceptance_approverPersonId           Acceptance[]           @relation("Acceptance_approverPersonId")
-  Issue_ownerPersonId                   Issue[]                @relation("Issue_ownerPersonId")
-  IssueNote_authorPersonId              IssueNote[]            @relation("IssueNote_person")
-  IssueTransition_actorPersonId         IssueTransition[]      @relation("IssueTransition_person")
-  PhotoEvidence_uploadedByPersonId      PhotoEvidence[]        @relation("PhotoEvidence_uploadedByPerson")
-  DailyClose_responsiblePersonId        DailyClose[]           @relation("DailyClose_responsiblePersonId")
-  DailyClose_delegatePersonId           DailyClose[]           @relation("DailyClose_delegatePersonId")
+  employerId                            String?                 @db.Uuid
+  employer                              Company?                @relation("Person_employerId", fields: [orgId, employerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  LoginAccount_personId                 LoginAccount[]          @relation("LoginAccount_personId")
+  PersonAlias_personId                  PersonAlias[]           @relation("PersonAlias_personId")
+  PersonAssignment_personId             PersonAssignment[]      @relation("PersonAssignment_personId")
+  AttendanceClaim_personId              AttendanceClaim[]       @relation("AttendanceClaim_personId")
+  PresenceVerification_reviewerPersonId PresenceVerification[]  @relation("PresenceVerification_reviewerPersonId")
+  PresenceVerification_subjectPersonId  PresenceVerification[]  @relation("PresenceVerification_subjectPersonId")
+  LaborEntry_personId                   LaborEntry[]            @relation("LaborEntry_personId")
+  Inspection_inspectorPersonId          Inspection[]            @relation("Inspection_inspectorPersonId")
+  Acceptance_approverPersonId           Acceptance[]            @relation("Acceptance_approverPersonId")
+  Issue_ownerPersonId                   Issue[]                 @relation("Issue_ownerPersonId")
+  IssueNote_authorPersonId              IssueNote[]             @relation("IssueNote_person")
+  IssueTransition_actorPersonId         IssueTransition[]       @relation("IssueTransition_person")
+  PhotoEvidence_uploadedByPersonId      PhotoEvidence[]         @relation("PhotoEvidence_uploadedByPerson")
+  DailyClose_responsiblePersonId        DailyClose[]            @relation("DailyClose_responsiblePersonId")
+  DailyClose_delegatePersonId           DailyClose[]            @relation("DailyClose_delegatePersonId")
+  CrewAssignment_person                 CrewAssignment[]        @relation("CrewAssignment_person")
+  FieldDevice_person                    FieldDevice[]           @relation("FieldDevice_person")
+  FieldDevice_confirmedByPerson         FieldDevice[]           @relation("FieldDevice_confirmedByPerson")
+  FieldConfirmChallenge_person          FieldConfirmChallenge[] @relation("FieldConfirmChallenge_person")
+  FieldPersonConfirm_person             FieldPersonConfirm[]    @relation("FieldPersonConfirm_person")
+  FieldDeviceEvent_person               FieldDeviceEvent[]      @relation("FieldDeviceEvent_person")
+  FieldDeviceEvent_actorPerson          FieldDeviceEvent[]      @relation("FieldDeviceEvent_actorPerson")
 
   @@unique([orgId, id])
 }
@@ -390,6 +412,13 @@ model LoginAccount {
   photoUploads         PhotoEvidence[]    @relation("PhotoEvidence_uploadedByAccount")
   photoLinkSupersedes  EvidenceLink[]     @relation("EvidenceLink_supersededBy")
   Membership_accountId Membership[]       @relation("Membership_accountId")
+  crewCreates          Crew[]             @relation("Crew_createdBy")
+  assignmentCreates    CrewAssignment[]   @relation("CrewAssignment_createdBy")
+  assignmentCloses     CrewAssignment[]   @relation("CrewAssignment_closedBy")
+  entryCodeCreates     FieldEntryCode[]   @relation("FieldEntryCode_createdBy")
+  entryCodeRetires     FieldEntryCode[]   @relation("FieldEntryCode_retiredBy")
+  deviceConfirms       FieldDevice[]      @relation("FieldDevice_confirmedByAccount")
+  fieldDeviceEvents    FieldDeviceEvent[] @relation("FieldDeviceEvent_actorAccount")
 
   @@unique([orgId, id])
   @@unique([orgId, entraTenantId, entraObjectId])
@@ -1227,4 +1256,206 @@ model ReportItem {
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, kind, key])
+}
+
+// ---------- A6a field roster, devices and entry (triggers, partial indexes, RLS in SQL) ----------
+model Crew {
+  id          String           @id @db.Uuid
+  orgId       String           @db.Uuid
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId   String           @db.Uuid
+  project     Project          @relation("Crew_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  code        String
+  name        String
+  activeFrom  DateTime         @default(now()) @db.Timestamptz(6)
+  /// Set once (trigger); the crew is never deleted.
+  activeUntil DateTime?        @db.Timestamptz(6)
+  createdBy   String           @db.Uuid
+  creator     LoginAccount     @relation("Crew_createdBy", fields: [orgId, createdBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  assignments CrewAssignment[] @relation("CrewAssignment_crew")
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, id])
+  @@unique([orgId, projectId, code])
+}
+
+model ProjectRoster {
+  id        String       @id @db.Uuid
+  orgId     String       @db.Uuid
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId String       @db.Uuid
+  project   Project      @relation("ProjectRoster_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  version   Int          @default(0)
+  updatedAt DateTime     @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, projectId])
+}
+
+/// Append-only half-open [validFrom, validUntil) interval; closed once at now() or later (trigger).
+model CrewAssignment {
+  id         String        @id @db.Uuid
+  orgId      String        @db.Uuid
+  org        Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId  String        @db.Uuid
+  crewId     String        @db.Uuid
+  crew       Crew          @relation("CrewAssignment_crew", fields: [orgId, projectId, crewId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId   String        @db.Uuid
+  person     Person        @relation("CrewAssignment_person", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// 'MEMBER' | 'FOREMAN' (CHECK constraint in SQL)
+  role       String
+  validFrom  DateTime      @db.Timestamptz(6)
+  validUntil DateTime?     @db.Timestamptz(6)
+  createdAt  DateTime      @default(now()) @db.Timestamptz(6)
+  createdBy  String        @db.Uuid
+  creator    LoginAccount  @relation("CrewAssignment_createdBy", fields: [orgId, createdBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  closedBy   String?       @db.Uuid
+  closer     LoginAccount? @relation("CrewAssignment_closedBy", fields: [orgId, closedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([orgId, projectId, personId, validFrom], map: "CrewAssignment_person_idx")
+  @@index([orgId, crewId, validFrom], map: "CrewAssignment_crew_idx")
+}
+
+/// 128-bit project entry code; one active per project (partial unique index in SQL).
+model FieldEntryCode {
+  id        String        @id @db.Uuid
+  orgId     String        @db.Uuid
+  org       Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId String        @db.Uuid
+  project   Project       @relation("FieldEntryCode_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  code      String        @unique
+  createdAt DateTime      @default(now()) @db.Timestamptz(6)
+  createdBy String        @db.Uuid
+  creator   LoginAccount  @relation("FieldEntryCode_createdBy", fields: [orgId, createdBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  retiredAt DateTime?     @db.Timestamptz(6)
+  retiredBy String?       @db.Uuid
+  retirer   LoginAccount? @relation("FieldEntryCode_retiredBy", fields: [orgId, retiredBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+}
+
+/// Browser-held secret for one Person on one project. Forward-only states (trigger);
+/// one CONFIRMED per person and project (partial unique index in SQL).
+model FieldDevice {
+  id                   String                  @id @db.Uuid
+  orgId                String                  @db.Uuid
+  org                  Organization            @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId            String                  @db.Uuid
+  project              Project                 @relation("FieldDevice_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId             String                  @db.Uuid
+  person               Person                  @relation("FieldDevice_person", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'REVOKED' | 'EXPIRED'
+  state                String
+  tokenHash            String                  @unique @db.Char(64)
+  prevTokenHash        String?                 @unique @db.Char(64)
+  rotatedAt            DateTime?               @db.Timestamptz(6)
+  generation           Int                     @default(1)
+  createdAt            DateTime                @default(now()) @db.Timestamptz(6)
+  pendingUntil         DateTime                @db.Timestamptz(6)
+  expiresAt            DateTime                @db.Timestamptz(6)
+  memberUntil          DateTime?               @db.Timestamptz(6)
+  lastSeenAt           DateTime                @db.Timestamptz(6)
+  confirmedAt          DateTime?               @db.Timestamptz(6)
+  confirmedByPersonId  String?                 @db.Uuid
+  confirmedByPerson    Person?                 @relation("FieldDevice_confirmedByPerson", fields: [orgId, confirmedByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  confirmedByAccountId String?                 @db.Uuid
+  confirmedByAccount   LoginAccount?           @relation("FieldDevice_confirmedByAccount", fields: [orgId, confirmedByAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  confirmedByDeviceId  String?                 @db.Uuid
+  confirmedByDevice    FieldDevice?            @relation("FieldDevice_confirmedByDevice", fields: [orgId, projectId, confirmedByDeviceId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  confirmedDevices     FieldDevice[]           @relation("FieldDevice_confirmedByDevice")
+  endedAt              DateTime?               @db.Timestamptz(6)
+  endReason            String?
+  version              Int                     @default(1)
+  tokenHashes          FieldTokenHash[]        @relation("FieldTokenHash_device")
+  challenges           FieldConfirmChallenge[] @relation("FieldConfirmChallenge_device")
+  events               FieldDeviceEvent[]      @relation("FieldDeviceEvent_device")
+  actorEvents          FieldDeviceEvent[]      @relation("FieldDeviceEvent_actorDevice")
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, id])
+  @@index([orgId, projectId, personId], map: "FieldDevice_person_idx")
+}
+
+/// Every accepted token hash, never reused (append-only).
+model FieldTokenHash {
+  hash       String       @id @db.Char(64)
+  orgId      String       @db.Uuid
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  deviceId   String       @db.Uuid
+  device     FieldDevice  @relation("FieldTokenHash_device", fields: [orgId, deviceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  acceptedAt DateTime     @default(now()) @db.Timestamptz(6)
+}
+
+/// Hashed 6-digit confirmation code; used or superseded once (trigger).
+model FieldConfirmChallenge {
+  id            String       @id @db.Uuid
+  orgId         String       @db.Uuid
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId     String       @db.Uuid
+  personId      String       @db.Uuid
+  person        Person       @relation("FieldConfirmChallenge_person", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  deviceId      String       @db.Uuid
+  device        FieldDevice  @relation("FieldConfirmChallenge_device", fields: [orgId, projectId, deviceId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  deviceVersion Int
+  codeHash      String       @db.Char(64)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(6)
+  expiresAt     DateTime     @db.Timestamptz(6)
+  usedAt        DateTime?    @db.Timestamptz(6)
+  supersededAt  DateTime?    @db.Timestamptz(6)
+
+  @@index([orgId, deviceId], map: "FieldConfirmChallenge_device_idx")
+}
+
+model FieldPersonConfirm {
+  id          String       @id @db.Uuid
+  orgId       String       @db.Uuid
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId   String       @db.Uuid
+  project     Project      @relation("FieldPersonConfirm_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId    String       @db.Uuid
+  person      Person       @relation("FieldPersonConfirm_person", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  failures    Int          @default(0)
+  windowStart DateTime     @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, projectId, personId])
+}
+
+/// Lifecycle and refusal events; no coordinates, codes, tokens, hashes or names (append-only).
+model FieldDeviceEvent {
+  id             String        @id @db.Uuid
+  orgId          String        @db.Uuid
+  org            Organization  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId      String        @db.Uuid
+  project        Project       @relation("FieldDeviceEvent_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  deviceId       String?       @db.Uuid
+  device         FieldDevice?  @relation("FieldDeviceEvent_device", fields: [orgId, projectId, deviceId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId       String?       @db.Uuid
+  person         Person?       @relation("FieldDeviceEvent_person", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  kind           String
+  reasonCode     String?
+  at             DateTime      @default(now()) @db.Timestamptz(6)
+  actorAccountId String?       @db.Uuid
+  actorAccount   LoginAccount? @relation("FieldDeviceEvent_actorAccount", fields: [orgId, actorAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actorPersonId  String?       @db.Uuid
+  actorDeviceId  String?       @db.Uuid
+  actorPerson    Person?       @relation("FieldDeviceEvent_actorPerson", fields: [orgId, actorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actorDevice    FieldDevice?  @relation("FieldDeviceEvent_actorDevice", fields: [orgId, projectId, actorDeviceId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  /// Append order (identity); never the clock.
+  seq            BigInt        @default(autoincrement())
+
+  @@index([orgId, deviceId, seq], map: "FieldDeviceEvent_device_idx")
+}
+
+/// Pre-authentication throttle windows; salted bucket hashes, no tenant or personal data.
+model FieldThrottle {
+  bucket      String
+  windowStart DateTime @db.Timestamptz(6)
+  count       Int
+
+  @@id([bucket, windowStart])
+  @@index([windowStart])
+}
+
+model FieldThrottleSalt {
+  day  DateTime @id @db.Date
+  salt String
 }

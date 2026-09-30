@@ -15,6 +15,8 @@ import { resolve } from 'node:path';
 import {
   AlphaError,
   AlphaStore,
+  FieldError,
+  FieldStore,
   IssueStore,
   PhotoStore,
   ReportError,
@@ -25,6 +27,8 @@ import { AlphaController } from './alpha.controller.js';
 import { ReportController } from './report.controller.js';
 import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
+import { FieldController } from './field.controller.js';
+import { FieldAdminController } from './field-admin.controller.js';
 import {
   TokenVerifier,
   type TokenConfiguration,
@@ -41,6 +45,11 @@ class HealthController {
     };
   }
 }
+const FIELD_STATUS: Partial<Record<string, number>> = {
+  NOT_FOUND: 404,
+  ENTRY_CODE_INVALID: 404,
+  RATE_LIMITED: 429,
+};
 @Catch()
 class SafeErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
@@ -60,6 +69,9 @@ class SafeErrorFilter implements ExceptionFilter {
     ) {
       status = 400;
       code = 'INVALID_INPUT';
+    } else if (error instanceof FieldError) {
+      code = error.code;
+      status = FIELD_STATUS[code] ?? 409;
     } else if (error instanceof AlphaError || error instanceof ReportError) {
       code = error.code;
       status =
@@ -72,6 +84,16 @@ class SafeErrorFilter implements ExceptionFilter {
               : code === 'UNSUPPORTED_MEDIA'
                 ? 415
                 : 409;
+    }
+    // A deadlock or serialization failure is safe to repeat with the same key.
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error.code === '40P01' || error.code === '40001')
+    ) {
+      status = 503;
+      code = 'RETRY';
     }
     if (error && typeof error === 'object' && 'type' in error) {
       if (error.type === 'entity.too.large') {
@@ -101,6 +123,8 @@ export interface AlphaRuntime {
   issueStore?: IssueStore;
   /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
   photoStore?: PhotoStore;
+  /** Field roster and entry (A6a-1); served only together with the report slice. */
+  fieldStore?: FieldStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
@@ -126,6 +150,9 @@ export async function createApp(alpha?: AlphaRuntime) {
       ...(alpha?.reportStore ? [ReportController] : []),
       ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
       ...(alpha?.reportStore && alpha.photoStore ? [PhotoController] : []),
+      ...(alpha?.reportStore && alpha.fieldStore
+        ? [FieldController, FieldAdminController]
+        : []),
     ],
     providers: alpha
       ? [
@@ -140,6 +167,9 @@ export async function createApp(alpha?: AlphaRuntime) {
           ...(alpha.reportStore && alpha.photoStore
             ? [{ provide: PhotoStore, useValue: alpha.photoStore }]
             : []),
+          ...(alpha.reportStore && alpha.fieldStore
+            ? [{ provide: FieldStore, useValue: alpha.fieldStore }]
+            : []),
         ]
       : [],
   })
@@ -148,6 +178,12 @@ export async function createApp(alpha?: AlphaRuntime) {
     bodyParser: false,
     logger: false,
   });
+  // Field throttles key on the client IP. Behind the platform ingress, TRUST_PROXY_HOPS=1 makes
+  // it the address the ingress saw (appended to X-Forwarded-For), not a client-chosen header.
+  (app.getHttpAdapter().getInstance() as express.Express).set(
+    'trust proxy',
+    Number(process.env['TRUST_PROXY_HOPS'] ?? 0),
+  );
   app.use(
     (
       _request: express.Request,
