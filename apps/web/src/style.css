@@ -965,7 +965,7 @@ figure .phbtn .ph {
   height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--tabs, 4), minmax(0, 1fr));
   background: var(--surface);
   border-top: 1px solid var(--line);
 }
@@ -1496,8 +1496,43 @@ label.ghost.off {
 .primary.danger {
   background: var(--err);
 }
+.code {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+svg.qr {
+  width: min(280px, 100%);
+  height: auto;
+  align-self: center;
+}
+.print-only {
+  display: none;
+}
+@media print {
+  .noprint,
+  .page > :not(.qr-poster) {
+    display: none !important;
+  }
+  .content {
+    margin: 0;
+  }
+  .qr-poster {
+    border: 0;
+    align-items: center;
+    text-align: center;
+  }
+  .qr-poster .print-only {
+    display: block;
+  }
+  svg.qr {
+    width: 12cm;
+  }
+}
 #app > main.page {
   max-width: 640px;
   margin: 0 auto;
   padding-bottom: 32px;
+}
+.qr-poster .kv {
+  grid-template-columns: 96px minmax(0, 1fr);
 }

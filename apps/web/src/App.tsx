@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   useCallback,
   useEffect,
   useMemo,
@@ -24,6 +25,7 @@ import { useIssues } from './report/useIssues.js';
 import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
+import { SitePage } from './site/SitePage.js';
 import { Sheet } from './ui.js';
 import {
   ResumeKeeper,
@@ -168,8 +170,10 @@ function Workspace({
   const [date, setDate] = useState(
     () => place?.date ?? siteToday(project.timezone),
   );
-  const [view, setView] = useState<'field' | 'report'>(
-    () => place?.view ?? 'report',
+  const canWrite = project.access === 'write';
+  // The site page (QR code, devices) is PM-only; a reader never gets it (OD20).
+  const [view, setView] = useState<'field' | 'report' | 'site'>(() =>
+    place?.view === 'site' && !canWrite ? 'report' : (place?.view ?? 'report'),
   );
   // The place is restored; drafts of other projects cannot be and are dropped.
   useEffect(() => resume.opened(project.id), [resume, project.id]);
@@ -212,7 +216,6 @@ function Workspace({
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
   const photos = usePhotos(api, project.id, date, dayStamp);
   const busy = actionBusy || h.busy;
-  const canWrite = project.access === 'write';
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
@@ -359,30 +362,41 @@ function Workspace({
     setTask('fill');
   };
 
+  const views = canWrite
+    ? (['field', 'report', 'site'] as const)
+    : (['field', 'report'] as const);
+  const navIcon = { field: Icon.field, report: Icon.report, site: Icon.site };
+  const navLabel = {
+    field: t('nav_field'),
+    report: t('nav_report'),
+    site: t('nav_people'),
+  };
   const nav = (
     <nav
       className="tabs"
       aria-label={t('mainNav')}
-      style={{
-        gridTemplateColumns: task ? undefined : 'repeat(2, minmax(0, 1fr))',
-      }}
+      // The column count applies to the phone's bottom bar only; wider screens use a sidebar.
+      style={task ? undefined : ({ '--tabs': views.length } as CSSProperties)}
     >
-      {(['field', 'report'] as const).map((v) => (
-        <button
-          key={v}
-          type="button"
-          className={view === v && !task ? 'on' : ''}
-          aria-current={view === v && !task ? 'page' : undefined}
-          onClick={() => {
-            void h.flush();
-            setTask(null);
-            setView(v);
-          }}
-        >
-          {v === 'field' ? <Icon.field /> : <Icon.report />}
-          <span>{v === 'field' ? t('nav_field') : t('nav_report')}</span>
-        </button>
-      ))}
+      {views.map((v) => {
+        const NavIcon = navIcon[v];
+        return (
+          <button
+            key={v}
+            type="button"
+            className={view === v && !task ? 'on' : ''}
+            aria-current={view === v && !task ? 'page' : undefined}
+            onClick={() => {
+              void h.flush();
+              setTask(null);
+              setView(v);
+            }}
+          >
+            <NavIcon />
+            <span>{navLabel[v]}</span>
+          </button>
+        );
+      })}
     </nav>
   );
 
@@ -437,7 +451,9 @@ function Workspace({
       </button>
     ) : null;
   let body;
-  if (viewing && view === 'report' && !task) {
+  if (view === 'site' && canWrite && !task)
+    body = <SitePage api={api} project={project} />;
+  else if (viewing && view === 'report' && !task) {
     const meta = day?.revisions.find((r) => r.n === viewing.n) ?? null;
     body = (
       <>

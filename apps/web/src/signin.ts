@@ -104,7 +104,7 @@ export interface DraftStash {
   version: number;
   facts: DayFactsDto;
 }
-export type View = 'field' | 'report';
+export type View = 'field' | 'report' | 'site';
 export interface ResumeState {
   projectId: string;
   date: string;
@@ -219,7 +219,7 @@ export function readResume(
     !isObj(s) ||
     typeof s['projectId'] !== 'string' ||
     !isDate(s['date']) ||
-    (s['view'] !== 'field' && s['view'] !== 'report') ||
+    (s['view'] !== 'field' && s['view'] !== 'report' && s['view'] !== 'site') ||
     !Array.isArray(s['drafts']) ||
     s['drafts'].length > RESUME_LIMITS.maxDrafts ||
     typeof s['savedAt'] !== 'number' ||
