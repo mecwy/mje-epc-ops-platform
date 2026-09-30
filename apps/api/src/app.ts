@@ -27,7 +27,7 @@ import { AlphaController } from './alpha.controller.js';
 import { ReportController } from './report.controller.js';
 import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
-import { FieldController } from './field.controller.js';
+import { FieldController, FieldTokenGuard } from './field.controller.js';
 import { FieldAdminController } from './field-admin.controller.js';
 import {
   TokenVerifier,
@@ -47,9 +47,17 @@ class HealthController {
   }
 }
 const FIELD_STATUS: Partial<Record<string, number>> = {
+  FIELD_AUTH_REQUIRED: 401,
+  DEVICE_ENDED: 401,
+  DEVICE_PENDING: 403,
+  FORBIDDEN: 403,
+  NOT_FOREMAN: 403,
+  SELF_CONFIRM: 403,
   NOT_FOUND: 404,
   ENTRY_CODE_INVALID: 404,
+  PERSON_NOT_ROSTERED: 404,
   RATE_LIMITED: 429,
+  RETRY: 503,
 };
 @Catch()
 class SafeErrorFilter implements ExceptionFilter {
@@ -124,7 +132,7 @@ export interface AlphaRuntime {
   issueStore?: IssueStore;
   /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
   photoStore?: PhotoStore;
-  /** Field roster and entry (A6a-1); served only together with the report slice. */
+  /** Field roster, devices and entry (A6a); served only together with the report slice. */
   fieldStore?: FieldStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
@@ -169,7 +177,10 @@ export async function createApp(alpha?: AlphaRuntime) {
             ? [{ provide: PhotoStore, useValue: alpha.photoStore }]
             : []),
           ...(alpha.reportStore && alpha.fieldStore
-            ? [{ provide: FieldStore, useValue: alpha.fieldStore }]
+            ? [
+                { provide: FieldStore, useValue: alpha.fieldStore },
+                FieldTokenGuard,
+              ]
             : []),
         ]
       : [],

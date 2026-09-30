@@ -1,7 +1,8 @@
 /**
  * Project roster (A6 design §1): crews and append-only CrewAssignment intervals. Every write
- * takes the project roster lock exclusively and increments ProjectRoster.version. (A6a-2 adds
- * the recomputation of the affected persons' device validity from the final interval set.)
+ * takes the project roster lock exclusively and increments ProjectRoster.version; the device
+ * validity of every person whose intervals change is recomputed once, from the transaction's
+ * final interval set, before commit.
  */
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
@@ -11,7 +12,17 @@ import type {
   RosterChangesCommand,
   RosterDto,
 } from '@mje/contracts';
-import { FieldError, personLocks, rosterLock } from './field-kit.js';
+import {
+  DEVICE_COLUMNS,
+  FieldError,
+  decisionTime,
+  endDevice,
+  personLocks,
+  rosterLock,
+  type DeviceRow,
+  type EventActor,
+} from './field-kit.js';
+import { expiryReason } from './field-rules.js';
 import { audit, type Actor } from './store-kit.js';
 
 /** Rows of a role that contain now (half-open). */
@@ -68,16 +79,19 @@ async function beginRosterWrite(
   if ((await rosterVersion(client, orgId, projectId)) !== expected)
     throw new FieldError('VERSION_CONFLICT');
 }
+/** Increments the version and raises the mark to this write's decision time (design §5). */
 async function bumpRoster(
   client: PoolClient,
   orgId: string,
   projectId: string,
+  at: string,
 ) {
   const r = await client.query<{ version: number }>(
-    `INSERT INTO "ProjectRoster"(id,"orgId","projectId",version) VALUES($1,$2,$3,1)
-    ON CONFLICT ("orgId","projectId") DO UPDATE SET version="ProjectRoster".version+1, "updatedAt"=now()
+    `INSERT INTO "ProjectRoster"(id,"orgId","projectId",version,"clockHighWater") VALUES($1,$2,$3,1,$4::timestamptz)
+    ON CONFLICT ("orgId","projectId") DO UPDATE SET version="ProjectRoster".version+1, "updatedAt"=now(),
+      "clockHighWater"=GREATEST(COALESCE("ProjectRoster"."clockHighWater", $4::timestamptz), $4::timestamptz)
     RETURNING version`,
-    [randomUUID(), orgId, projectId],
+    [randomUUID(), orgId, projectId, at],
   );
   return r.rows[0]!.version;
 }
@@ -92,6 +106,57 @@ async function timeOk(
     [at, notBefore],
   );
   return r.rows[0]!.ok;
+}
+
+/**
+ * Persists the deadlines that have already passed, then recomputes `memberUntil` of the persons' live devices (already locked FOR UPDATE) from the
+ * final interval set. Nobody who is a member now: the devices end at once (CONFIRMED →
+ * REVOKED, PENDING → REJECTED, reason UNASSIGNED). An elapsed `memberUntil` is never moved.
+ */
+export async function recomputeDevices(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  personIds: string[],
+  actor: EventActor,
+  decision: { t: Date; at: string },
+) {
+  const { t, at } = decision;
+  for (const personId of personIds) {
+    // A deadline this roster write can see has passed is persisted first: the device becomes
+    // terminal, so no later write (or a clock that steps back) can revive or extend it.
+    const live = await client.query<DeviceRow>(
+      `SELECT ${DEVICE_COLUMNS} FROM "FieldDevice" d
+      WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')`,
+      [orgId, projectId, personId],
+    );
+    for (const d of live.rows) {
+      const lapsed = expiryReason(d, t);
+      if (lapsed) await endDevice(client, d, 'EXPIRED', lapsed, actor, at);
+    }
+    const r = await client.query<{
+      id: string;
+      state: 'PENDING' | 'CONFIRMED';
+      member: boolean;
+    }>(
+      `UPDATE "FieldDevice" d SET "memberUntil"=r."until"
+      FROM field_member_run($1,$2,$3,$4::timestamptz) r
+      WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')
+        AND (d."memberUntil" IS NULL OR d."memberUntil" > $4::timestamptz)
+      RETURNING d.id, d.state, r.member`,
+      [orgId, projectId, personId, at],
+    );
+    for (const d of r.rows)
+      if (!d.member)
+        await endDevice(
+          client,
+          { orgId, projectId, id: d.id, personId },
+          d.state === 'CONFIRMED' ? 'REVOKED' : 'REJECTED',
+          'UNASSIGNED',
+          actor,
+          at,
+        );
+  }
 }
 
 export async function createCrew(
@@ -115,7 +180,8 @@ export async function createCrew(
     `INSERT INTO "Crew"(id,"orgId","projectId",code,name,"createdBy") VALUES($1,$2,$3,$4,$5,$6)`,
     [id, actor.orgId, cmd.projectId, cmd.code, cmd.name, actor.accountId],
   );
-  const version = await bumpRoster(client, actor.orgId, cmd.projectId);
+  const { at } = await decisionTime(client, actor.orgId, cmd.projectId);
+  const version = await bumpRoster(client, actor.orgId, cmd.projectId, at);
   await audit(
     client,
     actor,
@@ -163,7 +229,8 @@ export async function endCrew(
     `UPDATE "Crew" SET "activeUntil"=COALESCE($3::timestamptz, now()) WHERE "orgId"=$1 AND id=$2`,
     [actor.orgId, cmd.crewId, cmd.at],
   );
-  const version = await bumpRoster(client, actor.orgId, cmd.projectId);
+  const { at } = await decisionTime(client, actor.orgId, cmd.projectId);
+  const version = await bumpRoster(client, actor.orgId, cmd.projectId, at);
   await audit(
     client,
     actor,
@@ -179,7 +246,8 @@ export async function endCrew(
 
 /**
  * Assign, transfer, hand over or terminate, in one transaction: every close first, then every
- * open, so a transfer or handover at one instant is continuous.
+ * open (so a transfer or handover at one instant is continuous), then one recomputation of the
+ * affected persons' devices from the final interval set.
  */
 export async function changeRoster(
   client: PoolClient,
@@ -232,8 +300,17 @@ export async function changeRoster(
       ...opens.map((o) => o.personId),
     ]),
   ].sort();
-  // Level 1: every person whose intervals change (the trigger takes the same locks).
+  // Levels 1 and 2: every person whose intervals change (a foreman who only loses the FOREMAN
+  // role too), then their live devices FOR UPDATE, so an in-flight write by one of those
+  // devices commits first or sees the new roster.
   await personLocks(client, orgId, projectId, persons);
+  await client.query(
+    `SELECT id FROM "FieldDevice" WHERE "orgId"=$1 AND "projectId"=$2 AND "personId" = ANY($3::uuid[])
+      AND state IN ('PENDING','CONFIRMED') ORDER BY id FOR UPDATE`,
+    [orgId, projectId, persons],
+  );
+  // Design §5: the decision time, once every lock is held.
+  const decision = await decisionTime(client, orgId, projectId);
   for (const c of closes)
     await client.query(
       `UPDATE "CrewAssignment" SET "validUntil"=COALESCE($3::timestamptz, now()), "closedBy"=$4
@@ -265,7 +342,23 @@ export async function changeRoster(
     }
     opened.push(id);
   }
-  const version = await bumpRoster(client, orgId, projectId);
+  const version = await bumpRoster(client, orgId, projectId, decision.at);
+  try {
+    await recomputeDevices(
+      client,
+      orgId,
+      projectId,
+      persons,
+      { accountId: actor.accountId, personId: actor.personId },
+      decision,
+    );
+  } catch (error) {
+    // The trigger judges an elapsed membership end by the clock, which may have passed a
+    // deadline since `t` was taken: refused, repeat with the same key (design §5).
+    if ((error as { code?: string }).code === 'MJE01')
+      throw new FieldError('RETRY');
+    throw error;
+  }
   await audit(
     client,
     actor,

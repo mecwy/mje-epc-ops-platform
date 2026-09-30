@@ -1,18 +1,21 @@
-// Field roster and entry (A6a-1; devices follow in A6a-2) HTTP + database integration test. Synthetic TEST data
+// Field roster, devices and entry (A6a) HTTP + database integration test. Synthetic TEST data
 // only (TEST names, generated tokens and codes; no coordinates). Runs against an isolated
 // database created for this run; the application connects with a low-privilege role (no
 // ownership, no RLS bypass) exactly as deployed. Concurrency cases line requests up on the
 // locks they take (pg_locks / pg_stat_activity) instead of sleeping and hoping; deadline cases
 // move stored timestamps as the owner with triggers disabled (TEST database only).
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
 import {
   AlphaStore,
   FieldStore,
+  advanceClock,
   ReportStore,
+  clearPreviousHash,
+  recordActivity,
 } from '../packages/domain/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
@@ -57,6 +60,7 @@ for (const level of ['log', 'info', 'warn', 'error']) {
   };
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sha = (s) => createHash('sha256').update(s).digest('hex');
 // Throttles key on the client IP; each scenario sends its own X-Forwarded-For.
 process.env.TRUST_PROXY_HOPS = '1';
 const DEFAULT_IP = '10.9.9.9';
@@ -255,7 +259,7 @@ try {
   const workersA = ['pm', 'exec', 'pm2', 'f1', 'f2', 'f3', 'f4', 'fx', 'wx'];
   for (let i = 1; i <= 8; i++) workersA.push(`w${i}`);
   for (let i = 1; i <= 40; i++) workersA.push(`o${i}`);
-  workersA.push('a2only', 'unrostered');
+  workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1', 'c1', 'c2', 'c3');
   for (const k of workersA) await addPerson(k, orgA);
   for (const k of ['pmB', 'wb']) await addPerson(k, orgB);
   const accounts = {};
@@ -326,7 +330,15 @@ try {
   };
   const auth = { tenantId, audience, clientId, scope: 'access_as_user' };
   const verifier = new TokenVerifier(auth, createLocalJWKSet({ keys: [jwk] }));
-  const fieldStore = new FieldStore(appPool);
+  // TEST seam: queued challenge codes force a collision; otherwise random.
+  const codeQueue = [];
+  const fieldOptions = {
+    challengeCode: () =>
+      codeQueue.shift() ?? String(randomInt(0, 1_000_000)).padStart(6, '0'),
+    // Switched off where a test must show that no answer depends on deferred housekeeping.
+    housekeeping: true,
+  };
+  const fieldStore = new FieldStore(appPool, fieldOptions);
   app = await createApp({
     auth,
     verifier,
@@ -355,13 +367,50 @@ try {
       .sign(keys.privateKey);
   }
   const pm = await jwt(objects.pm),
+    twin = await jwt(objects.twin),
     exec = await jwt(objects.exec),
     pm2 = await jwt(objects.pm2),
     pmB = await jwt(objects.pmB);
 
   // ---------- HTTP helpers ----------
   const responses = [];
-  async function http(path, { method, bearer, body, key, ip = DEFAULT_IP }) {
+  /**
+   * The client contract for 503 RETRY (design §5, §6): repeat the same request, with the same
+   * key. The TEST VM's database clock can step back between two requests; the fail-closed
+   * clock policy answers RETRY until it catches up. Bounded, counted and reported at the end;
+   * switched off where a test expects the 503.
+   */
+  const retry = { on: true, force: false, repeated: 0 };
+  // Ordering and deadline tests assert their first attempt: no automatic repetition there.
+  const FIRST_ATTEMPT = new Set([
+    'roster',
+    'foreman handover at a scheduled instant',
+    'rotation',
+    'revoke vs rotate; release',
+    'idle deadline',
+    'transfer, termination, scheduled end',
+    'clock regression fails closed',
+    'decision time after the locks',
+    'roster read is one snapshot',
+    'challenge expiry, reuse, wrong version',
+    'stale confirmation, revoke before confirm',
+  ]);
+  async function http(path, options) {
+    const until = Date.now() + 10_000;
+    for (;;) {
+      const r = await httpOnce(path, options);
+      const repeat =
+        retry.force || (retry.on && !FIRST_ATTEMPT.has(currentStep));
+      if (!repeat || r.status !== 503 || r.body?.code !== 'RETRY') return r;
+      if (Date.now() > until) return r;
+      retry.repeated++;
+      await sleep(200);
+    }
+  }
+  async function httpOnce(
+    path,
+    { method, bearer, body, key, ip = DEFAULT_IP },
+  ) {
     const headers = { 'X-Forwarded-For': ip };
     if (bearer) headers.Authorization = `Bearer ${bearer}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -382,6 +431,8 @@ try {
     responses.push({ path, status: r.status, text });
     return { status: r.status, body: text ? JSON.parse(text) : null };
   }
+  const fget = (path, token, opts = {}) =>
+    http('/api/field' + path, { method: 'GET', bearer: token, ...opts });
   const fpost = (path, token, body, opts = {}) =>
     http('/api/field' + path, { method: 'POST', bearer: token, body, ...opts });
   const pget = (path, bearer) =>
@@ -447,11 +498,134 @@ try {
       )
       .at(-1).id;
 
-  // ---------- helpers ----------
-  const secret = { entry: [] };
+  // ---------- device helpers ----------
+  const secret = { tokens: [], codes: [], entry: [] };
+  const newToken = () => {
+    const t = 'fd1.' + randomBytes(32).toString('base64url');
+    secret.tokens.push(t);
+    return t;
+  };
   const entryCode = {};
+  const bind = (personId, opts = {}) => {
+    const token = opts.token ?? newToken();
+    return fpost(
+      '/bind',
+      null,
+      { code: opts.code ?? entryCode[projectA], personId, token },
+      { ip: opts.ip },
+    ).then((r) => ({ ...r, token }));
+  };
+  const challenge = async (token, opts) => {
+    const b = await expectStatus(
+      fpost('/device/challenge', token, {}, opts),
+      200,
+    );
+    secret.codes.push(b.code);
+    return b.code;
+  };
+  const pmConfirm = (
+    personId,
+    code,
+    expected = null,
+    bearer = pm,
+    projectId = projectA,
+  ) =>
+    ppost('/devices/confirm', bearer, {
+      projectId,
+      clientMutationId: randomUUID(),
+      personId,
+      code,
+      expectedCurrentDeviceId: expected,
+    });
+  const fConfirm = (
+    token,
+    personId,
+    code,
+    expected = null,
+    key = randomUUID(),
+  ) =>
+    fpost('/devices/confirm', token, {
+      clientMutationId: key,
+      personId,
+      code,
+      expectedCurrentDeviceId: expected,
+    });
+  const pmDevice = (
+    action,
+    deviceId,
+    expectedVersion,
+    bearer = pm,
+    projectId = projectA,
+  ) =>
+    ppost(`/devices/${action}`, bearer, {
+      projectId,
+      clientMutationId: randomUUID(),
+      deviceId,
+      expectedVersion,
+    });
+  const rotate = (token, newTok, expectedGeneration) =>
+    fpost('/device/rotate', token, { newToken: newTok, expectedGeneration });
+  const me = (token, opts) => fget('/me', token, opts);
+  /** Every device of the project as the PM list returns it, following the cursor. */
+  async function allDevices(bearer = pm, projectId = projectA) {
+    const out = [];
+    let cursor = null;
+    for (let page = 0; page < 100; page++) {
+      const body = await expectStatus(
+        pget(
+          `/devices?projectId=${projectId}${cursor ? `&cursor=${cursor}` : ''}`,
+          bearer,
+        ),
+        200,
+      );
+      if (Array.isArray(body)) return body; // an unpaged list
+      out.push(...body.devices);
+      if (!body.nextCursor) return out;
+      cursor = body.nextCursor;
+    }
+    throw new Error('device list did not end');
+  }
+  async function onboard(personId, opts = {}) {
+    const b = await bind(personId, opts);
+    assert.equal(b.status, 200, JSON.stringify(b.body));
+    const c = await challenge(b.token, { ip: opts.ip });
+    const r = opts.foreman
+      ? await fConfirm(opts.foreman, personId, c)
+      : await pmConfirm(
+          personId,
+          c,
+          null,
+          opts.bearer ?? pm,
+          opts.projectId ?? projectA,
+        );
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return { token: b.token, id: b.body.deviceId };
+  }
+  const row = async (id) =>
+    (
+      await owner.query(
+        `SELECT state, "endReason", version, generation, "memberUntil", "lastSeenAt", "prevTokenHash", "tokenHash"
+        FROM "FieldDevice" WHERE id=$1`,
+        [id],
+      )
+    ).rows[0];
   const count = async (sql, params = []) =>
     (await owner.query(sql, params)).rows[0].n;
+  /** Moves stored timestamps as the owner with triggers off (TEST database only). */
+  async function travel(sql, params) {
+    const c = await owner.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query(sql, params);
+      await c.query('COMMIT');
+    } catch (error) {
+      await c.query('ROLLBACK');
+      throw error;
+    } finally {
+      c.release();
+    }
+  }
   const waitFor = async (sql, params, n, timeoutMs = 15000) => {
     const until = Date.now() + timeoutMs;
     for (;;) {
@@ -472,6 +646,12 @@ try {
       [key],
       n,
     );
+  const rowWaiters = (n) =>
+    waitFor(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND wait_event IN ('tuple','transactionid')`,
+      [username],
+      n,
+    );
   const personKey = (personId, orgId = orgA, projectId = projectA) =>
     `${orgId}:field-person:${projectId}:${personId}`;
   /** Registers a held client; its release runs once, here or in the run's `finally`. */
@@ -488,6 +668,31 @@ try {
     held.add(release);
     return release;
   }
+  async function holdAdvisory(key) {
+    const c = await withTimeout(owner.connect(), 5_000, 'owner connect');
+    await withTimeout(
+      c.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
+      5_000,
+      'hold advisory lock',
+    );
+    return registerHeld(
+      c,
+      'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+      [key],
+    );
+  }
+  async function holdRow(id) {
+    const c = await withTimeout(owner.connect(), 5_000, 'owner connect');
+    await c.query('BEGIN');
+    await withTimeout(
+      c.query('SELECT 1 FROM "FieldDevice" WHERE id=$1 FOR UPDATE', [id]),
+      5_000,
+      'hold row lock',
+    );
+    return registerHeld(c, 'COMMIT', []);
+  }
+  const dbNow = async () =>
+    (await owner.query('SELECT now()::text AS t')).rows[0].t;
   // Scheduled instants come from the database clock (the one that judges them), not the host's.
   const dbFuture = async (ms) =>
     (
@@ -640,9 +845,10 @@ try {
     200,
   );
   await expectStatus(
-    change(
-      Array.from({ length: 40 }, (_, i) => open(C.C5, person[`o${i + 1}`])),
-    ),
+    change([
+      ...Array.from({ length: 40 }, (_, i) => open(C.C5, person[`o${i + 1}`])),
+      ...['r1', 'r2', 'p1', 'c1', 'c2', 'c3'].map((k) => open(C.C5, person[k])),
+    ]),
     200,
   );
   {
@@ -730,7 +936,9 @@ try {
     );
     await expectStatus(change([close(assignment(person.unrostered))]), 200);
     // The trigger alone serializes overlapping inserts that bypass the roster lock: the second
-    // waits on the person lock, then sees the first and fails (23P01).
+    // waits on the person lock, then sees the first and fails (23P01). The raw intervals start a
+    // second ahead: the database clock is not monotonic across transactions (the TEST VM's clock
+    // can step back), and "now" right after the close above must not reach back into it.
     // Both clients go through the lock registry, so a failure here can never leave one held.
     const t1 = await withTimeout(owner.connect(), 5_000, 'owner connect');
     const releaseT1 = registerHeld(t1, 'ROLLBACK', []);
@@ -740,7 +948,7 @@ try {
       const insert = (c, crewId) =>
         c.query(
           `INSERT INTO "CrewAssignment"(id,"orgId","projectId","crewId","personId",role,"validFrom","createdBy")
-          VALUES($1,$2,$3,$4,$5,'MEMBER',now(),$6)`,
+          VALUES($1,$2,$3,$4,$5,'MEMBER',now() + interval '1 second',$6)`,
           [
             randomUUID(),
             orgA,
@@ -762,7 +970,7 @@ try {
       assert.equal(await second, '23P01');
       await t2.query('ROLLBACK');
       await owner.query(
-        `UPDATE "CrewAssignment" SET "validUntil"=now(), "closedBy"=$2 WHERE "personId"=$1 AND "validUntil" IS NULL`,
+        `UPDATE "CrewAssignment" SET "validUntil"="validFrom", "closedBy"=$2 WHERE "personId"=$1 AND "validUntil" IS NULL`,
         [person.unrostered, accounts.pm],
       );
     } finally {
@@ -778,6 +986,1014 @@ try {
     [person.unrostered],
   );
   assert.equal(unrosteredRow.rows[0].n, 2);
+
+  // ================= entry, bind, pending =================
+  step('entry, bind, pending');
+  {
+    const entry = await expectStatus(
+      fpost('/entry', null, { code: entryCode[projectA] }),
+      200,
+    );
+    assert.equal(entry.project.id, projectA);
+    const listed = new Set(entry.roster.map((r) => r.personId));
+    assert.ok(listed.has(person.w1) && listed.has(person.o40));
+    assert.ok(!listed.has(person.a2only) && !listed.has(person.wb));
+    assert.ok(
+      !listed.has(person.unrostered),
+      'a closed interval is not current',
+    );
+    const b = await bind(person.w5);
+    assert.equal(b.status, 200);
+    assert.equal(b.body.state, 'PENDING');
+    const again = await bind(person.w5, { token: b.token });
+    assert.equal(again.body.deviceId, b.body.deviceId);
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "FieldDevice" WHERE "personId"=$1`,
+        [person.w5],
+      ),
+      1,
+    );
+    await expectStatus(
+      bind(person.w6, { token: b.token }),
+      409,
+      'TOKEN_CONFLICT',
+    );
+    await expectStatus(bind(person.a2only), 404, 'PERSON_NOT_ROSTERED');
+    await expectStatus(bind(person.unrostered), 404, 'PERSON_NOT_ROSTERED');
+    await expectStatus(bind(person.wb), 404, 'PERSON_NOT_ROSTERED');
+    await expectStatus(bind(randomUUID()), 404, 'PERSON_NOT_ROSTERED');
+    await expectStatus(
+      bind(person.w5, { code: 'B'.repeat(22) }),
+      404,
+      'ENTRY_CODE_INVALID',
+    );
+    const b2 = await bind(person.w5);
+    const b3 = await bind(person.w5);
+    assert.equal(b2.status, 200);
+    assert.equal(b3.status, 200);
+    await expectStatus(bind(person.w5), 409, 'TOO_MANY_PENDING');
+    const mine = await expectStatus(me(b.token), 200);
+    assert.equal(mine.device.state, 'PENDING');
+    assert.equal(mine.person.id, person.w5);
+    assert.equal(mine.foreman, null);
+    await expectStatus(
+      fConfirm(b.token, person.w6, '123456'),
+      403,
+      'DEVICE_PENDING',
+    );
+    await expectStatus(rotate(b.token, newToken(), 1), 403, 'DEVICE_PENDING');
+    // Pending 24 h: past pendingUntil the next request persists EXPIRED and is refused.
+    await travel(
+      `UPDATE "FieldDevice" SET "pendingUntil"=now()-interval '1 second' WHERE id=$1`,
+      [b3.body.deviceId],
+    );
+    await expectStatus(me(b3.token), 401, 'DEVICE_ENDED');
+    const expired = await row(b3.body.deviceId);
+    assert.equal(expired.state, 'EXPIRED');
+    assert.equal(expired.endReason, 'PENDING_TIMEOUT');
+    // With one pending slot free again, a bind succeeds.
+    assert.equal((await bind(person.w5)).status, 200);
+    pass(
+      "entry lists only current members of the code's project; bind is idempotent per token (same token + person → same row; another person → TOKEN_CONFLICT); not rostered (other project, closed interval, other org, unknown) → PERSON_NOT_ROSTERED; ≤ 3 pending per person; a pending device reads GET me but gets DEVICE_PENDING on confirm and rotate; past pendingUntil the device is persisted EXPIRED(PENDING_TIMEOUT)",
+    );
+  }
+
+  // ================= foremen, competing binds, challenge collision =================
+  step('foremen, competing binds, challenge collision');
+  const dev = {};
+  dev.f1 = await onboard(person.f1);
+  dev.f2 = await onboard(person.f2);
+  {
+    // Competing binds for one person: only the browser whose code is typed gets confirmed.
+    const a = await bind(person.w1);
+    const b = await bind(person.w1);
+    const ca = await challenge(a.token);
+    const cb = await challenge(b.token);
+    assert.notEqual(ca, cb);
+    const confirmed = await expectStatus(
+      fConfirm(dev.f1.token, person.w1, cb),
+      200,
+    );
+    assert.deepEqual(confirmed, {
+      deviceId: b.body.deviceId,
+      personId: person.w1,
+      state: 'CONFIRMED',
+    });
+    assert.equal((await row(a.body.deviceId)).endReason, 'SUPERSEDED');
+    await expectStatus(me(a.token), 401, 'DEVICE_ENDED');
+    await expectStatus(me(b.token), 200);
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w1, ca, b.body.deviceId),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    dev.w1 = { token: b.token, id: b.body.deviceId, rejected: a };
+    const list = await allDevices();
+    const shown = list.find((d) => d.id === dev.w1.id);
+    assert.deepEqual(shown.confirmedBy, {
+      kind: 'FOREMAN',
+      personId: person.f1,
+    });
+    assert.equal(list.find((d) => d.id === dev.f1.id).confirmedBy.kind, 'PM');
+    assert.ok(!JSON.stringify(list).includes('okenHash'));
+    await expectStatus(
+      pget(`/devices?projectId=${projectA}`, exec),
+      403,
+      'READ_ONLY',
+    );
+    // The foreman sees the crew's current devices (for expectedCurrentDeviceId).
+    const view = await expectStatus(me(dev.f1.token), 200);
+    assert.equal(view.foreman.crewId, C.C1);
+    assert.equal(
+      view.foreman.members.find((m) => m.personId === person.w1)
+        .currentDeviceId,
+      dev.w1.id,
+    );
+    // Code collision for one person: the second draw equals a live code and is redrawn.
+    const q1 = await bind(person.w8);
+    const q2 = await bind(person.w8);
+    codeQueue.push('111111', '111111', '222222');
+    assert.equal(await challenge(q1.token), '111111');
+    assert.equal(await challenge(q2.token), '222222');
+    await expectStatus(fConfirm(dev.f2.token, person.w8, '222222'), 200);
+    dev.w8 = { token: q2.token, id: q2.body.deviceId };
+    assert.equal((await row(q1.body.deviceId)).state, 'REJECTED');
+    pass(
+      "competing binds: only the browser whose challenge was typed is confirmed, the other is REJECTED(SUPERSEDED) and its code dies; PM list marks foreman confirmations for spot checks and never shows a hash; readers get READ_ONLY; the foreman's GET me lists the crew's current device; a challenge code equal to a live code of the same person is redrawn",
+    );
+  }
+
+  // ================= failed matches: per person, committed, replay-safe =================
+  step('failed matches: per person, committed, replay-safe');
+  {
+    const p1 = await bind(person.w7);
+    const p2 = await bind(person.w7);
+    codeQueue.push('314159', '271828');
+    const c1 = await challenge(p1.token);
+    const c2 = await challenge(p2.token);
+    const failures = () =>
+      count(
+        `SELECT failures AS n FROM "FieldPersonConfirm" WHERE "personId"=$1`,
+        [person.w7],
+      );
+    const keysUsed = [];
+    for (let i = 1; i <= 4; i++) {
+      keysUsed.push(randomUUID());
+      await expectStatus(
+        fConfirm(dev.f2.token, person.w7, `00000${i}`, null, keysUsed.at(-1)),
+        409,
+        'CHALLENGE_INVALID',
+      );
+      assert.equal(await failures(), i);
+    }
+    // A same-key retry replays the stored failure without counting it again.
+    await expectStatus(
+      fConfirm(dev.f2.token, person.w7, '000002', null, keysUsed[1]),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    assert.equal(await failures(), 4);
+    await expectStatus(
+      fConfirm(dev.f2.token, person.w7, '000009', null, keysUsed[1]),
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+    );
+    // The fifth failure supersedes every live challenge of the person and resets the counter.
+    await expectStatus(
+      fConfirm(dev.f2.token, person.w7, '000005'),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    assert.equal(await failures(), 0);
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "FieldConfirmChallenge" WHERE "personId"=$1 AND "usedAt" IS NULL AND "supersededAt" IS NULL`,
+        [person.w7],
+      ),
+      0,
+    );
+    await expectStatus(
+      fConfirm(dev.f2.token, person.w7, c1),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    await expectStatus(
+      fConfirm(dev.f2.token, person.w7, c2),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    const fresh = await challenge(p1.token);
+    await expectStatus(fConfirm(dev.f2.token, person.w7, fresh), 200);
+    dev.w7 = { token: p1.token, id: p1.body.deviceId };
+    assert.equal((await row(p2.body.deviceId)).endReason, 'SUPERSEDED');
+    // The confirmer's own failure count: 7 new failures, the replay not counted.
+    assert.equal(
+      await count(
+        `SELECT sum(count)::int AS n FROM "FieldThrottle" WHERE bucket=$1`,
+        [`confirm-fail:${dev.f2.id}`],
+      ),
+      7,
+    );
+    pass(
+      "wrong codes are counted per person across two pending devices, each failure committed with its 409; a same-key retry replays the failure without counting (a changed body → IDEMPOTENCY_KEY_REUSED); the fifth failure supersedes every live challenge and resets the counter; the confirmer's hourly failure count excludes replays",
+    );
+  }
+
+  // ================= challenge expiry, reuse, wrong version =================
+  step('challenge expiry, reuse, wrong version');
+  {
+    const d = await bind(person.w2);
+    const c = await challenge(d.token);
+    await travel(
+      `UPDATE "FieldConfirmChallenge" SET "expiresAt"=now()-interval '1 second' WHERE "deviceId"=$1 AND "usedAt" IS NULL AND "supersededAt" IS NULL`,
+      [d.body.deviceId],
+    );
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w2, c),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    const c2 = await challenge(d.token);
+    await travel(`UPDATE "FieldDevice" SET version=version+1 WHERE id=$1`, [
+      d.body.deviceId,
+    ]);
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w2, c2),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    const c3 = await challenge(d.token);
+    await expectStatus(fConfirm(dev.f1.token, person.w2, c3), 200);
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w2, c3, d.body.deviceId),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    dev.w2 = { token: d.token, id: d.body.deviceId };
+    // A confirmed device cannot ask for a code.
+    await expectStatus(
+      fpost('/device/challenge', d.token, {}),
+      403,
+      'FORBIDDEN',
+    );
+    pass(
+      'an expired challenge, a challenge bound to an older device version and a used code are all CHALLENGE_INVALID; a confirmed device cannot request a code',
+    );
+  }
+
+  // ================= stale confirmation, revoke before confirm =================
+  step('stale confirmation, revoke before confirm');
+  {
+    const d1 = await onboard(person.w3, { foreman: dev.f1.token });
+    const view = await expectStatus(me(dev.f1.token), 200);
+    const seen = view.foreman.members.find(
+      (m) => m.personId === person.w3,
+    ).currentDeviceId;
+    assert.equal(seen, d1.id);
+    const d2 = await bind(person.w3);
+    await expectStatus(
+      pmConfirm(person.w3, await challenge(d2.token), d1.id),
+      200,
+    );
+    assert.equal((await row(d1.id)).endReason, 'REPLACED');
+    // The foreman still believes d1 is current: another phone was confirmed meanwhile.
+    const d3 = await bind(person.w3);
+    const c3 = await challenge(d3.token);
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w3, c3, seen),
+      409,
+      'CONFIRM_STALE',
+    );
+    await expectStatus(pmConfirm(person.w3, c3, seen), 409, 'CONFIRM_STALE');
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w3, c3, d2.body.deviceId),
+      200,
+    );
+    assert.equal((await row(d2.body.deviceId)).endReason, 'REPLACED');
+    // PM revoke with an old version is refused; with the current one it ends the device.
+    await expectStatus(
+      pmDevice('revoke', d3.body.deviceId, 1),
+      409,
+      'VERSION_CONFLICT',
+    );
+    const revoked = await expectStatus(
+      pmDevice('revoke', d3.body.deviceId, 2),
+      200,
+    );
+    assert.equal(revoked.state, 'REVOKED');
+    await expectStatus(me(d3.token), 401, 'DEVICE_ENDED');
+    // Revoke (of a pending device) before the confirmation: its code dies with it.
+    const d4 = await bind(person.w3);
+    const c4 = await challenge(d4.token);
+    await expectStatus(pmDevice('revoke', d4.body.deviceId, 1), 200);
+    assert.equal((await row(d4.body.deviceId)).state, 'REJECTED');
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w3, c4),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    // The current device was revoked meanwhile: a confirmer expecting it is stale.
+    const d5 = await bind(person.w3);
+    const c5 = await challenge(d5.token);
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w3, c5, d3.body.deviceId),
+      409,
+      'CONFIRM_STALE',
+    );
+    await expectStatus(fConfirm(dev.f1.token, person.w3, c5, null), 200);
+    dev.w3 = { token: d5.token, id: d5.body.deviceId };
+    // PM reject only applies to a pending device; a terminal one is VERSION_CONFLICT.
+    await expectStatus(
+      pmDevice('reject', d5.body.deviceId, 2),
+      409,
+      'VERSION_CONFLICT',
+    );
+    await expectStatus(
+      pmDevice('revoke', d3.body.deviceId, 3),
+      409,
+      'VERSION_CONFLICT',
+    );
+    const d6 = await bind(person.w3);
+    await expectStatus(pmDevice('reject', d6.body.deviceId, 1), 200);
+    pass(
+      'CONFIRM_STALE when another phone was confirmed or the current one revoked since the confirmer looked (foreman and PM); a confirmation revokes the previous device (REPLACED) first; PM revoke/reject need the current version and a live (reject: pending) device; revoking a pending device before its confirmation kills its code',
+    );
+  }
+
+  // ================= self-confirm, authority, not found =================
+  step('self-confirm, authority, not found');
+  {
+    const s = await bind(person.pm);
+    const cs = await challenge(s.token);
+    await expectStatus(pmConfirm(person.pm, cs, null, pm), 403, 'SELF_CONFIRM');
+    await expectStatus(
+      pmConfirm(person.pm, cs, null, twin),
+      403,
+      'SELF_CONFIRM',
+    );
+    await expectStatus(fConfirm(dev.f2.token, person.pm, cs), 200);
+    const second = await bind(person.f1);
+    const cf = await challenge(second.token);
+    await expectStatus(
+      fConfirm(dev.f1.token, person.f1, cf),
+      403,
+      'SELF_CONFIRM',
+    );
+    // Foreman of another crew, a plain worker, a foreman of an empty crew.
+    await expectStatus(
+      fConfirm(dev.f2.token, person.w1, '123456'),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      fConfirm(dev.w1.token, person.w2, '123456'),
+      403,
+      'NOT_FOREMAN',
+    );
+    dev.f3 = await onboard(person.f3, { foreman: dev.f2.token });
+    await expectStatus(
+      fConfirm(dev.f3.token, person.w7, '123456'),
+      403,
+      'NOT_FOREMAN',
+    );
+    // Outside the project, another org or nonexistent: the same 404.
+    const bodies = [];
+    for (const target of [person.a2only, person.wb, randomUUID()]) {
+      const r = await fConfirm(dev.f1.token, target, '123456');
+      assert.equal(r.status, 404);
+      bodies.push(errorShape(r.body));
+    }
+    assert.deepEqual(bodies, ['NOT_FOUND', 'NOT_FOUND', 'NOT_FOUND']);
+    await expectStatus(pmConfirm(person.wb, '123456'), 404, 'NOT_FOUND');
+    pass(
+      "SELF_CONFIRM for the PM through either of the person's accounts and for a foreman's own second phone; another crew's foreman, a worker and the foreman of an empty crew get NOT_FOREMAN; a person outside the project, in another org or nonexistent gets the identical 404",
+    );
+  }
+
+  // ================= foreman handover at a scheduled instant =================
+  step('foreman handover at a scheduled instant');
+  {
+    dev.f4 = await onboard(person.f4, { foreman: dev.f1.token });
+    const E = await dbFuture(4000);
+    await expectStatus(
+      change([
+        close(assignment(person.f1, 'FOREMAN'), E),
+        open(C.C1, person.f4, 'FOREMAN', E),
+      ]),
+      200,
+    );
+    await expectStatus(
+      fConfirm(dev.f4.token, person.w4, '123456'),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w4, '123456'),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    // A confirmation by the old foreman that starts before E and waits on the subject's person
+    // lock until after E is authorized at its decision time: no longer foreman.
+    const releaseW4 = await holdAdvisory(personKey(person.w4));
+    const acrossE = fConfirm(dev.f1.token, person.w4, '123456');
+    await advisoryWaiters(personKey(person.w4), 1);
+    await untilDb(E);
+    await sleep(200);
+    await releaseW4();
+    await expectStatus(acrossE, 403, 'NOT_FOREMAN');
+    await expectStatus(
+      fConfirm(dev.f1.token, person.w4, '123456'),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      fConfirm(dev.f4.token, person.w4, '123456'),
+      409,
+      'CHALLENGE_INVALID',
+    );
+    // Losing only the FOREMAN role keeps the device.
+    await expectStatus(me(dev.f1.token), 200);
+    pass(
+      "a scheduled foreman handover at E: before E the old foreman has authority and the new one NOT_FOREMAN, after E the reverse, with no request in between; a confirmation that started before E and waited on a lock past E is refused NOT_FOREMAN (authorized at its decision time); the old foreman's device stays valid",
+    );
+  }
+
+  // ================= rotation =================
+  step('rotation');
+  {
+    const O = dev.w1.token;
+    const N1 = newToken();
+    assert.deepEqual(await expectStatus(rotate(O, N1, 1), 200), {
+      generation: 2,
+    });
+    await expectStatus(me(O), 401, 'FIELD_AUTH_REQUIRED');
+    // Lost response: the exact replay with the previous token returns the same 200.
+    assert.deepEqual(await expectStatus(rotate(O, N1, 1), 200), {
+      generation: 2,
+    });
+    await expectStatus(rotate(O, newToken(), 1), 401, 'FIELD_AUTH_REQUIRED');
+    await expectStatus(
+      fConfirm(O, person.w2, '123456'),
+      401,
+      'FIELD_AUTH_REQUIRED',
+    );
+    assert.notEqual((await row(dev.w1.id)).prevTokenHash, null);
+    // The new token's first use clears the recovery hash; the replay then stops working.
+    await expectStatus(me(N1), 200);
+    assert.equal((await row(dev.w1.id)).prevTokenHash, null);
+    await expectStatus(rotate(O, N1, 1), 401, 'FIELD_AUTH_REQUIRED');
+    // A stale tab: current token, old generation.
+    const N3 = newToken();
+    await expectStatus(rotate(N1, N3, 1), 409, 'VERSION_CONFLICT');
+    await expectStatus(rotate(N1, N3, 2), 200);
+    await expectStatus(rotate(N1, N3, 2), 200);
+    // Refused after rotatedAt + 7 days even though it was never cleared.
+    await travel(
+      `UPDATE "FieldDevice" SET "rotatedAt"="rotatedAt"-interval '7 days 1 second' WHERE id=$1`,
+      [dev.w1.id],
+    );
+    assert.notEqual((await row(dev.w1.id)).prevTokenHash, null);
+    await expectStatus(rotate(N1, N3, 2), 401, 'FIELD_AUTH_REQUIRED');
+    // A stale clear task for an older generation never clears the newer recovery hash.
+    assert.equal(
+      await clearPreviousHash(appPool, orgA, dev.w1.id, 2, sha(N1)),
+      false,
+    );
+    assert.equal((await row(dev.w1.id)).prevTokenHash, sha(N1));
+    // Every accepted hash is burned: a rejected device's token, a previous token, the same token.
+    await expectStatus(
+      rotate(N3, dev.w1.rejected.token, 3),
+      409,
+      'TOKEN_CONFLICT',
+    );
+    await expectStatus(rotate(N3, N3, 3), 409, 'TOKEN_CONFLICT');
+    await expectStatus(bind(person.w6, { token: O }), 409, 'TOKEN_CONFLICT');
+    await expectStatus(bind(person.w6, { token: N1 }), 409, 'TOKEN_CONFLICT');
+    // Two tabs rotate the same token at once: exactly one wins, the other is refused.
+    const release = await holdAdvisory(personKey(person.w1));
+    const N4 = newToken(),
+      N5 = newToken();
+    const tabs = [rotate(N3, N4, 3), rotate(N3, N5, 3)];
+    await advisoryWaiters(personKey(person.w1), 2);
+    await release();
+    const results = await Promise.all(tabs);
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 401]);
+    const winner = results[0].status === 200 ? N4 : N5;
+    const loser = winner === N4 ? N5 : N4;
+    await expectStatus(me(winner), 200);
+    await expectStatus(me(loser), 401, 'FIELD_AUTH_REQUIRED');
+    dev.w1.token = winner;
+    pass(
+      "rotation: the previous token only replays its own rotation (lost response → same 200), is refused on every other route and for another new token, is cleared by the new token's first use and refused after rotatedAt + 7 d even if never cleared; a stale clear task leaves a newer recovery hash; a stale tab → VERSION_CONFLICT; a reused, previous or identical hash → TOKEN_CONFLICT (rotate and bind); two concurrent tabs → one 200, one 401",
+    );
+  }
+
+  // ================= revoke vs rotate; release =================
+  step('revoke vs rotate; release');
+  {
+    // Both orders forced: the requests queue on the person lock in the order they arrive, and
+    // Postgres grants a lock's waiters in queue order.
+    const lineUp = async (personId, first, second) => {
+      const release = await holdAdvisory(personKey(personId));
+      const a = first();
+      await advisoryWaiters(personKey(personId), 1);
+      const b = second();
+      await advisoryWaiters(personKey(personId), 2);
+      await release();
+      return Promise.all([a, b]);
+    };
+    // Rotate first: the rotation lands, then the revoke ends the rotated device.
+    dev.w4 = await onboard(person.w4, { foreman: dev.f4.token });
+    const N = newToken();
+    const [rotated, revoked] = await lineUp(
+      person.w4,
+      () => rotate(dev.w4.token, N, 1),
+      () => pmDevice('revoke', dev.w4.id, 2),
+    );
+    assert.deepEqual([rotated.status, rotated.body], [200, { generation: 2 }]);
+    assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+    await expectStatus(me(dev.w4.token), 401, 'FIELD_AUTH_REQUIRED');
+    await expectStatus(me(N), 401, 'DEVICE_ENDED');
+    await expectStatus(rotate(dev.w4.token, N, 1), 401, 'DEVICE_ENDED');
+    assert.deepEqual(
+      [(await row(dev.w4.id)).state, (await row(dev.w4.id)).generation],
+      ['REVOKED', 2],
+    );
+    // Revoke first: the rotation then sees REVOKED; its new token was never accepted.
+    dev.r1 = await onboard(person.r1);
+    const N2 = newToken();
+    const [revokedFirst, rotatedAfter] = await lineUp(
+      person.r1,
+      () => pmDevice('revoke', dev.r1.id, 2),
+      () => rotate(dev.r1.token, N2, 1),
+    );
+    assert.equal(revokedFirst.status, 200, JSON.stringify(revokedFirst.body));
+    assert.deepEqual(
+      [rotatedAfter.status, rotatedAfter.body.code],
+      [401, 'DEVICE_ENDED'],
+    );
+    await expectStatus(me(dev.r1.token), 401, 'DEVICE_ENDED');
+    await expectStatus(me(N2), 401, 'FIELD_AUTH_REQUIRED');
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "FieldTokenHash" WHERE hash=$1`,
+        [sha(N2)],
+      ),
+      0,
+    );
+    assert.deepEqual(
+      [(await row(dev.r1.id)).state, (await row(dev.r1.id)).generation],
+      ['REVOKED', 1],
+    );
+    dev.w6 = await onboard(person.w6, { foreman: dev.f4.token });
+    const key = randomUUID();
+    const released = await expectStatus(
+      fpost('/device/release', dev.w6.token, { clientMutationId: key }),
+      200,
+    );
+    assert.equal(released.state, 'REVOKED');
+    assert.equal((await row(dev.w6.id)).endReason, 'RELEASED');
+    await expectStatus(
+      fpost('/device/release', dev.w6.token, { clientMutationId: key }),
+      401,
+      'DEVICE_ENDED',
+    );
+    await expectStatus(
+      fpost(
+        '/device/release',
+        dev.w8.token,
+        { clientMutationId: randomUUID() },
+        { key: randomUUID() },
+      ),
+      400,
+      'INVALID_INPUT',
+    );
+    pass(
+      `revoke vs rotate in both forced orders on the person lock: rotate first → 200 (generation 2), then the revoke ends it (old token FIELD_AUTH_REQUIRED, new one DEVICE_ENDED); revoke first → the rotation gets DEVICE_ENDED and its new token was never accepted (not registered, FIELD_AUTH_REQUIRED); release ends the own device (REVOKED/RELEASED) and a replay re-authenticates (DEVICE_ENDED); a key that differs from clientMutationId is INVALID_INPUT`,
+    );
+  }
+
+  // ================= idle deadline =================
+  step('idle deadline');
+  {
+    // (1) A authenticates just before lastSeenAt + 30 d, B just after; both FOR UPDATE, A first.
+    await travel(
+      `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '30 days'+interval '2500 milliseconds' WHERE id=$1`,
+      [dev.w2.id],
+    );
+    // Both queue FOR UPDATE on the row and are released before the deadline, so both decide
+    // before it (the decision time is taken after the lock); the first records its activity.
+    let unlock = await holdRow(dev.w2.id);
+    const A = me(dev.w2.token);
+    await rowWaiters(1);
+    const B = me(dev.w2.token);
+    await rowWaiters(2);
+    await unlock();
+    const [ra, rb] = await Promise.all([A, B]);
+    assert.deepEqual([ra.status, rb.status], [200, 200]);
+    // After the original deadline the device is still live: A's activity moved it.
+    await sleep(3000);
+    await expectStatus(me(dev.w2.token), 200);
+    assert.equal((await row(dev.w2.id)).state, 'CONFIRMED');
+    // (2) B (after the deadline) runs first and persists EXPIRED; A (before it) then sees it.
+    await travel(
+      `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '30 days'+interval '2500 milliseconds' WHERE id=$1`,
+      [dev.w3.id],
+    );
+    const releasePerson = await holdAdvisory(personKey(person.w3));
+    const A2 = rotate(dev.w3.token, newToken(), 1);
+    await advisoryWaiters(personKey(person.w3), 1);
+    await sleep(3000);
+    // B's own transaction must commit EXPIRED before it answers (no deferred housekeeping).
+    fieldOptions.housekeeping = false;
+    await expectStatus(me(dev.w3.token), 401, 'DEVICE_ENDED');
+    fieldOptions.housekeeping = true;
+    const ended = await row(dev.w3.id);
+    assert.deepEqual([ended.state, ended.endReason], ['EXPIRED', 'IDLE']);
+    await releasePerson();
+    await expectStatus(A2, 401, 'DEVICE_ENDED');
+    await expectStatus(me(dev.w3.token), 401, 'DEVICE_ENDED');
+    // (3) Reclassification: a FOR SHARE request delayed across the last margin day.
+    await travel(
+      `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '29 days'+interval '2500 milliseconds' WHERE id=$1`,
+      [dev.w7.id],
+    );
+    const L = (
+      await owner.query(
+        `SELECT "lastSeenAt"::text AS t FROM "FieldDevice" WHERE id=$1`,
+        [dev.w7.id],
+      )
+    ).rows[0].t;
+    unlock = await holdRow(dev.w7.id);
+    const R = me(dev.w7.token);
+    await rowWaiters(1);
+    await sleep(3000);
+    await unlock();
+    await expectStatus(R, 200);
+    const advanced = await owner.query(
+      `SELECT "lastSeenAt" >= $2::timestamptz + interval '29 days' AS ok FROM "FieldDevice" WHERE id=$1`,
+      [dev.w7.id, L],
+    );
+    assert.equal(
+      advanced.rows[0].ok,
+      true,
+      'the delayed request recorded its activity',
+    );
+    // (4) The deferred FOR SHARE activity update never moves back, never touches a terminal
+    // row and never touches a row within a day of its deadline.
+    const now = await dbNow();
+    assert.equal(
+      await recordActivity(appPool, orgA, dev.f2.id, '2000-01-01 00:00:00+00'),
+      false,
+    );
+    assert.equal(await recordActivity(appPool, orgA, dev.w3.id, now), false);
+    await travel(
+      `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '29 days 1 hour' WHERE id=$1`,
+      [dev.f2.id],
+    );
+    assert.equal(await recordActivity(appPool, orgA, dev.f2.id, now), false);
+    await travel(
+      `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '2 days' WHERE id=$1`,
+      [dev.f2.id],
+    );
+    assert.equal(await recordActivity(appPool, orgA, dev.f2.id, now), true);
+    // An ordinary FOR SHARE request records its activity after the transaction.
+    await travel(
+      `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '2 days' WHERE id=$1`,
+      [dev.f2.id],
+    );
+    await expectStatus(me(dev.f2.token), 200);
+    assert.ok(
+      Date.now() - (await row(dev.f2.id)).lastSeenAt.getTime() < 60_000,
+    );
+    pass(
+      'idle deadline: requests that decide just before the deadline serialize FOR UPDATE and the first records activity, so a request after the original deadline is still served; B first → EXPIRED(IDLE) committed, then A sees it (never revived); a FOR SHARE request whose wall clock crossed into the last day while it waited reclassifies and records its activity; the deferred update refuses an older authAt, a terminal row and a row within a day of its deadline',
+    );
+  }
+
+  // ================= transfer, termination, scheduled end =================
+  step('transfer, termination, scheduled end');
+  {
+    // Continuous transfer in one transaction keeps the device.
+    await expectStatus(
+      change([close(assignment(person.w8)), open(C.C1, person.w8)]),
+      200,
+    );
+    await expectStatus(me(dev.w8.token), 200);
+    assert.equal((await row(dev.w8.id)).memberUntil, null);
+    // Split over two transactions: the gap ends it, and reassignment does not revive it.
+    await expectStatus(change([close(assignment(person.w8))]), 200);
+    const gap = await row(dev.w8.id);
+    assert.deepEqual([gap.state, gap.endReason], ['REVOKED', 'UNASSIGNED']);
+    await expectStatus(change([open(C.C2, person.w8)]), 200);
+    await expectStatus(me(dev.w8.token), 401, 'DEVICE_ENDED');
+    // Scheduled end at E: works before E, fails after E with no request in between.
+    dev.o1 = await onboard(person.o1);
+    dev.o2 = await onboard(person.o2);
+    dev.o3 = await onboard(person.o3);
+    const pending3 = await bind(person.o3);
+    const E = await dbFuture(4000);
+    await expectStatus(
+      change([
+        close(assignment(person.o1), E),
+        close(assignment(person.o2), E),
+      ]),
+      200,
+    );
+    // A scheduled transfer added before E moves memberUntil to the end of the new run.
+    await expectStatus(change([open(C.C1, person.o2, 'MEMBER', E)]), 200);
+    assert.notEqual((await row(dev.o1.id)).memberUntil, null);
+    assert.equal((await row(dev.o2.id)).memberUntil, null);
+    await expectStatus(me(dev.o1.token), 200);
+    await untilDb(E);
+    const listed = await allDevices();
+    const o1 = listed.find((d) => d.id === dev.o1.id);
+    assert.deepEqual([o1.state, o1.effectiveState], ['CONFIRMED', 'EXPIRED']);
+    await expectStatus(me(dev.o1.token), 401, 'DEVICE_ENDED');
+    await expectStatus(me(dev.o2.token), 200);
+    const before = (await row(dev.o1.id)).memberUntil.getTime();
+    await expectStatus(change([open(C.C5, person.o1)]), 200);
+    await expectStatus(me(dev.o1.token), 401, 'DEVICE_ENDED');
+    assert.equal((await row(dev.o1.id)).memberUntil.getTime(), before);
+    // The elapsed end never moves, even for the owner.
+    await assert.rejects(
+      owner.query(`UPDATE "FieldDevice" SET "memberUntil"=NULL WHERE id=$1`, [
+        dev.o1.id,
+      ]),
+      /never changes|never moves/,
+    );
+    // Immediate termination revokes the confirmed device and rejects a pending one at once.
+    await expectStatus(change([close(assignment(person.o3))]), 200);
+    const t = await row(dev.o3.id);
+    assert.deepEqual([t.state, t.endReason], ['REVOKED', 'UNASSIGNED']);
+    assert.equal((await row(pending3.body.deviceId)).state, 'REJECTED');
+    await expectStatus(me(dev.o3.token), 401, 'DEVICE_ENDED');
+    // Pending devices whose membership ended do not hold bind slots: three pending binds, a
+    // scheduled end at E, a reassignment after E, and a new bind, with no request by the old
+    // devices in between (they are still stored PENDING).
+    const olds = [];
+    for (let k = 0; k < 3; k++) olds.push(await bind(person.p1));
+    assert.ok(olds.every((b) => b.status === 200));
+    await expectStatus(bind(person.p1), 409, 'TOO_MANY_PENDING');
+    const Ep = await dbFuture(4000);
+    await expectStatus(change([close(assignment(person.p1), Ep)]), 200);
+    await untilDb(Ep);
+    await expectStatus(change([open(C.C5, person.p1)]), 200);
+    // The reassignment is a roster write touching p1: it persists the elapsed ends it sees.
+    for (const b of olds) {
+      const old = await row(b.body.deviceId);
+      assert.deepEqual([old.state, old.endReason], ['EXPIRED', 'UNASSIGNED']);
+    }
+    dev.p1 = await onboard(person.p1);
+    await expectStatus(me(dev.p1.token), 200);
+    pass(
+      'pending devices whose membership ended are persisted EXPIRED(UNASSIGNED) by the reassigning roster write (no request by them) and do not block a new bind; a transfer in one transaction keeps the device; split over two it ends (REVOKED/UNASSIGNED) and a reassignment never revives it; a scheduled end at E works before E and fails after E with no request in between (PM list shows EXPIRED meanwhile), stays failed after a reassignment, and its elapsed memberUntil never moves; a scheduled transfer added before E keeps the device; immediate termination revokes the confirmed and rejects the pending device',
+    );
+  }
+
+  // ================= clock regression fails closed =================
+  step('clock regression fails closed');
+  {
+    // A confirmed device whose membership ends at E, 30 minutes ahead. Then the database clock
+    // steps back an hour behind time already observed in the project (simulated: the project's
+    // high-water mark is set an hour ahead). In that world E has passed.
+    dev.c1 = await onboard(person.c1);
+    const E = await dbFuture(30 * 60_000);
+    await expectStatus(change([close(assignment(person.c1), E)]), 200);
+    assert.equal((await row(dev.c1.id)).memberUntil.toISOString(), E);
+    const mark = async () =>
+      (
+        await owner.query(
+          `SELECT "clockHighWater" AS m FROM "ProjectRoster" WHERE "projectId"=$1`,
+          [projectA],
+        )
+      ).rows[0].m;
+    // Field requests advance the mark (at most once a second), never past the clock.
+    await expectStatus(me(dev.c1.token), 200);
+    const observed = await mark();
+    assert.ok(observed && Date.now() - observed.getTime() < 60_000);
+    await travel(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = now() + interval '1 hour' WHERE "projectId"=$1`,
+      [projectA],
+    );
+    let reset;
+    try {
+      // Authentication does not treat the device as live again: fail closed.
+      await expectStatus(me(dev.c1.token), 503, 'RETRY');
+      // A roster change cannot extend the membership end judged by the stepped-back clock.
+      await expectStatus(
+        change([open(C.C5, person.c1, 'MEMBER', E)]),
+        503,
+        'RETRY',
+      );
+      const after = await row(dev.c1.id);
+      assert.deepEqual(
+        [after.state, after.memberUntil.toISOString()],
+        ['CONFIRMED', E],
+      );
+      // Bind and PM confirm judge deadlines too.
+      await expectStatus(bind(person.w5), 503, 'RETRY');
+      await expectStatus(pmConfirm(person.w5, '123456'), 503, 'RETRY');
+    } finally {
+      // Recovery (design §5 runbook): the migration identity resets the mark to the clock.
+      // Devices whose deadline is at or before the old mark are persisted EXPIRED first.
+      reset = await owner.query(
+        'SELECT * FROM field_reset_clock_mark($1, $2)',
+        [projectA, 'TEST forward clock spike recovery'],
+      );
+    }
+    assert.ok(reset.rows[0].expiredDevices >= 1);
+    assert.ok(reset.rows[0].newMark < reset.rows[0].oldMark);
+    // The device whose membership end the old mark had passed stays ended; others proceed.
+    await expectStatus(me(dev.c1.token), 401, 'DEVICE_ENDED');
+    const c1 = await row(dev.c1.id);
+    assert.deepEqual([c1.state, c1.endReason], ['EXPIRED', 'UNASSIGNED']);
+    await expectStatus(me(dev.f1.token), 200);
+    const audit = await owner.query(
+      `SELECT reason, before->>'clockHighWater' AS old, after->>'actor' AS actor, "actorKind"
+      FROM "AuditLog" WHERE action='FIELD_CLOCK_RESET'`,
+    );
+    assert.equal(audit.rows.length, 1);
+    assert.equal(audit.rows[0].reason, 'TEST forward clock spike recovery');
+    assert.ok(audit.rows[0].old && audit.rows[0].actor);
+    // Only the migration identity may reset, with a reason, and only a mark ahead of the clock.
+    await assert.rejects(
+      appPool.query('SELECT * FROM field_reset_clock_mark($1, $2)', [
+        projectA,
+        'TEST not allowed for the app role',
+      ]),
+      (e) => e.code === '42501',
+    );
+    await assert.rejects(
+      owner.query('SELECT * FROM field_reset_clock_mark($1, $2)', [
+        projectA,
+        'x',
+      ]),
+      /reason/,
+    );
+    await assert.rejects(
+      owner.query('SELECT * FROM field_reset_clock_mark($1, $2)', [
+        projectA,
+        'TEST nothing to reset now',
+      ]),
+      /not ahead of the clock/,
+    );
+    // Deferred housekeeping never publishes a time ahead of the clock.
+    const before = await mark();
+    await advanceClock(appPool, orgA, projectA, await dbFuture(3_600_000));
+    assert.equal((await mark()).getTime(), before.getTime());
+    // The one explicit retry test: a short spike answers RETRY, and repeating the same
+    // request succeeds once the clock passes the mark.
+    await owner.query(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = clock_timestamp() + interval '1500 milliseconds' WHERE "projectId"=$1`,
+      [projectA],
+    );
+    const repeatedBefore = retry.repeated;
+    retry.force = true;
+    try {
+      await expectStatus(me(dev.f1.token), 200);
+    } finally {
+      retry.force = false;
+    }
+    assert.ok(retry.repeated > repeatedBefore, 'the first attempt was RETRY');
+    // The mark never moves back, even for the owner.
+    await assert.rejects(
+      owner.query(
+        `UPDATE "ProjectRoster" SET "clockHighWater" = "clockHighWater" - interval '1 second' WHERE "projectId"=$1`,
+        [projectA],
+      ),
+      /never moves back/,
+    );
+    pass(
+      'clock regression fails closed: with the database clock an hour behind time already observed in the project, a device whose membership ended in between is not authenticated (503 RETRY), a roster change cannot extend that elapsed membership end (503, nothing written), bind and PM confirm refuse too; the audited owner-only reset lowers the mark to the clock after persisting EXPIRED for devices whose deadline the old mark had passed (that device stays ended, others proceed; the app role cannot reset; a reason is required); deferred housekeeping never publishes a future time; a short spike answers RETRY and the repeated request succeeds; field requests advance the mark, which never moves back',
+    );
+  }
+
+  // ================= decision time after the locks =================
+  step('decision time after the locks');
+  {
+    // Membership ends at D (3 s ahead). A request starts before D, waits on a lock until the
+    // clock is past D, and meanwhile the project's mark records time past D (as a committed
+    // request would). It must decide at its decision time, taken after the lock, not at its
+    // start time (design §5).
+    dev.c2 = await onboard(person.c2);
+    dev.c3 = await onboard(person.c3);
+    const D = await dbFuture(3000);
+    await expectStatus(change([close(assignment(person.c2), D)]), 200);
+    const markPast = (deadline) =>
+      owner.query(
+        `UPDATE "ProjectRoster" SET "clockHighWater" = GREATEST("clockHighWater", $2::timestamptz + interval '100 milliseconds') WHERE "projectId"=$1`,
+        [projectA, deadline],
+      );
+    // Authentication: waits on the device row.
+    let unlock = await holdRow(dev.c2.id);
+    const waiting = me(dev.c2.token);
+    await rowWaiters(1);
+    await untilDb(D);
+    await sleep(300);
+    await markPast(D);
+    await unlock();
+    await expectStatus(waiting, 401, 'DEVICE_ENDED');
+    const c2 = await row(dev.c2.id);
+    assert.deepEqual([c2.state, c2.endReason], ['EXPIRED', 'UNASSIGNED']);
+    // Roster: a continuation at D2, started before D2, that waits on the person lock past D2
+    // cannot extend the elapsed end.
+    const D2 = await dbFuture(3000);
+    await expectStatus(change([close(assignment(person.c3), D2)]), 200);
+    unlock = await holdAdvisory(personKey(person.c3));
+    const continuing = change([open(C.C1, person.c3, 'MEMBER', D2)]);
+    await advisoryWaiters(personKey(person.c3), 1);
+    await untilDb(D2);
+    await sleep(300);
+    await markPast(D2);
+    await unlock();
+    await expectStatus(continuing, 200);
+    const c3 = await row(dev.c3.id);
+    assert.deepEqual(
+      [c3.state, c3.endReason, c3.memberUntil.toISOString()],
+      ['EXPIRED', 'UNASSIGNED', D2],
+    );
+    pass(
+      'decision time after the locks: a request that started before a membership end D and waited on a lock past D (with the mark past D) is refused and the device persisted EXPIRED; a roster continuation at a later end D2 that waited on the person lock past D2 is applied but cannot extend the elapsed end (the device is persisted EXPIRED, memberUntil stays D)',
+    );
+  }
+
+  // ================= other org, unknown token, identical refusals =================
+  step('other org, unknown token, identical refusals');
+  {
+    dev.wb = await onboard(person.wb, {
+      code: entryCode[projectB],
+      bearer: pmB,
+      projectId: projectB,
+    });
+    // A real device of the same org in another project (for the event-actor FK checks).
+    dev.a2 = await onboard(person.a2only, {
+      code: entryCode[projectA2],
+      bearer: pm2,
+      projectId: projectA2,
+    });
+    const theirs = await expectStatus(me(dev.wb.token), 200);
+    assert.equal(theirs.project.id, projectB);
+    const unknown = await me(newToken());
+    const entra = await http('/api/field/me', { method: 'GET', bearer: pm });
+    const malformed = await http('/api/field/me', {
+      method: 'GET',
+      bearer: 'fd1.short',
+    });
+    for (const r of [unknown, entra, malformed]) {
+      assert.equal(r.status, 401);
+      assert.equal(errorShape(r.body), 'FIELD_AUTH_REQUIRED');
+    }
+    await expectStatus(
+      http('/api/report/field/roster?projectId=' + projectA, {
+        method: 'GET',
+        bearer: dev.w1.token,
+      }),
+      401,
+      'LOGIN_REQUIRED',
+    );
+    for (const id of [dev.wb.id, randomUUID()]) {
+      const r = await pmDevice('revoke', id, 2);
+      assert.equal(r.status, 404);
+      assert.equal(errorShape(r.body), 'NOT_FOUND');
+    }
+    await expectStatus(
+      pmDevice('revoke', dev.wb.id, 2, pm, projectB),
+      403,
+      'FORBIDDEN',
+    );
+    const roster = await expectStatus(
+      pget(`/roster?projectId=${projectA}`, pm),
+      200,
+    );
+    assert.ok(!roster.assignments.some((a) => a.personId === person.wb));
+    // The lookup policy is SELECT-only: knowing another org's hash never allows a write.
+    const c = await appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(
+        "SELECT set_config('app.device_token_hash', $1, true), set_config('app.org_id', $2, true)",
+        [sha(dev.wb.token), orgA],
+      );
+      const seen = await c.query(
+        'SELECT id FROM "FieldDevice" WHERE "tokenHash"=$1',
+        [sha(dev.wb.token)],
+      );
+      assert.equal(seen.rowCount, 1);
+      const upd = await c.query(
+        `UPDATE "FieldDevice" SET "lastSeenAt"=now() WHERE "tokenHash"=$1`,
+        [sha(dev.wb.token)],
+      );
+      assert.equal(upd.rowCount, 0);
+      await c.query('ROLLBACK');
+    } finally {
+      c.release();
+    }
+    pass(
+      "an unknown token, an Entra token and a malformed bearer on a field route get the identical 401; a device token on a PM route is LOGIN_REQUIRED; another org's or a nonexistent device id gets the identical 404; a device of a project the PM does not manage is FORBIDDEN; the SELECT-only lookup policy never lets a known hash write",
+    );
+  }
 
   // ================= entry roster read, scheduled end, crew end =================
   step('entry roster read, scheduled end, crew end');
@@ -936,7 +2152,6 @@ try {
         );
       return out;
     };
-    const entry = (code, ip) => fpost('/entry', null, { code }, { ip });
     // Entry: 300 / 10 min per IP; 600 / 10 min per code (a refused request counts too). A
     // fresh code makes the per-code bucket hold only this scenario's requests.
     entryCode[projectA2] = (
@@ -944,25 +2159,109 @@ try {
     ).code;
     secret.entry.push(entryCode[projectA2]);
     await freshWindow(600);
-    let r = await burst(300, () => entry(entryCode[projectA2], '10.2.0.1'));
+    let r = await burst(300, () =>
+      fpost('/entry', null, { code: entryCode[projectA2] }, { ip: '10.2.0.1' }),
+    );
     assert.ok(r.every((x) => x.status === 200));
     await expectStatus(
-      entry(entryCode[projectA2], '10.2.0.1'),
+      fpost('/entry', null, { code: entryCode[projectA2] }, { ip: '10.2.0.1' }),
       429,
       'RATE_LIMITED',
     );
     // The code has counted 301 (the 429 counts too): 299 more reach 600.
-    r = await burst(299, () => entry(entryCode[projectA2], '10.2.0.2'));
+    r = await burst(299, () =>
+      fpost('/entry', null, { code: entryCode[projectA2] }, { ip: '10.2.0.2' }),
+    );
     assert.ok(r.every((x) => x.status === 200));
     await expectStatus(
-      entry(entryCode[projectA2], '10.2.0.3'),
+      fpost('/entry', null, { code: entryCode[projectA2] }, { ip: '10.2.0.3' }),
       429,
       'RATE_LIMITED',
     );
-    await expectStatus(entry(entryCode[projectA], '10.2.0.3'), 200);
-    // Wrong codes count against the IP too; a whole crew behind one NAT is far below the limit.
-    r = await burst(40, () => entry(entryCode[projectA], '10.5.0.1'));
-    assert.ok(r.every((x) => x.status === 200));
+    await expectStatus(
+      fpost('/entry', null, { code: entryCode[projectA] }, { ip: '10.2.0.3' }),
+      200,
+    );
+    // Bind: 150 / h per IP; 300 / h per code (refused binds count too).
+    await freshWindow(3600);
+    r = await burst(150, () =>
+      bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.1' }),
+    );
+    assert.ok(
+      r.every((x) => x.status === 404),
+      JSON.stringify([...new Set(r.map((x) => `${x.status}:${x.body.code}`))]),
+    );
+    await expectStatus(
+      bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.1' }),
+      429,
+      'RATE_LIMITED',
+    );
+    r = await burst(149, () =>
+      bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.2' }),
+    );
+    assert.ok(r.every((x) => x.status === 404));
+    await expectStatus(
+      bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.3' }),
+      429,
+      'RATE_LIMITED',
+    );
+    // Challenge: 10 / h per device.
+    const p = await bind(person.w5, { ip: '10.3.0.9' });
+    if (p.status === 409) {
+      // w5 may still hold three pending devices; free one.
+      const pend = (
+        await owner.query(
+          `SELECT id FROM "FieldDevice" WHERE "personId"=$1 AND state='PENDING' LIMIT 1`,
+          [person.w5],
+        )
+      ).rows[0].id;
+      await expectStatus(pmDevice('reject', pend, 1), 200);
+    }
+    const pd = p.status === 200 ? p : await bind(person.w5, { ip: '10.3.0.9' });
+    for (let i = 0; i < 10; i++) await challenge(pd.token);
+    await expectStatus(
+      fpost('/device/challenge', pd.token, {}),
+      429,
+      'RATE_LIMITED',
+    );
+    // Unknown tokens: 60 / 10 min per IP, then even a valid token from that IP is refused.
+    r = await burst(60, () => me(newToken(), { ip: '10.4.0.1' }));
+    assert.ok(r.every((x) => x.status === 401));
+    await expectStatus(
+      me(dev.f1.token, { ip: '10.4.0.1' }),
+      429,
+      'RATE_LIMITED',
+    );
+    await expectStatus(me(dev.f1.token, { ip: '10.4.0.2' }), 200);
+    // Failed confirms: 30 / h per confirmer, then even the right code is refused.
+    dev.fx = await onboard(person.fx);
+    const wxd = await bind(person.wx);
+    const cwx = await challenge(wxd.token);
+    for (let i = 0; i < 30; i++)
+      await expectStatus(
+        fConfirm(
+          dev.fx.token,
+          person.wx,
+          cwx === '999999' ? '999998' : '999999',
+        ),
+        409,
+        'CHALLENGE_INVALID',
+      );
+    await expectStatus(
+      fConfirm(dev.fx.token, person.wx, cwx),
+      429,
+      'RATE_LIMITED',
+    );
+    // A whole crew behind one NAT onboards without a 429.
+    const nat = '10.5.0.1';
+    for (let i = 4; i <= 40; i++) {
+      await expectStatus(
+        fpost('/entry', null, { code: entryCode[projectA] }, { ip: nat }),
+        200,
+      );
+      await onboard(person[`o${i}`], { ip: nat });
+      await expectStatus(me(dev.f1.token, { ip: nat }), 200);
+    }
     // Thousands of distinct invalid codes from one IP, far beyond its limit, leave a bounded
     // number of throttle rows: the IP bucket counts every request; a code bucket exists only
     // for a code that exists.
@@ -987,17 +2286,159 @@ try {
       rowsAfter - rowsBefore <= 2,
       `${rowsAfter - rowsBefore} new throttle rows`,
     );
+    // Bogus device tokens on the challenge route, far beyond the unknown-token limit of their
+    // IP: the IP gate refuses them first and no challenge bucket is made for a non-device.
+    const tokenRowsBefore = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    const bogus = await burst(600, () =>
+      fpost('/device/challenge', newToken(), {}, { ip: '10.6.0.3' }),
+    );
+    assert.ok(bogus.every((x) => x.status === 401 || x.status === 429));
+    assert.ok(bogus.filter((x) => x.status === 429).length >= 500);
+    const tokenRowsAfter = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    assert.ok(
+      tokenRowsAfter - tokenRowsBefore <= 2,
+      `${tokenRowsAfter - tokenRowsBefore} new throttle rows from bogus challenge tokens`,
+    );
+    // The same for binds: guessed codes never create bind-code buckets.
+    const bindRowsBefore = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    const bindGuesses = await burst(200, () =>
+      fpost(
+        '/bind',
+        null,
+        {
+          code: randomBytes(16).toString('base64url'),
+          personId: person.w1,
+          token: newToken(),
+        },
+        { ip: '10.6.0.2' },
+      ),
+    );
+    assert.ok(bindGuesses.every((x) => x.status === 404 || x.status === 429));
+    const bindRowsAfter = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    assert.ok(
+      bindRowsAfter - bindRowsBefore <= 2,
+      `${bindRowsAfter - bindRowsBefore} new throttle rows from guessed bind codes`,
+    );
     const buckets = await owner.query(`SELECT bucket FROM "FieldThrottle"`);
     for (const { bucket } of buckets.rows)
-      assert.match(bucket, /^[a-z-]+:[0-9a-f]{64}$/);
+      assert.match(bucket, /^[a-z-]+:([0-9a-f]{64}|[0-9a-f-]{36})$/);
     pass(
-      'throttles: entry 300/10 min per IP and 600/10 min per code (refused requests count) → 429 RATE_LIMITED; 40 people behind one NAT read the roster without a 429; 2000 distinct invalid codes from one IP get 300 × 404 then 429 and add at most 2 throttle rows (no bucket per guessed code); buckets hold only salted hashes',
+      'throttles: entry 300/10 min per IP and 600/10 min per code, bind 150/h per IP and 300/h per code (refused requests count), challenge 10/h per device, 60 unknown tokens/10 min per IP (then a valid token from that IP too), 30 failed confirms/h per confirmer (then the right code too) → 429; 37 people behind one NAT onboard without a 429; 2000 distinct invalid entry codes, 200 invalid bind codes and 600 bogus challenge tokens from one IP add at most 2 throttle rows each, never a bucket per guess; buckets hold only salted hashes or ids',
+    );
+  }
+
+  // ================= PM device list reaches every device =================
+  step('PM device list reaches every device');
+  {
+    // 501 newer historical rows (synthetic TEST rows, ended) put an older confirmed device
+    // beyond the first 500 rows of the list.
+    await owner.query(
+      `INSERT INTO "FieldDevice"(id,"orgId","projectId","personId",state,"tokenHash","pendingUntil","expiresAt","lastSeenAt","endedAt","endReason")
+      SELECT gen_random_uuid(), $1, $2, $3, 'REJECTED', encode(sha256(convert_to(gen_random_uuid()::text, 'UTF8')), 'hex'),
+        now(), now() + interval '1 day', now(), now(), 'REJECTED'
+      FROM generate_series(1, 501)`,
+      [orgA, projectA, person.w5],
+    );
+    const firstPage = await expectStatus(
+      pget(`/devices?projectId=${projectA}&limit=500`, pm),
+      200,
+    );
+    const firstRows = Array.isArray(firstPage) ? firstPage : firstPage.devices;
+    assert.ok(firstRows.length <= 500);
+    assert.ok(
+      !firstRows.some((d) => d.id === dev.f3.id),
+      'expected behind 500 rows',
+    );
+    const everything = await allDevices();
+    const target = everything.find((d) => d.id === dev.f3.id);
+    assert.ok(
+      target,
+      'an older confirmed device is reachable through the list',
+    );
+    assert.equal(target.state, 'CONFIRMED');
+    assert.equal(new Set(everything.map((d) => d.id)).size, everything.length);
+    assert.equal(
+      everything.length,
+      await count(
+        `SELECT count(*)::int AS n FROM "FieldDevice" WHERE "projectId"=$1`,
+        [projectA],
+      ),
+    );
+    await expectStatus(pmDevice('revoke', target.id, target.version), 200);
+    await expectStatus(me(dev.f3.token), 401, 'DEVICE_ENDED');
+    await expectStatus(
+      pget(`/devices?projectId=${projectA}&cursor=not-a-cursor`, pm),
+      400,
+      'INVALID_INPUT',
+    );
+    // A well-formed cursor with an impossible date is a 400 too, never a database error.
+    const impossible = Buffer.from(
+      `2026-02-30T01:02:03.123456Z|${target.id}`,
+    ).toString('base64url');
+    await expectStatus(
+      pget(`/devices?projectId=${projectA}&cursor=${impossible}`, pm),
+      400,
+      'INVALID_INPUT',
+    );
+    pass(
+      `the PM device list pages with a cursor (at most 500 per page, newest first): an older confirmed device behind 501 newer rows is not on the first page, is found by following the cursor (${everything.length} devices, each exactly once, all of the project) and is revoked; a malformed cursor, or one with an impossible date, is INVALID_INPUT`,
     );
   }
 
   // ================= history, grants, RLS, pooled context =================
   step('history, grants, RLS, pooled context');
   {
+    // A device whose membership end has passed but which is still stored CONFIRMED.
+    dev.r2 = await onboard(person.r2);
+    await travel(
+      `UPDATE "FieldDevice" SET "memberUntil" = now() - interval '1 minute' WHERE id=$1`,
+      [dev.r2.id],
+    );
+    // Name resolution: temporary tables cannot shadow the catalogs the mark's trigger reads.
+    const marks = async () =>
+      (
+        await owner.query(
+          `SELECT "clockHighWater" AS m, (SELECT count(*)::int FROM "AuditLog" WHERE action='FIELD_CLOCK_RESET') AS n
+          FROM "ProjectRoster" WHERE "projectId"=$1`,
+          [projectA],
+        )
+      ).rows[0];
+    const beforeShadow = await marks();
+    const shadow = await appPool.connect();
+    try {
+      await shadow.query('CREATE TEMP TABLE pg_roles (oid oid, rolname name)');
+      await shadow.query(
+        'CREATE TEMP TABLE pg_auth_members (roleid oid, member oid)',
+      );
+      await shadow.query('BEGIN');
+      await shadow.query(
+        "SELECT set_config('app.org_id', $1, true), set_config('app.clock_reset', 'on', true)",
+        [orgA],
+      );
+      await shadow.query('SAVEPOINT s');
+      await assert.rejects(
+        shadow.query(
+          `UPDATE public."ProjectRoster" SET "clockHighWater" = "clockHighWater" - interval '1 second' WHERE "projectId"=$1`,
+          [projectA],
+        ),
+        /never moves back/,
+      );
+      await shadow.query('ROLLBACK TO SAVEPOINT s');
+      await shadow.query('ROLLBACK');
+    } finally {
+      shadow.release(true); // discard the session and its temporary tables
+    }
+    const afterShadow = await marks();
+    assert.equal(afterShadow.m.getTime(), beforeShadow.m.getTime());
+    assert.equal(afterShadow.n, beforeShadow.n);
     const app = await appPool.connect();
     try {
       await app.query('BEGIN');
@@ -1020,13 +2461,33 @@ try {
         await assert.rejects(app.query(sql), pattern, sql);
         await app.query('ROLLBACK TO SAVEPOINT s');
       }
-      // Closing twice or reopening a closed interval fails.
+      // A forged app.decision_time cannot clear an elapsed membership end.
+      await app.query('SAVEPOINT s');
+      await app.query(
+        "SELECT set_config('app.decision_time', '-infinity', true)",
+      );
+      await assert.rejects(
+        app.query(`UPDATE "FieldDevice" SET "memberUntil"=NULL WHERE id=$1`, [
+          dev.r2.id,
+        ]),
+        (e) => e.code === 'MJE01',
+      );
+      await app.query('ROLLBACK TO SAVEPOINT s');
+      // Closing twice or reopening a closed interval, and reviving an ended device, fail.
       await app.query('SAVEPOINT s');
       await assert.rejects(
         app.query(
           `UPDATE "CrewAssignment" SET "validUntil"=now()+interval '1 day' WHERE "validUntil" IS NOT NULL`,
         ),
         /closed, once/,
+      );
+      await app.query('ROLLBACK TO SAVEPOINT s');
+      await app.query('SAVEPOINT s');
+      await assert.rejects(
+        app.query(`UPDATE "FieldDevice" SET state='CONFIRMED' WHERE id=$1`, [
+          dev.w4.id,
+        ]),
+        /never changes/,
       );
       await app.query('ROLLBACK TO SAVEPOINT s');
       // Event actors are tenant references: another org's or a nonexistent actor person or
@@ -1043,24 +2504,28 @@ try {
           ],
         );
       for (const actor of [
-        { person: person.wb },
-        { person: randomUUID() },
-        { device: randomUUID() },
+        { case: 'same-org device of another project', device: dev.a2.id },
+        { case: "another org's real device", device: dev.wb.id },
+        { case: "another org's person", person: person.wb },
+        { case: 'nonexistent person', person: randomUUID() },
+        { case: 'nonexistent device', device: randomUUID() },
       ]) {
         await app.query('SAVEPOINT s');
         await assert.rejects(
           actorEvent(actor),
           (e) => e.code === '23503',
-          `actor ${JSON.stringify(actor)} was accepted`,
+          `event actor accepted: ${actor.case}`,
         );
         await app.query('ROLLBACK TO SAVEPOINT s');
       }
+      // Accepted: a person of the org, and a device of the same project.
       await app.query('SAVEPOINT s');
       await actorEvent({ person: person.w1 });
+      await actorEvent({ person: person.f1, device: dev.f1.id });
       await app.query('ROLLBACK TO SAVEPOINT s');
       // RLS: another org's rows are invisible, and cannot be inserted.
       const other = await app.query(
-        `SELECT count(*)::int AS n FROM "CrewAssignment" WHERE "orgId"=$1`,
+        `SELECT count(*)::int AS n FROM "FieldDevice" WHERE "orgId"=$1`,
         [orgB],
       );
       assert.equal(other.rows[0].n, 0);
@@ -1076,6 +2541,16 @@ try {
     } finally {
       app.release();
     }
+    await assert.rejects(
+      owner.query(`UPDATE "FieldDevice" SET state='CONFIRMED' WHERE id=$1`, [
+        dev.w4.id,
+      ]),
+      /never changes/,
+    );
+    await assert.rejects(
+      owner.query(`DELETE FROM "FieldDeviceEvent"`),
+      /append-only|not allowed|immutable|deny/i,
+    );
     await assert.rejects(
       owner.query(`DELETE FROM "CrewAssignment"`),
       /append-only/,
@@ -1096,14 +2571,18 @@ try {
       for (const c of pooled) c.release();
     }
     pass(
-      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code (column grants on the tables A6a-2 will use); an interval closes once; intervals are append-only for the owner too; device-event actors must be people and devices of the same org (and project), never another tenant's or nonexistent ones; RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
+      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code; an interval closes once; an ended device never returns to CONFIRMED (not even for the owner); events and intervals are append-only for the owner too; a forged app.decision_time cannot clear an elapsed membership end (MJE01); temporary tables named pg_roles and pg_auth_members cannot make the mark move back (mark and audit unchanged); device-event actors must be people of the org and devices of the same project (another org's real device, a same-org device of another project and nonexistent ones are refused; a same-project device is accepted); RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
     );
   }
 
   // ================= redaction =================
   step('redaction');
   {
+    const hashes = secret.tokens.map(sha);
+    const forbiddenEverywhere = [...secret.tokens, ...hashes];
     for (const { path, status, text } of responses) {
+      for (const s of forbiddenEverywhere)
+        assert.ok(!text.includes(s), `${path} carried a token or hash`);
       if (status >= 400) {
         const body = JSON.parse(text);
         assert.deepEqual(
@@ -1111,40 +2590,64 @@ try {
           ['code', 'correlationId'],
           path,
         );
-        for (const s of [...secret.entry, ...names])
+        // Check each field for what it may hold. A 6-digit challenge code can occur by chance
+        // inside the random correlation id (about one run in five at this suite's volume), so the
+        // id is checked for its shape and the code for being a plain error code.
+        assert.match(
+          String(body.correlationId),
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+          `${path} correlationId is not a server UUID`,
+        );
+        assert.match(
+          String(body.code),
+          /^[A-Z][A-Z0-9_]{1,63}$/,
+          `${path} error code is not a plain code`,
+        );
+        for (const s of [...secret.entry, ...secret.codes, ...names])
           assert.ok(
-            !text.includes(s),
-            `${path} error carried an entry code or name`,
+            !String(body.code).includes(s),
+            `${path} error code carried a secret or name`,
           );
         continue;
       }
-      if (path !== '/api/report/field/entry-code/rotate')
+      const mayCarryCode = path === '/api/field/device/challenge';
+      const mayCarryEntry = path === '/api/report/field/entry-code/rotate';
+      if (!mayCarryCode)
+        for (const c of secret.codes)
+          assert.ok(
+            !text.includes(`"${c}"`),
+            `${path} carried a challenge code`,
+          );
+      if (!mayCarryEntry)
         for (const e of secret.entry)
           assert.ok(!text.includes(e), `${path} carried an entry code`);
     }
     const stored = await owner.query(
       `SELECT string_agg(t, ' ') AS all FROM (
         SELECT concat_ws(' ', before::text, after::text, reason) AS t FROM "AuditLog"
+        UNION ALL SELECT to_jsonb(e)::text FROM "FieldDeviceEvent" e
         UNION ALL SELECT concat_ws(' ', "responseBody"::text, route) FROM "IdempotencyRecord") x`,
     );
-    for (const s of [...secret.entry, ...names])
+    for (const s of [
+      ...forbiddenEverywhere,
+      ...secret.entry,
+      ...secret.codes.map((c) => `"${c}"`),
+      ...names,
+    ])
       assert.ok(
         !stored.rows[0].all.includes(s),
-        'audit or idempotency rows carried an entry code or name',
+        'audit, event or idempotency rows carried a secret or name',
       );
     for (const line of printed)
-      for (const s of [...secret.entry, ...names])
-        assert.ok(
-          !line.includes(s),
-          'process output carried an entry code or name',
-        );
+      for (const s of [...forbiddenEverywhere, ...secret.entry, ...names])
+        assert.ok(!line.includes(s), 'process output carried a secret or name');
     pass(
-      `redaction: across ${responses.length} responses every error is exactly {code, correlationId} with no entry code or name; entry codes appear only in the rotation response; audit and idempotency rows (roster replays keep only the version) and all process output carry neither`,
+      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} with no code, entry code or name; challenge codes only in the challenge response and entry codes only in the rotation response; audit, event and idempotency rows and all process output carry none of them`,
     );
   }
 
   console.log(
-    `Field roster and entry HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Field devices (A6a-2), check-in, foreman reports and the field web UI are later slices.`,
+    `Field roster/devices/entry HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. Check-in, foreman reports and the field web UI are later slices.`,
   );
   step('done');
 } catch (error) {

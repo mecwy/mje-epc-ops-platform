@@ -15,7 +15,10 @@ import { FieldStore } from '@mje/domain';
 import {
   InvalidReportInput,
   parseCreateCrewCommand,
+  parseDeviceListQuery,
   parseEndCrewCommand,
+  parsePmConfirmCommand,
+  parsePmDeviceCommand,
   parseRosterChangesCommand,
   parseRotateEntryCodeCommand,
 } from '@mje/contracts';
@@ -29,8 +32,8 @@ function projectId(value: unknown): string {
 }
 
 /**
- * Project-manager field routes (A6a-1): roster and the entry code. Entra only; the store
- * requires PROJECT_MANAGER of the resource's project (a reader gets READ_ONLY).
+ * Project-manager field routes (A6a): roster, devices and the entry code. Entra only; the
+ * store requires PROJECT_MANAGER of the resource's project (a reader gets READ_ONLY).
  */
 @Controller('api/report/field')
 export class FieldAdminController {
@@ -59,6 +62,19 @@ export class FieldAdminController {
   @Get('roster')
   async roster(@Req() request: Request, @Query('projectId') id: unknown) {
     return this.store.roster(await this.identity(request), projectId(id));
+  }
+  @Get('devices')
+  async devices(
+    @Req() request: Request,
+    @Query('projectId') id: unknown,
+    @Query('cursor') cursor: unknown,
+    @Query('limit') limit: unknown,
+  ) {
+    const identity = await this.identity(request);
+    return this.store.devices(
+      identity,
+      parseDeviceListQuery({ projectId: id, cursor, limit }),
+    );
   }
   @Post('crews')
   @HttpCode(200)
@@ -97,6 +113,47 @@ export class FieldAdminController {
     return this.store.changeRoster(
       identity,
       this.command(parseRosterChangesCommand, body, key),
+    );
+  }
+  @Post('devices/confirm')
+  @HttpCode(200)
+  async confirm(
+    @Req() request: Request,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: unknown,
+  ) {
+    const identity = await this.identity(request);
+    return this.store.pmConfirm(
+      identity,
+      this.command(parsePmConfirmCommand, body, key),
+    );
+  }
+  @Post('devices/reject')
+  @HttpCode(200)
+  async reject(
+    @Req() request: Request,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: unknown,
+  ) {
+    const identity = await this.identity(request);
+    return this.store.pmDevice(
+      identity,
+      this.command(parsePmDeviceCommand, body, key),
+      'reject',
+    );
+  }
+  @Post('devices/revoke')
+  @HttpCode(200)
+  async revoke(
+    @Req() request: Request,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: unknown,
+  ) {
+    const identity = await this.identity(request);
+    return this.store.pmDevice(
+      identity,
+      this.command(parsePmDeviceCommand, body, key),
+      'revoke',
     );
   }
   @Post('entry-code/rotate')
