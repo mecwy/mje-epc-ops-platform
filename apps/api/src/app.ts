@@ -33,6 +33,7 @@ import {
   TokenVerifier,
   type TokenConfiguration,
 } from './auth/token-verifier.js';
+import { trustProxySetting } from './trust-proxy.js';
 
 @Controller()
 class HealthController {
@@ -178,11 +179,11 @@ export async function createApp(alpha?: AlphaRuntime) {
     bodyParser: false,
     logger: false,
   });
-  // Field throttles key on the client IP. Behind the platform ingress, TRUST_PROXY_HOPS=1 makes
-  // it the address the ingress saw (appended to X-Forwarded-For), not a client-chosen header.
+  // Field throttles key on the client IP; see trust-proxy.ts for how it is derived behind the
+  // platform ingress without trusting client-chosen header entries.
   (app.getHttpAdapter().getInstance() as express.Express).set(
     'trust proxy',
-    Number(process.env['TRUST_PROXY_HOPS'] ?? 0),
+    trustProxySetting(process.env),
   );
   app.use(
     (
