@@ -28,6 +28,7 @@ User decisions (2026-09-29):
 | U6  | Late self or foreman check-in: up to 24 h by device clock, flagged `LATE` after 15 min. Older facts only by PM proxy.                                                                                         |
 | U7  | Anyone holding the QR code sees current display names. This is an intentional disclosure: rotating the code stops future reads but cannot retract names already seen.                                         |
 | U8  | Headcount is never filled from check-ins. Check-in counts are shown beside the PM's declared counts.                                                                                                          |
+| U9  | Selfie retention (2026-09-30): once a project enables selfies, images are kept 30 days, then deleted; only "had a selfie" (`hasSelfie`) is kept.                                                              |
 
 Design rules:
 
@@ -372,10 +373,9 @@ H selfie:   expiresAt = E. At E ≤ t < E+5 min: attach → SELFIE_EXPIRED, clea
 
 ## 10. Open questions
 
-The user decided the earlier Q1–Q8 (§0). Two defaults remain for the user to confirm:
+The user decided the earlier Q1–Q8 and selfie retention (§0, U9). One default remains for the user to confirm:
 
-1. Selfie retention once enabled. **Default: 30 days, then delete the image and keep `hasSelfie`.**
-2. How far back a PM proxy may go. **Default: 7 days, reason required when the date is not today.**
+1. How far back a PM proxy may go. **Default: 7 days, configurable; reason required when the date is not today.**
 
 PR plan: A6.0 reader filter (OD18) → A6a roster, devices and entry → A6b check-in and selfie → A6c foreman reports and adopt → A6d web.
 
