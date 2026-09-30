@@ -1,4 +1,10 @@
-import type { ForemanReportCommand, ForemanReportDto } from '@mje/contracts';
+import type {
+  ChallengeConfirmCommand,
+  ChallengeRejectCommand,
+  FieldMeDto,
+  ForemanReportCommand,
+  ForemanReportDto,
+} from '@mje/contracts';
 import { dec, isToken } from '@mje/domain/rules';
 import { shift, siteToday } from '../report/format.js';
 
@@ -66,4 +72,34 @@ export function changedOnServer(base: Draft, latest: Draft): string[] {
 export function reportDays(timeZone: string, now: Date): [string, string] {
   const today = siteToday(timeZone, now);
   return [today, shift(today, -1)];
+}
+
+export type CrewDecision =
+  | { kind: 'confirm'; command: ChallengeConfirmCommand }
+  | { kind: 'reject'; command: ChallengeRejectCommand };
+/**
+ * A foreman's confirm or reject of a crew member's phone, built from the newest reading when
+ * it runs (C2): `expectedCurrentDeviceId` is the member's current phone as that reading shows
+ * it, so an older view gets CONFIRM_STALE. Null when the person is no longer in the crew.
+ */
+export function crewDecision(
+  me: FieldMeDto | null,
+  personId: string,
+  code: string,
+  key: string,
+  what: 'confirm' | 'reject',
+): CrewDecision | null {
+  const m = me?.foreman?.members.find((x) => x.personId === personId);
+  if (!m) return null;
+  return what === 'confirm'
+    ? {
+        kind: 'confirm',
+        command: {
+          clientMutationId: key,
+          personId,
+          code,
+          expectedCurrentDeviceId: m.currentDeviceId,
+        },
+      }
+    : { kind: 'reject', command: { clientMutationId: key, personId, code } };
 }

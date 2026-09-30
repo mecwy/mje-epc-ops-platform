@@ -15,6 +15,7 @@ import type { DeviceApi } from './field-api.js';
 import {
   changedOnServer,
   checkDraft,
+  crewDecision,
   draftFrom,
   qtyKind,
   reportDays,
@@ -229,26 +230,15 @@ function ConfirmSheet({
     const r = session.pending
       ? await session.retry()
       : await session.act((me) => {
-          const m = me?.foreman?.members.find(
-            (x) => x.personId === member.personId,
-          );
-          if (!m) return null;
           const key = crypto.randomUUID();
+          const d = crewDecision(me, member.personId, code, key, what);
+          if (!d) return null;
           return {
             key,
             send: () =>
-              what === 'confirm'
-                ? api.confirmCrew({
-                    clientMutationId: key,
-                    personId: m.personId,
-                    code,
-                    expectedCurrentDeviceId: m.currentDeviceId,
-                  })
-                : api.rejectCrew({
-                    clientMutationId: key,
-                    personId: m.personId,
-                    code,
-                  }),
+              d.kind === 'confirm'
+                ? api.confirmCrew(d.command)
+                : api.rejectCrew(d.command),
           };
         });
     setBusy(false);

@@ -78,8 +78,12 @@ export class FieldSession<D> {
       if (ticket <= this.applied) return false;
       this.applied = ticket;
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
-      if (ENDED.has(code)) this.endedCode = code;
       this.readError = code;
+      if (ENDED.has(code)) {
+        this.endedCode = code;
+        // A read of another resource (the foreman report) ends the device page too.
+        this.options.onEnded?.(code);
+      }
       return false;
     } finally {
       this.notify();

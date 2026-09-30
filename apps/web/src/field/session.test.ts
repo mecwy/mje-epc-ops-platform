@@ -247,4 +247,18 @@ describe('FieldSession (IssueSession pattern)', () => {
       expect(b.session.readError).toBe(code);
     }
   });
+
+  it('a read refused because the device ended is reported too (foreman report read)', async () => {
+    const ended: string[] = [];
+    const session = new FieldSession<number>(
+      () => Promise.reject(new ApiError('DEVICE_ENDED', 401)),
+      () => {},
+      { onEnded: (c) => ended.push(c) },
+    );
+    await session.load();
+    expect(ended).toEqual(['DEVICE_ENDED']);
+    // Latched: no further read is sent and nothing is reported again.
+    await session.load();
+    expect(ended).toEqual(['DEVICE_ENDED']);
+  });
 });
