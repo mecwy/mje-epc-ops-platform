@@ -679,9 +679,9 @@ async function housekeeping(
 /**
  * The decision time of a transaction (design §5): `clock_timestamp()` taken once, after every
  * lock the decision depends on is held, to the millisecond. Refused with RETRY while it is
- * behind the project's high-water mark (the clock stepped back behind observed time). Also
- * set as the transaction-local `app.decision_time`, which the FieldDevice trigger judges an
- * elapsed membership end by.
+ * behind the project's high-water mark (the clock stepped back behind observed time). The
+ * FieldDevice trigger judges an elapsed membership end by the clock itself (at or after `t`,
+ * so stricter); its refusal (SQLSTATE MJE01) is answered with RETRY.
  */
 export async function decisionTime(
   client: PoolClient,
@@ -696,9 +696,6 @@ export async function decisionTime(
   );
   const d = r.rows[0]!;
   if (d.behind) throw new FieldError('RETRY');
-  await client.query("SELECT set_config('app.decision_time', $1, true)", [
-    d.at,
-  ]);
   return { t: d.t, at: d.at };
 }
 /**

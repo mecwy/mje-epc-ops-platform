@@ -343,14 +343,22 @@ export async function changeRoster(
     opened.push(id);
   }
   const version = await bumpRoster(client, orgId, projectId, decision.at);
-  await recomputeDevices(
-    client,
-    orgId,
-    projectId,
-    persons,
-    { accountId: actor.accountId, personId: actor.personId },
-    decision,
-  );
+  try {
+    await recomputeDevices(
+      client,
+      orgId,
+      projectId,
+      persons,
+      { accountId: actor.accountId, personId: actor.personId },
+      decision,
+    );
+  } catch (error) {
+    // The trigger judges an elapsed membership end by the clock, which may have passed a
+    // deadline since `t` was taken: refused, repeat with the same key (design §5).
+    if ((error as { code?: string }).code === 'MJE01')
+      throw new FieldError('RETRY');
+    throw error;
+  }
   await audit(
     client,
     actor,

@@ -253,7 +253,7 @@ export class FieldStore {
         deferred: this.deferred,
         allowPending: true,
       },
-      async (client, { device: d }) => {
+      async (client, { device: d, at }) => {
         const info = await client.query<{
           displayName: string;
           name: string;
@@ -263,10 +263,10 @@ export class FieldStore {
           WHERE p."orgId"=$1 AND p.id=$2 AND pr."orgId"=$1 AND pr.id=$3`,
           [d.orgId, d.personId, d.projectId],
         );
-        const crew = await this.crewNow(client, d, 'MEMBER');
+        const crew = await this.crewNow(client, d, 'MEMBER', at);
         const foremanOf =
           d.state === 'CONFIRMED'
-            ? await this.crewNow(client, d, 'FOREMAN')
+            ? await this.crewNow(client, d, 'FOREMAN', at)
             : null;
         let foreman: FieldMeDto['foreman'] = null;
         if (foremanOf) {
@@ -311,15 +311,18 @@ export class FieldStore {
       },
     );
   }
+  /** The person's crew in a role at the decision time `at` (design §5). */
   private async crewNow(
     client: PoolClient,
     d: { orgId: string; projectId: string; personId: string },
     role: 'MEMBER' | 'FOREMAN',
+    at: string,
   ): Promise<{ id: string; name: string } | null> {
     const r = await client.query<{ id: string; name: string }>(
       `SELECT c.id, c.name FROM "CrewAssignment" a JOIN "Crew" c ON c."orgId"=a."orgId" AND c.id=a."crewId"
-      WHERE a."orgId"=$1 AND a."projectId"=$2 AND a."personId"=$3 AND a.role=$4 AND ${NOW_IN('a')}`,
-      [d.orgId, d.projectId, d.personId, role],
+      WHERE a."orgId"=$1 AND a."projectId"=$2 AND a."personId"=$3 AND a.role=$4
+        AND a."validFrom" <= $5::timestamptz AND (a."validUntil" IS NULL OR $5::timestamptz < a."validUntil")`,
+      [d.orgId, d.projectId, d.personId, role, at],
     );
     return r.rows[0] ?? null;
   }
@@ -547,14 +550,15 @@ export class FieldStore {
       async (client, { device: d, now, at }) => {
         actorId = d.id;
         if (d.personId === cmd.personId) throw new FieldError('SELF_CONFIRM');
-        // U4: only the foreman of the subject's current crew, with authority now.
-        const crew = await this.crewNow(client, d, 'FOREMAN');
+        // U4: only the foreman of the subject's crew, both judged at the decision time.
+        const crew = await this.crewNow(client, d, 'FOREMAN', at);
         if (!crew) throw new FieldError('NOT_FOREMAN');
         await this.assertInProject(client, d.orgId, d.projectId, cmd.personId);
         const member = await client.query(
           `SELECT 1 FROM "CrewAssignment" a WHERE a."orgId"=$1 AND a."crewId"=$2 AND a."personId"=$3
-            AND a.role='MEMBER' AND ${NOW_IN('a')}`,
-          [d.orgId, crew.id, cmd.personId],
+            AND a.role='MEMBER' AND a."validFrom" <= $4::timestamptz
+            AND (a."validUntil" IS NULL OR $4::timestamptz < a."validUntil")`,
+          [d.orgId, crew.id, cmd.personId, at],
         );
         if (!member.rowCount) throw new FieldError('NOT_FOREMAN');
         if (await this.throttle.full(LIMITS.failedConfirms(d.id), client))

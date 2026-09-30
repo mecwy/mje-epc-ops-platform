@@ -392,6 +392,8 @@ try {
     'clock regression fails closed',
     'decision time after the locks',
     'roster read is one snapshot',
+    'challenge expiry, reuse, wrong version',
+    'stale confirmation, revoke before confirm',
   ]);
   async function http(path, options) {
     const until = Date.now() + 10_000;
@@ -1391,7 +1393,15 @@ try {
       409,
       'CHALLENGE_INVALID',
     );
+    // A confirmation by the old foreman that starts before E and waits on the subject's person
+    // lock until after E is authorized at its decision time: no longer foreman.
+    const releaseW4 = await holdAdvisory(personKey(person.w4));
+    const acrossE = fConfirm(dev.f1.token, person.w4, '123456');
+    await advisoryWaiters(personKey(person.w4), 1);
     await untilDb(E);
+    await sleep(200);
+    await releaseW4();
+    await expectStatus(acrossE, 403, 'NOT_FOREMAN');
     await expectStatus(
       fConfirm(dev.f1.token, person.w4, '123456'),
       403,
@@ -1405,7 +1415,7 @@ try {
     // Losing only the FOREMAN role keeps the device.
     await expectStatus(me(dev.f1.token), 200);
     pass(
-      "a scheduled foreman handover at E: before E the old foreman has authority and the new one NOT_FOREMAN, after E the reverse, with no request in between; the old foreman's device stays valid",
+      "a scheduled foreman handover at E: before E the old foreman has authority and the new one NOT_FOREMAN, after E the reverse, with no request in between; a confirmation that started before E and waited on a lock past E is refused NOT_FOREMAN (authorized at its decision time); the old foreman's device stays valid",
     );
   }
 
@@ -2386,6 +2396,49 @@ try {
   // ================= history, grants, RLS, pooled context =================
   step('history, grants, RLS, pooled context');
   {
+    // A device whose membership end has passed but which is still stored CONFIRMED.
+    dev.r2 = await onboard(person.r2);
+    await travel(
+      `UPDATE "FieldDevice" SET "memberUntil" = now() - interval '1 minute' WHERE id=$1`,
+      [dev.r2.id],
+    );
+    // Name resolution: temporary tables cannot shadow the catalogs the mark's trigger reads.
+    const marks = async () =>
+      (
+        await owner.query(
+          `SELECT "clockHighWater" AS m, (SELECT count(*)::int FROM "AuditLog" WHERE action='FIELD_CLOCK_RESET') AS n
+          FROM "ProjectRoster" WHERE "projectId"=$1`,
+          [projectA],
+        )
+      ).rows[0];
+    const beforeShadow = await marks();
+    const shadow = await appPool.connect();
+    try {
+      await shadow.query('CREATE TEMP TABLE pg_roles (oid oid, rolname name)');
+      await shadow.query(
+        'CREATE TEMP TABLE pg_auth_members (roleid oid, member oid)',
+      );
+      await shadow.query('BEGIN');
+      await shadow.query(
+        "SELECT set_config('app.org_id', $1, true), set_config('app.clock_reset', 'on', true)",
+        [orgA],
+      );
+      await shadow.query('SAVEPOINT s');
+      await assert.rejects(
+        shadow.query(
+          `UPDATE public."ProjectRoster" SET "clockHighWater" = "clockHighWater" - interval '1 second' WHERE "projectId"=$1`,
+          [projectA],
+        ),
+        /never moves back/,
+      );
+      await shadow.query('ROLLBACK TO SAVEPOINT s');
+      await shadow.query('ROLLBACK');
+    } finally {
+      shadow.release(true); // discard the session and its temporary tables
+    }
+    const afterShadow = await marks();
+    assert.equal(afterShadow.m.getTime(), beforeShadow.m.getTime());
+    assert.equal(afterShadow.n, beforeShadow.n);
     const app = await appPool.connect();
     try {
       await app.query('BEGIN');
@@ -2408,6 +2461,18 @@ try {
         await assert.rejects(app.query(sql), pattern, sql);
         await app.query('ROLLBACK TO SAVEPOINT s');
       }
+      // A forged app.decision_time cannot clear an elapsed membership end.
+      await app.query('SAVEPOINT s');
+      await app.query(
+        "SELECT set_config('app.decision_time', '-infinity', true)",
+      );
+      await assert.rejects(
+        app.query(`UPDATE "FieldDevice" SET "memberUntil"=NULL WHERE id=$1`, [
+          dev.r2.id,
+        ]),
+        (e) => e.code === 'MJE01',
+      );
+      await app.query('ROLLBACK TO SAVEPOINT s');
       // Closing twice or reopening a closed interval, and reviving an ended device, fail.
       await app.query('SAVEPOINT s');
       await assert.rejects(
@@ -2506,7 +2571,7 @@ try {
       for (const c of pooled) c.release();
     }
     pass(
-      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code; an interval closes once; an ended device never returns to CONFIRMED (not even for the owner); events and intervals are append-only for the owner too; device-event actors must be people of the org and devices of the same project (another org's real device, a same-org device of another project and nonexistent ones are refused; a same-project device is accepted); RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
+      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code; an interval closes once; an ended device never returns to CONFIRMED (not even for the owner); events and intervals are append-only for the owner too; a forged app.decision_time cannot clear an elapsed membership end (MJE01); temporary tables named pg_roles and pg_auth_members cannot make the mark move back (mark and audit unchanged); device-event actors must be people of the org and devices of the same project (another org's real device, a same-org device of another project and nonexistent ones are refused; a same-project device is accepted); RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
     );
   }
 
