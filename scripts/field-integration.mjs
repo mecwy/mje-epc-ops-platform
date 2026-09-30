@@ -2309,10 +2309,23 @@ try {
           ['code', 'correlationId'],
           path,
         );
+        // Check each field for what it may hold. A 6-digit challenge code can occur by chance
+        // inside the random correlation id (about one run in five at this suite's volume), so the
+        // id is checked for its shape and the code for being a plain error code.
+        assert.match(
+          String(body.correlationId),
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+          `${path} correlationId is not a server UUID`,
+        );
+        assert.match(
+          String(body.code),
+          /^[A-Z][A-Z0-9_]{1,63}$/,
+          `${path} error code is not a plain code`,
+        );
         for (const s of [...secret.entry, ...secret.codes, ...names])
           assert.ok(
-            !text.includes(s),
-            `${path} error carried a secret or name`,
+            !String(body.code).includes(s),
+            `${path} error code carried a secret or name`,
           );
         continue;
       }
