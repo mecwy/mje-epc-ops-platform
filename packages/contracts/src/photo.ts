@@ -60,6 +60,19 @@ export interface UnlinkPhotoCommand {
   clientMutationId: string;
   expectedVersion: number;
 }
+/**
+ * Whether a photo read carries exact coordinates (OD20): 'exact' for the project's writers;
+ * 'withheld' for read-only accounts, which see only whether there is a position (`location`)
+ * and the accuracy the device claimed, never where.
+ */
+export type PhotoCoordinates = 'exact' | 'withheld';
+/** A device fix as a photo read shows it; lat/lon are null when coordinates are withheld. */
+export interface CaptureFixViewDto {
+  lat: string | null;
+  lon: string | null;
+  accuracyM: string;
+  fixAt: string;
+}
 export interface PhotoDto {
   id: string;
   projectId: string;
@@ -69,15 +82,19 @@ export interface PhotoDto {
   sizeBytes: number;
   sha256: string;
   /** Device fix of an in-app capture, as declared by the device. */
-  capture: CaptureFixDto | null;
+  capture: CaptureFixViewDto | null;
   deviceCapturedAt: string | null;
-  /** What the file itself says (EXIF); album position only. Claims, not verification. */
+  /**
+   * What the file itself says (EXIF); album position only. Claims, not verification. `gps` is
+   * also null when coordinates are withheld; `location` still says 'file' then.
+   */
   file: {
     takenLocal: string | null;
     takenAt: string | null;
     gps: { lat: string; lon: string } | null;
   };
   location: PhotoLocationKind;
+  coordinates: PhotoCoordinates;
   hasThumbnail: boolean;
   receivedAt: string;
   uploadedByPersonId: string;

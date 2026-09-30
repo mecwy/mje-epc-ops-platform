@@ -129,11 +129,16 @@ function useLinkText() {
   };
 }
 
+/**
+ * Whether the photo has a position and how precise its fix claims to be; never where (a reader
+ * gets no coordinates at all, OD20). A reader's tag is neutral: a position is not a verification.
+ */
 function LocTag({ photo }: { photo: PhotoAsOfDto }) {
   const { t, locale } = useI18n();
+  const { canWrite } = usePhotoEnv();
   if (photo.location === 'device')
     return (
-      <span className="ptag ok">
+      <span className={canWrite ? 'ptag ok' : 'ptag'}>
         <Icon.pin />
         {photo.accuracyM
           ? `±${fmtNum(photo.accuracyM, locale)} ${t('u_m')}`
@@ -389,15 +394,17 @@ export function PhotoStrip({ photos }: { photos: PhotoAsOfDto[] }) {
 export function PhotosCard() {
   const { t } = useI18n();
   const env = usePhotoEnv();
-  const { photos } = env.handle;
+  const { photos, counts } = env.handle;
   const unlinked = (photos ?? []).filter((p) => !p.link);
   const jobs = env.handle.session.jobsFor(null);
+  // Counts only from a complete list: while reads after a write fail, the photos known are
+  // shown but not counted (a partial count would read as the day's total).
   return (
     <section className="card">
       <div className="blk-row">
         <h2 className="blk">
           {t('photos')}{' '}
-          {photos && <span className="muted">{photos.length}</span>}
+          {counts && <span className="muted">{counts.total}</span>}
         </h2>
         {env.canUpload && (
           <div className="chips">
@@ -412,7 +419,7 @@ export function PhotosCard() {
       {unlinked.length > 0 && (
         <>
           <span className="muted small">
-            {t('unlinkedN', { n: unlinked.length })}
+            {counts ? t('unlinkedN', { n: counts.noLink }) : t('unlinked')}
           </span>
           <div className="qphotos">
             {unlinked.map((p, i) => (
@@ -440,7 +447,7 @@ export function PhotosCard() {
 export function PhotosRow() {
   const { t } = useI18n();
   const env = usePhotoEnv();
-  const { photos, unlinked } = env.handle;
+  const { photos, unlinked, counts } = env.handle;
   // The list could not be read: say so with a retry rather than hide the photos.
   if (!photos)
     return env.handle.loadFailed ? (
@@ -453,7 +460,8 @@ export function PhotosRow() {
       <span className="grow">
         <b>{t('photos')}</b>{' '}
         <span className="muted">
-          {photos.length}
+          {/* Not counted from a partial list (see PhotosCard). */}
+          {counts ? counts.total : ''}
           {unlinked ? ` · ${t('unlinkedN', { n: unlinked })}` : ''}
         </span>
       </span>
@@ -549,12 +557,15 @@ function PhotoMeta({
   fixAt: string | null;
 }) {
   const { t, locale } = useI18n();
-  const { timeZone } = usePhotoEnv();
+  const { timeZone, canWrite } = usePhotoEnv();
   const lines = [
     photo.location === 'device'
       ? [
           photo.accuracyM
-            ? t('located', { m: fmtNum(photo.accuracyM, locale) })
+            ? canWrite
+              ? t('located', { m: fmtNum(photo.accuracyM, locale) })
+              : // OD20: a reader learns that there is a position and its accuracy, not where.
+                t('hasLocation', { m: fmtNum(photo.accuracyM, locale) })
             : null,
           fixAt ? t('fixAt', { t: fmtStamp(fixAt, locale, timeZone) }) : null,
         ]

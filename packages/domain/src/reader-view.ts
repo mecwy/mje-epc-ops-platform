@@ -2,8 +2,9 @@
  * What a read-only account (EXECUTIVE_READER) may see of a report day (OD18): only content
  * frozen in a submitted revision. A day still being written, a correction in progress, a plan
  * draft and photos not frozen in a submitted revision are never served to a reader; the web
- * shows "not submitted yet" instead. Writers (PROJECT_MANAGER) are not affected.
- * Pure mapping only; the stores read the rows and apply these.
+ * shows "not submitted yet" instead. A reader also never gets a photo's exact coordinates
+ * (OD20): only whether it has a position and its claimed accuracy. Writers (PROJECT_MANAGER)
+ * are not affected. Pure mapping only; the stores read the rows and apply these.
  */
 import type {
   PhotoAsOfDto,
@@ -118,9 +119,24 @@ export function readerContent(
 }
 
 /**
+ * OD20: a read-only account sees whether a photo has a position (`location`: device fix, file
+ * GPS or none) and the accuracy the device claimed, never where. The capture fix keeps its
+ * accuracy and time with lat/lon null, the file GPS is null, and `coordinates` says they are
+ * withheld (so a null is not read as "no position"). Every photo a reader is served passes here.
+ */
+export function withheldCoordinates(p: PhotoDto): PhotoDto {
+  return {
+    ...p,
+    capture: p.capture ? { ...p.capture, lat: null, lon: null } : null,
+    file: { ...p.file, gps: null },
+    coordinates: 'withheld',
+  };
+}
+
+/**
  * A frozen photo as a reader sees it: the stored photo with the link it had in the revision
- * (a later relink is not shown) and no link version (readers never change links). In the
- * revision's order; a frozen id without a row is left out.
+ * (a later relink is not shown), no link version (readers never change links) and no
+ * coordinates (OD20). In the revision's order; a frozen id without a row is left out.
  */
 export function frozenPhotoViews(
   frozen: PhotoAsOfDto[],
@@ -129,6 +145,37 @@ export function frozenPhotoViews(
   const byId = new Map(rows.map((p) => [p.id, p]));
   return frozen.flatMap((f) => {
     const photo = byId.get(f.id);
-    return photo ? [{ ...photo, link: f.link, linkVersion: 0 }] : [];
+    return photo
+      ? [withheldCoordinates({ ...photo, link: f.link, linkVersion: 0 })]
+      : [];
   });
+}
+
+/** Exactly the fields a submission freezes of a photo (photoAsOf); nothing else is passed on. */
+function frozenPhotoFields(p: PhotoAsOfDto): PhotoAsOfDto {
+  return {
+    id: p.id,
+    source: p.source,
+    location: p.location,
+    accuracyM: p.accuracyM,
+    deviceCapturedAt: p.deviceCapturedAt,
+    fileTakenAt: p.fileTakenAt,
+    fileTakenLocal: p.fileTakenLocal,
+    link: p.link,
+  };
+}
+/**
+ * A submitted revision's snapshot as a reader is served it (OD20): its photos carry only the
+ * frozen fields (position kind and accuracy, times, link), so no coordinates can reach a reader
+ * whatever a snapshot holds. A projection on read; the stored revision is never changed.
+ */
+export function readerSnapshot(
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
+  const photos = snapshot['photos'];
+  if (!Array.isArray(photos)) return snapshot;
+  return {
+    ...snapshot,
+    photos: (photos as PhotoAsOfDto[]).map(frozenPhotoFields),
+  };
 }

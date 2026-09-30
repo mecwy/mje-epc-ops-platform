@@ -5,13 +5,26 @@
  *
  * - `sniffImage`: the container family from the magic bytes (the declared type is not trusted).
  * - `readFileClaims`: EXIF DateTimeOriginal (+ OffsetTimeOriginal) and the GPS position, from
- *   JPEG (APP1), PNG (eXIf), WebP (EXIF chunk) and HEIF (Exif item via iinf/iloc). A minimal
- *   reader instead of a library: four tags are needed, every offset is bounds-checked against
- *   its containing structure, all loops share a fixed step budget (PARSE_STEPS), values are kept
- *   as written (no Date revival in the server's timezone) and any malformed structure simply
- *   yields no claim.
+ *   JPEG (APP1), PNG (eXIf), WebP (EXIF chunk) and HEIF (Exif item via iinf/iloc).
+ * - `exifOrientation`: IFD0 Orientation, so a reader's copy without metadata stays upright.
+ *
+ * A minimal reader instead of a library: five tags are needed, every offset is bounds-checked
+ * against its containing structure, all loops share a fixed step budget (PARSE_STEPS), values
+ * are kept as written (no Date revival in the server's timezone) and any malformed structure
+ * simply yields no claim.
  */
 import { isRealDate, isRealTimestamp } from '@mje/contracts';
+import {
+  Budget,
+  Exhausted,
+  PARSE_STEPS,
+  ascii,
+  be16,
+  be32,
+  le32,
+} from './image-bytes.js';
+
+export { PARSE_STEPS };
 
 export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 export const THUMB_MAX_BYTES = 300 * 1024;
@@ -51,16 +64,6 @@ const HEIF_BRANDS = new Set([
   'mif1',
   'msf1',
 ]);
-
-const ascii = (b: Uint8Array, at: number, n: number) =>
-  at < 0 || at + n > b.length
-    ? ''
-    : String.fromCharCode(...b.subarray(at, at + n));
-const be16 = (b: Uint8Array, o: number) => (b[o]! << 8) | b[o + 1]!;
-const be32 = (b: Uint8Array, o: number) =>
-  ((b[o]! << 24) >>> 0) + (b[o + 1]! << 16) + (b[o + 2]! << 8) + b[o + 3]!;
-const le32 = (b: Uint8Array, o: number) =>
-  ((b[o + 3]! << 24) >>> 0) + (b[o + 2]! << 16) + (b[o + 1]! << 8) + b[o]!;
 
 /** Container family from the leading bytes; null for anything else. */
 export function sniffImage(b: Uint8Array): ImageFamily | null {
@@ -102,19 +105,9 @@ export interface FileClaims {
 const NONE: FileClaims = { takenLocal: null, takenAt: null, gps: null };
 
 // ---------- locating the TIFF block ----------
-/**
- * Every loop below spends from one budget per file, so no structure (declared counts, zero-size
- * entries, many tiny boxes) can make the reader work longer than a fixed number of steps. A file
- * that needs more gets no claim. Real camera files use well under a thousand steps.
- */
-export const PARSE_STEPS = 10_000;
-class Exhausted extends Error {}
-class Budget {
-  private left = PARSE_STEPS;
-  step() {
-    if (--this.left < 0) throw new Exhausted();
-  }
-}
+// Every loop below spends from one Budget per file (image-bytes), so no structure (declared
+// counts, zero-size entries, many tiny boxes) can make the reader work longer than PARSE_STEPS.
+// A file that needs more gets no claim.
 interface Span {
   start: number;
   end: number;
@@ -363,11 +356,16 @@ function tiff(b: Uint8Array, span: Span, budget: Budget) {
         ])
       : null;
   const ifd0 = ifd(u32(start + 4));
+  const orientationTag = ifd0.get(0x0112);
   const exifAt = long(ifd0.get(0x8769));
   const gpsAt = long(ifd0.get(0x8825));
   const exif = exifAt === null ? new Map<number, Tag>() : ifd(exifAt);
   const gps = gpsAt === null ? new Map<number, Tag>() : ifd(gpsAt);
   return {
+    orientation:
+      orientationTag?.type === 3 && orientationTag.count === 1
+        ? u16(orientationTag.at)
+        : null,
     dateTimeOriginal: text(exif.get(0x9003)),
     offsetTimeOriginal: text(exif.get(0x9011)),
     latRef: text(gps.get(1)),
@@ -422,6 +420,14 @@ function readTags(b: Uint8Array) {
     if (error instanceof Exhausted) return null;
     throw error;
   }
+}
+/**
+ * The EXIF Orientation (1–8) of the file's first EXIF block, or null (none, or not readable).
+ * Used to keep a photo upright when its metadata is removed for a reader (photo-strip).
+ */
+export function exifOrientation(b: Uint8Array): number | null {
+  const o = readTags(b)?.orientation ?? null;
+  return o !== null && o >= 1 && o <= 8 ? o : null;
 }
 const EXIF_DATE = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/;
 const OFFSET = /^[+-]\d{2}:\d{2}$/;

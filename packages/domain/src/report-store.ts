@@ -42,7 +42,8 @@ const planLock = (orgId: string, projectId: string, target: string) =>
  * a Revision snapshot; a correction is a new revision with a reason and the earlier one stays.
  * Plans are confirmed versions per target day; the baseline of a day is its latest version.
  * Everything here is a declaration by the reporter, not a verified site fact.
- * A read-only account only ever gets submitted revisions and confirmed plans (OD18, reader-view).
+ * A read-only account only ever gets submitted revisions and confirmed plans (OD18, reader-view),
+ * and never a photo's coordinates (OD20).
  */
 import type { Identity } from './alpha-store.js';
 import {
@@ -68,7 +69,12 @@ import {
   photosOfDay,
   submittedPhotos,
 } from './photo-store.js';
-import { readerContent, readerDayState, readerPlan } from './reader-view.js';
+import {
+  readerContent,
+  readerDayState,
+  readerPlan,
+  readerSnapshot,
+} from './reader-view.js';
 
 export {
   READ_ROLES,
@@ -630,7 +636,7 @@ export class ReportStore {
     revisionNumber: number,
   ) {
     return this.transaction(identity, async (client, actor) => {
-      await this.access(client, actor, projectId);
+      const { access } = await this.access(client, actor, projectId);
       const day = await this.day(client, actor.orgId, projectId, businessDate);
       if (!day) throw new ReportError('NOT_FOUND');
       const r = (await this.revisions(client, actor.orgId, day.id)).find(
@@ -642,7 +648,8 @@ export class ReportStore {
         at: r.submittedAt.toISOString(),
         by: r.updatedBy,
         reason: r.reason,
-        snapshot: r.snapshot,
+        // OD20: a reader gets the frozen photo fields only (no coordinates); stored as is.
+        snapshot: access === 'read' ? readerSnapshot(r.snapshot) : r.snapshot,
       };
     });
   }
