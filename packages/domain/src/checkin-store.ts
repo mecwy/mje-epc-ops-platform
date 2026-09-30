@@ -38,6 +38,7 @@ import {
   keyLock,
   priorOutcome,
   recordOutcome,
+  type FieldAuth,
 } from './field-kit.js';
 import {
   FIX_STALE_MS,
@@ -68,6 +69,8 @@ export interface SelfieBlobStore extends PhotoBlobStore {
   delete(key: string): Promise<void>;
 }
 export const SELFIE_MAX_BYTES = 3 * 1024 * 1024;
+/** Design §2 (C29): refused check-ins per device per hour. */
+export const FAILED_CHECKINS_PER_HOUR = 30;
 export const SELFIE_MEDIA_TYPES = [
   'image/jpeg',
   'image/png',
@@ -330,7 +333,24 @@ function summarize(
 
 type DeviceOutcome =
   | { kind: 'ok'; body: CheckInResultDto }
-  | { kind: 'refused'; code: FieldError['code'] };
+  | {
+      kind: 'refused';
+      code: FieldError['code'];
+      existing?: FieldError['existing'];
+    };
+/**
+ * C29: which refusals of an authenticated device count against its limit. All of them (time,
+ * geofence, slot, selfie, resource and key-reuse refusals) except the limit itself and the
+ * failures that are not a decision about the attempt (authentication, device state, RETRY).
+ */
+const countedRefusal = (code: FieldError['code']) =>
+  ![
+    'RATE_LIMITED',
+    'RETRY',
+    'FIELD_AUTH_REQUIRED',
+    'DEVICE_ENDED',
+    'DEVICE_PENDING',
+  ].includes(code);
 
 export class CheckInStore {
   readonly throttle: FieldThrottle;
@@ -530,6 +550,202 @@ export class CheckInStore {
             occurredAt: cmd.occurredAt,
             fix: cmd.fix,
           };
+    const decide = async (
+      client: PoolClient,
+      { device: d, now: t, at }: FieldAuth,
+    ): Promise<DeviceOutcome> => {
+      const subject = cmd.personId ?? d.personId;
+      // Resource authorization (before the idempotency lookup, so a replay re-runs it).
+      let crewId: string | null;
+      if (kind === 'FOREMAN_PROXY') {
+        if (subject === d.personId) throw new FieldError('PROXY_NOT_ALLOWED');
+        await assertInProject(client, d.orgId, d.projectId, subject);
+        // Actor authority at the decision time; the subject in that crew now and at occurredAt.
+        const crew = await crewAt(
+          client,
+          d.orgId,
+          d.projectId,
+          d.personId,
+          at,
+          'FOREMAN',
+        );
+        const now = await crewAt(client, d.orgId, d.projectId, subject, at);
+        crewId = await crewAt(
+          client,
+          d.orgId,
+          d.projectId,
+          subject,
+          cmd.occurredAt,
+        );
+        if (!crew || now !== crew || crewId !== crew)
+          throw new FieldError('PROXY_NOT_ALLOWED');
+      } else {
+        crewId = await crewAt(
+          client,
+          d.orgId,
+          d.projectId,
+          subject,
+          cmd.occurredAt,
+        );
+        if (!crewId) throw new FieldError('PERSON_NOT_ROSTERED');
+      }
+      let selfie: { state: string; expiresAt: Date } | null = null;
+      if (cmd.stagedSelfieId) {
+        const s = await client.query<{ state: string; expiresAt: Date }>(
+          `SELECT state, "expiresAt" FROM "FieldSelfie"
+            WHERE "orgId"=$1 AND "projectId"=$2 AND id=$3 AND "deviceId"=$4 AND "personId"=$5`,
+          [d.orgId, d.projectId, cmd.stagedSelfieId, d.id, d.personId],
+        );
+        // Someone else's, another project's, another org's or none: the same NOT_FOUND.
+        if (!s.rows[0]) throw new FieldError('NOT_FOUND');
+        selfie = s.rows[0];
+      }
+      const prior = await priorOutcome<CheckInResultDto>(
+        client,
+        d.orgId,
+        d.id,
+        route,
+        cmd.clientMutationId,
+        event,
+      );
+      // A replay returns the stored result: no time or geofence rule is re-run.
+      if (prior) return { kind: 'ok', body: prior.body as CheckInResultDto };
+      const refuse = async (
+        code: FieldError['code'],
+        distance: number | null = null,
+      ): Promise<DeviceOutcome> => {
+        await deviceEvent(client, {
+          orgId: d.orgId,
+          projectId: d.projectId,
+          deviceId: d.id,
+          personId: subject,
+          kind: 'CHECKIN_REFUSED',
+          reason: code,
+          actor: { deviceId: d.id, personId: d.personId },
+          distanceBucketM: distance === null ? null : distanceBucket(distance),
+          decidedAt: at,
+        });
+        return { kind: 'refused', code };
+      };
+      const timeZone = await projectTimezone(client, d.orgId, d.projectId);
+      const time = admitDeviceTimes({
+        occurredAt: new Date(cmd.occurredAt),
+        fixAt: new Date(cmd.fix.fixAt),
+        deviceSentAt: new Date(cmd.deviceSentAt),
+        receivedAt: t,
+        businessDate: cmd.businessDate,
+        timeZone,
+        todayOrYesterday: kind === 'FOREMAN_PROXY',
+      });
+      if (!time.ok) return refuse(time.code);
+      const ref = await siteReference(client, d.orgId, d.projectId);
+      const fenced = fence(fixOf(cmd.fix), ref);
+      if (!fenced.ok) return refuse(fenced.code, fenced.distanceM);
+      await existingCheckIn(
+        client,
+        d.orgId,
+        d.projectId,
+        subject,
+        cmd.businessDate,
+      );
+      if (selfie) {
+        const settings = await fieldSettings(client, d.orgId, d.projectId);
+        if (!settings.selfieEnabled) throw new FieldError('FEATURE_OFF');
+        // Row-locked (level 6): STAGED and unexpired at the decision time, or nothing.
+        if (
+          selfie.state !== 'STAGED' ||
+          selfie.expiresAt.getTime() <= t.getTime()
+        )
+          throw new FieldError('SELFIE_EXPIRED');
+      }
+      const flags: CheckInFlag[] = [...time.flags, ...fenced.flags];
+      if (
+        await multiProjectDay(
+          client,
+          d.orgId,
+          d.projectId,
+          subject,
+          cmd.businessDate,
+        )
+      )
+        flags.push('MULTI_PROJECT_DAY');
+      const boundary = await submittedBoundary(
+        client,
+        d.orgId,
+        d.projectId,
+        cmd.businessDate,
+      );
+      const seq = await nextSeq(client, d.orgId, d.projectId, cmd.businessDate);
+      const id = randomUUID();
+      const self = kind === 'SELF';
+      const distance = Math.round(fenced.distanceM);
+      await client.query(
+        `INSERT INTO "WorkerCheckIn"(id,"orgId","projectId","personId","businessDate","siteTimezone",kind,"crewId","crewAttribution",
+            "deviceId","actorPersonId","occurredAt","timePrecision","fixAt","deviceSentAt","receivedAt","clockSkewMs",
+            lat,lon,"accuracyM","distanceM","siteRefN","actorLat","actorLon","actorAccuracyM","actorFixAt","actorDistanceM",flags,"daySeq")
+          VALUES($1,$2,$3,$4,$5::date,$6,$7,$8,'OCCURRED_AT',$9,$10,$11::timestamptz,'EXACT',$12::timestamptz,$13::timestamptz,$14::timestamptz,$15,
+            $16,$17,$18,$19,$20,$21,$22,$23,$24::timestamptz,$25,$26::text[],$27)`,
+        [
+          id,
+          d.orgId,
+          d.projectId,
+          subject,
+          cmd.businessDate,
+          timeZone,
+          kind,
+          crewId,
+          d.id,
+          d.personId,
+          cmd.occurredAt,
+          cmd.fix.fixAt,
+          cmd.deviceSentAt,
+          at,
+          t.getTime() - new Date(cmd.deviceSentAt).getTime(),
+          self ? cmd.fix.lat : null,
+          self ? cmd.fix.lon : null,
+          self ? cmd.fix.accuracyM : null,
+          self ? distance : null,
+          ref!.n,
+          self ? null : cmd.fix.lat,
+          self ? null : cmd.fix.lon,
+          self ? null : cmd.fix.accuracyM,
+          self ? null : cmd.fix.fixAt,
+          self ? null : distance,
+          flags,
+          seq,
+        ],
+      );
+      if (selfie) {
+        await client.query(
+          `UPDATE "FieldSelfie" SET state='ATTACHED', "attachedAt"=$3::timestamptz WHERE "orgId"=$1 AND id=$2`,
+          [d.orgId, cmd.stagedSelfieId, at],
+        );
+        await client.query(
+          `INSERT INTO "CheckInSelfie"(id,"orgId","projectId","personId","checkInId","selfieId") VALUES($1,$2,$3,$4,$5,$6)`,
+          [randomUUID(), d.orgId, d.projectId, subject, id, cmd.stagedSelfieId],
+        );
+      }
+      const body: CheckInResultDto = {
+        checkInId: id,
+        businessDate: cmd.businessDate,
+        kind,
+        occurredAt: new Date(cmd.occurredAt).toISOString(),
+        timePrecision: 'EXACT',
+        flags,
+        hasSelfie: !!selfie,
+        afterSubmission: boundary !== null && seq > boundary,
+      };
+      await recordOutcome(
+        client,
+        d.orgId,
+        d.id,
+        route,
+        cmd.clientMutationId,
+        event,
+        { status: 200, body },
+      );
+      return { kind: 'ok', body };
+    };
     const outcome = await fieldTransaction<DeviceOutcome>(
       this.pool,
       this.throttle,
@@ -542,6 +758,11 @@ export class CheckInStore {
         // lock (a submission) or the selfie row (a cleanup claim) is judged after the wait.
         afterLock: async (client, d) => {
           const subject = cmd.personId ?? d.personId;
+          // Level 2a (C29): the device's refusal lock, right after its row lock.
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [`${d.orgId}:field-checkin-refusals:${d.id}`],
+          );
           await lockReportDay(client, d.orgId, d.projectId, cmd.businessDate);
           await slotLock(client, d.orgId, subject, cmd.businessDate);
           if (cmd.stagedSelfieId)
@@ -551,214 +772,79 @@ export class CheckInStore {
             );
         },
       },
-      async (client, { device: d, now: t, at }) => {
-        const subject = cmd.personId ?? d.personId;
-        // Resource authorization (before the idempotency lookup, so a replay re-runs it).
-        let crewId: string | null;
-        if (kind === 'FOREMAN_PROXY') {
-          if (subject === d.personId) throw new FieldError('PROXY_NOT_ALLOWED');
-          await assertInProject(client, d.orgId, d.projectId, subject);
-          // Actor authority at the decision time; the subject in that crew now and at occurredAt.
-          const crew = await crewAt(
-            client,
-            d.orgId,
-            d.projectId,
-            d.personId,
-            at,
-            'FOREMAN',
-          );
-          const now = await crewAt(client, d.orgId, d.projectId, subject, at);
-          crewId = await crewAt(
-            client,
-            d.orgId,
-            d.projectId,
-            subject,
-            cmd.occurredAt,
-          );
-          if (!crew || now !== crew || crewId !== crew)
-            throw new FieldError('PROXY_NOT_ALLOWED');
-        } else {
-          crewId = await crewAt(
-            client,
-            d.orgId,
-            d.projectId,
-            subject,
-            cmd.occurredAt,
-          );
-          if (!crewId) throw new FieldError('PERSON_NOT_ROSTERED');
-        }
-        let selfie: { state: string; expiresAt: Date } | null = null;
-        if (cmd.stagedSelfieId) {
-          const s = await client.query<{ state: string; expiresAt: Date }>(
-            `SELECT state, "expiresAt" FROM "FieldSelfie"
-            WHERE "orgId"=$1 AND "projectId"=$2 AND id=$3 AND "deviceId"=$4 AND "personId"=$5`,
-            [d.orgId, d.projectId, cmd.stagedSelfieId, d.id, d.personId],
-          );
-          // Someone else's, another project's, another org's or none: the same NOT_FOUND.
-          if (!s.rows[0]) throw new FieldError('NOT_FOUND');
-          selfie = s.rows[0];
-        }
-        const prior = await priorOutcome<CheckInResultDto>(
-          client,
-          d.orgId,
-          d.id,
-          route,
-          cmd.clientMutationId,
-          event,
+      async (client, auth) => {
+        const d = auth.device;
+        // Design §2 (C29): 30 refused check-ins per hour per device = the device's committed
+        // CHECKIN_REFUSED events whose decision time lies within the hour before this decision
+        // time. Counting and any new refusal event happen in this transaction under the device's
+        // refusal lock (level 2a, taken right after the device row lock), so a refusal counts if
+        // and only if its event committed. A limited device is refused first (not counted),
+        // except for the exact replay of a committed success.
+        const refused = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM "FieldDeviceEvent"
+          WHERE "orgId"=$1 AND "deviceId"=$2 AND kind='CHECKIN_REFUSED' AND "decidedAt" > $3::timestamptz - interval '1 hour'
+            AND "decidedAt" <= $3::timestamptz`,
+          [d.orgId, d.id, auth.at],
         );
-        // A replay returns the stored result: no time or geofence rule is re-run.
-        if (prior) return { kind: 'ok', body: prior.body as CheckInResultDto };
-        const refuse = async (
-          code: FieldError['code'],
-          distance: number | null = null,
-        ): Promise<DeviceOutcome> => {
+        const limited = refused.rows[0]!.n >= FAILED_CHECKINS_PER_HOUR;
+        if (
+          limited &&
+          !(await priorOutcome(
+            client,
+            d.orgId,
+            d.id,
+            route,
+            cmd.clientMutationId,
+            event,
+          ).catch((error: unknown) => {
+            if (error instanceof FieldError) return null;
+            throw error;
+          }))
+        )
+          throw new FieldError('RATE_LIMITED');
+        // Every other refusal of an authenticated device counts (C29): the business writes of
+        // the attempt are undone to the savepoint and only its refusal event commits.
+        await client.query('SAVEPOINT check_in');
+        try {
+          const outcome = await decide(client, auth);
+          // A limited device is only ever served an authorized replay: a replay whose
+          // re-checked authorization now refuses is RATE_LIMITED and writes nothing (C29).
+          if (limited && outcome.kind === 'refused') {
+            await client.query('ROLLBACK TO SAVEPOINT check_in');
+            throw new FieldError('RATE_LIMITED');
+          }
+          return outcome;
+        } catch (error) {
+          if (!(error instanceof FieldError) || !countedRefusal(error.code))
+            throw error;
+          await client.query('ROLLBACK TO SAVEPOINT check_in');
+          if (limited) throw new FieldError('RATE_LIMITED');
+          const subject = cmd.personId ?? d.personId;
           await deviceEvent(client, {
             orgId: d.orgId,
             projectId: d.projectId,
             deviceId: d.id,
-            personId: subject,
+            // Only a person known to exist: the device's own, or a subject already checked in.
+            personId:
+              subject === d.personId || error.code === 'ALREADY_CHECKED_IN'
+                ? subject
+                : null,
             kind: 'CHECKIN_REFUSED',
-            reason: code,
+            reason: error.code,
             actor: { deviceId: d.id, personId: d.personId },
-            distanceBucketM:
-              distance === null ? null : distanceBucket(distance),
+            decidedAt: auth.at,
           });
-          return { kind: 'refused', code };
-        };
-        const timeZone = await projectTimezone(client, d.orgId, d.projectId);
-        const time = admitDeviceTimes({
-          occurredAt: new Date(cmd.occurredAt),
-          fixAt: new Date(cmd.fix.fixAt),
-          deviceSentAt: new Date(cmd.deviceSentAt),
-          receivedAt: t,
-          businessDate: cmd.businessDate,
-          timeZone,
-          todayOrYesterday: kind === 'FOREMAN_PROXY',
-        });
-        if (!time.ok) return refuse(time.code);
-        const ref = await siteReference(client, d.orgId, d.projectId);
-        const fenced = fence(fixOf(cmd.fix), ref);
-        if (!fenced.ok) return refuse(fenced.code, fenced.distanceM);
-        await existingCheckIn(
-          client,
-          d.orgId,
-          d.projectId,
-          subject,
-          cmd.businessDate,
-        );
-        if (selfie) {
-          const settings = await fieldSettings(client, d.orgId, d.projectId);
-          if (!settings.selfieEnabled) throw new FieldError('FEATURE_OFF');
-          // Row-locked (level 6): STAGED and unexpired at the decision time, or nothing.
-          if (
-            selfie.state !== 'STAGED' ||
-            selfie.expiresAt.getTime() <= t.getTime()
-          )
-            throw new FieldError('SELFIE_EXPIRED');
+          return {
+            kind: 'refused',
+            code: error.code,
+            existing: error.existing,
+          };
         }
-        const flags: CheckInFlag[] = [...time.flags, ...fenced.flags];
-        if (
-          await multiProjectDay(
-            client,
-            d.orgId,
-            d.projectId,
-            subject,
-            cmd.businessDate,
-          )
-        )
-          flags.push('MULTI_PROJECT_DAY');
-        const boundary = await submittedBoundary(
-          client,
-          d.orgId,
-          d.projectId,
-          cmd.businessDate,
-        );
-        const seq = await nextSeq(
-          client,
-          d.orgId,
-          d.projectId,
-          cmd.businessDate,
-        );
-        const id = randomUUID();
-        const self = kind === 'SELF';
-        const distance = Math.round(fenced.distanceM);
-        await client.query(
-          `INSERT INTO "WorkerCheckIn"(id,"orgId","projectId","personId","businessDate","siteTimezone",kind,"crewId","crewAttribution",
-            "deviceId","actorPersonId","occurredAt","timePrecision","fixAt","deviceSentAt","receivedAt","clockSkewMs",
-            lat,lon,"accuracyM","distanceM","siteRefN","actorLat","actorLon","actorAccuracyM","actorFixAt","actorDistanceM",flags,"daySeq")
-          VALUES($1,$2,$3,$4,$5::date,$6,$7,$8,'OCCURRED_AT',$9,$10,$11::timestamptz,'EXACT',$12::timestamptz,$13::timestamptz,$14::timestamptz,$15,
-            $16,$17,$18,$19,$20,$21,$22,$23,$24::timestamptz,$25,$26::text[],$27)`,
-          [
-            id,
-            d.orgId,
-            d.projectId,
-            subject,
-            cmd.businessDate,
-            timeZone,
-            kind,
-            crewId,
-            d.id,
-            d.personId,
-            cmd.occurredAt,
-            cmd.fix.fixAt,
-            cmd.deviceSentAt,
-            at,
-            t.getTime() - new Date(cmd.deviceSentAt).getTime(),
-            self ? cmd.fix.lat : null,
-            self ? cmd.fix.lon : null,
-            self ? cmd.fix.accuracyM : null,
-            self ? distance : null,
-            ref!.n,
-            self ? null : cmd.fix.lat,
-            self ? null : cmd.fix.lon,
-            self ? null : cmd.fix.accuracyM,
-            self ? null : cmd.fix.fixAt,
-            self ? null : distance,
-            flags,
-            seq,
-          ],
-        );
-        if (selfie) {
-          await client.query(
-            `UPDATE "FieldSelfie" SET state='ATTACHED', "attachedAt"=$3::timestamptz WHERE "orgId"=$1 AND id=$2`,
-            [d.orgId, cmd.stagedSelfieId, at],
-          );
-          await client.query(
-            `INSERT INTO "CheckInSelfie"(id,"orgId","projectId","personId","checkInId","selfieId") VALUES($1,$2,$3,$4,$5,$6)`,
-            [
-              randomUUID(),
-              d.orgId,
-              d.projectId,
-              subject,
-              id,
-              cmd.stagedSelfieId,
-            ],
-          );
-        }
-        const body: CheckInResultDto = {
-          checkInId: id,
-          businessDate: cmd.businessDate,
-          kind,
-          occurredAt: new Date(cmd.occurredAt).toISOString(),
-          timePrecision: 'EXACT',
-          flags,
-          hasSelfie: !!selfie,
-          afterSubmission: boundary !== null && seq > boundary,
-        };
-        await recordOutcome(
-          client,
-          d.orgId,
-          d.id,
-          route,
-          cmd.clientMutationId,
-          event,
-          { status: 200, body },
-        );
-        return { kind: 'ok', body };
       },
     );
     // A refused attempt committed its event; it is a request error, never a finding.
-    if (outcome.kind === 'refused') throw new FieldError(outcome.code);
+    if (outcome.kind === 'refused')
+      throw new FieldError(outcome.code, outcome.existing);
     return outcome.body;
   }
 

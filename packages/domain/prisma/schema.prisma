@@ -1460,6 +1460,9 @@ model FieldDeviceEvent {
   seq             BigInt        @default(autoincrement())
   /// Refused check-in attempts: distance from the site in 100 m buckets; never coordinates.
   distanceBucketM Int?
+  /// Refused check-ins: the decision time they were judged at; the failed check-in limit counts
+  /// by it (C29). Partial index in SQL.
+  decidedAt       DateTime?     @db.Timestamptz(6)
 
   @@index([orgId, deviceId, seq], map: "FieldDeviceEvent_device_idx")
 }

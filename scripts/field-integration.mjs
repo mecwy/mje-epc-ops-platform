@@ -275,6 +275,12 @@ try {
     'km',
     'kd',
     'kr',
+    'ky',
+    'kw',
+    'kz',
+    'kg',
+    'kh',
+    'kj',
     'kc1',
     'kc2',
     'kp',
@@ -321,8 +327,11 @@ try {
   // TEST seam on the app's own pool: a gate can hold one request right after a chosen
   // statement, so another transaction can commit between two statements of that request.
   let queryGate = null;
-  // TEST seam: when armed, the COMMIT of a transaction that inserted a selfie row runs, and then
-  // the client reports an error, as if the acknowledgement was lost on the way back.
+  // TEST seam: when armed, the COMMIT of the next transaction that inserted a selfie row (true)
+  // or a check-in write (a WorkerCheckIn or FieldDeviceEvent row: 'checkin') runs, and then the
+  // client reports an error, as if the acknowledgement was lost on the way back. 'checkin-abort'
+  // rolls that transaction back instead of committing it and reports an error, as if the
+  // process stopped before its COMMIT.
   let commitFault = false;
   const realConnect = appPool.connect.bind(appPool);
   appPool.connect = async (...args) => {
@@ -335,14 +344,25 @@ try {
         const text = typeof q[0] === 'string' ? q[0] : (q[0]?.text ?? '');
         if (text.includes('INSERT INTO "FieldSelfie"'))
           client.selfieInsert = true;
-        const result = await query(...q);
+        if (/INSERT INTO "(WorkerCheckIn|FieldDeviceEvent)"/.test(text))
+          client.checkInWrite = true;
+        const armed =
+          text === 'COMMIT' &&
+          ((commitFault === true && client.selfieInsert) ||
+            (typeof commitFault === 'string' && client.checkInWrite));
         if (text === 'COMMIT' || text === 'ROLLBACK') {
-          const lose = commitFault && text === 'COMMIT' && client.selfieInsert;
           client.selfieInsert = false;
-          if (lose) {
-            commitFault = false;
-            throw new Error('TEST lost COMMIT acknowledgement');
-          }
+          client.checkInWrite = false;
+        }
+        if (armed && commitFault === 'checkin-abort') {
+          commitFault = false;
+          await query('ROLLBACK');
+          throw new Error('TEST process stopped before COMMIT');
+        }
+        const result = await query(...q);
+        if (armed) {
+          commitFault = false;
+          throw new Error('TEST lost COMMIT acknowledgement');
         }
         const gate = queryGate;
         if (gate && gate.match(text)) {
@@ -2737,6 +2757,10 @@ try {
     'kp',
     'kd',
     'kr',
+    'ky',
+    'kw',
+    'kz',
+    'kj',
     's1',
     's2',
     's3',
@@ -2977,6 +3001,330 @@ try {
     );
   }
 
+  // ---------- C29: failed check-in limit (30 per hour per device) ----------
+  const refusalKey = (deviceId) => `${orgA}:field-checkin-refusals:${deviceId}`;
+  /** n committed refusal events of a device, decided now (TEST setup, as the owner). */
+  const seedRefusals = (key, n) =>
+    owner.query(
+      `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorDeviceId","actorPersonId","decidedAt")
+      SELECT gen_random_uuid(), $1, $2, $3, $4, 'CHECKIN_REFUSED', 'GEOFENCE_OUTSIDE', $3, $4, clock_timestamp()
+      FROM generate_series(1, $5::int)`,
+      [orgA, projectA, dev[key].id, person[key], n],
+    );
+  const outsideBody = (o = {}) => tapBody({ m: 900, ...o });
+
+  step('failed check-ins: which refusals count, replays');
+  {
+    // C29: every refusal of an authenticated device counts, logged as one CHECKIN_REFUSED event:
+    // geofence (same-key retries too), time, duplicate slot, selfie/resource and key reuse.
+    // A replay of a committed success is served and never counted, also once limited.
+    const ok = await tap(dev.kr.token);
+    const success = await expectStatus(Promise.resolve(ok.r), 200);
+    const replay = async () =>
+      assert.deepEqual(
+        await expectStatus(kpost('/checkin', dev.kr.token, ok.body), 200),
+        success,
+      );
+    const outside = await outsideBody();
+    const today = ok.body.businessDate;
+    const cases = [
+      ...Array.from({ length: 5 }, () => [
+        () => outside,
+        409,
+        'GEOFENCE_OUTSIDE',
+      ]),
+      ...Array.from({ length: 5 }, () => [
+        async () => ({ ...(await outsideBody()) }),
+        409,
+        'GEOFENCE_OUTSIDE',
+      ]),
+      ...Array.from({ length: 5 }, () => [
+        () => tapBody(),
+        409,
+        'ALREADY_CHECKED_IN',
+      ]),
+      ...Array.from({ length: 5 }, () => [
+        () => tapBody({ selfie: randomUUID() }),
+        404,
+        'NOT_FOUND',
+      ]),
+      ...Array.from({ length: 5 }, () => [
+        () => ({
+          ...ok.body,
+          occurredAt: new Date(
+            Date.parse(ok.body.occurredAt) - 1_000,
+          ).toISOString(),
+        }),
+        409,
+        'IDEMPOTENCY_KEY_REUSED',
+      ]),
+      ...Array.from({ length: 5 }, () => [
+        () => tapBody({ date: shiftDay(today, -1) }),
+        409,
+        'BUSINESS_DAY_MISMATCH',
+      ]),
+    ];
+    for (const [i, [make, status, code]] of cases.entries()) {
+      await expectStatus(
+        kpost('/checkin', dev.kr.token, await make()),
+        status,
+        code,
+      );
+      if (i % 5 === 0) await replay();
+    }
+    for (const body of [
+      await outsideBody(),
+      outside,
+      {
+        ...ok.body,
+        occurredAt: new Date(
+          Date.parse(ok.body.occurredAt) - 1_000,
+        ).toISOString(),
+      },
+    ])
+      await expectStatus(
+        kpost('/checkin', dev.kr.token, body),
+        429,
+        'RATE_LIMITED',
+      );
+    await replay();
+    const events = await refusals(dev.kr.id);
+    const by = {};
+    for (const e of events) by[e.reasonCode] = (by[e.reasonCode] ?? 0) + 1;
+    assert.deepEqual(by, {
+      GEOFENCE_OUTSIDE: 10,
+      ALREADY_CHECKED_IN: 5,
+      NOT_FOUND: 5,
+      IDEMPOTENCY_KEY_REUSED: 5,
+      BUSINESS_DAY_MISMATCH: 5,
+    });
+    pass(
+      'failed check-ins (C29): 30 refusals of one device in an hour are allowed and logged (geofence with same-key retries, time, duplicate slot, a foreign selfie, a changed command under a used key); the 31st attempt, new key, same key or changed command, is RATE_LIMITED with no further event; replays of the committed success are served and never counted, also once limited',
+    );
+  }
+
+  step('failed check-ins: decision time after lock waits, window boundary');
+  {
+    // A refusal decided after a lock wait counts for a full hour from its decision time (not
+    // from its transaction start); it stops counting once that hour has passed.
+    const unlock = await holdRow(dev.ky.id);
+    const waiting = kpost('/checkin', dev.ky.token, await outsideBody());
+    await rowWaiters(1);
+    await untilDb(await dbFuture(6_000));
+    await unlock();
+    await expectStatus(waiting, 409, 'GEOFENCE_OUTSIDE');
+    const [waited] = (
+      await owner.query(
+        `SELECT id, extract(epoch FROM "decidedAt" - at) AS gap FROM "FieldDeviceEvent" WHERE "deviceId"=$1 AND kind='CHECKIN_REFUSED'`,
+        [dev.ky.id],
+      )
+    ).rows;
+    assert.ok(
+      Number(waited.gap) >= 5,
+      `decided ${waited.gap} s after its start`,
+    );
+    await seedRefusals('ky', 29);
+    // Move the waited refusal so its decision lies 4 s inside the hour and its start outside.
+    await travel(
+      `UPDATE "FieldDeviceEvent" SET at = clock_timestamp() - interval '1 hour' + interval '4 seconds' - ("decidedAt" - at),
+        "decidedAt" = clock_timestamp() - interval '1 hour' + interval '4 seconds' WHERE id=$1`,
+      [waited.id],
+    );
+    const { edge } = (
+      await owner.query(
+        `SELECT to_char(("decidedAt" + interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS edge
+        FROM "FieldDeviceEvent" WHERE id=$1`,
+        [waited.id],
+      )
+    ).rows[0];
+    await expectStatus(
+      kpost('/checkin', dev.ky.token, await outsideBody()),
+      429,
+      'RATE_LIMITED',
+    );
+    await untilDb(edge);
+    await expectStatus(
+      kpost('/checkin', dev.ky.token, await outsideBody()),
+      409,
+      'GEOFENCE_OUTSIDE',
+    );
+    await expectStatus(
+      kpost('/checkin', dev.ky.token, await outsideBody()),
+      429,
+      'RATE_LIMITED',
+    );
+    pass(
+      'failed check-ins: a refusal decided after a 6 s lock wait records its decision time; with 29 others it keeps the device limited while its decision lies inside the hour even though its transaction start is already outside; once the hour from its decision has passed it no longer counts, one more refusal is allowed and the next is RATE_LIMITED',
+    );
+  }
+
+  step('failed check-ins: stops and lost acknowledgements');
+  {
+    // The count is the committed refusal events, nothing else: (1) a success whose COMMIT
+    // acknowledgement is lost charges nothing; (2) a refusal whose transaction stops before its
+    // COMMIT charges nothing; (3) a refusal committed with its acknowledgement lost charges one.
+    // Then exactly 29 more refusals are allowed.
+    const ok = await tapBody();
+    commitFault = 'checkin';
+    let r;
+    try {
+      r = await kpost('/checkin', dev.kw.token, ok);
+    } finally {
+      commitFault = false;
+    }
+    assert.equal(r.status, 500);
+    await expectStatus(kpost('/checkin', dev.kw.token, ok), 200);
+    for (const mode of ['checkin-abort', 'checkin']) {
+      commitFault = mode;
+      try {
+        r = await kpost('/checkin', dev.kw.token, await outsideBody());
+      } finally {
+        commitFault = false;
+      }
+      assert.equal(r.status, 500);
+    }
+    assert.equal((await refusals(dev.kw.id)).length, 1);
+    let allowed = 0;
+    for (let i = 0; i < 31; i++) {
+      const x = await kpost('/checkin', dev.kw.token, await outsideBody());
+      if (x.status === 429) break;
+      assert.equal(x.body.code, 'GEOFENCE_OUTSIDE');
+      allowed++;
+    }
+    assert.equal(allowed, 29);
+    assert.equal((await refusals(dev.kw.id)).length, 30);
+    pass(
+      'failed check-ins count exactly the committed refusal events: a success with a lost COMMIT acknowledgement charges nothing (its replay is served), a refusal stopped before its COMMIT charges nothing, a refusal committed with a lost acknowledgement charges one, and then exactly 29 more refusals are allowed before RATE_LIMITED',
+    );
+  }
+
+  step('failed check-ins: threshold under concurrency, across business days');
+  {
+    // From 29 refusals, four refused attempts on two business days (different day and slot
+    // locks) meet only at the device's refusal lock (level 2a): the first is held right after
+    // it counted, the others must wait on that lock; exactly one more refusal is counted.
+    await seedRefusals('kz', 29);
+    const { m, now } = (
+      await owner.query(
+        `SELECT (date_trunc('day', clock_timestamp() AT TIME ZONE 'Europe/Belgrade') AT TIME ZONE 'Europe/Belgrade') AS m, clock_timestamp() AS now`,
+      )
+    ).rows[0];
+    const yesterday = () => outsideBody({ now, at: m - now - 30 * MIN });
+    const bodies = [
+      await outsideBody(),
+      await yesterday(),
+      await outsideBody(),
+      await yesterday(),
+    ];
+    assert.notEqual(bodies[1].businessDate, bodies[0].businessDate);
+    let hit, release;
+    const reached = new Promise((resolve) => (hit = resolve));
+    const opened = new Promise((resolve) => (release = resolve));
+    const openGate = async () => {
+      held.delete(openGate);
+      release();
+    };
+    held.add(openGate);
+    queryGate = {
+      match: (text) =>
+        text.includes(`kind='CHECKIN_REFUSED'`) &&
+        text.includes('"decidedAt" >'),
+      hit,
+      opened,
+    };
+    let seen;
+    let first, rest;
+    try {
+      first = kpost('/checkin', dev.kz.token, bodies[0]);
+      await withTimeout(reached, STEP_MS, 'the first attempt counts');
+      rest = bodies.slice(1).map((b) => kpost('/checkin', dev.kz.token, b));
+      seen = await Promise.race([
+        Promise.all(rest).then(() => 'finished'),
+        advisoryWaiters(refusalKey(dev.kz.id), 3).then(
+          () => 'waiting',
+          () => 'not waiting',
+        ),
+      ]);
+    } finally {
+      await openGate();
+      queryGate = null;
+    }
+    const results = [await first, ...(await Promise.all(rest))];
+    assert.deepEqual(
+      [seen, ...results.map((x) => x.body.code)],
+      [
+        'waiting',
+        'GEOFENCE_OUTSIDE',
+        'RATE_LIMITED',
+        'RATE_LIMITED',
+        'RATE_LIMITED',
+      ],
+    );
+    assert.equal((await refusals(dev.kz.id)).length, 30);
+    pass(
+      'failed check-ins at the threshold, concurrently across two business days: from 29 refusals, the first attempt is held after counting while three others (both days) wait on the device refusal lock, not on day or slot locks; exactly one more refusal is counted and the three get RATE_LIMITED',
+    );
+  }
+
+  step(
+    'failed check-ins: a limited device, replay after authorization changed',
+  );
+  {
+    // A foreman's successful proxy is replayed while the device is at its limit. Authorized,
+    // it is served; once the subject has moved to another crew the re-checked authorization
+    // refuses, and a limited device then gets RATE_LIMITED with no new refusal event.
+    K.K3 = await crew(projectA, 'K3');
+    await expectStatus(
+      change([
+        open(K.K3, person.kg, 'FOREMAN'),
+        open(K.K3, person.kg),
+        open(K.K3, person.kh),
+      ]),
+      200,
+    );
+    await travel(
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '10 days' WHERE "personId" = ANY($1::uuid[])`,
+      [[person.kg, person.kh]],
+    );
+    dev.kg = await onboard(person.kg, { ip: KIP });
+    const proxied = await tap(dev.kg.token, { personId: person.kh });
+    const success = await expectStatus(Promise.resolve(proxied.r), 200);
+    await seedRefusals('kg', 30);
+    const replay = () => kpost('/checkin/proxy', dev.kg.token, proxied.body);
+    assert.deepEqual(await expectStatus(replay(), 200), success);
+    await expectStatus(
+      change([close(assignment(person.kh)), open(K.K1, person.kh)]),
+      200,
+    );
+    for (let i = 0; i < 3; i++)
+      await expectStatus(replay(), 429, 'RATE_LIMITED');
+    assert.equal((await refusals(dev.kg.id)).length, 30);
+    pass(
+      'a limited device is served only an authorized replay: a foreman proxy replay at 30 refusals is served; after the subject moved to another crew the same replay is RATE_LIMITED three times and the device keeps exactly 30 refusal events (no lockout extension)',
+    );
+  }
+
+  step('failed check-ins: clock recovery (future-dated refusals)');
+  {
+    // After a forward clock spike and its recovery, refusals decided "in the future" lie
+    // outside (t − 1 h, t] and do not limit a decision at the earlier, corrected time.
+    await owner.query(
+      `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorDeviceId","actorPersonId","decidedAt")
+      SELECT gen_random_uuid(), $1, $2, $3, $4, 'CHECKIN_REFUSED', 'GEOFENCE_OUTSIDE', $3, $4, clock_timestamp() + interval '2 hours'
+      FROM generate_series(1, 30)`,
+      [orgA, projectA, dev.kj.id, person.kj],
+    );
+    await expectStatus(
+      kpost('/checkin', dev.kj.token, await outsideBody()),
+      409,
+      'GEOFENCE_OUTSIDE',
+    );
+    assert.equal((await refusals(dev.kj.id)).length, 31);
+    pass(
+      'failed check-ins after clock recovery: 30 refusals decided two hours ahead (a spiked clock) do not limit a decision at the corrected, earlier time; the count window is (t − 1 h, t]',
+    );
+  }
+
   step('check-in: local midnight');
   {
     const midnight = async () =>
@@ -3064,7 +3412,14 @@ try {
         e.distanceBucketM,
         e.personId,
       ]),
-      [['GEOFENCE_OUTSIDE', 600, person.k8]],
+      // C29: resource refusals of the device are logged too (no person for an unverified one).
+      [
+        ['PROXY_NOT_ALLOWED', null, null],
+        ['PROXY_NOT_ALLOWED', null, person.kf],
+        ['NOT_FOUND', null, null],
+        ['NOT_FOUND', null, null],
+        ['GEOFENCE_OUTSIDE', 600, person.k8],
+      ],
     );
     await expectStatus(
       Promise.resolve((await tap(dev.kf2.token, { personId: person.kx })).r),
