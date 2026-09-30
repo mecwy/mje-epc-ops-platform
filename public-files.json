@@ -120,6 +120,7 @@
   "apps/web/src/site/device-orderings.test.ts",
   "apps/web/src/site/headcount-guard.test.ts",
   "apps/web/src/site/pm-owners.ts",
+  "apps/web/src/site/pm-round1.test.ts",
   "apps/web/src/site/pm-selfcheck.test.ts",
   "apps/web/src/site/proxy-rules.test.ts",
   "apps/web/src/site/proxy-rules.ts",
