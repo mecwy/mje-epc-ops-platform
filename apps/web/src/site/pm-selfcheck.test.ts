@@ -11,8 +11,15 @@ import type {
   FieldSettingsDto,
   RosterDto,
 } from '@mje/contracts';
-import { ApiError, reportApi, type Project } from '../api.js';
+import {
+  ApiError,
+  reportApi,
+  type ForemanDayView,
+  type Project,
+} from '../api.js';
 import { I18nProvider } from '../i18n.js';
+import { AdoptFlow } from '../report/foreman-adopt.js';
+import { ForemanLine, PmFieldContext } from '../report/ForemanLine.js';
 import { ProxySheet } from './CheckIns.js';
 import { PmOwnedBar } from './OwnedBar.js';
 import { ActionSheet, DevicesCard } from './Devices.js';
@@ -22,11 +29,12 @@ import { saveSettings, SiteSessions, startProxy } from './site-sessions.js';
 
 /*
  * #40 self-check (L5) and round 1 (P4 QR result in the reader bar, P5 proxy owned by its day) against the #36/#37/#39 rules, on every PM write surface: the PM proxy
- * sheet, the field settings card and the device sheet and
+ * sheet, the foreman-total adoption line, the field settings card and the device sheet and
  * list. (1) An unsettled code reads as an unknown outcome, first send and Retry. (2) A refusal
  * the server makes before replaying (FORBIDDEN / READ_ONLY from the project-writer check,
  * LOGIN_REQUIRED from sign-in) after an unanswered attempt reads "may already have been
- * recorded"; answered at once, it keeps its own message. (3) One source for a first
+ * recorded"; answered at once, it keeps its own message. FOREMAN_TOTAL_CHANGED is judged after
+ * the replay (report-store adoptForeman), so it stays certain. (3) One source for a first
  * send's and a Retry's outcome. (4) Owners outlive write access: a reader sees an
  * owned-actions bar with Retry / Give up.
  */
@@ -111,6 +119,26 @@ const settingsDto: FieldSettingsDto = {
   siteReference: { n: 1, lat: '1.000000', lon: '1.000000', radiusM: 500 },
   settings: { n: 1, selfieEnabled: false, pmProxyDays: 7 },
 };
+const view = (value: string): ForemanDayView => ({
+  rosterVersion: 1,
+  expectedCrews: [{ crewId: 'c', code: 'A', name: 'TEST A', hasForeman: true }],
+  revisions: [],
+  items: {
+    support: {
+      status: 'COMPLETE',
+      value,
+      atLeast: null,
+      crews: { c: { status: 'VALUE', qty: value, expected: true } },
+    },
+  },
+  adoptions: [],
+  basis: {
+    rosterVersion: 1,
+    expectedCrews: ['c'],
+    revisions: [{ crewId: 'c', n: 1 }],
+  },
+  expectedCrewsChanged: null,
+});
 
 /** A PM api whose writes answer from a queue (then OK). */
 function pmApi() {
@@ -143,6 +171,7 @@ function pmApi() {
       confirmDevice: write,
       rejectDevice: write,
       revokeDevice: write,
+      adoptForeman: write,
       rotateEntryCode: write,
     },
   };
@@ -205,7 +234,7 @@ function pmSessions() {
   return { ...a, sessions: new SiteSessions(a.api as never, P) };
 }
 
-type Surface = 'proxy' | 'settings' | 'device';
+type Surface = 'proxy' | 'adopt' | 'settings' | 'device';
 /** Start the surface's command on fresh PM state; returns what renders it. */
 async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
   const sessions = new SiteSessions(a.api as never, P);
@@ -214,6 +243,18 @@ async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
   await sessions.devices.session.load();
   const day = sessions.checkIns(DAY);
   await day.list.load();
+  const flow = new AdoptFlow(
+    {
+      api: a.api,
+      projectId: P,
+      businessDate: DAY,
+      hold: async () => ({ outcome: 'ok', version: 3 }),
+      current: () => ({ foreman: view('10'), version: 3 }),
+      release: async () => true,
+      abandon: () => {},
+    },
+    () => {},
+  );
   const command = {
     projectId: P,
     personId: 'w',
@@ -229,6 +270,8 @@ async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
         const body = { ...command, clientMutationId: key };
         return { key, send: () => a.api.pmProxy(body) };
       });
+    if (s === 'adopt')
+      return flow.adopt('support', { basis: view('10').basis, value: '10' });
     if (s === 'settings')
       return saveSettings(
         sessions.settingsSave,
@@ -242,9 +285,11 @@ async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
   const retry = () =>
     s === 'proxy'
       ? day.proxy.retry()
-      : s === 'settings'
-        ? sessions.settingsSave.retry()
-        : sessions.devices.retry();
+      : s === 'adopt'
+        ? flow.retry()
+        : s === 'settings'
+          ? sessions.settingsSave.retry()
+          : sessions.devices.retry();
   const render = () => {
     if (s === 'proxy')
       return wrap(
@@ -255,6 +300,23 @@ async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
           date: DAY,
           onClose: () => {},
         }),
+      );
+    if (s === 'adopt')
+      return wrap(
+        createElement(
+          PmFieldContext.Provider,
+          {
+            value: {
+              foreman: view('10'),
+              adopt: flow,
+              canWrite: true,
+              dayState: 'draft',
+              timeZone: project.timezone,
+              checkIns: null,
+            },
+          },
+          createElement(ForemanLine, { itemKey: 'support' }),
+        ),
       );
     if (s === 'settings')
       return wrap(
@@ -286,10 +348,10 @@ async function surface(s: Surface, a: ReturnType<typeof pmApi>) {
       ),
     );
   };
-  return { sessions, start, retry, render };
+  return { sessions, flow, start, retry, render };
 }
 
-const SURFACES: Surface[] = ['proxy', 'settings', 'device'];
+const SURFACES: Surface[] = ['proxy', 'adopt', 'settings', 'device'];
 
 describe('#40 self-check: unknown outcomes read as unknown on every PM write surface', () => {
   for (const code of ['NETWORK', 'REQUEST_FAILED', 'RETRY', 'RATE_LIMITED'])
@@ -339,10 +401,22 @@ describe('#40 self-check: authority re-checked before the replay → "may alread
         expect(html).not.toMatch(/may already have been recorded/);
       });
     }
+
+  it('adopt · FOREMAN_TOTAL_CHANGED after an unanswered attempt stays certain (judged after the replay)', async () => {
+    const a = pmApi();
+    const x = await surface('adopt', a);
+    a.plan.push(err('NETWORK'));
+    await x.start();
+    a.plan.push(err('FOREMAN_TOTAL_CHANGED'));
+    await x.retry();
+    const html = x.render();
+    expect(html).toMatch(/you saw 10/i);
+    expect(html).not.toMatch(/may already have been recorded/);
+  });
 });
 
 describe('#40 self-check: a reader keeps the owned attempts (owners outlive write access)', () => {
-  it('proxy, settings save and device action unresolved → the bar lists each with Retry / Give up', async () => {
+  it('proxy, adoption, settings save and device action unresolved → the bar lists each with Retry / Give up', async () => {
     const a = pmApi();
     const sessions = new SiteSessions(a.api as never, P);
     await sessions.roster.load();
@@ -350,7 +424,19 @@ describe('#40 self-check: a reader keeps the owned attempts (owners outlive writ
     await sessions.devices.session.load();
     const day = sessions.checkIns(DAY);
     await day.list.load();
-    a.plan.push(err('NETWORK'), err('NETWORK'), err('NETWORK'));
+    const flow = new AdoptFlow(
+      {
+        api: a.api,
+        projectId: P,
+        businessDate: DAY,
+        hold: async () => ({ outcome: 'ok', version: 3 }),
+        current: () => ({ foreman: view('10'), version: 3 }),
+        release: async () => true,
+        abandon: () => {},
+      },
+      () => {},
+    );
+    a.plan.push(err('NETWORK'), err('NETWORK'), err('NETWORK'), err('NETWORK'));
     const command = {
       projectId: P,
       personId: 'w',
@@ -364,6 +450,7 @@ describe('#40 self-check: a reader keeps the owned attempts (owners outlive writ
       const body = { ...command, clientMutationId: key };
       return { key, send: () => a.api.pmProxy(body) };
     });
+    await flow.adopt('support', { basis: view('10').basis, value: '10' });
     await saveSettings(
       sessions.settingsSave,
       a.api as never,
@@ -379,16 +466,22 @@ describe('#40 self-check: a reader keeps the owned attempts (owners outlive writ
     const mod = (await import('./OwnedBar.js').catch(() => null)) as {
       PmOwnedBar?: FunctionComponent<Record<string, unknown>>;
     } | null;
-    const owners = { site: sessions };
+    const owners = { site: sessions, adoptDays: () => [[DAY, flow]] };
     const html = mod?.PmOwnedBar
-      ? wrap(createElement(mod.PmOwnedBar, { owners }))
+      ? wrap(
+          createElement(mod.PmOwnedBar, {
+            owners,
+            itemLabel: () => 'TEST support',
+          }),
+        )
       : '';
     expect(html).toMatch(/Unresolved actions/);
     expect(html).toMatch(/PM check-in for TEST worker/);
+    expect(html).toMatch(/Using the foreman total: TEST support/);
     expect(html).toMatch(/Saving the field settings/);
     expect(html).toMatch(/Confirming the phone of TEST A/);
-    expect(html.match(/>Retry</g)?.length).toBe(3);
-    expect(html.match(/>Give up</g)?.length).toBe(3);
+    expect(html.match(/>Retry</g)?.length).toBe(4);
+    expect(html.match(/>Give up</g)?.length).toBe(4);
     expect(html).toMatch(UNKNOWN.NETWORK!);
     expect(html).not.toMatch(FORBIDDEN_WORDING);
   });
@@ -495,13 +588,19 @@ describe('#40 round 1 P4: a reader keeps the QR change result', () => {
       const c = { projectId: P, clientMutationId: 'k-rotate' };
       return { key: c.clientMutationId, send: () => pm.api.rotateEntryCode(c) };
     });
-    const owners = { site: pm.sessions };
+    const owners = { site: pm.sessions, adoptDays: () => [] };
     const before = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
       owners,
+      itemLabel: () => '',
     });
     expect(before.html).toMatch(/Changing the QR code/);
     await click(before.buttons, /^Retry$/);
-    const after = wrap(createElement(PmOwnedBar, { owners: owners as never }));
+    const after = wrap(
+      createElement(PmOwnedBar, {
+        owners: owners as never,
+        itemLabel: () => '',
+      }),
+    );
     expect(after).toMatch(/Changing the QR code/);
     expect(after).toMatch(
       /no longer have write access to this project\. The earlier send may already have been recorded/,
@@ -543,7 +642,8 @@ describe('#40 round 1 P5: a backdated PM proxy is owned by the day it is for', (
     // The bar names the day it is for.
     const bar = wrap(
       createElement(PmOwnedBar, {
-        owners: { site: pm.sessions } as never,
+        owners: { site: pm.sessions, adoptDays: () => [] } as never,
+        itemLabel: () => '',
       }),
     );
     expect(bar).toMatch(/PM check-in for TEST worker \(Thu 1 October\)/);
