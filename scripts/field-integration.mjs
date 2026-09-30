@@ -440,6 +440,25 @@ try {
     }
   };
 
+  /**
+   * Throttles use fixed, clock-aligned windows. Wait (by the database clock) until at least a
+   * minute is left in the current window, so a burst and its assertions never straddle a window
+   * boundary.
+   */
+  const freshWindow = async (windowSec) => {
+    const r = await withTimeout(
+      owner.query(
+        `SELECT extract(epoch FROM clock_timestamp()) % $1 < $1 - 60 AS ok,
+          to_char(to_timestamp((floor(extract(epoch FROM clock_timestamp()) / $1) + 1) * $1) AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "next"`,
+        [windowSec],
+      ),
+      5_000,
+      'window poll',
+    );
+    if (!r.rows[0].ok) await untilDb(r.rows[0].next, 90_000);
+  };
+
   // ================= entry code =================
   step('entry code');
   const rotateEntry = (projectId, bearer, key = randomUUID()) =>
@@ -719,9 +738,10 @@ try {
       change([close(assignment(person.w8)), open(C.C1, person.w8)]),
       200,
     );
-    const w8 = lastRoster[projectA].assignments.filter(
-      (a) => a.personId === person.w8 && a.role === 'MEMBER',
-    );
+    // The last two MEMBER intervals of w8: the one just closed and the one just opened.
+    const w8 = lastRoster[projectA].assignments
+      .filter((a) => a.personId === person.w8 && a.role === 'MEMBER')
+      .slice(-2);
     assert.equal(w8.length, 2);
     assert.equal(w8[0].validUntil, w8[1].validFrom);
     await expectStatus(change([close(w8[0].id)]), 409, 'ASSIGNMENT_CLOSED');
@@ -799,7 +819,13 @@ try {
       return out;
     };
     const entry = (code, ip) => fpost('/entry', null, { code }, { ip });
-    // Entry: 300 / 10 min per IP; 600 / 10 min per code (a refused request counts too).
+    // Entry: 300 / 10 min per IP; 600 / 10 min per code (a refused request counts too). A
+    // fresh code makes the per-code bucket hold only this scenario's requests.
+    entryCode[projectA2] = (
+      await expectStatus(rotateEntry(projectA2, pm2), 200)
+    ).code;
+    secret.entry.push(entryCode[projectA2]);
+    await freshWindow(600);
     let r = await burst(300, () => entry(entryCode[projectA2], '10.2.0.1'));
     assert.ok(r.every((x) => x.status === 200));
     await expectStatus(
@@ -807,8 +833,8 @@ try {
       429,
       'RATE_LIMITED',
     );
-    // The code already counted 1 (earlier) + 301 (the 429 counts too): 298 more reach 600.
-    r = await burst(298, () => entry(entryCode[projectA2], '10.2.0.2'));
+    // The code has counted 301 (the 429 counts too): 299 more reach 600.
+    r = await burst(299, () => entry(entryCode[projectA2], '10.2.0.2'));
     assert.ok(r.every((x) => x.status === 200));
     await expectStatus(
       entry(entryCode[projectA2], '10.2.0.3'),
