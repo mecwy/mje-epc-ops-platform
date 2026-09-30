@@ -18,6 +18,7 @@ import {
   clearPreviousHash,
   recordActivity,
   CheckInStore,
+  ForemanStore,
   readFileClaims,
 } from '../packages/domain/dist/index.js';
 import { exifTiff, testJpeg } from '../packages/testing/dist/index.js';
@@ -400,6 +401,7 @@ try {
     reportStore: new ReportStore(appPool),
     fieldStore,
     checkInStore,
+    foremanStore: new ForemanStore(appPool, fieldOptions),
   });
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
