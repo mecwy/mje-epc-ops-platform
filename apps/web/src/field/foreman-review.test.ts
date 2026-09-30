@@ -355,7 +355,10 @@ describe('#39 round 1 finding 4: an ended device is latched on the command answe
       code: 'DEVICE_ENDED',
     });
     expect(r.ended).toEqual(['DEVICE_ENDED']);
-    expect(r.day.session.ended).toBe(true);
+    // Connectivity back: a good read still cannot bring the device back.
+    r.sv.failReads(false);
+    expect(await r.day.session.load()).toBe(false);
+    expect(r.day.session.readError).toBe('DEVICE_ENDED');
     expect(r.day.sends.canStart).toBe(false);
   });
 });
