@@ -662,7 +662,7 @@ function GallerySheet({ onClose }: { onClose: () => void }) {
       {env.handle.photos === null
         ? !env.handle.loadFailed && <p className="muted">{t('loading')}</p>
         : photos.length === 0 && <p className="muted">{t('none')}</p>}
-      <div className="grid2">
+      <div className="grid2 photo-grid">
         {photos.map((p, i) => (
           <figure key={p.id}>
             <Tile photo={photoAsOf(p)} n={i + 1} live />

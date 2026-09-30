@@ -236,13 +236,15 @@ h3 {
 }
 .kv {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  /* Labels size to their text (capped) so long translations never run into the value (L20). */
+  grid-template-columns: minmax(64px, fit-content(45%)) minmax(0, 1fr);
   gap: 12px;
   font-size: 14px;
 }
 .kv > span:first-child {
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: break-word;
 }
 .kv.top-line {
   padding-top: 10px;
@@ -490,7 +492,9 @@ input.sm {
   padding: 0 10px;
 }
 .unit {
-  width: 22px;
+  min-width: 22px;
+  flex: none;
+  white-space: nowrap;
   font-size: 14px;
   color: var(--muted);
 }
@@ -523,6 +527,17 @@ input.sm {
 }
 .mini > span {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.mini > input {
+  flex: none;
+}
+/* One photo per row on a phone, so the "linked to" select shows the whole item name (L20). */
+@media (max-width: 520px) {
+  .grid2.photo-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .mini input[type='date'] {
   height: 40px;
