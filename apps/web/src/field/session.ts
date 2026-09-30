@@ -33,7 +33,8 @@ export type Outcome<R> =
  * ticketed: an older response, successful or failed, never overwrites a newer one; freshness
  * after a write counts successful reads only. A command refused because the device ended is
  * reported through `onEnded`, so the device page ends even when the refusal came from a
- * command rather than a read.
+ * command rather than a read. An ended device stays ended: once a read or end() has said so,
+ * no later read (a network failure on resume, say) replaces that state, and none is sent.
  */
 export class FieldSession<D> {
   data: D | null = null;
@@ -50,6 +51,8 @@ export class FieldSession<D> {
   private dataAt = 0;
   private writtenAt = 0;
   private queue: Promise<unknown> = Promise.resolve();
+  /** The code by which this device ended, latched for the life of this session. */
+  private endedCode: string | null = null;
 
   constructor(
     private readonly read: () => Promise<D>,
@@ -58,6 +61,10 @@ export class FieldSession<D> {
   ) {}
 
   async load(): Promise<boolean> {
+    if (this.endedCode) {
+      this.notify();
+      return false;
+    }
     const ticket = ++this.reads;
     try {
       const d = await this.read();
@@ -70,7 +77,9 @@ export class FieldSession<D> {
     } catch (e) {
       if (ticket <= this.applied) return false;
       this.applied = ticket;
-      this.readError = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
+      const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
+      if (ENDED.has(code)) this.endedCode = code;
+      this.readError = code;
       return false;
     } finally {
       this.notify();
@@ -90,7 +99,8 @@ export class FieldSession<D> {
    */
   end(code: string) {
     this.applied = ++this.reads;
-    this.readError = code;
+    this.endedCode ??= code;
+    this.readError = this.endedCode;
     this.notify();
   }
 

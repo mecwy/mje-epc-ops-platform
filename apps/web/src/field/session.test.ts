@@ -217,4 +217,34 @@ describe('FieldSession (IssueSession pattern)', () => {
     expect(session.readError).toBe('DEVICE_ENDED');
     expect(session.data).toBe(1);
   });
+
+  it('round 2: an ended device stays ended when a later read fails (offline resume)', async () => {
+    for (const code of ['DEVICE_ENDED', 'FIELD_AUTH_REQUIRED']) {
+      // Ended by a command (end()), then the page comes back offline.
+      const a = harness();
+      const first = a.session.load();
+      a.reads[0]!.settle(1);
+      await first;
+      a.session.end(code);
+      const resumeA = a.session.load();
+      a.reads[1]?.settle(new ApiError('NETWORK', 0));
+      expect(await resumeA).toBe(false);
+      expect(a.reads).toHaveLength(1);
+      expect(a.session.readError).toBe(code);
+      expect(a.session.data).toBe(1);
+      // Ended by a read, then a later read would fail with a transient code.
+      const b = harness();
+      const r0 = b.session.load();
+      b.reads[0]!.settle(1);
+      await r0;
+      const r1 = b.session.load();
+      b.reads[1]!.settle(new ApiError(code, 401));
+      await r1;
+      const resumeB = b.session.load();
+      b.reads[2]?.settle(new ApiError('NETWORK', 0));
+      expect(await resumeB).toBe(false);
+      expect(b.reads).toHaveLength(2);
+      expect(b.session.readError).toBe(code);
+    }
+  });
 });
