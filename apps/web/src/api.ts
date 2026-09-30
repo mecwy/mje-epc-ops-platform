@@ -34,6 +34,9 @@ import type {
   SiteReferenceCommand,
   CheckInListDto,
   CheckInResultDto,
+  ForemanAdoptCommand,
+  ForemanAdoptResultDto,
+  ForemanDayDto,
   PmProxyCheckInCommand,
   RosterDto,
 } from '@mje/contracts';
@@ -142,7 +145,13 @@ export interface RevisionMeta {
   by: string;
   reason: string;
 }
+/** The writer's live foreman view (C37); a reader never gets it. */
+export type ForemanDayView = ForemanDayDto & {
+  expectedCrewsChanged: boolean | null;
+};
 export interface DayView extends Omit<ReportContent, 'photos'> {
+  /** Writers only: the foreman claims beside the PM's facts (never merged into them). */
+  foreman?: ForemanDayView;
   access: Access;
   /** The day's photos as they are now, linked or not. */
   photos: PhotoDto[];
@@ -457,6 +466,8 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
       get<CheckInListDto>('field/checkins', { projectId, businessDate }),
     pmProxy: (c: PmProxyCheckInCommand) =>
       post<CheckInResultDto>('field/checkins/proxy', c),
+    adoptForeman: (c: ForemanAdoptCommand) =>
+      post<ForemanAdoptResultDto>('foreman/adopt', c),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',
