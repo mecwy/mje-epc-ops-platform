@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -14,7 +15,12 @@ import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
 import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
-import { liveCoverage, byKind, reportPhotos } from './report/model.js';
+import {
+  liveCoverage,
+  byKind,
+  reportPhotos,
+  declaredHeadcount,
+} from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
@@ -26,7 +32,10 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
-import { SiteSessions } from './site/site-sessions.js';
+import { PmOwnerRegistry } from './site/pm-owners.js';
+import { PmOwnedBar } from './site/OwnedBar.js';
+import { useSessions } from './site/use-sessions.js';
+import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
 import {
   ResumeKeeper,
@@ -217,9 +226,27 @@ function Workspace({
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
   const photos = usePhotos(api, project.id, date, dayStamp);
   const busy = actionBusy || h.busy;
-  // The People page's sessions live as long as the workspace (like the issue and plan
-  // sessions): leaving the tab keeps an unresolved command and its key.
-  const [siteSessions] = useState(() => new SiteSessions(api, project.id));
+  // The PM command owners (People page sessions) live as long as the workspace, one set per
+  // project (AGENTS.md): leaving a tab, losing write access or switching projects and back
+  // keeps an unresolved command, its key and its payload.
+  const [pmRegistry] = useState(() => new PmOwnerRegistry(api));
+  const pm = pmRegistry.get(project.id);
+  const siteSessions = pm.site;
+  useSessions(siteSessions);
+  // Check-ins beside the headcount (writers only; a reader never gets them, OD20).
+  useEffect(() => {
+    if (canWrite) void siteSessions.checkIns(date).list.load();
+  }, [canWrite, siteSessions, date]);
+  // The check-ins beside the headcount on the fill page: writers only.
+  const pmField: PmField | null =
+    canWrite && h.day
+      ? {
+          checkIns: siteSessions.checkIns(date).list.data?.summary ?? null,
+        }
+      : null;
+  const withPmField = (node: ReactNode) => (
+    <PmFieldContext.Provider value={pmField}>{node}</PmFieldContext.Provider>
+  );
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
@@ -456,7 +483,15 @@ function Workspace({
     ) : null;
   let body;
   if (view === 'site' && canWrite && !task)
-    body = <SitePage api={api} project={project} sessions={siteSessions} />;
+    body = (
+      <SitePage
+        api={api}
+        project={project}
+        sessions={siteSessions}
+        date={date}
+        headcount={h.facts ? declaredHeadcount(h.facts) : null}
+      />
+    );
   else if (viewing && view === 'report' && !task) {
     const meta = day?.revisions.find((r) => r.n === viewing.n) ?? null;
     body = (
@@ -561,7 +596,7 @@ function Workspace({
   }
 
   if (task && day && h.facts && cov)
-    return (
+    return withPmField(
       <PhotoHost env={photoEnv}>
         {nav}
         <div className="content">
@@ -606,7 +641,7 @@ function Workspace({
           )}
         </div>
         <Toast text={toast} />
-      </PhotoHost>
+      </PhotoHost>,
     );
 
   // The current photos, to link them; the report itself shows what the day froze.
@@ -618,7 +653,7 @@ function Workspace({
     (day.state !== 'empty' || (photos.photos?.length ?? 0) > 0) ? (
       <PhotosRow />
     ) : null;
-  return (
+  return withPmField(
     <PhotoHost env={photoEnv}>
       {nav}
       <div className="content">
@@ -664,6 +699,10 @@ function Workspace({
           </button>
         </header>
         <main className={`page view-${view}`}>
+          {!canWrite && (
+            // Write access went away while a PM attempt was owned: its Retry / Give up stay.
+            <PmOwnedBar owners={pm} />
+          )}
           {signin.expired && (
             <div className="banner err" role="alert">
               {signin.failure ? (
@@ -731,7 +770,7 @@ function Workspace({
         />
       )}
       <Toast text={toast} />
-    </PhotoHost>
+    </PhotoHost>,
   );
 }
 

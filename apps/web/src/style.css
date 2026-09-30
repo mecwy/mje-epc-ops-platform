@@ -1578,6 +1578,23 @@ ul.plainlist:not(.card) {
 .fmrow .blk-row input {
   flex: none;
 }
+/* PM daily field view (A6d-4) */
+.side {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.side > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--line-2);
+}
+.devrow.voided b {
+  text-decoration: line-through;
+}
 
 /* Report attempts for days outside today/yesterday (#39 follow-up). */
 .retained {

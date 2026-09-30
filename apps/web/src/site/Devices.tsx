@@ -6,6 +6,7 @@ import { useI18n } from '../i18n.js';
 import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
 import { fmtStamp } from '../report/format.js';
+import type { Outcome } from '../field/session.js';
 import { groupDevices } from './site-form.js';
 import type {
   DeviceAction,
@@ -123,7 +124,7 @@ export function DevicesCard({
             kind={unresolved.kind}
             name={unresolved.device.displayName}
           />{' '}
-          <ErrorText code={session.error} />
+          <ErrorText code={session.error} write />
           <div className="chips">
             <button
               type="button"
@@ -142,6 +143,21 @@ export function DevicesCard({
               {t('pm_giveUp')}
             </button>
           </div>
+        </div>
+      )}
+      {commands.refused && commands.refusal && !action && (
+        // The result of the last action, whether it ended in its sheet or from this list.
+        <div className="banner err" role="alert">
+          <UnresolvedText
+            kind={commands.refused.kind}
+            name={commands.refused.device.displayName}
+            done
+          />{' '}
+          <ErrorText
+            code={commands.refusal}
+            write
+            uncertain={commands.refusalUncertain}
+          />
         </div>
       )}
       {session.readError && (
@@ -212,18 +228,31 @@ function EndText({ reason }: { reason: string | null }) {
 function UnresolvedText({
   kind,
   name,
+  done = false,
 }: {
   kind: Action['kind'];
   name: string;
+  /** The action has ended (its result follows); otherwise it got no answer. */
+  done?: boolean;
 }) {
   const { t } = useI18n();
-  const key =
-    kind === 'confirm'
+  const key = done
+    ? kind === 'confirm'
+      ? 'fm_actConfirm'
+      : kind === 'reject'
+        ? 'pm_actReject'
+        : 'pm_actRevoke'
+    : kind === 'confirm'
       ? 'pm_unresolvedConfirm'
       : kind === 'reject'
         ? 'pm_unresolvedReject'
         : 'pm_unresolvedRevoke';
-  return <>{t(key, { name })}</>;
+  return (
+    <>
+      {t(key, { name })}
+      {done ? ':' : ''}
+    </>
+  );
 }
 
 /**
@@ -249,16 +278,24 @@ export function ActionSheet({
       ? commands.current
       : null;
   const unresolved = owned !== null && commands.unresolved !== null;
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    code: string;
+    uncertain: boolean;
+  } | null>(null);
   const title =
     action.kind === 'confirm'
       ? 'pm_confirmTitle'
       : action.kind === 'reject'
         ? 'pm_rejectTitle'
         : 'pm_revokeTitle';
-  const settle = (r: { kind: string; code?: string }) => {
+  // One settlement for a first send and a Retry: the outcome and whether it may be recorded.
+  const settle = (r: Outcome<unknown>) => {
     if (r.kind === 'ok') onClose();
-    else setError(r.code ?? null);
+    else
+      setError({
+        code: r.code,
+        uncertain: r.kind === 'rejected' && r.uncertain,
+      });
   };
   return (
     <Sheet title={t(title)} onClose={() => !session.busy && onClose()}>
@@ -274,7 +311,7 @@ export function ActionSheet({
           {unresolved ? (
             <div className="banner warn" role="alert">
               {t('pm_attemptUnresolved')}{' '}
-              <ErrorText code={session.error ?? 'NETWORK'} />
+              <ErrorText code={session.error ?? 'NETWORK'} write />
             </div>
           ) : (
             <p className="muted small">{t('saving')}</p>
@@ -328,7 +365,7 @@ function ActionEdit({
 }: {
   action: Action;
   commands: DeviceCommands;
-  error: string | null;
+  error: { code: string; uncertain: boolean } | null;
   onRun: (a: DeviceAction) => void;
 }) {
   const { t } = useI18n();
@@ -365,7 +402,7 @@ function ActionEdit({
       )}
       {error && (
         <div className="banner err" role="alert">
-          <ErrorText code={error} />
+          <ErrorText code={error.code} write uncertain={error.uncertain} />
         </div>
       )}
       <button

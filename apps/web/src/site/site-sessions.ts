@@ -1,5 +1,8 @@
 import type {
+  CheckInListDto,
   EntryCodeDto,
+  PmProxyCheckInCommand,
+  RosterDto,
   FieldDeviceDto,
   FieldSettingsCommand,
   FieldSettingsDto,
@@ -21,6 +24,9 @@ type SiteApi = Pick<
   | 'fieldSettings'
   | 'setFieldSettings'
   | 'setSiteReference'
+  | 'roster'
+  | 'checkIns'
+  | 'pmProxy'
 >;
 
 export type DeviceAction =
@@ -62,25 +68,31 @@ export class DeviceCommands {
   get canStart() {
     return this.owned.canStart;
   }
+  /** The last refused action, its code, and whether it may have been applied anyway. */
+  get refused(): DeviceAction | null {
+    return this.owned.refused;
+  }
+  get refusal(): string | null {
+    return this.owned.refusal;
+  }
+  get refusalUncertain(): boolean {
+    return this.owned.refusalUncertain;
+  }
 
   run(a: DeviceAction): Promise<Outcome<unknown>> {
     return this.owned.run(a, (list, key) => {
-      if (a.kind === 'confirm')
-        return {
-          key,
-          send: () =>
-            this.api.confirmDevice({
-              projectId: this.projectId,
-              clientMutationId: key,
-              personId: a.device.personId,
-              code: a.code,
-              // From the newest list when it runs; an older view gets CONFIRM_STALE.
-              expectedCurrentDeviceId: currentDevice(
-                list ?? [],
-                a.device.personId,
-              ),
-            }),
+      if (a.kind === 'confirm') {
+        // Fixed once: a Retry under this key sends the same body (AGENTS.md).
+        const c = {
+          projectId: this.projectId,
+          clientMutationId: key,
+          personId: a.device.personId,
+          code: a.code,
+          // From the newest list when it runs; an older view gets CONFIRM_STALE.
+          expectedCurrentDeviceId: currentDevice(list ?? [], a.device.personId),
         };
+        return { key, send: () => this.api.confirmDevice(c) };
+      }
       const row = list?.find((x) => x.id === a.device.id);
       if (!row) return null;
       const c = {
@@ -134,8 +146,13 @@ export class SiteSessions {
     FormSave<SettingsValue>
   >;
 
-  constructor(api: SiteApi, projectId: string) {
-    const notify = () => this.listeners.forEach((fn) => fn());
+  private readonly notify = () => this.listeners.forEach((fn) => fn());
+  constructor(
+    private readonly api: SiteApi,
+    private readonly projectId: string,
+  ) {
+    const notify = this.notify;
+    this.roster = new FieldSession(() => api.roster(projectId), notify);
     this.entry = new FieldSession(() => api.entryCode(projectId), notify);
     this.devices = new DeviceCommands(api, projectId, notify);
     this.site = new FieldSession(() => api.fieldSettings(projectId), notify);
@@ -145,6 +162,65 @@ export class SiteSessions {
     );
     this.siteSave = new OwnedCommands(this.site);
     this.settingsSave = new OwnedCommands(this.settings);
+  }
+  readonly roster: FieldSession<RosterDto>;
+  private readonly days = new Map<
+    string,
+    {
+      list: FieldSession<CheckInListDto>;
+      proxy: OwnedCommands<CheckInListDto, ProxyAction>;
+    }
+  >();
+  /** A site day's check-ins and PM proxies, kept for the workspace's life. */
+  checkIns(businessDate: string) {
+    let d = this.days.get(businessDate);
+    if (!d) {
+      const list = new FieldSession<CheckInListDto>(
+        () => this.api.checkIns(this.projectId, businessDate),
+        this.notify,
+      );
+      d = { list, proxy: new OwnedCommands(list) };
+      this.days.set(businessDate, d);
+    }
+    return d;
+  }
+  /** The site day of the last PM proxy started (its result is shown in the sheet). */
+  lastProxyDay: string | null = null;
+  /**
+   * The PM proxy running or unresolved, keyed by the day it is for (its command's
+   * businessDate, not the page's date). One at a time across days.
+   */
+  ownedProxy(): {
+    day: string;
+    proxy: OwnedCommands<CheckInListDto, ProxyAction>;
+  } | null {
+    for (const [day, d] of this.days)
+      if (d.proxy.current) return { day, proxy: d.proxy };
+    return null;
+  }
+  /** The proxy owner a sheet shows: the owned one, else the last one started, else this day's. */
+  proxySheetOwner(pageDate: string) {
+    const owned = this.ownedProxy();
+    return (
+      owned ?? {
+        day: this.lastProxyDay ?? pageDate,
+        proxy: this.checkIns(this.lastProxyDay ?? pageDate).proxy,
+      }
+    );
+  }
+  /** Every site day read so far, with its proxy owner (for the owned-actions bar). */
+  proxyDays(): [
+    string,
+    {
+      list: FieldSession<CheckInListDto>;
+      proxy: OwnedCommands<CheckInListDto, ProxyAction>;
+    },
+  ][] {
+    return [...this.days.entries()];
+  }
+  /** Tell the page that state kept with these sessions changed (adoption flows). */
+  changed() {
+    this.notify();
   }
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn);
@@ -233,5 +309,28 @@ export function saveSettings(
   return commands.run({ editedFrom, value }, (_d, key) => {
     const c = settingsCommand(projectId, editedFrom, value, key);
     return { key, send: () => api.setFieldSettings(c) };
+  });
+}
+
+/** A PM proxy check-in as sent (its command, shown locked while unresolved). */
+export type ProxyAction = Omit<PmProxyCheckInCommand, 'clientMutationId'>;
+
+/**
+ * Start a PM proxy, owned by the day it is for (its businessDate, not the page's date): that
+ * day's list is what it rereads, opening that day shows it, and the bar names that day. One at
+ * a time across days; null when one is already owned.
+ */
+export function startProxy(
+  sessions: SiteSessions,
+  api: Pick<SiteApi, 'pmProxy'>,
+  command: ProxyAction,
+): Promise<Outcome<unknown>> | null {
+  if (sessions.ownedProxy()) return null;
+  const cmds = sessions.checkIns(command.businessDate).proxy;
+  sessions.lastProxyDay = command.businessDate;
+  return cmds.run(command, (_d, key) => {
+    // Fixed once: a Retry under this key sends the same body (AGENTS.md).
+    const body = { ...command, clientMutationId: key };
+    return { key, send: () => api.pmProxy(body) };
   });
 }

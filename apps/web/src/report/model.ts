@@ -5,8 +5,10 @@ import type {
   ReportItemDto,
 } from '@mje/contracts';
 import {
+  ROLE_KEYS,
   coverage,
   dec,
+  decText,
   isReported,
   suggestCumulative,
   type Coverage,
@@ -183,4 +185,17 @@ export function photoPlacement(
       !p.link || !(p.link.type === 'item' ? items : shownIssues).has(p.link.id),
   );
   return { photoOnlyItems, otherIssues, unplaced };
+}
+
+/**
+ * The report's declared people total (U8): read from the PM's facts only; a check-in never
+ * fills or changes it. Null when no role has a number.
+ */
+export function declaredHeadcount(
+  f: Pick<DayFactsDto, 'people'>,
+): string | null {
+  const n = ROLE_KEYS.map((r) => dec(f.people[r] ?? '')).filter(
+    (x): x is bigint => x !== null,
+  );
+  return n.length ? decText(n.reduce((a, b) => a + b, 0n)) : null;
 }

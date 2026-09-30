@@ -25,9 +25,9 @@ export class FieldApiError extends ApiError {
     status: number,
     public readonly existing: Existing | null = null,
     /** This answer came after an earlier attempt of the same request was lost. */
-    public readonly afterLostAttempt = false,
+    afterLostAttempt = false,
   ) {
-    super(code, status);
+    super(code, status, afterLostAttempt);
   }
 }
 function existingOf(body: string): Existing | null {

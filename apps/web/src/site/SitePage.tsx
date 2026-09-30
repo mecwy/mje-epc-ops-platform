@@ -4,6 +4,7 @@ import { useI18n } from '../i18n.js';
 import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
 import { fmtStamp } from '../report/format.js';
+import { CheckInsCard } from './CheckIns.js';
 import { DevicesCard } from './Devices.js';
 import { encodeQr, qrPath } from './qr.js';
 import { SettingsCards } from './Settings.js';
@@ -87,9 +88,23 @@ export function EntryCodeCard({
       <div className="blk-row">
         <h2 className="blk">{t('site_qrTitle')}</h2>
       </div>
+      {!session.pending &&
+        !confirming &&
+        session.error &&
+        session.error !== 'STALE' && (
+          // The last change's refusal, also when its Retry came from the banner below.
+          <div className="banner err noprint" role="alert">
+            <ErrorText
+              code={session.error}
+              write
+              uncertain={session.errorUncertain}
+            />
+          </div>
+        )}
       {session.pending && !confirming && (
         <div className="banner warn noprint" role="alert">
           {t('site_rotateUnsettled')}{' '}
+          <ErrorText code={session.error ?? 'NETWORK'} write />{' '}
           <button
             type="button"
             className="pill"
@@ -182,7 +197,11 @@ export function EntryCodeCard({
           <p className="para muted small">{t('site_qrNames')}</p>
           {session.error && session.error !== 'STALE' && (
             <div className="banner err" role="alert">
-              <ErrorText code={session.error} />
+              <ErrorText
+                code={session.error}
+                write
+                uncertain={session.errorUncertain}
+              />
             </div>
           )}
           <button
@@ -208,14 +227,25 @@ export function SitePage({
   api,
   project,
   sessions,
+  date,
+  headcount,
 }: {
   api: ReportApi;
   project: Project;
   sessions: SiteSessions;
+  date: string;
+  headcount: string | null;
 }) {
   return (
     <>
       <DevicesCard sessions={sessions} project={project} />
+      <CheckInsCard
+        api={api}
+        project={project}
+        sessions={sessions}
+        date={date}
+        headcount={headcount}
+      />
       <EntryCodeCard sessions={sessions} project={project} api={api} />
       <SettingsCards sessions={sessions} project={project} api={api} />
     </>

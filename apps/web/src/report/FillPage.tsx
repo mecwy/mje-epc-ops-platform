@@ -7,6 +7,7 @@ import { Icon } from '../icons.js';
 import { NumInput, TokenChips } from '../ui.js';
 import type { MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
+import { CheckInsBeside } from './CheckInsBeside.js';
 import {
   activeWork,
   byKind,
@@ -590,7 +591,8 @@ export function FillPage({
                     <h2 className="blk">{t('resources')}</h2>
                     <span className="small">
                       {t('peopleTotal')}{' '}
-                      <b className="num">{any ? decText(total) : '—'}</b>
+                      <b className="num">{any ? decText(total) : '—'}</b>{' '}
+                      <CheckInsBeside />
                     </span>
                   </div>
                   <div className="grid2">

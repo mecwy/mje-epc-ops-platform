@@ -32,6 +32,10 @@ import type {
   PmDeviceCommand,
   RotateEntryCodeCommand,
   SiteReferenceCommand,
+  CheckInListDto,
+  CheckInResultDto,
+  PmProxyCheckInCommand,
+  RosterDto,
 } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
@@ -199,6 +203,8 @@ export class ApiError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
+    /** This answer came after an earlier attempt of the same request was lost (a resend). */
+    public readonly afterLostAttempt = false,
   ) {
     super(code);
   }
@@ -263,6 +269,7 @@ async function request<T>(
       throw new ApiError(
         responseCode(response.status, await response.text().catch(() => '')),
         response.status,
+        attempt > 0,
       );
     return (await response.json()) as T;
   }
@@ -444,6 +451,12 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
       post<{ n: number }>('field/settings', c),
     setSiteReference: (c: SiteReferenceCommand) =>
       post<{ n: number }>('field/site-reference', c),
+    roster: (projectId: string) =>
+      get<RosterDto>('field/roster', { projectId }),
+    checkIns: (projectId: string, businessDate: string) =>
+      get<CheckInListDto>('field/checkins', { projectId, businessDate }),
+    pmProxy: (c: PmProxyCheckInCommand) =>
+      post<CheckInResultDto>('field/checkins/proxy', c),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',
