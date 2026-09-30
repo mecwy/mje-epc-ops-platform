@@ -1125,6 +1125,12 @@ try {
       call(`/plan?projectId=${projectA}&targetBusinessDate=${date}`, bearer),
       200,
     );
+  // Every leaf value of a response body: a check for a draft figure must not match part of a
+  // random id or a timestamp in the same body (L7).
+  const leaves = (v) =>
+    v !== null && typeof v === 'object'
+      ? Object.values(v).flatMap(leaves)
+      : [String(v)];
   const blank = {
     weather: '',
     temperature: '',
@@ -1321,7 +1327,7 @@ try {
   const readerPlanD10 = await planOf(D10, exec);
   assert.equal(readerPlanD10.draft, null);
   assert.deepEqual(readerPlanD10.status, { status: 'none', n: null });
-  assert.ok(!JSON.stringify(readerPlanD10).includes('7771'));
+  assert.ok(!leaves(readerPlanD10).includes('7771'));
   const writerPlanD10 = await planOf(D10, pm);
   assert.deepEqual(writerPlanD10.draft, [{ item: 'support', target: '7771' }]);
   assert.deepEqual(writerPlanD10.status, { status: 'draft', n: null });
@@ -1331,7 +1337,7 @@ try {
   assert.equal(readerPlanD9.draft, null);
   assert.deepEqual(readerPlanD9.versions, writerPlanD9.versions);
   assert.notEqual(readerPlanD9.status.status, 'draft');
-  assert.ok(!JSON.stringify(readerPlanD9).includes('654'));
+  assert.ok(!leaves(readerPlanD9).includes('654'));
   assert.deepEqual(
     (await planOf(D1, exec)).versions.map((x) => x.n),
     [1, 2, 3],
