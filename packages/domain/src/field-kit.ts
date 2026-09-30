@@ -11,6 +11,7 @@ import {
   expiryReason,
   isLive,
   lockMode,
+  nearIdle,
   type DeviceClock,
   type EndReason,
 } from './field-rules.js';
@@ -377,11 +378,12 @@ export async function endDevice(
   state: 'REJECTED' | 'REVOKED' | 'EXPIRED',
   reason: EndReason,
   actor: EventActor = {},
+  at: string | null = null,
 ): Promise<boolean> {
   const r = await client.query(
-    `UPDATE "FieldDevice" SET state=$3, "endedAt"=now(), "endReason"=$4, version=version+1
+    `UPDATE "FieldDevice" SET state=$3, "endedAt"=COALESCE($5::timestamptz, now()), "endReason"=$4, version=version+1
     WHERE "orgId"=$1 AND id=$2 AND state IN ('PENDING','CONFIRMED')`,
-    [d.orgId, d.id, state, reason],
+    [d.orgId, d.id, state, reason, at],
   );
   if (!r.rowCount) return false;
   await client.query(
@@ -418,6 +420,8 @@ export const DEVICE_COLUMNS = `d.id, d."orgId", d."projectId", d."personId", d.s
 export interface FieldAuth {
   device: DeviceRow;
   matched: 'current' | 'previous';
+  /** The decision time (design §5) as exact text, for SQL. */
+  at: string;
   /** The authoritative clock: now() = the transaction start time. */
   now: Date;
 }
@@ -432,6 +436,8 @@ export interface FieldSpec {
   tokenLock?: string;
   /** Level 1 person locks, given the non-locking lookup (sorted inside). */
   persons?: (d: DeviceRow) => string[];
+  /** Further level 2 locks the route decides on, taken before the decision time. */
+  afterLock?: (client: PoolClient, d: DeviceRow) => Promise<unknown>;
   /**
    * Deferred housekeeping after the transaction (default on). A TEST seam switches it off to
    * show that nothing the request answers depends on it.
@@ -491,7 +497,9 @@ export async function fieldTransaction<T>(
     }
     const d = a.auth.device;
     if (deferred)
-      await advanceClock(pool, d.orgId, d.projectId).catch(() => undefined);
+      await advanceClock(pool, d.orgId, d.projectId, a.authAt).catch(
+        () => undefined,
+      );
     if (
       deferred &&
       a.mode === 'SHARE' &&
@@ -570,11 +578,10 @@ async function attemptOnce<T>(
         current: boolean;
         previous: boolean;
         hasPrevious: boolean;
-        authAt: string;
       }
     >(
       `SELECT ${DEVICE_COLUMNS}, d."tokenHash"=$3 AS current, COALESCE(d."prevTokenHash"=$3, false) AS previous,
-        d."prevTokenHash" IS NOT NULL AS "hasPrevious", now()::text AS "authAt"
+        d."prevTokenHash" IS NOT NULL AS "hasPrevious"
       FROM "FieldDevice" d WHERE d."orgId"=$1 AND d.id=$2 FOR ${mode === 'UPDATE' ? 'UPDATE' : 'SHARE'}`,
       [seen.orgId, seen.id, tokenHash],
     );
@@ -583,12 +590,8 @@ async function attemptOnce<T>(
       await finish(false);
       return { kind: 'unknown' };
     }
-    if (
-      row.previous &&
-      (!spec.allowPrevious ||
-        !row.rotatedAt ||
-        now.getTime() >= row.rotatedAt.getTime() + PREVIOUS_HASH_MS)
-    ) {
+    // The previous hash may only replay its rotation; anywhere else it is unknown.
+    if (row.previous && !spec.allowPrevious) {
       await finish(false);
       return { kind: 'unknown' };
     }
@@ -596,40 +599,42 @@ async function attemptOnce<T>(
       await finish(false);
       return { kind: 'ended', observed: null };
     }
-    // Design §5: never judge a deadline with a clock that is behind time already observed.
-    await assertClockCurrent(client, row.orgId, row.projectId);
-    const reason = expiryReason(row, now);
-    if (reason) {
-      if (mode === 'UPDATE') {
-        await endDevice(client, row, 'EXPIRED', reason);
-        await finish(true);
-        return { kind: 'ended', observed: null };
-      }
-      // Rejected from the timestamps alone; persisting is best-effort housekeeping.
+    if (spec.afterLock) await spec.afterLock(client, row);
+    // Design §5: one decision time, taken once every lock is held and refused while behind
+    // the project's mark; every deadline below is judged at it, never at the start time.
+    const { t, at } = await decisionTime(client, row.orgId, row.projectId);
+    if (
+      row.previous &&
+      (!row.rotatedAt ||
+        t.getTime() >= row.rotatedAt.getTime() + PREVIOUS_HASH_MS)
+    ) {
       await finish(false);
-      return { kind: 'ended', observed: row };
+      return { kind: 'unknown' };
     }
-    if (mode === 'SHARE' && row.state === 'CONFIRMED') {
-      const late = await client.query<{ late: boolean }>(
-        `SELECT clock_timestamp() >= "lastSeenAt" + interval '29 days' AS late FROM "FieldDevice" WHERE "orgId"=$1 AND id=$2`,
-        [row.orgId, row.id],
-      );
-      if (late.rows[0]!.late) {
-        await finish(false);
-        return { kind: 'reclassify' };
-      }
+    const reason = expiryReason(row, t);
+    if (mode === 'SHARE' && (reason || nearIdle(row, t))) {
+      // Chosen from the start time, the share lock cannot persist what the decision time
+      // shows: restart (once) so the next attempt locks FOR UPDATE.
+      await finish(false);
+      return { kind: 'reclassify' };
+    }
+    if (reason) {
+      await endDevice(client, row, 'EXPIRED', reason, {}, at);
+      await finish(true);
+      return { kind: 'ended', observed: null };
     }
     if (row.state === 'PENDING' && !spec.allowPending)
       throw new FieldError('DEVICE_PENDING');
     if (mode === 'UPDATE' && row.state === 'CONFIRMED' && row.current)
       await client.query(
-        `UPDATE "FieldDevice" SET "lastSeenAt"=GREATEST("lastSeenAt", now()) WHERE "orgId"=$1 AND id=$2`,
-        [row.orgId, row.id],
+        `UPDATE "FieldDevice" SET "lastSeenAt"=GREATEST("lastSeenAt", $3::timestamptz) WHERE "orgId"=$1 AND id=$2`,
+        [row.orgId, row.id, at],
       );
     const auth: FieldAuth = {
       device: row,
       matched: row.current ? 'current' : 'previous',
-      now,
+      now: t,
+      at,
     };
     const value = await work(client, auth);
     await finish(true);
@@ -638,7 +643,7 @@ async function attemptOnce<T>(
       value,
       auth,
       mode,
-      authAt: row.authAt,
+      authAt: at,
       hasPrevious: row.hasPrevious,
     };
   } catch (error) {
@@ -672,36 +677,48 @@ async function housekeeping(
   }
 }
 /**
- * Clock regression fails closed (design §5): refuses with RETRY while the database clock is
- * behind the project's high-water mark of time already observed. `clock_timestamp()`, not
- * `now()`: every mark comes from a committed transaction, so only a clock that stepped back is
- * behind it, never a merely long-running transaction.
+ * The decision time of a transaction (design §5): `clock_timestamp()` taken once, after every
+ * lock the decision depends on is held, to the millisecond. Refused with RETRY while it is
+ * behind the project's high-water mark (the clock stepped back behind observed time). Also
+ * set as the transaction-local `app.decision_time`, which the FieldDevice trigger judges an
+ * elapsed membership end by.
  */
-export async function assertClockCurrent(
+export async function decisionTime(
   client: PoolClient,
   orgId: string,
   projectId: string,
-) {
-  const r = await client.query<{ behind: boolean }>(
-    `SELECT clock_timestamp() < "clockHighWater" AS behind FROM "ProjectRoster" WHERE "orgId"=$1 AND "projectId"=$2`,
+): Promise<{ t: Date; at: string }> {
+  const r = await client.query<{ t: Date; at: string; behind: boolean }>(
+    `SELECT c.t, c.t::text AS at, COALESCE(c.t < p."clockHighWater", false) AS behind
+    FROM (SELECT date_trunc('milliseconds', clock_timestamp()) AS t) c
+    LEFT JOIN "ProjectRoster" p ON p."orgId"=$1 AND p."projectId"=$2`,
     [orgId, projectId],
   );
-  if (r.rows[0]?.behind) throw new FieldError('RETRY');
+  const d = r.rows[0]!;
+  if (d.behind) throw new FieldError('RETRY');
+  await client.query("SELECT set_config('app.decision_time', $1, true)", [
+    d.at,
+  ]);
+  return { t: d.t, at: d.at };
 }
 /**
- * Advances the project's high-water mark after a request, at most about once a second (one
- * guarded UPDATE, lock_timeout 1 s, skipped on contention), so the row never becomes hot.
+ * Publishes a decision time that passed the guard as the project's mark, after the request,
+ * at most about once a second, and only while it is not ahead of the clock (a transaction's
+ * time is never evidence of time that has not been reached). One guarded UPDATE, lock_timeout
+ * 1 s, skipped on contention, so the row never becomes hot.
  */
 export async function advanceClock(
   pool: Pool,
   orgId: string,
   projectId: string,
+  at: string,
 ) {
   await housekeeping(pool, orgId, async (c) => {
     await c.query(
-      `UPDATE "ProjectRoster" SET "clockHighWater"=now()
-      WHERE "orgId"=$1 AND "projectId"=$2 AND ("clockHighWater" IS NULL OR "clockHighWater" < now() - interval '1 second')`,
-      [orgId, projectId],
+      `UPDATE "ProjectRoster" SET "clockHighWater"=$3::timestamptz
+      WHERE "orgId"=$1 AND "projectId"=$2 AND $3::timestamptz <= clock_timestamp()
+        AND ("clockHighWater" IS NULL OR "clockHighWater" < $3::timestamptz - interval '1 second')`,
+      [orgId, projectId, at],
     );
   });
 }

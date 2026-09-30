@@ -12,6 +12,7 @@ import { Pool } from 'pg';
 import {
   AlphaStore,
   FieldStore,
+  advanceClock,
   ReportStore,
   clearPreviousHash,
   recordActivity,
@@ -258,7 +259,7 @@ try {
   const workersA = ['pm', 'exec', 'pm2', 'f1', 'f2', 'f3', 'f4', 'fx', 'wx'];
   for (let i = 1; i <= 8; i++) workersA.push(`w${i}`);
   for (let i = 1; i <= 40; i++) workersA.push(`o${i}`);
-  workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1', 'c1');
+  workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1', 'c1', 'c2', 'c3');
   for (const k of workersA) await addPerson(k, orgA);
   for (const k of ['pmB', 'wb']) await addPerson(k, orgB);
   const accounts = {};
@@ -379,12 +380,26 @@ try {
    * clock policy answers RETRY until it catches up. Bounded, counted and reported at the end;
    * switched off where a test expects the 503.
    */
-  const retry = { on: true, repeated: 0 };
+  const retry = { on: true, force: false, repeated: 0 };
+  // Ordering and deadline tests assert their first attempt: no automatic repetition there.
+  const FIRST_ATTEMPT = new Set([
+    'roster',
+    'foreman handover at a scheduled instant',
+    'rotation',
+    'revoke vs rotate; release',
+    'idle deadline',
+    'transfer, termination, scheduled end',
+    'clock regression fails closed',
+    'decision time after the locks',
+    'roster read is one snapshot',
+  ]);
   async function http(path, options) {
     const until = Date.now() + 10_000;
     for (;;) {
       const r = await httpOnce(path, options);
-      if (!retry.on || r.status !== 503 || r.body?.code !== 'RETRY') return r;
+      const repeat =
+        retry.force || (retry.on && !FIRST_ATTEMPT.has(currentStep));
+      if (!repeat || r.status !== 503 || r.body?.code !== 'RETRY') return r;
       if (Date.now() > until) return r;
       retry.repeated++;
       await sleep(200);
@@ -830,7 +845,7 @@ try {
   await expectStatus(
     change([
       ...Array.from({ length: 40 }, (_, i) => open(C.C5, person[`o${i + 1}`])),
-      ...['r1', 'r2', 'p1', 'c1'].map((k) => open(C.C5, person[k])),
+      ...['r1', 'r2', 'p1', 'c1', 'c2', 'c3'].map((k) => open(C.C5, person[k])),
     ]),
     200,
   );
@@ -1557,15 +1572,19 @@ try {
       `UPDATE "FieldDevice" SET "lastSeenAt"=now()-interval '30 days'+interval '2500 milliseconds' WHERE id=$1`,
       [dev.w2.id],
     );
+    // Both queue FOR UPDATE on the row and are released before the deadline, so both decide
+    // before it (the decision time is taken after the lock); the first records its activity.
     let unlock = await holdRow(dev.w2.id);
     const A = me(dev.w2.token);
     await rowWaiters(1);
-    await sleep(3000);
     const B = me(dev.w2.token);
     await rowWaiters(2);
     await unlock();
     const [ra, rb] = await Promise.all([A, B]);
     assert.deepEqual([ra.status, rb.status], [200, 200]);
+    // After the original deadline the device is still live: A's activity moved it.
+    await sleep(3000);
+    await expectStatus(me(dev.w2.token), 200);
     assert.equal((await row(dev.w2.id)).state, 'CONFIRMED');
     // (2) B (after the deadline) runs first and persists EXPIRED; A (before it) then sees it.
     await travel(
@@ -1639,7 +1658,7 @@ try {
       Date.now() - (await row(dev.f2.id)).lastSeenAt.getTime() < 60_000,
     );
     pass(
-      "idle deadline: A (just before) and B (just after) serialize FOR UPDATE — A first → both 200 with A's activity; B first → EXPIRED(IDLE) committed, then A sees it (never revived); a FOR SHARE request whose wall clock crossed into the last day while it waited reclassifies and records its activity; the deferred update refuses an older authAt, a terminal row and a row within a day of its deadline",
+      'idle deadline: requests that decide just before the deadline serialize FOR UPDATE and the first records activity, so a request after the original deadline is still served; B first → EXPIRED(IDLE) committed, then A sees it (never revived); a FOR SHARE request whose wall clock crossed into the last day while it waited reclassifies and records its activity; the deferred update refuses an older authAt, a terminal row and a row within a day of its deadline',
     );
   }
 
@@ -1748,7 +1767,7 @@ try {
       `UPDATE "ProjectRoster" SET "clockHighWater" = now() + interval '1 hour' WHERE "projectId"=$1`,
       [projectA],
     );
-    retry.on = false;
+    let reset;
     try {
       // Authentication does not treat the device as live again: fail closed.
       await expectStatus(me(dev.c1.token), 503, 'RETRY');
@@ -1767,14 +1786,67 @@ try {
       await expectStatus(bind(person.w5), 503, 'RETRY');
       await expectStatus(pmConfirm(person.w5, '123456'), 503, 'RETRY');
     } finally {
-      retry.on = true;
-      // The clock catches up.
-      await travel(
-        `UPDATE "ProjectRoster" SET "clockHighWater" = now() WHERE "projectId"=$1`,
-        [projectA],
+      // Recovery (design §5 runbook): the migration identity resets the mark to the clock.
+      // Devices whose deadline is at or before the old mark are persisted EXPIRED first.
+      reset = await owner.query(
+        'SELECT * FROM field_reset_clock_mark($1, $2)',
+        [projectA, 'TEST forward clock spike recovery'],
       );
     }
-    await expectStatus(me(dev.c1.token), 200);
+    assert.ok(reset.rows[0].expiredDevices >= 1);
+    assert.ok(reset.rows[0].newMark < reset.rows[0].oldMark);
+    // The device whose membership end the old mark had passed stays ended; others proceed.
+    await expectStatus(me(dev.c1.token), 401, 'DEVICE_ENDED');
+    const c1 = await row(dev.c1.id);
+    assert.deepEqual([c1.state, c1.endReason], ['EXPIRED', 'UNASSIGNED']);
+    await expectStatus(me(dev.f1.token), 200);
+    const audit = await owner.query(
+      `SELECT reason, before->>'clockHighWater' AS old, after->>'actor' AS actor, "actorKind"
+      FROM "AuditLog" WHERE action='FIELD_CLOCK_RESET'`,
+    );
+    assert.equal(audit.rows.length, 1);
+    assert.equal(audit.rows[0].reason, 'TEST forward clock spike recovery');
+    assert.ok(audit.rows[0].old && audit.rows[0].actor);
+    // Only the migration identity may reset, with a reason, and only a mark ahead of the clock.
+    await assert.rejects(
+      appPool.query('SELECT * FROM field_reset_clock_mark($1, $2)', [
+        projectA,
+        'TEST not allowed for the app role',
+      ]),
+      (e) => e.code === '42501',
+    );
+    await assert.rejects(
+      owner.query('SELECT * FROM field_reset_clock_mark($1, $2)', [
+        projectA,
+        'x',
+      ]),
+      /reason/,
+    );
+    await assert.rejects(
+      owner.query('SELECT * FROM field_reset_clock_mark($1, $2)', [
+        projectA,
+        'TEST nothing to reset now',
+      ]),
+      /not ahead of the clock/,
+    );
+    // Deferred housekeeping never publishes a time ahead of the clock.
+    const before = await mark();
+    await advanceClock(appPool, orgA, projectA, await dbFuture(3_600_000));
+    assert.equal((await mark()).getTime(), before.getTime());
+    // The one explicit retry test: a short spike answers RETRY, and repeating the same
+    // request succeeds once the clock passes the mark.
+    await owner.query(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = clock_timestamp() + interval '1500 milliseconds' WHERE "projectId"=$1`,
+      [projectA],
+    );
+    const repeatedBefore = retry.repeated;
+    retry.force = true;
+    try {
+      await expectStatus(me(dev.f1.token), 200);
+    } finally {
+      retry.force = false;
+    }
+    assert.ok(retry.repeated > repeatedBefore, 'the first attempt was RETRY');
     // The mark never moves back, even for the owner.
     await assert.rejects(
       owner.query(
@@ -1784,7 +1856,56 @@ try {
       /never moves back/,
     );
     pass(
-      'clock regression fails closed: with the database clock an hour behind time already observed in the project, a device whose membership ended in between is not authenticated (503 RETRY), a roster change cannot extend that elapsed membership end (503, nothing written), bind and PM confirm refuse too; once the clock catches up everything proceeds; field requests advance the per-project high-water mark, which never moves back',
+      'clock regression fails closed: with the database clock an hour behind time already observed in the project, a device whose membership ended in between is not authenticated (503 RETRY), a roster change cannot extend that elapsed membership end (503, nothing written), bind and PM confirm refuse too; the audited owner-only reset lowers the mark to the clock after persisting EXPIRED for devices whose deadline the old mark had passed (that device stays ended, others proceed; the app role cannot reset; a reason is required); deferred housekeeping never publishes a future time; a short spike answers RETRY and the repeated request succeeds; field requests advance the mark, which never moves back',
+    );
+  }
+
+  // ================= decision time after the locks =================
+  step('decision time after the locks');
+  {
+    // Membership ends at D (3 s ahead). A request starts before D, waits on a lock until the
+    // clock is past D, and meanwhile the project's mark records time past D (as a committed
+    // request would). It must decide at its decision time, taken after the lock, not at its
+    // start time (design §5).
+    dev.c2 = await onboard(person.c2);
+    dev.c3 = await onboard(person.c3);
+    const D = await dbFuture(3000);
+    await expectStatus(change([close(assignment(person.c2), D)]), 200);
+    const markPast = (deadline) =>
+      owner.query(
+        `UPDATE "ProjectRoster" SET "clockHighWater" = GREATEST("clockHighWater", $2::timestamptz + interval '100 milliseconds') WHERE "projectId"=$1`,
+        [projectA, deadline],
+      );
+    // Authentication: waits on the device row.
+    let unlock = await holdRow(dev.c2.id);
+    const waiting = me(dev.c2.token);
+    await rowWaiters(1);
+    await untilDb(D);
+    await sleep(300);
+    await markPast(D);
+    await unlock();
+    await expectStatus(waiting, 401, 'DEVICE_ENDED');
+    const c2 = await row(dev.c2.id);
+    assert.deepEqual([c2.state, c2.endReason], ['EXPIRED', 'UNASSIGNED']);
+    // Roster: a continuation at D2, started before D2, that waits on the person lock past D2
+    // cannot extend the elapsed end.
+    const D2 = await dbFuture(3000);
+    await expectStatus(change([close(assignment(person.c3), D2)]), 200);
+    unlock = await holdAdvisory(personKey(person.c3));
+    const continuing = change([open(C.C1, person.c3, 'MEMBER', D2)]);
+    await advisoryWaiters(personKey(person.c3), 1);
+    await untilDb(D2);
+    await sleep(300);
+    await markPast(D2);
+    await unlock();
+    await expectStatus(continuing, 200);
+    const c3 = await row(dev.c3.id);
+    assert.deepEqual(
+      [c3.state, c3.endReason, c3.memberUntil.toISOString()],
+      ['EXPIRED', 'UNASSIGNED', D2],
+    );
+    pass(
+      'decision time after the locks: a request that started before a membership end D and waited on a lock past D (with the mark past D) is refused and the device persisted EXPIRED; a roster continuation at a later end D2 that waited on the person lock past D2 is applied but cannot extend the elapsed end (the device is persisted EXPIRED, memberUntil stays D)',
     );
   }
 

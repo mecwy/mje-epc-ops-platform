@@ -375,7 +375,13 @@ export function parseRosterChangesCommand(v: unknown): RosterChangesCommand {
 const CURSOR_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 /** Shape, calendar date and clock fields (no leap second), keeping all six fraction digits. */
 function realCursorTime(t: string): boolean {
-  if (!CURSOR_TIME.test(t) || !isRealDate(t.slice(0, 10))) return false;
+  // Year 0000 is a valid JavaScript date but not a PostgreSQL timestamp.
+  if (
+    !CURSOR_TIME.test(t) ||
+    t.startsWith('0000') ||
+    !isRealDate(t.slice(0, 10))
+  )
+    return false;
   const [hh, mm, ss] = t.slice(11, 19).split(':').map(Number);
   return hh! <= 23 && mm! <= 59 && ss! <= 59;
 }

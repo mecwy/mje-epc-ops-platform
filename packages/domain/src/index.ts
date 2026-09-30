@@ -11,6 +11,7 @@ export * from './field-rules.js';
 export {
   FieldError,
   FieldThrottle,
+  advanceClock,
   clearPreviousHash,
   hashSecret,
   persistObservedExpiry,

@@ -46,7 +46,7 @@ import {
   DEVICE_COLUMNS,
   FieldError,
   FieldThrottle,
-  assertClockCurrent,
+  decisionTime,
   LIMITS,
   deviceEvent,
   endDevice,
@@ -186,17 +186,18 @@ export class FieldStore {
         throw new FieldError('TOKEN_CONFLICT');
       }
       await personLocks(client, orgId, projectId, [cmd.personId]);
-      await assertClockCurrent(client, orgId, projectId);
+      // Design §5: the decision time, once the person lock is held.
+      const { at } = await decisionTime(client, orgId, projectId);
       const run = await client.query<{ member: boolean }>(
-        `SELECT member FROM field_member_run($1,$2,$3,now())`,
-        [orgId, projectId, cmd.personId],
+        `SELECT member FROM field_member_run($1,$2,$3,$4::timestamptz)`,
+        [orgId, projectId, cmd.personId, at],
       );
       if (!run.rows[0]!.member) throw new FieldError('PERSON_NOT_ROSTERED');
       const pending = await client.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM "FieldDevice" WHERE "orgId"=$1 AND "projectId"=$2 AND "personId"=$3
-          AND state='PENDING' AND "pendingUntil" > now() AND "expiresAt" > now()
-          AND ("memberUntil" IS NULL OR "memberUntil" > now())`,
-        [orgId, projectId, cmd.personId],
+          AND state='PENDING' AND "pendingUntil" > $4::timestamptz AND "expiresAt" > $4::timestamptz
+          AND ("memberUntil" IS NULL OR "memberUntil" > $4::timestamptz)`,
+        [orgId, projectId, cmd.personId, at],
       );
       // Only pending devices that are still live by every deadline hold a slot; one whose
       // membership ended is already refused by its timestamps even while stored PENDING.
@@ -205,9 +206,9 @@ export class FieldStore {
       const id = randomUUID();
       await client.query(
         `INSERT INTO "FieldDevice"(id,"orgId","projectId","personId",state,"tokenHash","pendingUntil","expiresAt","memberUntil","lastSeenAt")
-        SELECT $1,$2,$3,$4,'PENDING',$5, now() + $6 * interval '1 millisecond', now() + $7 * interval '1 millisecond', r."until", now()
-        FROM field_member_run($2,$3,$4,now()) r`,
-        [id, orgId, projectId, cmd.personId, hash, PENDING_MS, LIFETIME_MS],
+        SELECT $1,$2,$3,$4,'PENDING',$5, $8::timestamptz + $6 * interval '1 millisecond', $8::timestamptz + $7 * interval '1 millisecond', r."until", $8::timestamptz
+        FROM field_member_run($2,$3,$4,$8::timestamptz) r`,
+        [id, orgId, projectId, cmd.personId, hash, PENDING_MS, LIFETIME_MS, at],
       );
       // Every accepted hash is registered once; a hash seen before (even a cleared previous
       // one) is a conflict, and the device insert rolls back with it.
@@ -339,13 +340,13 @@ export class FieldStore {
         allowPending: true,
         persons: (d) => [d.personId],
       },
-      async (client, { device: d }) => {
+      async (client, { device: d, at }) => {
         if (d.state !== 'PENDING') throw new FieldError('FORBIDDEN');
         await client.query(
           `UPDATE "FieldConfirmChallenge" SET "supersededAt"=now()
           WHERE "orgId"=$1 AND "projectId"=$2 AND "personId"=$3 AND "usedAt" IS NULL AND "supersededAt" IS NULL
-            AND ("deviceId"=$4 OR "expiresAt" <= now())`,
-          [d.orgId, d.projectId, d.personId, d.id],
+            AND ("deviceId"=$4 OR "expiresAt" <= $5::timestamptz)`,
+          [d.orgId, d.projectId, d.personId, d.id, at],
         );
         const live = await client.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM "FieldConfirmChallenge"
@@ -377,7 +378,7 @@ export class FieldStore {
         const code = await draw();
         const r = await client.query<{ expiresAt: Date }>(
           `INSERT INTO "FieldConfirmChallenge"(id,"orgId","projectId","personId","deviceId","deviceVersion","codeHash","expiresAt")
-          VALUES($1,$2,$3,$4,$5,$6,$7, LEAST(now() + $8 * interval '1 millisecond', $9::timestamptz)) RETURNING "expiresAt"`,
+          VALUES($1,$2,$3,$4,$5,$6,$7, LEAST($10::timestamptz + $8 * interval '1 millisecond', $9::timestamptz)) RETURNING "expiresAt"`,
           [
             randomUUID(),
             d.orgId,
@@ -388,6 +389,7 @@ export class FieldStore {
             codeHash(d.orgId, d.personId, code),
             CHALLENGE_MS,
             d.pendingUntil,
+            at,
           ],
         );
         await deviceEvent(client, {
@@ -539,8 +541,10 @@ export class FieldStore {
         deferred: this.deferred,
         keyLock: { route, key: cmd.clientMutationId },
         persons: (d) => [d.personId, cmd.personId],
+        afterLock: (client, d) =>
+          this.lockSubject(client, d.orgId, d.projectId, cmd.personId),
       },
-      async (client, { device: d }) => {
+      async (client, { device: d, now, at }) => {
         actorId = d.id;
         if (d.personId === cmd.personId) throw new FieldError('SELF_CONFIRM');
         // U4: only the foreman of the subject's current crew, with authority now.
@@ -563,10 +567,15 @@ export class FieldStore {
           cmd.clientMutationId,
           cmd,
           () =>
-            this.decide(client, d.orgId, d.projectId, cmd, kind, {
-              deviceId: d.id,
-              personId: d.personId,
-            }),
+            this.decide(
+              client,
+              d.orgId,
+              d.projectId,
+              cmd,
+              kind,
+              { deviceId: d.id, personId: d.personId },
+              { t: now, at },
+            ),
         );
       },
     );
@@ -657,19 +666,15 @@ export class FieldStore {
    * not a throw. On success: stale check, revoke the current device (REPLACED) before
    * confirming, reject every other pending device (SUPERSEDED), confirm and burn the code.
    */
-  private async decide(
+  /** The subject's live devices FOR UPDATE (level 2, id order), then its live challenges (2c). */
+  private async lockSubject(
     client: PoolClient,
     orgId: string,
     projectId: string,
-    cmd: ChallengeConfirmCommand,
-    kind: 'confirm' | 'reject',
-    actor: EventActor,
-  ): Promise<Outcome<DeviceDecisionDto>> {
-    const personId = cmd.personId;
-    // Challenge and device deadlines are judged here: never with a clock that stepped back.
-    await assertClockCurrent(client, orgId, projectId);
-    const devices = await client.query<DeviceRow & { now: Date }>(
-      `SELECT ${DEVICE_COLUMNS}, now() AS now FROM "FieldDevice" d
+    personId: string,
+  ): Promise<DeviceRow[]> {
+    const devices = await client.query<DeviceRow>(
+      `SELECT ${DEVICE_COLUMNS} FROM "FieldDevice" d
       WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')
       ORDER BY d.id FOR UPDATE`,
       [orgId, projectId, personId],
@@ -679,21 +684,33 @@ export class FieldStore {
         AND "usedAt" IS NULL AND "supersededAt" IS NULL ORDER BY id FOR UPDATE`,
       [orgId, projectId, personId],
     );
-    const match = await client.query<{
-      id: string;
-      deviceId: string;
-      now: Date;
-    }>(
-      `SELECT c.id, c."deviceId", now() AS now FROM "FieldConfirmChallenge" c
+    return devices.rows;
+  }
+  private async decide(
+    client: PoolClient,
+    orgId: string,
+    projectId: string,
+    cmd: ChallengeConfirmCommand,
+    kind: 'confirm' | 'reject',
+    actor: EventActor,
+    decided: { t: Date; at: string } | null = null,
+  ): Promise<Outcome<DeviceDecisionDto>> {
+    const personId = cmd.personId;
+    // Levels 2 and 2c (re-entrant when the foreman path took them before its decision time),
+    // then one decision time for every deadline below (design §5).
+    const devices = await this.lockSubject(client, orgId, projectId, personId);
+    const { t, at } = decided ?? (await decisionTime(client, orgId, projectId));
+    const match = await client.query<{ id: string; deviceId: string }>(
+      `SELECT c.id, c."deviceId" FROM "FieldConfirmChallenge" c
         JOIN "FieldDevice" d ON d."orgId"=c."orgId" AND d.id=c."deviceId"
       WHERE c."orgId"=$1 AND c."projectId"=$2 AND c."personId"=$3 AND c."codeHash"=$4
-        AND c."usedAt" IS NULL AND c."supersededAt" IS NULL AND c."expiresAt" > now()
+        AND c."usedAt" IS NULL AND c."supersededAt" IS NULL AND c."expiresAt" > $5::timestamptz
         AND d.state='PENDING' AND d.version=c."deviceVersion"`,
-      [orgId, projectId, personId, codeHash(orgId, personId, cmd.code)],
+      [orgId, projectId, personId, codeHash(orgId, personId, cmd.code), at],
     );
     const m = match.rows[0];
     const target = m
-      ? devices.rows.find((x) => x.id === m.deviceId && !expiryReason(x, m.now))
+      ? devices.find((x) => x.id === m.deviceId && !expiryReason(x, t))
       : undefined;
     const subject = { orgId, projectId, personId };
     if (!m || !target) {
@@ -724,7 +741,6 @@ export class FieldStore {
       }
       return { status: 409, body: { code: 'CHALLENGE_INVALID' } };
     }
-    const now = m.now;
     await client.query(
       `UPDATE "FieldConfirmChallenge" SET "usedAt"=now() WHERE "orgId"=$1 AND id=$2`,
       [orgId, m.id],
@@ -732,10 +748,10 @@ export class FieldStore {
     if (kind === 'reject') {
       await endDevice(client, target, 'REJECTED', 'REJECTED', actor);
     } else {
-      let current = devices.rows.find((x) => x.state === 'CONFIRMED');
-      const lapsed = current ? expiryReason(current, now) : null;
+      let current = devices.find((x) => x.state === 'CONFIRMED');
+      const lapsed = current ? expiryReason(current, t) : null;
       if (current && lapsed) {
-        await endDevice(client, current, 'EXPIRED', lapsed);
+        await endDevice(client, current, 'EXPIRED', lapsed, {}, at);
         current = undefined;
       }
       // The confirmer's view was old: another phone was confirmed or revoked meanwhile.
@@ -743,12 +759,12 @@ export class FieldStore {
         throw new FieldError('CONFIRM_STALE');
       if (current)
         await endDevice(client, current, 'REVOKED', 'REPLACED', actor);
-      for (const other of devices.rows)
+      for (const other of devices)
         if (other.state === 'PENDING' && other.id !== target.id)
           await endDevice(client, other, 'REJECTED', 'SUPERSEDED', actor);
       await client.query(
-        `UPDATE "FieldDevice" SET state='CONFIRMED', "confirmedAt"=now(), "confirmedByPersonId"=$3,
-          "confirmedByAccountId"=$4, "confirmedByDeviceId"=$5, version=version+1, "lastSeenAt"=GREATEST("lastSeenAt", now())
+        `UPDATE "FieldDevice" SET state='CONFIRMED', "confirmedAt"=$6::timestamptz, "confirmedByPersonId"=$3,
+          "confirmedByAccountId"=$4, "confirmedByDeviceId"=$5, version=version+1, "lastSeenAt"=GREATEST("lastSeenAt", $6::timestamptz)
         WHERE "orgId"=$1 AND id=$2 AND state='PENDING'`,
         [
           orgId,
@@ -756,6 +772,7 @@ export class FieldStore {
           actor.personId,
           actor.accountId ?? null,
           actor.deviceId ?? null,
+          at,
         ],
       );
       await deviceEvent(client, {

@@ -15,7 +15,7 @@ import type {
 import {
   DEVICE_COLUMNS,
   FieldError,
-  assertClockCurrent,
+  decisionTime,
   endDevice,
   personLocks,
   rosterLock,
@@ -78,20 +78,20 @@ async function beginRosterWrite(
   await rosterLock(client, orgId, projectId);
   if ((await rosterVersion(client, orgId, projectId)) !== expected)
     throw new FieldError('VERSION_CONFLICT');
-  // Nothing is judged or written with a clock behind time already observed (design §5).
-  await assertClockCurrent(client, orgId, projectId);
 }
+/** Increments the version and raises the mark to this write's decision time (design §5). */
 async function bumpRoster(
   client: PoolClient,
   orgId: string,
   projectId: string,
+  at: string,
 ) {
   const r = await client.query<{ version: number }>(
-    `INSERT INTO "ProjectRoster"(id,"orgId","projectId",version,"clockHighWater") VALUES($1,$2,$3,1,now())
+    `INSERT INTO "ProjectRoster"(id,"orgId","projectId",version,"clockHighWater") VALUES($1,$2,$3,1,$4::timestamptz)
     ON CONFLICT ("orgId","projectId") DO UPDATE SET version="ProjectRoster".version+1, "updatedAt"=now(),
-      "clockHighWater"=GREATEST(COALESCE("ProjectRoster"."clockHighWater", now()), now())
+      "clockHighWater"=GREATEST(COALESCE("ProjectRoster"."clockHighWater", $4::timestamptz), $4::timestamptz)
     RETURNING version`,
-    [randomUUID(), orgId, projectId],
+    [randomUUID(), orgId, projectId, at],
   );
   return r.rows[0]!.version;
 }
@@ -119,18 +119,20 @@ export async function recomputeDevices(
   projectId: string,
   personIds: string[],
   actor: EventActor,
+  decision: { t: Date; at: string },
 ) {
+  const { t, at } = decision;
   for (const personId of personIds) {
     // A deadline this roster write can see has passed is persisted first: the device becomes
     // terminal, so no later write (or a clock that steps back) can revive or extend it.
-    const live = await client.query<DeviceRow & { now: Date }>(
-      `SELECT ${DEVICE_COLUMNS}, now() AS now FROM "FieldDevice" d
+    const live = await client.query<DeviceRow>(
+      `SELECT ${DEVICE_COLUMNS} FROM "FieldDevice" d
       WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')`,
       [orgId, projectId, personId],
     );
     for (const d of live.rows) {
-      const lapsed = expiryReason(d, d.now);
-      if (lapsed) await endDevice(client, d, 'EXPIRED', lapsed, actor);
+      const lapsed = expiryReason(d, t);
+      if (lapsed) await endDevice(client, d, 'EXPIRED', lapsed, actor, at);
     }
     const r = await client.query<{
       id: string;
@@ -138,11 +140,11 @@ export async function recomputeDevices(
       member: boolean;
     }>(
       `UPDATE "FieldDevice" d SET "memberUntil"=r."until"
-      FROM field_member_run($1,$2,$3,now()) r
+      FROM field_member_run($1,$2,$3,$4::timestamptz) r
       WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."personId"=$3 AND d.state IN ('PENDING','CONFIRMED')
-        AND (d."memberUntil" IS NULL OR d."memberUntil" > now())
+        AND (d."memberUntil" IS NULL OR d."memberUntil" > $4::timestamptz)
       RETURNING d.id, d.state, r.member`,
-      [orgId, projectId, personId],
+      [orgId, projectId, personId, at],
     );
     for (const d of r.rows)
       if (!d.member)
@@ -152,6 +154,7 @@ export async function recomputeDevices(
           d.state === 'CONFIRMED' ? 'REVOKED' : 'REJECTED',
           'UNASSIGNED',
           actor,
+          at,
         );
   }
 }
@@ -177,7 +180,8 @@ export async function createCrew(
     `INSERT INTO "Crew"(id,"orgId","projectId",code,name,"createdBy") VALUES($1,$2,$3,$4,$5,$6)`,
     [id, actor.orgId, cmd.projectId, cmd.code, cmd.name, actor.accountId],
   );
-  const version = await bumpRoster(client, actor.orgId, cmd.projectId);
+  const { at } = await decisionTime(client, actor.orgId, cmd.projectId);
+  const version = await bumpRoster(client, actor.orgId, cmd.projectId, at);
   await audit(
     client,
     actor,
@@ -225,7 +229,8 @@ export async function endCrew(
     `UPDATE "Crew" SET "activeUntil"=COALESCE($3::timestamptz, now()) WHERE "orgId"=$1 AND id=$2`,
     [actor.orgId, cmd.crewId, cmd.at],
   );
-  const version = await bumpRoster(client, actor.orgId, cmd.projectId);
+  const { at } = await decisionTime(client, actor.orgId, cmd.projectId);
+  const version = await bumpRoster(client, actor.orgId, cmd.projectId, at);
   await audit(
     client,
     actor,
@@ -304,6 +309,8 @@ export async function changeRoster(
       AND state IN ('PENDING','CONFIRMED') ORDER BY id FOR UPDATE`,
     [orgId, projectId, persons],
   );
+  // Design §5: the decision time, once every lock is held.
+  const decision = await decisionTime(client, orgId, projectId);
   for (const c of closes)
     await client.query(
       `UPDATE "CrewAssignment" SET "validUntil"=COALESCE($3::timestamptz, now()), "closedBy"=$4
@@ -335,11 +342,15 @@ export async function changeRoster(
     }
     opened.push(id);
   }
-  const version = await bumpRoster(client, orgId, projectId);
-  await recomputeDevices(client, orgId, projectId, persons, {
-    accountId: actor.accountId,
-    personId: actor.personId,
-  });
+  const version = await bumpRoster(client, orgId, projectId, decision.at);
+  await recomputeDevices(
+    client,
+    orgId,
+    projectId,
+    persons,
+    { accountId: actor.accountId, personId: actor.personId },
+    decision,
+  );
   await audit(
     client,
     actor,

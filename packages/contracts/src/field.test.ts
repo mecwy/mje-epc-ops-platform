@@ -149,6 +149,7 @@ describe('PM device list query', () => {
       'not-a-cursor',
       encodeDeviceCursor('2026-09-30T01:02:03Z', deviceId),
       // impossible calendar dates and clock times, with a valid six-digit fraction
+      encodeDeviceCursor('0000-01-01T00:00:00.000000Z', deviceId),
       encodeDeviceCursor('2026-02-30T01:02:03.123456Z', deviceId),
       encodeDeviceCursor('2026-13-01T01:02:03.123456Z', deviceId),
       encodeDeviceCursor('2026-09-30T24:00:00.000000Z', deviceId),
