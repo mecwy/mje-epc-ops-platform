@@ -72,3 +72,11 @@ test('subsection content belongs to its parent section; CRLF is accepted', () =>
   assert.deepEqual(missingSections(nested), []);
   assert.deepEqual(missingSections(full.replace(/\n/g, '\r\n')), []);
 });
+
+test('fenced test output under a real section counts as content', () => {
+  const fenced = full.replace(
+    '## 测试命令与结果\npnpm check：通过。',
+    '## Tests\n```\nnode --test\n6 passed, 0 failed\n```',
+  );
+  assert.deepEqual(missingSections(fenced), []);
+});

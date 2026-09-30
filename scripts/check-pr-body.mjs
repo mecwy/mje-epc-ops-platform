@@ -17,7 +17,10 @@ export const SECTIONS = [
   { name: 'migration and rollback / 迁移与回退', heading: /回退|rollback/i },
 ];
 
-/** Markdown text with HTML comments and fenced code blocks removed (they never count). */
+/**
+ * Markdown lines with HTML comments removed. Lines inside fenced code blocks are kept as content
+ * but marked, so a heading inside a fence never counts as a heading.
+ */
 export function visibleText(body) {
   const text = String(body ?? '')
     .replace(/\r\n/g, '\n')
@@ -29,13 +32,14 @@ export function visibleText(body) {
     if (fence) {
       if (f && f[1][0] === fence[0] && f[1].length >= fence.length)
         fence = null;
+      else out.push({ line, fenced: true });
       continue;
     }
     if (f) {
       fence = f[1];
       continue;
     }
-    out.push(line);
+    out.push({ line, fenced: false });
   }
   return out;
 }
@@ -48,8 +52,8 @@ const classify = (heading) =>
 export function missingSections(body) {
   const lines = visibleText(body);
   const headings = [];
-  lines.forEach((line, i) => {
-    const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+  lines.forEach(({ line, fenced }, i) => {
+    const h = fenced ? null : /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
     if (h) headings.push({ i, level: h[1].length, text: h[2] });
   });
   const filled = new Set();
@@ -59,7 +63,13 @@ export function missingSections(body) {
     // Content runs until the next heading of the same or a higher level (subsections count).
     const next = headings.slice(k + 1).find((n) => n.level <= h.level);
     const content = lines.slice(h.i + 1, next ? next.i : lines.length);
-    if (content.some((l) => l.trim() && !/^#{1,6}\s/.test(l)))
+    // Fenced lines always count as content; outside fences a bare heading line does not.
+    if (
+      content.some(
+        ({ line, fenced }) =>
+          line.trim() && (fenced || !/^#{1,6}\s/.test(line)),
+      )
+    )
       filled.add(section);
   });
   return SECTIONS.filter((s) => !filled.has(s)).map((s) => s.name);

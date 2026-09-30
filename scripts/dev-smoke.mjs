@@ -83,11 +83,15 @@ try {
       page.status === 200 && page.type.includes('text/html'),
       `status ${page.status}`,
     );
+    // src/href in any quoting (double, single, none), absolute-path or relative.
     const refs = [
       ...page.text.matchAll(
-        /<(script|link)\b[^>]*?\b(?:src|href)\s*=\s*(["'])(\/[^"']+)\2/gi,
+        /<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>"']+))/gi,
       ),
-    ].map((m) => m[3]);
+    ]
+      .map((m) => m[1] ?? m[2] ?? m[3])
+      .filter((r) => !/^(?:[a-z]+:)?\/\//i.test(r) && !r.startsWith('data:'))
+      .map((r) => new URL(r, url('/')).pathname);
     const assets = [
       ...new Set(refs.filter((r) => /\.(m?js|css)(\?|$)/.test(r))),
     ];
