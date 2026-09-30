@@ -72,6 +72,7 @@ export function usePhotos(
     images,
     photos: current.photos,
     unlinked: current.unlinked,
+    counts: current.counts,
     access: current.access,
     jobs: current.jobs,
     busy: current.busy,

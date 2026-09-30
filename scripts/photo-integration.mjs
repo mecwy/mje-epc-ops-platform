@@ -13,6 +13,7 @@ import {
   IssueStore,
   PhotoStore,
   ReportStore,
+  readFileClaims,
 } from '../packages/domain/dist/index.js';
 import {
   exifTiff,
@@ -1098,6 +1099,101 @@ try {
     'OD18: after submission a reader lists, reads and fetches only the photos frozen in the revision, with their frozen link and version 0; a photo linked after submission or never frozen is 404 for the reader and still readable by the PM',
   );
 
+  // ---------- OD20: a reader sees whether a photo has a position, not where ----------
+  // The TEST positions (fix 44.800000/20.400000, file GPS 44.800000/20.410000) never reach a reader.
+  const noCoordinates = (label, body) =>
+    assert.ok(!/44\.8|20\.4/.test(JSON.stringify(body)), label);
+  const execRev1 = await expectStatus(
+    call(`/revision?projectId=${projectA}&businessDate=${D1}&n=1`, exec),
+    200,
+  );
+  const execP1Meta = await expectStatus(
+    call(`/photos/${p1.id}/meta`, exec),
+    200,
+  );
+  const execGpsMeta = await expectStatus(
+    call(`/photos/${withGps.id}/meta`, exec),
+    200,
+  );
+  for (const [label, body] of [
+    ['list', execFrozen],
+    ['day', execDay],
+    ['revision', execRev1],
+    ['meta device', execP1Meta],
+    ['meta file', execGpsMeta],
+  ])
+    noCoordinates(`reader ${label}`, body);
+  assert.ok(execFrozen.photos.every((p) => p.coordinates === 'withheld'));
+  assert.ok(execDay.photos.every((p) => p.coordinates === 'withheld'));
+  // Whether and how precisely stay: the device fix keeps its accuracy and time, the file claim
+  // its kind and time.
+  assert.equal(execP1Meta.photo.location, 'device');
+  assert.deepEqual(execP1Meta.photo.capture, {
+    lat: null,
+    lon: null,
+    accuracyM: '12.00',
+    fixAt: '2026-10-05T08:00:00.000Z',
+  });
+  assert.equal(execGpsMeta.photo.location, 'file');
+  assert.deepEqual(execGpsMeta.photo.file, {
+    takenLocal: '2026-10-05T11:20:00',
+    takenAt: '2026-10-05T09:20:00.000Z',
+    gps: null,
+  });
+  // The revision a reader gets is the frozen photo fields, as the PM gets them.
+  assert.deepEqual(execRev1.snapshot.photos, rev1.snapshot.photos);
+  // The original bytes a reader gets carry no position: the EXIF block (GPS, time) and the
+  // comment are gone, the image data is the same. The PM gets the stored bytes unchanged.
+  const gpsShot = jpeg('album-gps', exif).bytes;
+  const execGpsBytes = await raw(`/${withGps.id}`, exec);
+  assert.equal(execGpsBytes.status, 200);
+  assert.equal(execGpsBytes.type, 'image/jpeg');
+  assert.deepEqual(readFileClaims(execGpsBytes.bytes), {
+    takenLocal: null,
+    takenAt: null,
+    gps: null,
+  });
+  assert.ok(execGpsBytes.bytes.equals(testJpeg()));
+  const pmGpsBytes = await raw(`/${withGps.id}`, pm);
+  assert.ok(pmGpsBytes.bytes.equals(gpsShot));
+  assert.equal(sha(pmGpsBytes.bytes), withGps.sha256);
+  assert.deepEqual(readFileClaims(pmGpsBytes.bytes).gps, {
+    lat: '44.800000',
+    lon: '20.410000',
+  });
+  // A thumbnail served to a reader is stripped the same way (its tEXt chunk is gone).
+  assert.ok((await raw(`/${p1.id}/thumbnail`, exec)).bytes.equals(testPng()));
+  assert.ok((await raw(`/${p1.id}/thumbnail`, pm)).bytes.equals(thumb1.bytes));
+  assert.ok((await raw(`/${p1.id}`, exec)).bytes.equals(testJpeg()));
+  assert.ok((await raw(`/${p1.id}`, pm)).bytes.equals(shot1.bytes));
+  // The PM keeps the exact coordinates.
+  const pmNow = await expectStatus(list(D1), 200);
+  const pmById = Object.fromEntries(pmNow.photos.map((p) => [p.id, p]));
+  assert.ok(pmNow.photos.every((p) => p.coordinates === 'exact'));
+  assert.deepEqual(pmById[p1.id].capture, {
+    lat: '44.800000',
+    lon: '20.400000',
+    accuracyM: '12.00',
+    fixAt: '2026-10-05T08:00:00.000Z',
+  });
+  assert.deepEqual(pmById[withGps.id].file.gps, {
+    lat: '44.800000',
+    lon: '20.410000',
+  });
+  assert.equal(
+    (await expectStatus(call(`/photos/${withGps.id}/meta`, pm), 200)).photo.file
+      .gps.lat,
+    '44.800000',
+  );
+  assert.equal(
+    (await expectStatus(day(D1), 200)).photos.find((p) => p.id === p1.id)
+      .capture.lat,
+    '44.800000',
+  );
+  pass(
+    'OD20: a reader gets no coordinates from the photo list, metadata, day or revision, only the position kind (device/file/none), the claimed accuracy and the times, marked withheld; the original JPEG and the thumbnail a reader downloads have their EXIF GPS, time and text removed with the image data unchanged; the PM still gets the exact coordinates and the stored bytes unchanged',
+  );
+
   // ---------- no existence oracle: an id the caller may not see answers like a missing id ----------
   const a2Photo = await expectStatus(
     upload(twin, album({ projectId: projectA2 }), jpeg('project-a2')),
@@ -1142,13 +1238,17 @@ try {
   assert.deepEqual(await probe(execA, a2Photo.id), notFound);
   assert.deepEqual(await probe(execA, webp.id), notFound);
   assert.deepEqual(
-    (await probe(execA, p1.id)).map(([route, status]) => [route, status]),
+    (await probe(execA, p1.id)).map(([route, status, body]) => [
+      route,
+      status,
+      typeof body === 'object' ? body.code : body,
+    ]),
     [
-      ['', 200],
-      ['/thumbnail', 200],
-      ['/meta', 200],
-      ['/photos/link', 403],
-      ['/photos/unlink', 403],
+      ['', 200, 'bytes'],
+      ['/thumbnail', 200, 'bytes'],
+      ['/meta', 200, undefined],
+      ['/photos/link', 403, 'READ_ONLY'],
+      ['/photos/unlink', 403, 'READ_ONLY'],
     ],
   );
   // A PM of project A only: another project's photo answers like a missing id; its own reads.
@@ -1221,8 +1321,17 @@ try {
   // OD18: after the resubmission the reader gets revision 2's photos, heif and the late one too.
   const execRev2 = await expectStatus(list(D1, exec), 200);
   assert.deepEqual(ids(execRev2.photos), ids(rev2.snapshot.photos));
-  for (const id of [late.id, heif.id])
-    assert.equal((await raw(`/${id}`, exec)).status, 200);
+  assert.equal((await raw(`/${late.id}`, exec)).status, 200);
+  // OD20: a HEIF original is not stripped byte by byte, so it is never served to a reader (404
+  // NOT_FOUND; the web shows the thumbnail); its metadata stays readable, the PM gets the file.
+  const heifForReader = await raw(`/${heif.id}`, exec);
+  assert.equal(heifForReader.status, 404);
+  assert.equal(heifForReader.json.code, 'NOT_FOUND');
+  assert.equal(
+    (await expectStatus(call(`/photos/${heif.id}/meta`, exec), 200)).photo.id,
+    heif.id,
+  );
+  assert.equal((await raw(`/${heif.id}`, pm)).status, 200);
   await notFoundForReader(webp.id);
   // Another day stays open; its photo is not the reader's until that day is submitted.
   const d3Photo = await expectStatus(

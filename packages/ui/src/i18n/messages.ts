@@ -318,6 +318,12 @@ export const MESSAGES = {
   ],
   grp_sub: ['分包', 'Subcontractor', 'Podizvođač', 'Subcontrata'],
   grp_worker: ['施工工人', 'Workers', 'Radnici', 'Operarios'],
+  hasLocation: [
+    '有位置 ±{m} 米',
+    'Has location ±{m} m',
+    'Ima lokaciju ±{m} m',
+    'Tiene ubicación ±{m} m',
+  ],
   history: ['历史版本', 'Versions', 'Verzije', 'Versiones'],
   ignore: ['忽略', 'Dismiss', 'Zanemari', 'Descartar'],
   imageUnavailable: [

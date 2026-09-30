@@ -21,6 +21,7 @@ import {
   mediaTypeMatches,
   readFileClaims,
 } from './photo-file.js';
+import { withoutLocationMetadata } from './photo-strip.js';
 import { ISSUE_KIND } from './issue-store.js';
 import {
   REPORT_SCOPE,
@@ -53,6 +54,10 @@ import {
  * - A read-only account (OD18) only ever sees photos frozen in a submitted revision of the
  *   project, with the link they had there. A photo id the caller may not see (missing, another
  *   project, or unfrozen for a reader) is NOT_FOUND on every photo route, never FORBIDDEN.
+ * - OD20: a reader sees whether a photo has a position and its claimed accuracy, never the
+ *   coordinates (reader-view `withheldCoordinates`, applied to every reader photo view), and
+ *   gets image bytes without location metadata (photo-strip). The PHOTO_ELSEWHERE refusal of a
+ *   duplicate file is unchanged (only writers upload).
  * - A photo backs one work item or one issue. Link changes are append-only (supersede + insert),
  *   so the history stays and a submitted revision keeps the link it froze. An unlinked photo is
  *   staging only: a submission freezes just the photos with a valid current link.
@@ -175,6 +180,8 @@ function toDto(r: PhotoRow): PhotoDto {
     deviceCapturedAt: iso(r.deviceCapturedAt),
     file: { takenLocal: r.fileTakenLocal, takenAt: iso(r.fileTakenAt), gps },
     location,
+    // Exact for the stores' writer paths; every reader path goes through withheldCoordinates.
+    coordinates: 'exact',
     hasThumbnail: r.thumbBlobKey !== null,
     receivedAt: r.receivedAt.toISOString(),
     uploadedByPersonId: r.uploadedByPersonId,
@@ -502,7 +509,10 @@ export class PhotoStore {
   }
   /**
    * Photo or thumbnail bytes of a photo the caller may see (see `visible`); both are re-hashed
-   * before serving.
+   * before serving. A writer gets the stored bytes unchanged. A reader (OD20) gets them without
+   * location metadata (photo-strip); when that cannot be done safely (HEIF, or a structure the
+   * stripper cannot follow) the bytes are not served to the reader at all: NOT_FOUND, and the
+   * web shows the thumbnail instead.
    */
   async content(
     identity: Identity,
@@ -513,12 +523,13 @@ export class PhotoStore {
       this.pool,
       identity,
       async (client, actor) => {
-        const { row } = await this.visible(client, actor, photoId);
+        const { row, access } = await this.visible(client, actor, photoId);
         if (which === 'photo')
           return {
             key: row.blobKey,
             mediaType: row.mediaType,
             sha256: row.sha256,
+            access,
           };
         if (
           row.thumbBlobKey === null ||
@@ -530,15 +541,21 @@ export class PhotoStore {
           key: row.thumbBlobKey,
           mediaType: row.thumbMediaType,
           sha256: row.thumbSha256,
+          access,
         };
       },
     );
     const blob = await this.blobs.get(target.key);
     if (!blob) throw new ReportError('NOT_FOUND');
     // Content addressing makes tampering or a mixed-up blob detectable; never serve it silently.
+    // Checked on the stored bytes, before anything is removed for a reader.
     if (sha256(blob.bytes) !== target.sha256)
       throw new Error('Stored blob does not match its recorded hash');
-    return { bytes: blob.bytes, mediaType: target.mediaType };
+    if (target.access === 'write')
+      return { bytes: blob.bytes, mediaType: target.mediaType };
+    const stripped = withoutLocationMetadata(blob.bytes);
+    if (!stripped) throw new ReportError('NOT_FOUND');
+    return { bytes: stripped, mediaType: target.mediaType };
   }
 
   // ---------- writes (project manager) ----------

@@ -264,6 +264,7 @@ describe('photos in a report day', () => {
     deviceCapturedAt: null,
     file: { takenLocal: null, takenAt: null, gps: null },
     location: 'device',
+    coordinates: 'exact',
     hasThumbnail: false,
     receivedAt: '2026-10-05T08:00:01.000Z',
     uploadedByPersonId: 'u',
