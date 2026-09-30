@@ -14,7 +14,35 @@ export type { SaveState } from './draft.js';
 /** Where stashed drafts wait until their day is read (see ResumeKeeper). */
 export interface DraftRecovery {
   draft(projectId: string, businessDate: string): DraftStash | null;
-  resolved(projectId: string, businessDate: string): void;
+  taken(stash: DraftStash): void;
+  resolved(stash: DraftStash): void;
+}
+
+/**
+ * A day was just read into `s` (nothing unsaved): reconcile the draft stashed for it. Saved or
+ * conflicting drafts are resolved at once; a re-applied one only when its write is answered
+ * (acknowledged or refused as a conflict), so until then a renewal keeps it.
+ */
+export function reconcileDraft(
+  recovery: DraftRecovery | undefined,
+  s: DraftSession,
+  onConflict: () => void,
+  afterFlush: (outcome: FlushOutcome) => void,
+) {
+  const stash = recovery?.draft(s.projectId, s.businessDate);
+  if (!recovery || !stash || s.dirty) return;
+  const decision = restoreDecision(stash, s);
+  if (decision === 'apply') {
+    if (!s.edit(stash.facts)) return; // held by an action: try on the next read
+    recovery.taken(stash);
+    void s.flush().then((outcome) => {
+      if (outcome === 'ok' || outcome === 'conflict') recovery.resolved(stash);
+      afterFlush(outcome);
+    });
+    return;
+  }
+  recovery.resolved(stash);
+  if (decision === 'conflict') onConflict();
 }
 const AUTOSAVE_MS = 700;
 
@@ -113,15 +141,14 @@ export function useDay(
         e.day = d;
         e.frozen = content;
         e.error = null;
-        const stash = recover.current?.draft(s.projectId, s.businessDate);
         // Only against a read the session took (not refused by adopt), else wait for the next.
-        if (stash && !s.dirty && s.version === d.version) {
-          recover.current?.resolved(s.projectId, s.businessDate);
-          const decision = restoreDecision(stash, s);
-          if (decision === 'apply' && s.edit(stash.facts))
-            void s.flush().then((o) => afterRestore.current(e, o));
-          else if (decision === 'conflict') conflict.current();
-        }
+        if (s.version === d.version)
+          reconcileDraft(
+            recover.current,
+            s,
+            () => conflict.current(),
+            (o) => void afterRestore.current(e, o),
+          );
       } catch (err) {
         if (ticket === e.reads)
           e.error = err instanceof ApiError ? err.code : 'REQUEST_FAILED';

@@ -119,7 +119,8 @@ const RESUME_KEY = 'mje-resume';
 export const RESUME_LIMITS = {
   maxAgeMs: 24 * 60 * 60 * 1000,
   maxDrafts: 31,
-  maxChars: 512 * 1024,
+  /** UTF-8 bytes of the stored JSON. */
+  maxBytes: 512 * 1024,
 };
 const isDate = (v: unknown): v is string =>
   typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -167,11 +168,16 @@ const isDraft = (v: unknown): v is DraftStash =>
 const draftKey = (d: { projectId: string; businessDate: string }) =>
   `${d.projectId}:${d.businessDate}`;
 
+/** A UTF-16 code unit is at least one UTF-8 byte, so long strings are refused unencoded. */
+const withinBytes = (raw: string) =>
+  raw.length <= RESUME_LIMITS.maxBytes &&
+  new TextEncoder().encode(raw).length <= RESUME_LIMITS.maxBytes;
+
 /** Returns false if it could not be stored (private mode, quota, over the limits). */
 export function saveResume(storage: Store | null, state: ResumeState) {
   if (!storage || state.drafts.length > RESUME_LIMITS.maxDrafts) return false;
   const raw = JSON.stringify(state);
-  if (raw.length > RESUME_LIMITS.maxChars) return false;
+  if (!withinBytes(raw)) return false;
   try {
     storage.setItem(RESUME_KEY, raw);
     return true;
@@ -203,7 +209,7 @@ export function readResume(
   }
   if (raw === null) return null;
   let s: unknown = null;
-  if (raw.length <= RESUME_LIMITS.maxChars)
+  if (withinBytes(raw))
     try {
       s = JSON.parse(raw);
     } catch {
@@ -231,20 +237,30 @@ export function readResume(
   };
 }
 
+const sameDraft = (a: DraftStash, b: DraftStash) =>
+  draftKey(a) === draftKey(b) &&
+  a.version === b.version &&
+  canonical(a.facts) === canonical(b.facts);
+
 /**
- * Owns the resume state across sign-in round trips. The stored copy stays until every draft
- * in it has been reconciled with its day, so a cancelled or failed sign-in, a reload or a
- * second redirect before that point loses nothing.
+ * Owns the resume state across sign-in round trips. The stored copy keeps a draft until its
+ * day has been reconciled and any re-applied facts acknowledged, so a cancelled or failed
+ * sign-in, a reload or a second redirect before that point loses nothing.
  */
 export class ResumeKeeper {
   readonly state: ResumeState | null;
+  /** Drafts not yet handed to their day. */
   private readonly pending = new Map<string, DraftStash>();
+  /** What storage holds now: the stash read at load, or the latest snapshot saved. */
+  private stored: ResumeState | null;
+  private snapshotSaved = false;
 
   constructor(
     private readonly storage: Store | null,
     now: number,
   ) {
     this.state = readResume(storage, now);
+    this.stored = this.state;
     for (const d of this.state?.drafts ?? []) this.pending.set(draftKey(d), d);
   }
 
@@ -252,7 +268,11 @@ export class ResumeKeeper {
   opened(projectId: string) {
     for (const [k, d] of this.pending)
       if (d.projectId !== projectId) this.pending.delete(k);
-    this.persist();
+    if (this.stored)
+      this.write({
+        ...this.stored,
+        drafts: this.stored.drafts.filter((d) => d.projectId === projectId),
+      });
   }
   get pendingCount() {
     return this.pending.size;
@@ -261,35 +281,52 @@ export class ResumeKeeper {
   draft(projectId: string, businessDate: string): DraftStash | null {
     return this.pending.get(draftKey({ projectId, businessDate })) ?? null;
   }
-  /** Its day was read and the draft applied, found saved, or refused as a conflict. */
-  resolved(projectId: string, businessDate: string) {
-    if (this.pending.delete(draftKey({ projectId, businessDate })))
-      this.persist();
+  /** Its day took it (it is not offered again); the stored copy stays until `resolved`. */
+  taken(stash: DraftStash) {
+    this.pending.delete(draftKey(stash));
+  }
+  /**
+   * The draft needs no keeping any more: found saved, refused as a conflict, or re-applied
+   * and acknowledged. Only that very draft leaves the stored copy (a newer snapshot entry of
+   * the same day, and every other entry, stay).
+   */
+  resolved(stash: DraftStash) {
+    this.taken(stash);
+    if (this.stored)
+      this.write({
+        ...this.stored,
+        drafts: this.stored.drafts.filter((d) => !sameDraft(d, stash)),
+      });
   }
   /**
    * Before another redirect: the current place, every unsaved day, and every draft not yet
-   * reconciled (an unsaved day wins over its older stashed draft).
+   * handed to its day (an unsaved day wins over its older stashed draft). Stamped now; drafts
+   * from a stash older than the age limit are left out so the rest stays readable. True only
+   * if the snapshot was stored.
    */
   save(
     place: { projectId: string; date: string; view: View },
     unsaved: DraftStash[],
     now: number,
   ): boolean {
-    const drafts = new Map(this.pending);
+    const fresh =
+      this.state !== null &&
+      this.state.savedAt <= now &&
+      now - this.state.savedAt <= RESUME_LIMITS.maxAgeMs;
+    const drafts = new Map(fresh ? this.pending : []);
     for (const d of unsaved) drafts.set(draftKey(d), d);
-    return saveResume(this.storage, {
-      ...place,
-      drafts: [...drafts.values()],
-      savedAt: this.pending.size && this.state ? this.state.savedAt : now,
-    });
+    const next = { ...place, drafts: [...drafts.values()], savedAt: now };
+    if (!saveResume(this.storage, next)) return false;
+    this.stored = next;
+    this.snapshotSaved = true;
+    return true;
   }
-  private persist() {
-    if (!this.state || this.pending.size === 0) clearResume(this.storage);
-    else
-      saveResume(this.storage, {
-        ...this.state,
-        drafts: [...this.pending.values()],
-      });
+  /** A snapshot keeps its place even without drafts; the load-time stash is then done. */
+  private write(next: ResumeState) {
+    if (next.drafts.length === 0 && !this.snapshotSaved) {
+      clearResume(this.storage);
+      this.stored = null;
+    } else if (saveResume(this.storage, next)) this.stored = next;
   }
 }
 

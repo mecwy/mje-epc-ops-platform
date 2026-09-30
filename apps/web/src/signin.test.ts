@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DayFactsDto } from '@mje/contracts';
+import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
+import { DraftSession } from './report/draft.js';
+import { reconcileDraft } from './report/useDay.js';
 import {
   INTERACTION_KEY,
   RESUME_LIMITS,
@@ -180,7 +182,7 @@ describe('resume state', () => {
         }),
         NOW,
       ],
-      ['x'.repeat(RESUME_LIMITS.maxChars + 1), NOW],
+      ['x'.repeat(RESUME_LIMITS.maxBytes + 1), NOW],
     ];
     for (const [raw, now] of cases) {
       const s = memoryStore({ 'mje-resume': raw });
@@ -194,7 +196,7 @@ describe('resume state', () => {
       draft(`2026-08-${String((i % 28) + 1).padStart(2, '0')}`),
     );
     expect(saveResume(s, { ...state, drafts: many })).toBe(false);
-    const huge = draft('2026-09-29', 'x'.repeat(RESUME_LIMITS.maxChars));
+    const huge = draft('2026-09-29', 'x'.repeat(RESUME_LIMITS.maxBytes));
     expect(saveResume(s, { ...state, drafts: [huge] })).toBe(false);
     expect(s.data.size).toBe(0);
     expect(saveResume(null, state)).toBe(false);
@@ -235,7 +237,7 @@ describe('ResumeKeeper', () => {
     retried.opened('p2');
     expect(retried.state?.view).toBe('field');
     expect(retried.draft('p2', '2026-09-29')).toEqual(draft('2026-09-29'));
-    retried.resolved('p2', '2026-09-29');
+    retried.resolved(draft('2026-09-29'));
     expect(s.data.size).toBe(0);
   });
 
@@ -253,12 +255,12 @@ describe('ResumeKeeper', () => {
     stashed(s, [draft('2026-09-28'), draft('2026-09-29')]);
     const k = new ResumeKeeper(s, NOW);
     k.opened('p2');
-    k.resolved('p2', '2026-09-29'); // opened and applied; now unsaved in its session
+    k.taken(draft('2026-09-29')); // opened and applied; now unsaved in its session
     const unsaved = [draft('2026-09-29', '13')];
     expect(k.save(place, unsaved, NOW + 5000)).toBe(true);
     const next = new ResumeKeeper(s, NOW + 10_000);
     expect(next.state?.drafts).toEqual([draft('2026-09-28'), unsaved[0]]);
-    expect(next.state?.savedAt).toBe(NOW);
+    expect(next.state?.savedAt).toBe(NOW + 5000);
   });
 
   it("drops another project's drafts when the workspace opens", () => {
@@ -369,5 +371,112 @@ describe('restoreDecision', () => {
     expect(
       restoreDecision(stash, { version: 5, facts: facts({ a: '9' }) }),
     ).toBe('conflict');
+  });
+});
+
+describe('round 2 regressions', () => {
+  const stashed = (s: ReturnType<typeof memoryStore>, drafts: DraftStash[]) =>
+    saveResume(s, { ...place, drafts, savedAt: NOW });
+  const unsavedOf = (d: DraftSession): DraftStash => ({
+    projectId: d.projectId,
+    businessDate: d.businessDate,
+    version: d.version,
+    facts: d.facts,
+  });
+  const session = (
+    businessDate: string,
+    version: number,
+    write: (c: SaveFactsCommand) => Promise<{ version: number }> = () =>
+      new Promise(() => {}),
+  ) =>
+    new DraftSession(
+      'p2',
+      businessDate,
+      version,
+      facts({}),
+      write as never,
+      () => {},
+    );
+
+  it('a day read that lands after the renewal snapshot keeps the other unsaved day', async () => {
+    const s = memoryStore();
+    const A = draft('2026-09-28', '12'); // stashed; its day is still loading
+    stashed(s, [A]);
+    const keeper = new ResumeKeeper(s, NOW);
+    keeper.opened('p2');
+    // Day B has unsaved text (its write cannot land without a token).
+    const b = session('2026-09-29', 7);
+    b.edit(facts({ b: 'five' }));
+    // Renewal: snapshot of B plus the pending A, then the redirect starts.
+    expect(keeper.save(place, [unsavedOf(b)], NOW + 1000)).toBe(true);
+    // A's day read arrives now: the server already has A's facts.
+    const a = session('2026-09-28', 0);
+    a.reset(5, A.facts);
+    const conflict = vi.fn();
+    reconcileDraft(keeper, a, conflict, () => {});
+    expect(conflict).not.toHaveBeenCalled();
+    // Return from Microsoft: B is still there; A (saved) is not.
+    const back = new ResumeKeeper(s, NOW + 60_000);
+    expect(back.state?.drafts).toEqual([unsavedOf(b)]);
+    expect(back.state?.view).toBe('field');
+  });
+
+  it('a re-applied draft stays stored until its write is acknowledged', async () => {
+    const s = memoryStore();
+    const A = draft('2026-09-28', '12');
+    stashed(s, [A]);
+    const keeper = new ResumeKeeper(s, NOW);
+    keeper.opened('p2');
+    let ack: (v: { version: number }) => void = () => {};
+    const a = session(
+      '2026-09-28',
+      0,
+      () => new Promise((resolve) => (ack = resolve)),
+    );
+    a.reset(4, facts({ a: '1' })); // server unchanged since A was typed
+    reconcileDraft(
+      keeper,
+      a,
+      () => {},
+      () => {},
+    );
+    expect(a.facts).toEqual(A.facts);
+    expect(keeper.draft('p2', '2026-09-28')).toBeNull(); // not offered again
+    expect(readResume(s, NOW)?.drafts).toEqual([A]); // still kept
+    ack({ version: 5 });
+    await vi.waitFor(() => expect(s.data.size).toBe(0));
+  });
+
+  it('fresh edits stay recoverable when the old stash is past the age limit', () => {
+    const s = memoryStore();
+    stashed(s, [draft('2026-09-28')]);
+    const keeper = new ResumeKeeper(s, NOW);
+    keeper.opened('p2');
+    const later = NOW + RESUME_LIMITS.maxAgeMs + 1;
+    const fresh = draft('2026-09-29', '13');
+    expect(keeper.save(place, [fresh], later)).toBe(true);
+    expect(readResume(s, later + 1)?.drafts).toEqual([fresh]);
+  });
+
+  it('the size limit counts UTF-8 bytes, not characters', () => {
+    const text = '混'.repeat(200_000); // 200 000 characters, 600 000 bytes
+    const big = {
+      ...draft('2026-09-29'),
+      facts: { ...facts({}), weather: text },
+    };
+    const s = memoryStore();
+    expect(saveResume(s, { ...place, drafts: [big], savedAt: NOW })).toBe(
+      false,
+    );
+    const raw = JSON.stringify({ ...place, drafts: [big], savedAt: NOW });
+    const t = memoryStore({ 'mje-resume': raw });
+    expect(readResume(t, NOW)).toBeNull();
+    const fits = {
+      ...big,
+      facts: { ...facts({}), weather: '混'.repeat(1000) },
+    };
+    expect(saveResume(s, { ...place, drafts: [fits], savedAt: NOW })).toBe(
+      true,
+    );
   });
 });
