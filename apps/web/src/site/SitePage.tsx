@@ -88,9 +88,23 @@ export function EntryCodeCard({
       <div className="blk-row">
         <h2 className="blk">{t('site_qrTitle')}</h2>
       </div>
+      {!session.pending &&
+        !confirming &&
+        session.error &&
+        session.error !== 'STALE' && (
+          // The last change's refusal, also when its Retry came from the banner below.
+          <div className="banner err noprint" role="alert">
+            <ErrorText
+              code={session.error}
+              write
+              uncertain={session.errorUncertain}
+            />
+          </div>
+        )}
       {session.pending && !confirming && (
         <div className="banner warn noprint" role="alert">
           {t('site_rotateUnsettled')}{' '}
+          <ErrorText code={session.error ?? 'NETWORK'} write />{' '}
           <button
             type="button"
             className="pill"
