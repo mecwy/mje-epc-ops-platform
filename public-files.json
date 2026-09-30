@@ -51,6 +51,8 @@
   "apps/web/src/field/checkin-flow.ts",
   "apps/web/src/field/checkin.test.ts",
   "apps/web/src/field/checkin.ts",
+  "apps/web/src/field/crew-commands.test.ts",
+  "apps/web/src/field/crew-commands.ts",
   "apps/web/src/field/device-store.ts",
   "apps/web/src/field/errors.test.ts",
   "apps/web/src/field/errors.ts",

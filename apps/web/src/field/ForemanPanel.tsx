@@ -15,13 +15,13 @@ import type { DeviceApi } from './field-api.js';
 import {
   changedOnServer,
   checkDraft,
-  crewDecision,
   draftFrom,
   qtyKind,
   reportDays,
   type Draft,
 } from './foreman-report.js';
 import { ProxyFlow, type ProxyPhase } from './proxy-flow.js';
+import { CrewCommands } from './crew-commands.js';
 import { FieldSession } from './session.js';
 
 function localStore(): Storage | null {
@@ -67,11 +67,22 @@ export function CrewCard({
       }),
   );
   const [confirming, setConfirming] = useState<Member | null>(null);
+  // Kept with the card (mounted for the page's life): an unresolved decision keeps its key.
+  const [commands] = useState(() => new CrewCommands(session, api));
   const crew = me.foreman;
+  const unresolvedName = commands.unresolved
+    ? (crew?.members.find((m) => m.personId === commands.unresolved?.personId)
+        ?.displayName ?? '—')
+    : null;
   if (!crew) return null;
   return (
     <section className="card">
       <h2 className="blk">{t('fm_crewTitle', { crew: crew.crewName })}</h2>
+      {unresolvedName && !confirming && (
+        <div className="banner warn" role="alert">
+          {t('fm_unresolvedFor', { name: unresolvedName })}
+        </div>
+      )}
       {crew.members.length === 0 && (
         <p className="muted small">{t('fm_crewEmpty')}</p>
       )}
@@ -105,10 +116,14 @@ export function CrewCard({
               </span>
               {!self && (
                 <span className="chips">
-                  {m.pendingDevices > 0 && (
+                  {(m.pendingDevices > 0 ||
+                    commands.isUnresolved(m.personId)) && (
                     <button
                       type="button"
                       className="pill accent"
+                      disabled={
+                        !commands.canStart && !commands.isUnresolved(m.personId)
+                      }
                       onClick={() => setConfirming(m)}
                     >
                       {t('fm_confirmPhone')}
@@ -144,9 +159,8 @@ export function CrewCard({
       <p className="muted small">{t('fm_proxyNote')}</p>
       {confirming && (
         <ConfirmSheet
-          api={api}
+          commands={commands}
           member={confirming}
-          session={session}
           onClose={() => setConfirming(null)}
         />
       )}
@@ -209,41 +223,38 @@ function ProxyStatus({ phase }: { phase: ProxyPhase }) {
  * as the newest reading shows it when the command runs (an older view gets CONFIRM_STALE).
  */
 function ConfirmSheet({
-  api,
+  commands,
   member,
-  session,
   onClose,
 }: {
-  api: DeviceApi;
+  commands: CrewCommands;
   member: Member;
-  session: FieldSession<FieldMeDto>;
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [code, setCode] = useState('');
+  const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // While this member's attempt is unresolved, the code is the one sent and cannot change.
+  const unresolved = commands.isUnresolved(member.personId)
+    ? commands.unresolved
+    : null;
+  const code = unresolved?.code ?? typed;
   const ok = CHALLENGE_CODE.test(code);
   const run = async (what: 'confirm' | 'reject') => {
     setBusy(true);
     setError(null);
-    const r = session.pending
-      ? await session.retry()
-      : await session.act((me) => {
-          const key = crypto.randomUUID();
-          const d = crewDecision(me, member.personId, code, key, what);
-          if (!d) return null;
-          return {
-            key,
-            send: () =>
-              d.kind === 'confirm'
-                ? api.confirmCrew(d.command)
-                : api.rejectCrew(d.command),
-          };
-        });
+    const r = unresolved
+      ? await commands.retry()
+      : await commands.run({ personId: member.personId, what, code });
     setBusy(false);
     if (r.kind === 'ok') onClose();
     else setError(r.code);
+  };
+  const giveUp = () => {
+    commands.discard();
+    setError(null);
+    setTyped('');
   };
   return (
     <Sheet title={t('fm_confirmPhone')} onClose={() => !busy && onClose()}>
@@ -257,32 +268,60 @@ function ConfirmSheet({
           autoComplete="one-time-code"
           maxLength={6}
           value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+          readOnly={unresolved !== null}
+          aria-readonly={unresolved !== null || undefined}
+          onChange={(e) => setTyped(e.target.value.replace(/\D/g, ''))}
         />
       </label>
-      {error && (
+      {unresolved && (
+        <div className="banner warn" role="alert">
+          {t('fm_attemptUnresolved')} <ErrorText code={error ?? 'NETWORK'} />
+        </div>
+      )}
+      {error && !unresolved && (
         <div className="banner err" role="alert">
           <ErrorText code={error} />
         </div>
       )}
-      <div className="row2">
-        <button
-          type="button"
-          className="ghost"
-          disabled={busy || (!ok && !session.pending)}
-          onClick={() => void run('reject')}
-        >
-          {t('pm_reject')}
-        </button>
-        <button
-          type="button"
-          className="primary"
-          disabled={busy || (!ok && !session.pending)}
-          onClick={() => void run('confirm')}
-        >
-          {session.pending ? t('retry') : t('pm_confirm')}
-        </button>
-      </div>
+      {unresolved ? (
+        <div className="row2">
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={giveUp}
+          >
+            {t('pm_giveUp')}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void run(unresolved.what)}
+          >
+            {t('retry')}
+          </button>
+        </div>
+      ) : (
+        <div className="row2">
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy || !ok || !commands.canStart}
+            onClick={() => void run('reject')}
+          >
+            {t('pm_reject')}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !ok || !commands.canStart}
+            onClick={() => void run('confirm')}
+          >
+            {t('pm_confirm')}
+          </button>
+        </div>
+      )}
     </Sheet>
   );
 }
@@ -387,6 +426,13 @@ function ReportForm({
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const latest = draftFrom(data);
+  // While a send is unresolved the form is locked: its retry resends exactly what was sent.
+  const locked = session.busy || session.pending !== null;
+  const giveUp = () => {
+    session.discard();
+    setError(null);
+    void session.load();
+  };
   const send = async () => {
     setError(null);
     setSent(false);
@@ -463,12 +509,12 @@ function ReportForm({
                 value={v}
                 label={label(it.label)}
                 onChange={(x) => setDraft({ ...draft, [it.key]: x })}
-                disabled={session.busy}
+                disabled={locked}
               />
             </div>
             <TokenChips
               value={v}
-              disabled={session.busy}
+              disabled={locked}
               onSet={(x) => setDraft({ ...draft, [it.key]: x })}
             />
             {changed.includes(it.key) && (
@@ -490,6 +536,7 @@ function ReportForm({
           rows={2}
           maxLength={FOREMAN_NOTE_MAX}
           value={note}
+          disabled={locked}
           onChange={(e) => setNote(e.target.value)}
         />
       </label>
@@ -500,14 +547,31 @@ function ReportForm({
         </div>
       )}
       {sent && <p className="ok-t">{t('fm_sent', { n: data.n })}</p>}
-      <button
-        type="button"
-        className="primary big"
-        disabled={session.busy || data.items.length === 0}
-        onClick={() => void send()}
-      >
-        {session.pending ? t('retry') : t('fm_send')}
-      </button>
+      {session.pending && (
+        <div className="banner warn" role="alert">
+          {t('fm_sendUnresolved')}
+        </div>
+      )}
+      <div className="row2">
+        {session.pending && (
+          <button
+            type="button"
+            className="ghost"
+            disabled={session.busy}
+            onClick={giveUp}
+          >
+            {t('pm_giveUp')}
+          </button>
+        )}
+        <button
+          type="button"
+          className="primary big"
+          disabled={session.busy || data.items.length === 0}
+          onClick={() => void send()}
+        >
+          {session.pending ? t('retry') : t('fm_send')}
+        </button>
+      </div>
     </>
   );
 }

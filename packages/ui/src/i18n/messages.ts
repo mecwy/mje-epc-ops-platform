@@ -815,6 +815,12 @@ export const MESSAGES = {
   ],
   fill: ['填写', 'Fill in', 'Unesi', 'Rellenar'],
   fixAt: ['定位于 {t}', 'Fix at {t}', 'Lokacija u {t}', 'Ubicación a las {t}'],
+  fm_attemptUnresolved: [
+    '这次确认未收到结果。重试会原样再发同一个码；要换码请先放弃。',
+    'No answer was received for this attempt. Retry sends the same code again; to use another code, give this one up first.',
+    'Za ovaj pokušaj nije stigao odgovor. Ponovni pokušaj šalje isti kod; za drugi kod prvo odustanite od ovog.',
+    'No se recibió respuesta a este intento. Reintentar envía el mismo código; para usar otro, primero descarta este.',
+  ],
   fm_blank: ['空白', 'blank', 'prazno', 'en blanco'],
   fm_checkInFor: ['代签到', 'Check in', 'Prijavi', 'Fichar'],
   fm_confirmPhone: [
@@ -896,6 +902,12 @@ export const MESSAGES = {
     'Pošalji količine',
     'Enviar cantidades',
   ],
+  fm_sendUnresolved: [
+    '报量发送未收到结果。重试会原样再发；要修改请先放弃（可能已保存，放弃后会重新载入）。',
+    'No answer was received for this send. Retry sends it again unchanged; to edit, give it up first (it may have been saved; the report is reloaded).',
+    'Za ovo slanje nije stigao odgovor. Ponovni pokušaj ga šalje nepromenjeno; za izmenu prvo odustanite (možda je sačuvano; izveštaj se ponovo učitava).',
+    'No se recibió respuesta a este envío. Reintentar lo envía sin cambios; para editar, descártalo primero (puede que se haya guardado; el parte se recarga).',
+  ],
   fm_sent: [
     '已发送第 {n} 版',
     'Revision {n} sent',
@@ -906,6 +918,12 @@ export const MESSAGES = {
   fm_tabMe: ['我的签到', 'My check-in', 'Moja prijava', 'Mi fichaje'],
   fm_tabReport: ['报量', 'Quantities', 'Količine', 'Cantidades'],
   fm_today: ['今天', 'Today', 'Danas', 'Hoy'],
+  fm_unresolvedFor: [
+    '{name} 的手机确认未收到结果：打开后重试或放弃。',
+    'Confirming the phone of {name} got no answer: open it to retry or give up.',
+    'Potvrda telefona za {name} nije dobila odgovor: otvorite je da ponovite ili odustanete.',
+    'La confirmación del teléfono de {name} no obtuvo respuesta: ábrela para reintentar o descartar.',
+  ],
   fm_yesterday: ['昨天', 'Yesterday', 'Juče', 'Ayer'],
   forbidden: ['没有权限', 'Not permitted', 'Nije dozvoljeno', 'No permitido'],
   foremanN: ['工头报 {n}', 'foreman {n}', 'poslovođa {n}', 'encargado {n}'],
