@@ -113,6 +113,7 @@
   "apps/web/src/site/SitePage.tsx",
   "apps/web/src/site/daily-forms.test.ts",
   "apps/web/src/site/device-orderings.test.ts",
+  "apps/web/src/site/headcount-guard.test.ts",
   "apps/web/src/site/proxy-rules.test.ts",
   "apps/web/src/site/proxy-rules.ts",
   "apps/web/src/site/qr.test.ts",

@@ -14,7 +14,12 @@ import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
 import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
-import { liveCoverage, byKind, reportPhotos } from './report/model.js';
+import {
+  liveCoverage,
+  byKind,
+  reportPhotos,
+  declaredHeadcount,
+} from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
@@ -30,14 +35,7 @@ import { SiteSessions } from './site/site-sessions.js';
 import { useSessions } from './site/use-sessions.js';
 import { AdoptFlow } from './report/foreman-adopt.js';
 import { PmFieldContext, type PmField } from './report/ForemanLine.js';
-import { ROLE_KEYS, dec, decText } from '@mje/domain/rules';
-import type { DayFactsDto } from '@mje/contracts';
 
-/** The report's declared people total (never computed from check-ins); null if none. */
-function declaredHeadcount(f: DayFactsDto): string | null {
-  const n = ROLE_KEYS.map((r) => dec(f.people[r])).filter((x) => x !== null);
-  return n.length ? decText(n.reduce((a, b) => a + b, 0n)) : null;
-}
 import { Sheet } from './ui.js';
 import {
   ResumeKeeper,
