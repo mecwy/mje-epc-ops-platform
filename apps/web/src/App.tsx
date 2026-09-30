@@ -26,6 +26,7 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
+import { SiteSessions } from './site/site-sessions.js';
 import { Sheet } from './ui.js';
 import {
   ResumeKeeper,
@@ -216,6 +217,9 @@ function Workspace({
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
   const photos = usePhotos(api, project.id, date, dayStamp);
   const busy = actionBusy || h.busy;
+  // The People page's sessions live as long as the workspace (like the issue and plan
+  // sessions): leaving the tab keeps an unresolved command and its key.
+  const [siteSessions] = useState(() => new SiteSessions(api, project.id));
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
@@ -452,7 +456,7 @@ function Workspace({
     ) : null;
   let body;
   if (view === 'site' && canWrite && !task)
-    body = <SitePage api={api} project={project} />;
+    body = <SitePage api={api} project={project} sessions={siteSessions} />;
   else if (viewing && view === 'report' && !task) {
     const meta = day?.revisions.find((r) => r.n === viewing.n) ?? null;
     body = (

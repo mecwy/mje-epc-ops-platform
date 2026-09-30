@@ -1349,6 +1349,7 @@ export const MESSAGES = {
     'Fuera de rango (latitud ±90, longitud ±180)',
   ],
   pm_errRequired: ['必填', 'Required', 'Obavezno', 'Obligatorio'],
+  pm_giveUp: ['放弃', 'Give up', 'Odustani', 'Descartar'],
   pm_lastSeen: [
     '最近使用 {t}',
     'Last used {t}',
@@ -1451,6 +1452,24 @@ export const MESSAGES = {
     'Site location',
     'Lokacija gradilišta',
     'Ubicación de la obra',
+  ],
+  pm_unresolvedConfirm: [
+    '确认 {name} 的手机：结果未确认。',
+    'Confirming the phone of {name}: outcome not confirmed.',
+    'Potvrda telefona za {name}: ishod nije potvrđen.',
+    'Confirmación del teléfono de {name}: resultado no confirmado.',
+  ],
+  pm_unresolvedReject: [
+    '拒绝 {name} 的手机：结果未确认。',
+    'Rejecting the phone of {name}: outcome not confirmed.',
+    'Odbijanje telefona za {name}: ishod nije potvrđen.',
+    'Rechazo del teléfono de {name}: resultado no confirmado.',
+  ],
+  pm_unresolvedRevoke: [
+    '撤销 {name} 的手机：结果未确认。',
+    'Revoking the phone of {name}: outcome not confirmed.',
+    'Opoziv telefona za {name}: ishod nije potvrđen.',
+    'Revocación del teléfono de {name}: resultado no confirmado.',
   ],
   pm_useHere: [
     '使用我现在的位置',
@@ -1640,6 +1659,12 @@ export const MESSAGES = {
   signOut: ['退出登录', 'Sign out', 'Odjava', 'Cerrar sesión'],
   site_code: ['入口码', 'Entry code', 'Ulazni kod', 'Código de acceso'],
   site_codeSince: ['生成于 {t}', 'Created {t}', 'Napravljen {t}', 'Creado {t}'],
+  site_codeStale: [
+    '二维码可能已换过，但未能载入当前的码。刷新前不显示也不能打印旧码。',
+    'The code may have been replaced, but the current one could not be loaded. The old one is not shown or printable until you reload.',
+    'Kod je možda zamenjen, ali trenutni nije učitan. Stari se ne prikazuje i ne štampa dok ne osvežite.',
+    'Puede que el código se haya cambiado, pero no se pudo cargar el actual. El anterior no se muestra ni se imprime hasta recargar.',
+  ],
   site_create: [
     '生成二维码',
     'Create QR code',
@@ -1672,8 +1697,15 @@ export const MESSAGES = {
     'QR kod gradilišta',
     'Código QR de la obra',
   ],
+  site_reload: ['重新载入', 'Reload', 'Ponovo učitaj', 'Recargar'],
   site_rotate: ['换新码', 'Replace code', 'Zameni kod', 'Cambiar código'],
   site_rotateConfirm: ['确认', 'Confirm', 'Potvrdi', 'Confirmar'],
+  site_rotateUnsettled: [
+    '换码结果未确认，重试不会多换一次。',
+    'Replacing the code was not confirmed; retrying never replaces it twice.',
+    'Zamena koda nije potvrđena; ponovni pokušaj je neće ponoviti dvaput.',
+    'El cambio de código no se confirmó; reintentar nunca lo cambia dos veces.',
+  ],
   site_rotateWarn: [
     '旧二维码将立即失效，已张贴的旧码需要换掉。已登记的手机不受影响。',
     'The old QR code stops working at once; replace posted copies. Registered phones are not affected.',

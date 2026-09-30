@@ -1509,11 +1509,12 @@ svg.qr {
   display: none;
 }
 @media print {
-  .noprint,
-  .page > :not(.qr-poster) {
+  /* Only a poster print (the People page's Print button) hides everything but the poster. */
+  body.print-poster .noprint,
+  body.print-poster .page > :not(.qr-poster) {
     display: none !important;
   }
-  .content {
+  body.print-poster .content {
     margin: 0;
   }
   .qr-poster {

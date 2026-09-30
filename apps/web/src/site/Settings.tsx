@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   PM_PROXY_DAYS_MAX,
   RADIUS_MAX_M,
@@ -8,7 +8,7 @@ import {
 import type { Project, ReportApi } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { ErrorText } from '../field/ErrorText.js';
-import { FieldSession } from '../field/session.js';
+import type { FieldSession } from '../field/session.js';
 import { locate } from '../report/geo.js';
 import {
   checkProxyDays,
@@ -16,22 +16,15 @@ import {
   type SiteField,
   type SiteProblem,
 } from './site-form.js';
+import {
+  saveSettings,
+  saveSiteReference,
+  type SiteSessions,
+} from './site-sessions.js';
+import { useSessions } from './use-sessions.js';
 
 type Settings = FieldSession<FieldSettingsDto>;
 
-/** A numbered settings read (C24); each card keeps its own, so their commands never mix. */
-function useSettings(api: ReportApi, projectId: string): Settings {
-  const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [session] = useState(
-    () =>
-      new FieldSession<FieldSettingsDto>(
-        () => api.fieldSettings(projectId),
-        rerender,
-      ),
-  );
-  useEffect(() => void session.load(), [session]);
-  return session;
-}
 function Loading({ session }: { session: Settings }) {
   const { t } = useI18n();
   return (
@@ -46,16 +39,23 @@ function Loading({ session }: { session: Settings }) {
     </section>
   );
 }
-/** Field settings and the site location; PM only. */
+/** Field settings and the site location; PM only. Sessions live with the workspace. */
 export function SettingsCards({
   api,
   project,
+  sessions,
 }: {
   api: ReportApi;
   project: Project;
+  sessions: SiteSessions;
 }) {
-  const site = useSettings(api, project.id);
-  const settings = useSettings(api, project.id);
+  useSessions(sessions);
+  const site = sessions.site;
+  const settings = sessions.settings;
+  useEffect(() => {
+    void site.load();
+    void settings.load();
+  }, [site, settings]);
   return (
     <>
       {site.data ? (
@@ -162,21 +162,14 @@ function SiteLocationCard({
     if (!check.ok && !session.pending) return;
     const r = session.pending
       ? await session.retry()
-      : await session.act((d) => {
-          if (!d || !check.ok) return null;
-          const c = {
-            projectId: project.id,
-            clientMutationId: crypto.randomUUID(),
-            expectedN: d.siteReference?.n ?? 0,
+      : check.ok
+        ? await saveSiteReference(session, api, project.id, data, {
             lat: check.lat,
             lon: check.lon,
             radiusM: check.radiusM,
-          };
-          return {
-            key: c.clientMutationId,
-            send: () => api.setSiteReference(c),
-          };
-        });
+          })
+        : null;
+    if (!r) return;
     if (r.kind !== 'ok') setError(r.code);
   };
   return (
@@ -281,20 +274,13 @@ function FieldSettingsCard({
     setError(null);
     const r = session.pending
       ? await session.retry()
-      : await session.act((d) => {
-          if (!d || parsedDays === null) return null;
-          const c = {
-            projectId: project.id,
-            clientMutationId: crypto.randomUUID(),
-            expectedN: d.settings.n,
+      : parsedDays !== null
+        ? await saveSettings(session, api, project.id, data, {
             selfieEnabled: selfie,
             pmProxyDays: parsedDays,
-          };
-          return {
-            key: c.clientMutationId,
-            send: () => api.setFieldSettings(c),
-          };
-        });
+          })
+        : null;
+    if (!r) return;
     if (r.kind !== 'ok') setError(r.code);
   };
   return (
