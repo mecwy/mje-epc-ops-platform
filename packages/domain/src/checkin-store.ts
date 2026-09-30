@@ -702,6 +702,7 @@ export class CheckInStore {
           receivedAt: t,
           businessDate: cmd.businessDate,
           timeZone,
+          todayOrYesterday: kind === 'FOREMAN_PROXY',
         });
         if (!time.ok) return refuse(time.code);
         const ref = await siteReference(client, d.orgId, d.projectId);

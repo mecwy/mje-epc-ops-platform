@@ -4,7 +4,7 @@
  * nothing here turns it into hours or headcount, and nothing is ever corrected silently.
  */
 import type { CheckInFlag } from '@mje/contracts';
-import { distanceM } from './report-rules.js';
+import { daysBetween, distanceM } from './report-rules.js';
 
 const MINUTE = 60_000;
 /** T1: a fix no older than 2 minutes at the tap, and never from after it. */
@@ -52,6 +52,12 @@ export interface DeviceTimes {
   receivedAt: Date;
   businessDate: string;
   timeZone: string;
+  /**
+   * Foreman proxy (§1 historical writes): the business day must also be the site's today or
+   * yesterday at receipt. Separate from the 24 h limit: across the spring DST change 23 h 45 min
+   * can span two calendar days.
+   */
+  todayOrYesterday?: boolean;
 }
 /**
  * Time admission T1–T5 for self and foreman-proxy check-ins, first attempt only (a replay never
@@ -72,6 +78,14 @@ export function admitDeviceTimes(
   if (age > TOO_LATE_MS) return { ok: false, code: 'TOO_LATE' };
   if (localDate(t.occurredAt, t.timeZone) !== t.businessDate)
     return { ok: false, code: 'BUSINESS_DAY_MISMATCH' };
+  if (t.todayOrYesterday) {
+    const back = daysBetween(
+      t.businessDate,
+      localDate(t.receivedAt, t.timeZone),
+    );
+    if (back > 1) return { ok: false, code: 'TOO_LATE' };
+    if (back < 0) return { ok: false, code: 'TIME_ORDER_INVALID' };
+  }
   return { ok: true, flags: age > LATE_AFTER_MS ? ['LATE'] : [] };
 }
 

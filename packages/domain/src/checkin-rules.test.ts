@@ -88,6 +88,47 @@ describe('check-in time admission (T1–T5)', () => {
   });
 });
 
+describe('foreman proxy: today or yesterday in the site zone', () => {
+  // Europe/Belgrade spring DST: receipt 2026-03-30 00:30 CEST, occurrence 2026-03-28 23:45 CET
+  // are only 23 h 45 min apart but two site days back.
+  const dst = {
+    occurredAt: at('2026-03-28T22:45:00Z'),
+    fixAt: at('2026-03-28T22:44:50Z'),
+    deviceSentAt: at('2026-03-29T22:29:59Z'),
+    receivedAt: at('2026-03-29T22:30:00Z'),
+    businessDate: '2026-03-28',
+    timeZone: 'Europe/Belgrade',
+  };
+  it('the 24 h limit alone accepts it (self check-in, LATE)', () => {
+    expect(localDate(dst.receivedAt, dst.timeZone)).toBe('2026-03-30');
+    expect(admitDeviceTimes(dst)).toEqual({ ok: true, flags: ['LATE'] });
+  });
+  it('a foreman proxy refuses it: the day is neither today nor yesterday', () => {
+    expect(admitDeviceTimes({ ...dst, todayOrYesterday: true })).toEqual({
+      ok: false,
+      code: 'TOO_LATE',
+    });
+    // Yesterday (23:10 on 2026-03-29, local) is still accepted.
+    const yesterday = {
+      ...dst,
+      occurredAt: at('2026-03-29T21:10:00Z'),
+      fixAt: at('2026-03-29T21:09:50Z'),
+      businessDate: '2026-03-29',
+      todayOrYesterday: true,
+    };
+    expect(admitDeviceTimes(yesterday)).toEqual({ ok: true, flags: ['LATE'] });
+    // The 24 h limit still applies to a foreman proxy.
+    expect(
+      admitDeviceTimes({
+        ...base,
+        deviceSentAt: at('2026-10-06T08:00:01Z'),
+        receivedAt: at('2026-10-06T08:00:02Z'),
+        todayOrYesterday: true,
+      }),
+    ).toEqual({ ok: false, code: 'TOO_LATE' });
+  });
+});
+
 describe('geofence', () => {
   it('refuses coarse accuracy, outside the radius and a missing reference (never distance 0)', () => {
     const inside = { lat: north(300), lon: 0, accuracyM: 20 };
