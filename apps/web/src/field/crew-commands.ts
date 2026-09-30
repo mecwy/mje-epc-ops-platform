@@ -64,6 +64,10 @@ export class CrewCommands {
   get refusalUncertain(): boolean {
     return this.owned.refusalUncertain;
   }
+  /** Stop showing the last refusal (dismissed by the user). */
+  clearRefusal() {
+    this.owned.clearRefusal();
+  }
   isUnresolved(personId: string) {
     return this.unresolved?.personId === personId;
   }

@@ -96,15 +96,11 @@ export function CrewList({
       commands.current?.personId === confirming.personId)
       ? confirming
       : null;
-  // A refused confirmation whose sheet has closed (its person left) or that may already
-  // have been recorded (an earlier attempt went unanswered) stays named on the card.
+  // The last refused confirmation stays named on the card whenever its sheet is not open:
+  // after the sheet closed, after its person left, and after the role was lost and restored
+  // (the sheet's own state is gone then; the owner keeps the result). Dismissed by the user.
   const lastRefused =
-    commands.refused &&
-    commands.refusal &&
-    !open &&
-    (!inCrew(commands.refused.personId) || commands.refusalUncertain)
-      ? commands.refused
-      : null;
+    commands.refused && commands.refusal && !open ? commands.refused : null;
   return (
     <section className="card">
       <h2 className="blk">{t('fm_crewTitle', { crew: crew.crewName })}</h2>
@@ -120,7 +116,14 @@ export function CrewList({
             code={commands.refusal}
             write
             uncertain={commands.refusalUncertain}
-          />
+          />{' '}
+          <button
+            type="button"
+            className="textbtn"
+            onClick={() => commands.clearRefusal()}
+          >
+            {t('close')}
+          </button>
         </div>
       )}
       {rows.length === 0 && <p className="muted small">{t('fm_crewEmpty')}</p>}
@@ -438,7 +441,10 @@ export function ReportCard({
 }) {
   const { t, locale } = useI18n();
   const days = reportDays(me.project.timezone, new Date());
-  const [day, setDay] = useState(days[0]);
+  const [picked, setDay] = useState(days[0]);
+  // New reports only for the site's today and yesterday: a day that has left that window
+  // (site midnight passed) is not offered any more; its retained attempt is shown below.
+  const day = days.includes(picked) ? picked : days[0];
   const e = owners.reports.get(day);
   useEffect(() => {
     if (!e.session.data && !e.session.readError) void e.session.load();
@@ -461,7 +467,62 @@ export function ReportCard({
         ))}
       </div>
       <ReportDayBody report={e} timeZone={me.project.timezone} />
+      <RetainedReports owners={owners} window={days} />
     </section>
+  );
+}
+
+/**
+ * Report attempts for days outside the selectable window (the site's today and yesterday),
+ * kept by the device-level owner: a send that is running or unresolved keeps its payload,
+ * original key and body, and Retry / Give up; the server decides (a day now too old is refused
+ * TOO_LATE, a certain refusal). The last refusal stays shown until dismissed.
+ */
+export function RetainedReports({
+  owners,
+  window,
+}: {
+  owners: ForemanOwners;
+  window: readonly string[];
+}) {
+  const { t, locale } = useI18n();
+  const retained = owners.reports
+    .all()
+    .filter(
+      (d) =>
+        !window.includes(d.day) &&
+        (d.sends.current !== null || d.sends.refusal !== null),
+    );
+  if (retained.length === 0) return null;
+  return (
+    <div className="retained">
+      {retained.map((d) => {
+        const owned = d.sends.current;
+        return (
+          <div key={d.day} className="retained-day">
+            <b>{t('fm_actReport', { day: fmtDay(d.day, locale) })}</b>
+            {owned ? (
+              <OwnedReport data={d.session.data} report={d} payload={owned} />
+            ) : (
+              <div className="banner err" role="alert">
+                <ErrorText
+                  code={d.sends.refusal}
+                  write
+                  uncertain={d.sends.refusalUncertain}
+                />{' '}
+                <button
+                  type="button"
+                  className="textbtn"
+                  onClick={() => d.sends.clearRefusal()}
+                >
+                  {t('close')}
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -520,7 +581,8 @@ export function OwnedReport({
   report,
   payload,
 }: {
-  data: ForemanReportDto;
+  /** The read the labels come from (null for a retained day never read in this view). */
+  data: ForemanReportDto | null;
   report: ReportDay;
   payload: ReportSend;
 }) {
@@ -529,7 +591,7 @@ export function OwnedReport({
   const unresolved = report.sends.unresolved !== null;
   const busy = report.session.busy;
   const labelOf = (k: string) => {
-    const it = data.items.find((i) => i.key === k);
+    const it = data?.items.find((i) => i.key === k);
     return it ? label(it.label) : k;
   };
   return (

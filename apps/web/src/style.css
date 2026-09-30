@@ -1578,3 +1578,17 @@ ul.plainlist:not(.card) {
 .fmrow .blk-row input {
   flex: none;
 }
+
+/* Report attempts for days outside today/yesterday (#39 follow-up). */
+.retained {
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+}
+.retained-day {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
