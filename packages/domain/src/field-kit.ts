@@ -41,14 +41,35 @@ export type FieldErrorCode =
   | 'CREW_ENDED'
   | 'CREW_NOT_EMPTY'
   | 'CREW_CODE_TAKEN'
+  // check-in and selfie (A6b)
+  | 'PROXY_NOT_ALLOWED'
+  | 'FEATURE_OFF'
+  | 'FIX_TIME_INVALID'
+  | 'TIME_ORDER_INVALID'
+  | 'DEVICE_CLOCK_SKEW'
+  | 'TOO_LATE'
+  | 'BUSINESS_DAY_MISMATCH'
+  | 'LOCATION_TOO_COARSE'
+  | 'GEOFENCE_OUTSIDE'
+  | 'SITE_NOT_CONFIGURED'
+  | 'ALREADY_CHECKED_IN'
+  | 'REASON_REQUIRED'
+  | 'SELFIE_EXPIRED'
+  | 'SELFIE_TOO_LARGE'
+  | 'UNSUPPORTED_MEDIA'
   // foreman reports and adoption (A6c)
   | 'REVISION_CONFLICT'
   | 'NUMBER_INVALID'
-  | 'ITEM_NOT_FOUND'
-  | 'TOO_LATE'
-  | 'TIME_ORDER_INVALID';
+  | 'ITEM_NOT_FOUND';
 export class FieldError extends Error {
-  constructor(public readonly code: FieldErrorCode) {
+  constructor(
+    public readonly code: FieldErrorCode,
+    /**
+     * Extra refusal fields the caller is entitled to (only ALREADY_CHECKED_IN: the existing
+     * check-in's occurredAt and kind). Never coordinates, secrets or names.
+     */
+    public readonly existing?: { occurredAt: string | null; kind: string },
+  ) {
     super(code);
   }
 }
@@ -285,8 +306,32 @@ export async function fieldIdempotent<T>(
   command: unknown,
   work: () => Promise<Outcome<T>>,
 ): Promise<Outcome<T> & { replayed: boolean }> {
-  const requestHash = sha(command);
   await keyLock(client, orgId, actorId, route, key);
+  const prior = await priorOutcome<T>(
+    client,
+    orgId,
+    actorId,
+    route,
+    key,
+    command,
+  );
+  if (prior) return { ...prior, replayed: true };
+  const outcome = await work();
+  await recordOutcome(client, orgId, actorId, route, key, command, outcome);
+  return { ...outcome, replayed: false };
+}
+/**
+ * The stored outcome of (actor, route, key), if any; a different command under the same key
+ * is IDEMPOTENCY_KEY_REUSED. The caller holds the key lock (level I).
+ */
+export async function priorOutcome<T>(
+  client: PoolClient,
+  orgId: string,
+  actorId: string,
+  route: string,
+  key: string,
+  command: unknown,
+): Promise<Outcome<T> | null> {
   const prior = await client.query<{
     requestHash: string;
     responseStatus: 200 | 409;
@@ -296,16 +341,23 @@ export async function fieldIdempotent<T>(
     WHERE "orgId"=$1 AND "actorId"=$2 AND route=$3 AND key=$4`,
     [orgId, actorId, route, key],
   );
-  if (prior.rows[0]) {
-    if (prior.rows[0].requestHash !== requestHash)
-      throw new FieldError('IDEMPOTENCY_KEY_REUSED');
-    return {
-      status: prior.rows[0].responseStatus,
-      body: prior.rows[0].responseBody,
-      replayed: true,
-    };
-  }
-  const outcome = await work();
+  if (!prior.rows[0]) return null;
+  if (prior.rows[0].requestHash !== sha(command))
+    throw new FieldError('IDEMPOTENCY_KEY_REUSED');
+  return {
+    status: prior.rows[0].responseStatus,
+    body: prior.rows[0].responseBody,
+  };
+}
+export async function recordOutcome<T>(
+  client: PoolClient,
+  orgId: string,
+  actorId: string,
+  route: string,
+  key: string,
+  command: unknown,
+  outcome: Outcome<T>,
+) {
   await client.query(
     `INSERT INTO "IdempotencyRecord"(id,"orgId","updatedAt","updatedBy","actorId",route,key,"requestHash",status,"responseStatus","responseBody")
     VALUES($1,$2,now(),$3,$3,$4,$5,$6,'COMPLETED',$7,$8)`,
@@ -315,12 +367,11 @@ export async function fieldIdempotent<T>(
       actorId,
       route,
       key,
-      requestHash,
+      sha(command),
       outcome.status,
       JSON.stringify(outcome.body),
     ],
   );
-  return { ...outcome, replayed: false };
 }
 export function settled<T>(o: Outcome<T>): T {
   if (o.status !== 200)
@@ -344,11 +395,13 @@ export async function deviceEvent(
     kind: string;
     reason?: string | null;
     actor?: EventActor;
+    /** Refused check-ins only: the distance in 100 m buckets (never coordinates). */
+    distanceBucketM?: number | null;
   },
 ) {
   await client.query(
-    `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorAccountId","actorPersonId","actorDeviceId")
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorAccountId","actorPersonId","actorDeviceId","distanceBucketM")
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [
       randomUUID(),
       e.orgId,
@@ -360,6 +413,7 @@ export async function deviceEvent(
       e.actor?.accountId ?? null,
       e.actor?.personId ?? null,
       e.actor?.deviceId ?? null,
+      e.distanceBucketM ?? null,
     ],
   );
 }

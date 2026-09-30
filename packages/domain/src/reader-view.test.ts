@@ -213,6 +213,19 @@ describe('reader view: whether a photo has a position, not where (OD20)', () => 
     const noPhotos = { businessDate: '2026-10-05' };
     expect(readerSnapshot(noPhotos)).toBe(noPhotos);
   });
+
+  it('a revision snapshot never gives a reader the frozen check-ins (A6.0)', () => {
+    const field = { seqBoundary: 2, checkIns: [{ personId: 'p' }] };
+    const stored = { businessDate: '2026-10-05', field, photos: [] };
+    const copy = structuredClone(stored);
+    const shown = readerSnapshot(stored);
+    expect('field' in shown).toBe(false);
+    expect(shown).toEqual({ businessDate: '2026-10-05', photos: [] });
+    expect(readerSnapshot({ businessDate: 'x', field })).toEqual({
+      businessDate: 'x',
+    });
+    expect(stored).toEqual(copy);
+  });
   it('never passes on frozen foreman reports or adoptions (writer data)', () => {
     const stored = {
       businessDate: '2026-10-05',

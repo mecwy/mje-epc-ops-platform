@@ -66,8 +66,9 @@ import {
   type ReportProjectRow,
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
+import { fieldDayAsOf, nextSeq } from './checkin-store.js';
 import { FieldError, rosterLock } from './field-kit.js';
-import { foremanDayAsOf, nextFieldSeq } from './foreman-store.js';
+import { foremanDayAsOf } from './foreman-store.js';
 import {
   frozenPhotos,
   photoAsOf,
@@ -593,18 +594,32 @@ export class ReportStore {
     });
   }
   /**
-   * The live foreman view for a writer, marked where its expected crew set differs from the one
-   * the latest submitted revision froze (a roster change after submission never alters it).
+   * The live foreman view for a writer. Revisions and adoptions numbered after the latest
+   * submission's boundary are marked `afterSubmission` (they enter only through a correction),
+   * and the live expected crew set is compared with the one that submission froze (a roster
+   * change after submission never alters the revision). Null marks: never submitted.
    */
   private static foremanView(
     live: ForemanDayDto,
     submitted: Record<string, unknown> | null,
   ) {
     const frozen = submitted?.['foreman'] as ForemanDayDto | undefined;
+    const field = submitted?.['field'] as { seqBoundary?: number } | undefined;
+    // A revision from before field sequences existed froze none (0).
+    const boundary = submitted ? (field?.seqBoundary ?? 0) : null;
+    const after = (daySeq: number) => boundary !== null && daySeq > boundary;
     const ids = (d: ForemanDayDto) =>
       d.expectedCrews.map((c) => c.crewId).sort();
     return {
       ...live,
+      revisions: live.revisions.map((r) => ({
+        ...r,
+        afterSubmission: after(r.daySeq),
+      })),
+      adoptions: live.adoptions.map((a) => ({
+        ...a,
+        afterSubmission: after(a.daySeq),
+      })),
       submittedExpectedCrews: frozen ? ids(frozen) : null,
       expectedCrewsChanged: frozen
         ? ids(frozen).join(',') !== ids(live).join(',')
@@ -789,6 +804,14 @@ export class ReportStore {
       throw new ReportError('LOCKED');
     // A photo upload for this day either lands before the snapshot or finds the day locked.
     await lockReportDay(client, actor.orgId, project.id, businessDate);
+    // Design §5 submission boundary: the field rows numbered up to the day's sequence as read
+    // under the day lock (never by receipt time); later rows are afterSubmission.
+    const field = await fieldDayAsOf(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+    );
     const items = await this.items(client, actor.orgId, project.id);
     const { snapshot, coverage: cov } = await this.snapshot(
       client,
@@ -815,6 +838,7 @@ export class ReportStore {
         reason,
         {
           ...snapshot,
+          field,
           revisionNumber,
           correctionReason: reason,
           aggregateVersion: day.version,
@@ -1003,7 +1027,7 @@ export class ReportStore {
             qty: { ...before.qty, [command.item]: total.value },
           };
           await this.saveDraft(client, actor, day.id, facts);
-          const daySeq = await nextFieldSeq(
+          const daySeq = await nextSeq(
             client,
             actor.orgId,
             project.id,

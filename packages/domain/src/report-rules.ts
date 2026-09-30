@@ -369,29 +369,17 @@ export function sameForemanBasis(a: ForemanBasis, b: ForemanBasis): boolean {
     revs(a) === revs(b)
   );
 }
-/** The site's calendar date (YYYY-MM-DD) at an instant. */
-export function siteDate(at: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(at);
-  const part = (t: string) => parts.find((p) => p.type === t)!.value;
-  return `${part('year')}-${part('month')}-${part('day')}`;
-}
 /**
- * A foreman writes only for the site's today or yesterday at the decision time (§1 historical
- * writes); older days are PM-only and a future day is not a report.
+ * A foreman writes only for the site's today or yesterday (§1 historical writes), judged from
+ * the site's calendar date at the decision time, never a client date; older days are PM-only
+ * and a future day is not a report.
  */
 export function foremanDateAllowed(
   businessDate: string,
-  at: Date,
-  timeZone: string,
+  siteToday: string,
 ): 'ok' | 'future' | 'tooOld' {
-  const today = siteDate(at, timeZone);
-  if (businessDate > today) return 'future';
-  return businessDate >= shiftDate(today, -1) ? 'ok' : 'tooOld';
+  if (businessDate > siteToday) return 'future';
+  return businessDate >= shiftDate(siteToday, -1) ? 'ok' : 'tooOld';
 }
 
 // ---------- coverage (what is still missing; never blocks submission) ----------

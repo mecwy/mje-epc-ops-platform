@@ -25,7 +25,6 @@ import {
   planStatus,
   sameForemanBasis,
   shiftDate,
-  siteDate,
   suggestCumulative,
   type ForemanBasis,
   type ForemanItemTotal,
@@ -330,18 +329,13 @@ describe('foreman totals (completeness, not a bare sum)', () => {
       }),
     ).toBe(false);
   });
-  it('a foreman writes for the site today or yesterday only, by the site calendar', () => {
-    // 23:30 UTC on 30 Sep is 1 Oct 01:30 in Belgrade (UTC+2).
-    const at = new Date('2026-09-30T23:30:00Z');
-    expect(siteDate(at, 'Europe/Belgrade')).toBe('2026-10-01');
-    expect(foremanDateAllowed('2026-10-01', at, 'Europe/Belgrade')).toBe('ok');
-    expect(foremanDateAllowed('2026-09-30', at, 'Europe/Belgrade')).toBe('ok');
-    expect(foremanDateAllowed('2026-09-29', at, 'Europe/Belgrade')).toBe(
-      'tooOld',
-    );
-    expect(foremanDateAllowed('2026-10-02', at, 'Europe/Belgrade')).toBe(
-      'future',
-    );
+  it('a foreman writes for the site today or yesterday only', () => {
+    expect(foremanDateAllowed('2026-10-01', '2026-10-01')).toBe('ok');
+    expect(foremanDateAllowed('2026-09-30', '2026-10-01')).toBe('ok');
+    expect(foremanDateAllowed('2026-09-29', '2026-10-01')).toBe('tooOld');
+    expect(foremanDateAllowed('2026-10-02', '2026-10-01')).toBe('future');
+    // Across a month and a year end.
+    expect(foremanDateAllowed('2026-12-31', '2027-01-01')).toBe('ok');
   });
 });
 

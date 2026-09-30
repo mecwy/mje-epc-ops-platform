@@ -8,4 +8,5 @@ export * from './report.js';
 export * from './issue.js';
 export * from './photo.js';
 export * from './field.js';
+export * from './checkin.js';
 export * from './foreman.js';

@@ -15,6 +15,7 @@ import { resolve } from 'node:path';
 import {
   AlphaError,
   AlphaStore,
+  CheckInStore,
   FieldError,
   FieldStore,
   ForemanStore,
@@ -30,6 +31,10 @@ import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
 import { FieldController, FieldTokenGuard } from './field.controller.js';
 import { FieldAdminController } from './field-admin.controller.js';
+import {
+  CheckInAdminController,
+  CheckInController,
+} from './checkin.controller.js';
 import {
   ForemanAdoptController,
   ForemanFieldController,
@@ -61,6 +66,10 @@ const FIELD_STATUS: Partial<Record<string, number>> = {
   NOT_FOUND: 404,
   ENTRY_CODE_INVALID: 404,
   PERSON_NOT_ROSTERED: 404,
+  PROXY_NOT_ALLOWED: 403,
+  FEATURE_OFF: 403,
+  SELFIE_TOO_LARGE: 413,
+  UNSUPPORTED_MEDIA: 415,
   ITEM_NOT_FOUND: 404,
   RATE_LIMITED: 429,
   RETRY: 503,
@@ -70,6 +79,8 @@ class SafeErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     let status = 500;
     let code = 'REQUEST_FAILED';
+    // Only ALREADY_CHECKED_IN adds anything: the existing check-in's occurredAt and kind.
+    let existing: FieldError['existing'];
     if (error instanceof HttpException) {
       status = error.getStatus();
       code =
@@ -87,6 +98,7 @@ class SafeErrorFilter implements ExceptionFilter {
     } else if (error instanceof FieldError) {
       code = error.code;
       status = FIELD_STATUS[code] ?? 409;
+      if (code === 'ALREADY_CHECKED_IN') existing = error.existing;
     } else if (error instanceof AlphaError || error instanceof ReportError) {
       code = error.code;
       status =
@@ -127,7 +139,9 @@ class SafeErrorFilter implements ExceptionFilter {
       .switchToHttp()
       .getResponse<express.Response>()
       .status(status)
-      .json({ code, correlationId });
+      .json(
+        existing ? { code, correlationId, existing } : { code, correlationId },
+      );
   }
 }
 export interface AlphaRuntime {
@@ -140,6 +154,8 @@ export interface AlphaRuntime {
   photoStore?: PhotoStore;
   /** Field roster, devices and entry (A6a); served only together with the report slice. */
   fieldStore?: FieldStore;
+  /** Worker check-in and staged selfie (A6b); served only together with the field slice. */
+  checkInStore?: CheckInStore;
   /** Foreman quantity reports (A6c); served only together with the field slice. */
   foremanStore?: ForemanStore;
   verifier: TokenVerifier;
@@ -170,6 +186,9 @@ export async function createApp(alpha?: AlphaRuntime) {
       ...(alpha?.reportStore && alpha.fieldStore
         ? [FieldController, FieldAdminController]
         : []),
+      ...(alpha?.reportStore && alpha.fieldStore && alpha.checkInStore
+        ? [CheckInController, CheckInAdminController]
+        : []),
       ...(alpha?.reportStore && alpha.fieldStore && alpha.foremanStore
         ? [ForemanFieldController, ForemanAdoptController]
         : []),
@@ -192,6 +211,9 @@ export async function createApp(alpha?: AlphaRuntime) {
                 { provide: FieldStore, useValue: alpha.fieldStore },
                 FieldTokenGuard,
               ]
+            : []),
+          ...(alpha.reportStore && alpha.fieldStore && alpha.checkInStore
+            ? [{ provide: CheckInStore, useValue: alpha.checkInStore }]
             : []),
           ...(alpha.reportStore && alpha.fieldStore && alpha.foremanStore
             ? [{ provide: ForemanStore, useValue: alpha.foremanStore }]

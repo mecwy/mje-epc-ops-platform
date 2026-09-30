@@ -27,6 +27,8 @@ import {
   type DeviceRow,
 } from './field-kit.js';
 import { rosterVersion } from './field-roster.js';
+import { localDate } from './checkin-rules.js';
+import { nextSeq, submittedBoundary } from './checkin-store.js';
 import {
   dec,
   foremanDateAllowed,
@@ -46,6 +48,8 @@ export interface ForemanReportResultDto {
   revisionId: string;
   daySeq: number;
   receivedAt: string;
+  /** Numbered after the day's latest submission: it enters only through a correction. */
+  afterSubmission: boolean;
 }
 
 /** '' | 'unknown' | 'na' | a decimal (comma accepted, normalized); anything else is null. */
@@ -182,22 +186,6 @@ export async function foremanDayAsOf(
     },
   };
 }
-/** Level 7: the next field sequence number of the day (the caller holds the day lock, level 4). */
-export async function nextFieldSeq(
-  client: PoolClient,
-  orgId: string,
-  projectId: string,
-  businessDate: string,
-): Promise<number> {
-  const r = await client.query<{ lastSeq: string }>(
-    `INSERT INTO "FieldDay"(id,"orgId","projectId","businessDate","lastSeq") VALUES($1,$2,$3,$4::date,1)
-    ON CONFLICT ("orgId","projectId","businessDate") DO UPDATE SET "lastSeq" = "FieldDay"."lastSeq" + 1
-    RETURNING "lastSeq"`,
-    [randomUUID(), orgId, projectId, businessDate],
-  );
-  return Number(r.rows[0]!.lastSeq);
-}
-
 export class ForemanStore {
   readonly throttle: FieldThrottle;
   constructor(
@@ -247,7 +235,7 @@ export class ForemanStore {
     t: Date,
   ): Promise<string> {
     const tz = await this.timezone(client, d);
-    const allowed = foremanDateAllowed(businessDate, t, tz);
+    const allowed = foremanDateAllowed(businessDate, localDate(t, tz));
     if (allowed === 'future') throw new FieldError('TIME_ORDER_INVALID');
     if (allowed === 'tooOld') throw new FieldError('TOO_LATE');
     const crews = await expectedCrews(
@@ -388,7 +376,13 @@ export class ForemanStore {
                   [reportId, d.orgId, d.projectId, crew.id, cmd.businessDate],
                 );
               }
-              const daySeq = await nextFieldSeq(
+              const boundary = await submittedBoundary(
+                client,
+                d.orgId,
+                d.projectId,
+                cmd.businessDate,
+              );
+              const daySeq = await nextSeq(
                 client,
                 d.orgId,
                 d.projectId,
@@ -423,6 +417,7 @@ export class ForemanStore {
                   revisionId,
                   daySeq,
                   receivedAt: t.toISOString(),
+                  afterSubmission: boundary !== null && daySeq > boundary,
                 },
               };
             },
