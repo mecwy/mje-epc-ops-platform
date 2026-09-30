@@ -72,6 +72,7 @@
   "apps/web/src/field/proxy-flow.ts",
   "apps/web/src/field/release.test.ts",
   "apps/web/src/field/release.ts",
+  "apps/web/src/field/retained-attempts.test.ts",
   "apps/web/src/field/session.test.ts",
   "apps/web/src/field/session.ts",
   "apps/web/src/i18n-vars.test.ts",

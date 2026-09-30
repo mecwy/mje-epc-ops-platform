@@ -53,8 +53,11 @@ function buttonsOf(
   props: object,
   provide: (el: ReactElement) => ReactElement = (el) => el,
 ) {
-  const out: { text: string; onClick?: () => unknown; disabled?: boolean }[] =
-    [];
+  const out: {
+    text: string;
+    onClick: (() => unknown) | undefined;
+    disabled: boolean | undefined;
+  }[] = [];
   const textOf = (n: unknown): string =>
     typeof n === 'string' || typeof n === 'number'
       ? String(n)
@@ -85,7 +88,7 @@ function buttonsOf(
   return { html, buttons: out };
 }
 const click = async (
-  b: { text: string; onClick?: () => unknown }[],
+  b: { text: string; onClick: (() => unknown) | undefined }[],
   text: RegExp,
 ) => {
   const btn = b.find((x) => text.test(x.text));
