@@ -1,6 +1,12 @@
 import { Pool } from 'pg';
 import { ManagedIdentityCredential } from '@azure/identity';
-import { AlphaStore, IssueStore, PhotoStore, ReportStore } from '@mje/domain';
+import {
+  AlphaStore,
+  FieldStore,
+  IssueStore,
+  PhotoStore,
+  ReportStore,
+} from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
 import { AzurePhotoBlobStore } from './photo-blobs.js';
 import { TokenVerifier } from './auth/token-verifier.js';
@@ -79,7 +85,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
   const roles = await pool.query<{
     unsafe: boolean;
   }>(`SELECT (r.rolsuper OR r.rolbypassrls OR EXISTS
-    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
+    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink','Person','Crew','CrewAssignment','ProjectRoster','FieldEntryCode','FieldDevice','FieldTokenHash','FieldConfirmChallenge','FieldPersonConfirm','FieldDeviceEvent','FieldThrottle','FieldThrottleSalt') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
     FROM pg_roles r WHERE r.rolname=current_user`);
   if (roles.rows[0]?.unsafe !== false)
     throw new Error(
@@ -91,6 +97,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     store: new AlphaStore(pool),
     reportStore: new ReportStore(pool),
     issueStore: new IssueStore(pool),
+    fieldStore: new FieldStore(pool),
   };
   const blobs = await photoBlobs();
   if (blobs) runtime.photoStore = new PhotoStore(pool, blobs);
