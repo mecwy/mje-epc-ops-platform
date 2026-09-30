@@ -8,8 +8,42 @@ import {
 } from '../api.js';
 import { DraftSession, type FlushOutcome } from './draft.js';
 import { photoAsOf, setFact } from './model.js';
+import { restoreDecision, type DraftStash } from '../signin.js';
 
 export type { SaveState } from './draft.js';
+/** Where stashed drafts wait until their day is read (see ResumeKeeper). */
+export interface DraftRecovery {
+  draft(projectId: string, businessDate: string): DraftStash | null;
+  taken(stash: DraftStash): void;
+  resolved(stash: DraftStash): void;
+}
+
+/**
+ * A day was just read into `s` (nothing unsaved): reconcile the draft stashed for it. Saved or
+ * conflicting drafts are resolved at once; a re-applied one only when its write is answered
+ * (acknowledged or refused as a conflict), so until then a renewal keeps it.
+ */
+export function reconcileDraft(
+  recovery: DraftRecovery | undefined,
+  s: DraftSession,
+  onConflict: () => void,
+  afterFlush: (outcome: FlushOutcome) => void,
+) {
+  const stash = recovery?.draft(s.projectId, s.businessDate);
+  if (!recovery || !stash || s.dirty) return;
+  const decision = restoreDecision(stash, s);
+  if (decision === 'apply') {
+    if (!s.edit(stash.facts)) return; // held by an action: try on the next read
+    recovery.taken(stash);
+    void s.flush().then((outcome) => {
+      if (outcome === 'ok' || outcome === 'conflict') recovery.resolved(stash);
+      afterFlush(outcome);
+    });
+    return;
+  }
+  recovery.resolved(stash);
+  if (decision === 'conflict') onConflict();
+}
 const AUTOSAVE_MS = 700;
 
 export class ActionAborted extends Error {
@@ -40,6 +74,8 @@ export function useDay(
   projectId: string,
   businessDate: string,
   onConflict: () => void,
+  /** Unsaved facts put aside before a sign-in redirect; each is reconciled on its first read. */
+  recovery?: DraftRecovery,
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const entries = useRef(new Map<string, Entry>());
@@ -47,6 +83,10 @@ export function useDay(
   const conflict = useRef(onConflict);
   conflict.current = onConflict;
   const key = `${projectId}:${businessDate}`;
+  const recover = useRef(recovery);
+  const afterRestore = useRef<(e: Entry, o: FlushOutcome) => Promise<void>>(
+    async () => {},
+  );
 
   const entryFor = useCallback(
     (pid: string, date: string): Entry => {
@@ -101,6 +141,14 @@ export function useDay(
         e.day = d;
         e.frozen = content;
         e.error = null;
+        // Only against a read the session took (not refused by adopt), else wait for the next.
+        if (s.version === d.version)
+          reconcileDraft(
+            recover.current,
+            s,
+            () => conflict.current(),
+            (o) => void afterRestore.current(e, o),
+          );
       } catch (err) {
         if (ticket === e.reads)
           e.error = err instanceof ApiError ? err.code : 'REQUEST_FAILED';
@@ -119,6 +167,7 @@ export function useDay(
     },
     [read],
   );
+  afterRestore.current = settleAfter;
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -231,6 +280,16 @@ export function useDay(
     error: e?.error ?? null,
     edit,
     flush,
+    /** Every day of this workspace with facts the server has not acknowledged. */
+    unsaved: (): DraftStash[] =>
+      [...entries.current.values()]
+        .filter((x) => x.session.dirty)
+        .map(({ session: d }) => ({
+          projectId: d.projectId,
+          businessDate: d.businessDate,
+          version: d.version,
+          facts: d.facts,
+        })),
     reload: () => (e ? read(e, false) : Promise.resolve()),
     submit: () => act((v) => api.submit({ ...base(), expectedVersion: v })),
     noWork: (reason: NoWorkReason, note: string) =>
