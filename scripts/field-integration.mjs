@@ -1,5 +1,5 @@
-// Field roster, devices and entry (A6a), worker check-in and staged selfie (A6b) HTTP + database
-// integration test. Synthetic TEST data
+// Field roster, devices and entry (A6a), worker check-in and staged selfie (A6b), foreman
+// quantity reports and PM adoption (A6c) HTTP + database integration test. Synthetic TEST data
 // only (TEST names, generated tokens and codes; no coordinates). Runs against an isolated
 // database created for this run; the application connects with a low-privilege role (no
 // ownership, no RLS bypass) exactly as deployed. Concurrency cases line requests up on the
@@ -451,6 +451,8 @@ try {
     'stale confirmation, revoke before confirm',
     'selfie: attach vs cleanup',
     'check-in: submission boundary under concurrency',
+    'foreman: adopt vs roster change',
+    'foreman: adopt, revision and roster vs submit',
   ]);
   async function http(path, options) {
     const until = Date.now() + 10_000;
@@ -4068,6 +4070,774 @@ try {
     );
   }
 
+  // ================= A6c: foreman quantity reports and PM adoption =================
+  // A project of its own (TEST-F), so its days, roster and items start empty. Its crews are
+  // moved three days back (owner, triggers off; TEST only), so yesterday and the day before are
+  // staffed days too and the date rule, not the roster, decides what a foreman may write.
+  step('foreman: reports, authority, dates');
+  const F = { dev: {} };
+  const projectF = randomUUID();
+  const rget = (path, bearer) =>
+    http('/api/report' + path, { method: 'GET', bearer });
+  const rpost = (path, bearer, body) =>
+    http('/api/report' + path, { method: 'POST', bearer, body });
+  const dayOf = (date, bearer = pm) =>
+    expectStatus(
+      rget(`/day?projectId=${projectF}&businessDate=${date}`, bearer),
+      200,
+    );
+  const revisionOf = (date, n, bearer = pm) =>
+    expectStatus(
+      rget(
+        `/revision?projectId=${projectF}&businessDate=${date}&n=${n}`,
+        bearer,
+      ),
+      200,
+    );
+  const reportBody = (o) => ({
+    clientMutationId: o.key ?? randomUUID(),
+    businessDate: o.date ?? F.T,
+    crewId: o.crew,
+    expectedRevision: o.n ?? 0,
+    rows: Array.isArray(o.rows)
+      ? o.rows
+      : Object.entries(o.rows ?? {}).map(([itemKey, qty]) => ({
+          itemKey,
+          qty,
+        })),
+    note: o.note ?? '',
+    occurredAt: new Date().toISOString(),
+  });
+  const freport = (token, o) => fpost('/report', token, reportBody(o));
+  const adopt = (item, day, o = {}) =>
+    rpost('/foreman/adopt', o.bearer ?? pm, {
+      projectId: projectF,
+      businessDate: o.date ?? F.T,
+      clientMutationId: o.key ?? randomUUID(),
+      item,
+      expectedVersion: o.version ?? day.version,
+      basis: o.basis ?? day.foreman.basis,
+    });
+  const adoptions = () =>
+    count(
+      `SELECT count(*)::int AS n FROM "ForemanAdoption" WHERE "projectId"=$1`,
+      [projectF],
+    );
+  const rosterKeyF = `${orgA}:field-roster:${projectF}`;
+  /** Holds the next app statement matching `match` (after it ran) until `open()`. */
+  function gateAfter(match) {
+    let hit, release;
+    const reached = new Promise((resolve) => (hit = resolve));
+    const opened = new Promise((resolve) => (release = resolve));
+    const open = async () => {
+      held.delete(open);
+      release();
+    };
+    held.add(open);
+    queryGate = { match: (text) => text.includes(match), hit, opened };
+    return {
+      reached: () => withTimeout(reached, STEP_MS, `gate after ${match}`),
+      open,
+    };
+  }
+  const openAssignment = (personId, role = 'MEMBER') =>
+    lastRoster[projectF].assignments
+      .filter(
+        (a) =>
+          a.personId === personId && a.role === role && a.validUntil === null,
+      )
+      .at(-1).id;
+  {
+    await owner.query(
+      'INSERT INTO "Project"(id,"orgId","updatedAt","updatedBy",code,name,timezone,status) VALUES($1,$2,now(),$3,\'TEST-F\',\'TEST-F\',\'Europe/Belgrade\',\'ACTIVE\')',
+      [projectF, orgA, seedActor],
+    );
+    await membership(orgA, accounts.pm, 'PROJECT_MANAGER', projectF);
+    rosterV[projectF] = 0;
+    entryCode[projectF] = (
+      await expectStatus(rotateEntry(projectF, pm), 200)
+    ).code;
+    secret.entry.push(entryCode[projectF]);
+    const item = (key, sortOrder, active = true) => ({
+      kind: 'work',
+      key,
+      label: `TEST ${key}`,
+      unit: 'set',
+      designQty: '',
+      openingCumulative: '',
+      sortOrder,
+      active,
+    });
+    await expectStatus(
+      rpost('/items', pm, {
+        projectId: projectF,
+        clientMutationId: randomUUID(),
+        items: [
+          ...['support', 'rail', 'modules', 'cable', 'fence', 'big'].map(
+            (k, i) => item(k, i),
+          ),
+          item('retired', 9, false),
+        ],
+      }),
+      200,
+    );
+    for (const k of [
+      'Ffa',
+      'Ffb',
+      'Ffc',
+      'Ffd',
+      'Fwa',
+      'Fwb',
+      'Fwc',
+      'Fwd',
+      'Fw1',
+      'Fw2',
+      'Fw3',
+      'Fw4',
+    ])
+      await addPerson(k, orgA);
+    for (const c of ['FA', 'FB', 'FC', 'FD']) F[c] = await crew(projectF, c);
+    await expectStatus(
+      change(
+        [
+          open(F.FA, person.Ffa),
+          open(F.FA, person.Ffa, 'FOREMAN'),
+          open(F.FA, person.Fwa),
+          open(F.FB, person.Ffb),
+          open(F.FB, person.Ffb, 'FOREMAN'),
+          open(F.FB, person.Fwb),
+          open(F.FC, person.Ffc),
+          open(F.FC, person.Ffc, 'FOREMAN'),
+          open(F.FC, person.Fwc),
+          // Crew FD is staffed all day but has no foreman (Ffd becomes its foreman later).
+          open(F.FD, person.Fwd),
+          open(F.FD, person.Ffd),
+        ],
+        projectF,
+      ),
+      200,
+    );
+    await travel(
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '3 days' WHERE "projectId"=$1`,
+      [projectF],
+    );
+    await travel(
+      `UPDATE "Crew" SET "activeFrom" = "activeFrom" - interval '3 days' WHERE "projectId"=$1`,
+      [projectF],
+    );
+    for (const k of ['Ffa', 'Ffb', 'Ffc', 'Ffd', 'Fwa'])
+      F.dev[k] = await onboard(person[k], {
+        code: entryCode[projectF],
+        projectId: projectF,
+      });
+    F.T = await siteDay(await clockNow());
+    F.Y = shiftDay(F.T, -1);
+    F.Y2 = shiftDay(F.T, -2);
+    const fa = F.dev.Ffa.token;
+
+    // The foreman's own crew, nothing reported yet; the active work items only.
+    const empty = await expectStatus(
+      fget(`/report?businessDate=${F.T}`, fa),
+      200,
+    );
+    assert.deepEqual(
+      [empty.crewId, empty.n, empty.rows, empty.items.map((i) => i.key)],
+      [F.FA, 0, [], ['support', 'rail', 'modules', 'cable', 'fence', 'big']],
+    );
+    // First revision; blank, unknown, n/a, zero and a comma decimal are all kept as given.
+    const first = reportBody({
+      crew: F.FA,
+      rows: {
+        support: '10',
+        rail: '',
+        modules: 'unknown',
+        cable: '0',
+        fence: 'na',
+        big: '99999999999999',
+      },
+      note: 'TEST first',
+    });
+    F.firstA = first;
+    const r1 = await expectStatus(fpost('/report', fa, first), 200);
+    assert.deepEqual([r1.crewId, r1.n, r1.afterSubmission], [F.FA, 1, false]);
+    assert.deepEqual(await expectStatus(fpost('/report', fa, first), 200), r1);
+    const stored = (
+      await owner.query(
+        `SELECT v.rows, v."daySeq"::int AS seq, v."siteTimezone", v."receivedAt", v."occurredAt"
+        FROM "ForemanReportRevision" v WHERE v.id=$1`,
+        [r1.revisionId],
+      )
+    ).rows[0];
+    assert.deepEqual(
+      stored.rows.find((x) => x.itemKey === 'rail'),
+      { itemKey: 'rail', qty: '' },
+    );
+    assert.equal(stored.seq, r1.daySeq);
+    assert.equal(stored.siteTimezone, 'Europe/Belgrade');
+    // Stale: the foreman submits on n−1 (a second tab still at 0).
+    await expectStatus(
+      freport(fa, { crew: F.FA, n: 0, rows: { support: '11' } }),
+      409,
+      'REVISION_CONFLICT',
+    );
+    // Items, numbers and duplicate keys.
+    for (const [rows, status, code] of [
+      [{ nope: '1' }, 404, 'ITEM_NOT_FOUND'],
+      [{ retired: '1' }, 404, 'ITEM_NOT_FOUND'],
+      [{ support: 'abc' }, 409, 'NUMBER_INVALID'],
+      [{ support: '1e3' }, 409, 'NUMBER_INVALID'],
+      [{ support: '-1' }, 409, 'NUMBER_INVALID'],
+      [{ support: '123456789012345' }, 409, 'NUMBER_INVALID'],
+      [{ support: '1.1234567' }, 409, 'NUMBER_INVALID'],
+      [
+        [
+          { itemKey: 'support', qty: '1' },
+          { itemKey: 'support', qty: '2' },
+        ],
+        400,
+        'INVALID_INPUT',
+      ],
+    ])
+      await expectStatus(freport(fa, { crew: F.FA, n: 1, rows }), status, code);
+    // Authority: another crew, a worker, another project's foreman; dates by the site calendar.
+    await expectStatus(
+      freport(fa, { crew: F.FB, rows: { support: '1' } }),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      freport(F.dev.Fwa.token, { crew: F.FA, n: 1, rows: { support: '1' } }),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      fget(`/report?businessDate=${F.T}`, F.dev.Fwa.token),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      freport(dev.kf.token, { crew: F.FA, n: 1, rows: { support: '1' } }),
+      403,
+      'NOT_FOREMAN',
+    );
+    await expectStatus(
+      freport(fa, { crew: F.FA, date: F.Y2, rows: { support: '1' } }),
+      409,
+      'TOO_LATE',
+    );
+    await expectStatus(
+      fget(`/report?businessDate=${F.Y2}`, fa),
+      409,
+      'TOO_LATE',
+    );
+    await expectStatus(
+      freport(fa, {
+        crew: F.FA,
+        date: shiftDay(F.T, 1),
+        rows: { support: '1' },
+      }),
+      409,
+      'TIME_ORDER_INVALID',
+    );
+    const y = await expectStatus(
+      freport(fa, { crew: F.FA, date: F.Y, rows: { support: '4' } }),
+      200,
+    );
+    assert.equal(y.n, 1);
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "ForemanReportRevision" v JOIN "ForemanReport" h ON h.id=v."reportId"
+        WHERE h."crewId"=$1 AND h."businessDate"=$2::date`,
+        [F.FA, F.T],
+      ),
+      1,
+    );
+    // The other crews report; FD (no foreman) cannot.
+    await expectStatus(
+      freport(F.dev.Ffb.token, {
+        crew: F.FB,
+        rows: {
+          support: '0',
+          rail: 'na',
+          modules: '5',
+          cable: '0',
+          fence: 'na',
+          big: '99999999999999',
+        },
+      }),
+      200,
+    );
+    const c1 = await expectStatus(
+      freport(F.dev.Ffc.token, {
+        crew: F.FC,
+        rows: {
+          support: 'na',
+          rail: 'na',
+          modules: '5,5',
+          cable: '0.000',
+          fence: 'na',
+          big: '1',
+        },
+      }),
+      200,
+    );
+    const cRows = (
+      await owner.query(
+        `SELECT rows FROM "ForemanReportRevision" WHERE id=$1`,
+        [c1.revisionId],
+      )
+    ).rows[0].rows;
+    assert.equal(cRows.find((x) => x.itemKey === 'modules').qty, '5.5');
+    await expectStatus(
+      freport(F.dev.Ffd.token, { crew: F.FD, rows: { support: '0' } }),
+      403,
+      'NOT_FOREMAN',
+    );
+    pass(
+      "foreman reports: the foreman's own current crew only (another crew, a worker, another project's foreman → NOT_FOREMAN), the site's today or yesterday only (two days ago → TOO_LATE, tomorrow → TIME_ORDER_INVALID); append-only revisions with expectedRevision (a stale n−1 → REVISION_CONFLICT) and an exact replay; unknown or inactive items → ITEM_NOT_FOUND (404); non-numbers, negatives, exponents and values outside Decimal(20,6) → NUMBER_INVALID; duplicate item keys → INVALID_INPUT; blanks stored as blank, a comma decimal normalized, the site timezone and day sequence stored; a refused write stores nothing",
+    );
+  }
+
+  step('foreman: completeness and explicit adoption');
+  {
+    const day0 = await dayOf(F.T);
+    const f0 = day0.foreman;
+    assert.deepEqual(
+      f0.expectedCrews.map((c) => [c.crewId, c.hasForeman]),
+      [
+        [F.FA, true],
+        [F.FB, true],
+        [F.FC, true],
+        [F.FD, false],
+      ],
+    );
+    // A staffed crew without a foreman is expected and MISSING_REPORT: nothing is COMPLETE.
+    assert.deepEqual(
+      [
+        f0.items.support.status,
+        f0.items.support.value,
+        f0.items.support.atLeast,
+      ],
+      ['PARTIAL', null, '10'],
+    );
+    assert.equal(f0.items.support.crews[F.FD].status, 'MISSING_REPORT');
+    assert.equal(f0.items.cable.status, 'PARTIAL');
+    assert.deepEqual(
+      f0.basis.revisions.find((r) => r.crewId === F.FD),
+      { crewId: F.FD, n: null },
+    );
+    // Before anything is submitted a reader gets nothing of the day, and never foreman data.
+    const readerDraft = await dayOf(F.T, exec);
+    assert.equal(JSON.stringify(readerDraft).includes('foreman'), false);
+    await expectStatus(adopt('support', day0), 409, 'ADOPT_NOT_COMPLETE');
+    await expectStatus(
+      adopt('support', day0, { bearer: exec }),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      adopt('support', day0, { bearer: pm2 }),
+      403,
+      'FORBIDDEN',
+    );
+    await expectStatus(adopt('nope', day0), 404, 'ITEM_NOT_FOUND');
+    await expectStatus(adopt('retired', day0), 404, 'ITEM_NOT_FOUND');
+    // A roster change (Ffd becomes FD's foreman) → the old basis is stale by roster version.
+    await expectStatus(
+      change([open(F.FD, person.Ffd, 'FOREMAN')], projectF),
+      200,
+    );
+    await expectStatus(adopt('support', day0), 409, 'FOREMAN_TOTAL_CHANGED');
+    await expectStatus(
+      freport(F.dev.Ffd.token, {
+        crew: F.FD,
+        rows: {
+          support: '0',
+          rail: 'na',
+          modules: 'na',
+          cable: '0',
+          fence: 'na',
+          big: '0',
+        },
+      }),
+      200,
+    );
+    const day1 = await dayOf(F.T);
+    const it = day1.foreman.items;
+    const st = (k) => [it[k].status, it[k].value, it[k].atLeast];
+    assert.deepEqual(st('support'), ['COMPLETE', '10', null]);
+    assert.deepEqual(st('rail'), ['PARTIAL', null, null]);
+    assert.equal(it.rail.crews[F.FA].status, 'OMITTED');
+    assert.deepEqual(st('modules'), ['PARTIAL', null, '10.5']);
+    assert.equal(it.modules.crews[F.FA].status, 'UNKNOWN');
+    assert.deepEqual(st('cable'), ['COMPLETE', '0', null]);
+    assert.deepEqual(
+      Object.values(it.cable.crews).map((c) => c.status),
+      ['ZERO', 'ZERO', 'ZERO', 'ZERO'],
+    );
+    assert.deepEqual(st('fence'), ['ALL_NA', null, null]);
+    assert.deepEqual(st('big'), ['OVERFLOW', null, null]);
+    for (const k of ['rail', 'modules', 'fence', 'big'])
+      await expectStatus(adopt(k, day1), 409, 'ADOPT_NOT_COMPLETE');
+    assert.equal(await adoptions(), 0);
+    // A foreman revision after the PM read → the old basis is stale by revision.
+    await expectStatus(
+      freport(F.dev.Ffa.token, {
+        crew: F.FA,
+        n: 1,
+        rows: {
+          support: '12',
+          rail: '3',
+          modules: 'unknown',
+          cable: '0',
+          fence: 'na',
+          big: '99999999999999',
+        },
+      }),
+      200,
+    );
+    await expectStatus(adopt('support', day1), 409, 'FOREMAN_TOTAL_CHANGED');
+    const day2 = await dayOf(F.T);
+    assert.equal(day2.foreman.items.support.value, '22');
+    // A changed expected crew set (one left out, one added) is a change too.
+    for (const expectedCrews of [
+      day2.foreman.basis.expectedCrews.slice(1),
+      [...day2.foreman.basis.expectedCrews, randomUUID()],
+    ])
+      await expectStatus(
+        adopt('support', day2, {
+          basis: { ...day2.foreman.basis, expectedCrews },
+        }),
+        409,
+        'FOREMAN_TOTAL_CHANGED',
+      );
+    assert.equal(await adoptions(), 0);
+    assert.equal(day2.facts.qty.support ?? '', '');
+    // Explicit adoption against the current basis; an exact replay; an explicit zero.
+    const key = randomUUID();
+    const a1 = await expectStatus(adopt('support', day2, { key }), 200);
+    assert.deepEqual([a1.item, a1.value], ['support', '22']);
+    assert.deepEqual(
+      await expectStatus(adopt('support', day2, { key }), 200),
+      a1,
+    );
+    const day3 = await dayOf(F.T);
+    assert.equal(day3.facts.qty.support, '22');
+    const a2 = await expectStatus(adopt('cable', day3), 200);
+    assert.equal(a2.value, '0');
+    const day4 = await dayOf(F.T);
+    assert.equal(day4.facts.qty.cable, '0');
+    assert.deepEqual(
+      day4.foreman.adoptions.map((a) => [a.itemKey, a.value]),
+      [
+        ['support', '22'],
+        ['cable', '0'],
+      ],
+    );
+    assert.deepEqual(day4.foreman.adoptions[0].basis, day2.foreman.basis);
+    assert.equal(await adoptions(), 2);
+    // The PM may always type another value; a stale adoption then never overwrites it.
+    const typed = await expectStatus(
+      rpost('/facts', pm, {
+        projectId: projectF,
+        businessDate: F.T,
+        expectedVersion: day4.version,
+        clientMutationId: randomUUID(),
+        facts: {
+          ...day4.facts,
+          qty: { ...day4.facts.qty, support: '25' },
+        },
+      }),
+      200,
+    );
+    await expectStatus(adopt('support', day4), 409, 'VERSION_CONFLICT');
+    const day5 = await dayOf(F.T);
+    assert.deepEqual(
+      [day5.version, day5.facts.qty.support, day5.foreman.items.support.value],
+      [typed.version, '25', '22'],
+    );
+    F.day5 = day5;
+    pass(
+      'completeness: a staffed crew without a foreman is expected and MISSING_REPORT (support PARTIAL ≥10, not adoptable); per crew OMITTED (blank), UNKNOWN, NA, ZERO and VALUE; an explicit zero from every crew is COMPLETE 0 and adoptable; all n/a is ALL_NA (no number); a sum outside Decimal(20,6) is OVERFLOW (no number); only COMPLETE is adopted (ADOPT_NOT_COMPLETE otherwise); a stale basis after a roster change, a new revision or a changed crew set → FOREMAN_TOTAL_CHANGED and nothing is written; adoption writes facts.qty with an append-only row and its basis, replays exactly, is PM-only (reader READ_ONLY, other PM FORBIDDEN, unknown item 404); the PM can type another value and a stale adoption then gets VERSION_CONFLICT',
+    );
+  }
+
+  step('foreman: adopt vs roster change');
+  {
+    // Roster first: the write holds the exclusive roster lock (waiting on a person lock); the
+    // adoption waits on the shared lock and then sees the new roster version.
+    let day = await dayOf(F.T);
+    const vBefore = day.foreman.rosterVersion;
+    const unlock = await holdAdvisory(personKey(person.Fw1, orgA, projectF));
+    const rosterFirst = change([open(F.FA, person.Fw1)], projectF);
+    await advisoryWaiters(personKey(person.Fw1, orgA, projectF), 1);
+    const waiting = adopt('support', day);
+    await advisoryWaiters(rosterKeyF, 1);
+    await unlock();
+    await expectStatus(rosterFirst, 200);
+    await expectStatus(waiting, 409, 'FOREMAN_TOTAL_CHANGED');
+    assert.equal(await adoptions(), 2);
+    // Adoption first: held after its insert (holding the shared roster lock); the roster write
+    // waits for the exclusive lock and commits after it.
+    day = await dayOf(F.T);
+    const vMid = day.foreman.rosterVersion;
+    assert.equal(vMid, vBefore + 1);
+    const gate = gateAfter('INSERT INTO "ForemanAdoption"');
+    const adopting = adopt('cable', day);
+    await gate.reached();
+    const rosterAfter = change([open(F.FB, person.Fw2)], projectF);
+    await advisoryWaiters(rosterKeyF, 1);
+    await gate.open();
+    const a = await expectStatus(adopting, 200);
+    await expectStatus(rosterAfter, 200);
+    const after = await dayOf(F.T);
+    assert.equal(after.foreman.rosterVersion, vMid + 1);
+    const row = after.foreman.adoptions.find((x) => x.id === a.adoptionId);
+    assert.equal(row.basis.rosterVersion, vMid);
+    pass(
+      'adopt vs roster change under controlled lock timing: a roster write holding the exclusive roster lock commits first → the waiting adoption gets FOREMAN_TOTAL_CHANGED and writes nothing; an adoption holding the shared roster lock commits first with the old roster version in its basis, and the roster write waits until after it',
+    );
+  }
+
+  step('foreman: adopt, revision and roster vs submit');
+  {
+    const submit = (date, version) =>
+      rpost('/submit', pm, {
+        projectId: projectF,
+        businessDate: date,
+        expectedVersion: version,
+        clientMutationId: randomUUID(),
+      });
+    // (a) Adoption first: the submission waits on the day row and then finds a newer version.
+    let day = await dayOf(F.T);
+    let gate = gateAfter('INSERT INTO "ForemanAdoption"');
+    const adopting = adopt('cable', day);
+    await gate.reached();
+    const late = submit(F.T, day.version);
+    await rowWaiters(1);
+    await gate.open();
+    await expectStatus(adopting, 200);
+    await expectStatus(late, 409, 'VERSION_CONFLICT');
+    // (b) Submission first, held after reading the day's sequence (holding the roster share,
+    // the day row and the day lock): an adoption queues on the day row, a foreman revision on
+    // the day lock. The adoption finds a newer version; the revision lands after the boundary.
+    day = await dayOf(F.T);
+    const dayKey = `${orgA}:day:${projectF}:${F.T}`;
+    const nA = day.foreman.revisions.find((r) => r.crewId === F.FA).n;
+    gate = gateAfter('SELECT "lastSeq" FROM "FieldDay"');
+    const submitting = submit(F.T, day.version);
+    await gate.reached();
+    const queuedAdopt = adopt('support', day);
+    await rowWaiters(1);
+    const queuedReport = freport(F.dev.Ffa.token, {
+      crew: F.FA,
+      n: nA,
+      rows: { support: '99', cable: '0' },
+    });
+    await advisoryWaiters(dayKey, 1);
+    await gate.open();
+    const submitted = await expectStatus(submitting, 200);
+    await expectStatus(queuedAdopt, 409, 'VERSION_CONFLICT');
+    const afterRev = await expectStatus(queuedReport, 200);
+    assert.equal(afterRev.afterSubmission, true);
+    const rev = await revisionOf(F.T, submitted.revisionNumber);
+    const snap = rev.snapshot;
+    // Both figures are frozen: the PM's typed value and the foreman's complete total.
+    assert.equal(snap.facts.qty.support, '25');
+    assert.deepEqual(
+      [snap.foreman.items.support.status, snap.foreman.items.support.value],
+      ['COMPLETE', '22'],
+    );
+    assert.deepEqual(
+      snap.foreman.adoptions.map((x) => [x.itemKey, x.value]),
+      [
+        ['support', '22'],
+        ['cable', '0'],
+        ['cable', '0'],
+        ['cable', '0'],
+      ],
+    );
+    assert.equal(snap.foreman.revisions.find((r) => r.crewId === F.FA).n, nA);
+    assert.ok(afterRev.daySeq > snap.field.seqBoundary);
+    assert.ok(
+      snap.foreman.revisions.every((r) => r.daySeq <= snap.field.seqBoundary),
+    );
+    assert.equal(snap.foreman.rosterVersion, rosterV[projectF]);
+    // The writer view marks the late revision; the day is locked for adoption.
+    const live = await dayOf(F.T);
+    const lateRow = live.foreman.revisions.find((r) => r.crewId === F.FA);
+    assert.deepEqual([lateRow.n, lateRow.afterSubmission], [nA + 1, true]);
+    assert.equal(live.foreman.expectedCrewsChanged, false);
+    assert.equal(live.foreman.items.support.value, '99');
+    await expectStatus(adopt('support', live), 409, 'LOCKED');
+    // A later roster change never alters the frozen revision.
+    await expectStatus(change([open(F.FC, person.Fw3)], projectF), 200);
+    assert.deepEqual(await revisionOf(F.T, submitted.revisionNumber), rev);
+    F.rev = { date: F.T, n: submitted.revisionNumber, body: rev };
+
+    // (c) A roster write that waits until after a submission (yesterday): frozen unchanged.
+    const y = await dayOf(F.Y);
+    const vY = y.foreman.rosterVersion;
+    gate = gateAfter('SELECT "lastSeq" FROM "FieldDay"');
+    const submittingY = submit(F.Y, y.version);
+    await gate.reached();
+    const rosterLate = change([open(F.FD, person.Fw4)], projectF);
+    await advisoryWaiters(rosterKeyF, 1);
+    await gate.open();
+    const sY = await expectStatus(submittingY, 200);
+    await expectStatus(rosterLate, 200);
+    const revY = await revisionOf(F.Y, sY.revisionNumber);
+    assert.equal(revY.snapshot.foreman.rosterVersion, vY);
+    assert.equal(
+      revY.snapshot.foreman.revisions.find((r) => r.crewId === F.FA).n,
+      1,
+    );
+    assert.equal(revY.snapshot.foreman.items.support.status, 'PARTIAL');
+    assert.equal((await dayOf(F.Y)).foreman.rosterVersion, vY + 1);
+    // (d) A roster write that commits before a submission (two days ago): the new version.
+    const unlock = await holdAdvisory(personKey(person.Fw4, orgA, projectF));
+    const rosterFirst = change(
+      [close(openAssignment(person.Fw4), null)],
+      projectF,
+    );
+    await advisoryWaiters(personKey(person.Fw4, orgA, projectF), 1);
+    const submittingY2 = submit(F.Y2, 0);
+    await advisoryWaiters(rosterKeyF, 1);
+    await unlock();
+    await expectStatus(rosterFirst, 200);
+    const sY2 = await expectStatus(submittingY2, 200);
+    const revY2 = await revisionOf(F.Y2, sY2.revisionNumber);
+    assert.equal(revY2.snapshot.foreman.rosterVersion, rosterV[projectF]);
+    assert.equal(revY2.snapshot.foreman.rosterVersion, vY + 2);
+    pass(
+      'ordering with submit under controlled lock timing: an adoption holding the day row commits first and the queued submission gets VERSION_CONFLICT; a submission holding the day row and lock commits first → the queued adoption gets VERSION_CONFLICT, the queued foreman revision gets a sequence above the boundary (afterSubmission, not frozen) and a later adoption is LOCKED; the snapshot keeps the PM figure (25) beside the foreman total (COMPLETE 22), the adoptions and the revision numbers; a roster write waiting until after a submission leaves the frozen roster version, one committing before it is frozen with the new version; a later roster change never alters a revision',
+    );
+  }
+
+  step('foreman: readers, replays and history');
+  {
+    // A reader never sees foreman data: not in the day, not in the revision.
+    const readerDay = await dayOf(F.rev.date, exec);
+    const readerRev = await revisionOf(F.rev.date, F.rev.n, exec);
+    for (const body of [readerDay, readerRev]) {
+      const text = JSON.stringify(body);
+      assert.equal(text.includes('"foreman"'), false);
+      for (const r of F.rev.body.snapshot.foreman.revisions)
+        assert.equal(text.includes(r.revisionId), false);
+    }
+    assert.equal(readerRev.snapshot.facts.qty.support, '25');
+    // A replay re-runs authorization: once Ffa is no longer a foreman, the first key is refused.
+    await expectStatus(
+      change([close(openAssignment(person.Ffa, 'FOREMAN'), null)], projectF),
+      200,
+    );
+    await expectStatus(
+      fpost('/report', F.dev.Ffa.token, F.firstA),
+      403,
+      'NOT_FOREMAN',
+    );
+    // History: the app role cannot rewrite reports, revisions or adoptions.
+    const ids = (
+      await owner.query(
+        `SELECT (SELECT id FROM "ForemanReport" WHERE "projectId"=$1 LIMIT 1) AS report,
+          (SELECT id FROM "ForemanReportRevision" WHERE "projectId"=$1 LIMIT 1) AS revision,
+          (SELECT id FROM "ForemanAdoption" WHERE "projectId"=$1 LIMIT 1) AS adoption`,
+        [projectF],
+      )
+    ).rows[0];
+    const client = await appPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.org_id', $1, true)", [orgA]);
+      for (const [sql, params, codes] of [
+        [
+          `UPDATE "ForemanReportRevision" SET note='x' WHERE id=$1`,
+          [ids.revision],
+          ['42501'],
+        ],
+        [
+          `DELETE FROM "ForemanReportRevision" WHERE id=$1`,
+          [ids.revision],
+          ['42501'],
+        ],
+        [
+          `UPDATE "ForemanAdoption" SET value=1 WHERE id=$1`,
+          [ids.adoption],
+          ['42501'],
+        ],
+        [
+          `DELETE FROM "ForemanAdoption" WHERE id=$1`,
+          [ids.adoption],
+          ['42501'],
+        ],
+        [`DELETE FROM "ForemanReport" WHERE id=$1`, [ids.report], ['42501']],
+        [
+          `UPDATE "ForemanReport" SET "crewId"="crewId" WHERE id=$1`,
+          [ids.report],
+          ['42501'],
+        ],
+        [
+          `UPDATE "ForemanReport" SET "currentN"="currentN"+2 WHERE id=$1`,
+          [ids.report],
+          ['P0001'],
+        ],
+        [
+          `UPDATE "ForemanReport" SET "currentN"="currentN"-1 WHERE id=$1`,
+          [ids.report],
+          ['P0001', '23514'],
+        ],
+        // Same-project references: another project's device, a missing work item, a
+        // non-work item kind.
+        [
+          `INSERT INTO "ForemanReportRevision"(id,"orgId","projectId","reportId",n,rows,note,"byPersonId","byDeviceId","occurredAt","receivedAt","siteTimezone","daySeq")
+          VALUES($1,$2,$3,$4,99,'[]','',$5,$6,now(),now(),'UTC',1)`,
+          [randomUUID(), orgA, projectF, ids.report, person.kf, dev.kf.id],
+          ['23503'],
+        ],
+        [
+          `INSERT INTO "ForemanAdoption"(id,"orgId","projectId","businessDate","itemKey",value,basis,"daySeq","byAccountId")
+          VALUES($1,$2,$3,now()::date,'nope',1,'{}',1,$4)`,
+          [randomUUID(), orgA, projectF, accounts.pm],
+          ['23503'],
+        ],
+        [
+          `INSERT INTO "ForemanAdoption"(id,"orgId","projectId","businessDate","itemKind","itemKey",value,basis,"daySeq","byAccountId")
+          VALUES($1,$2,$3,now()::date,'material','support',1,'{}',1,$4)`,
+          [randomUUID(), orgA, projectF, accounts.pm],
+          ['23514', '23503'],
+        ],
+      ]) {
+        await client.query('SAVEPOINT s');
+        await assert.rejects(
+          client.query(sql, params),
+          (e) => codes.includes(e.code),
+          sql,
+        );
+        await client.query('ROLLBACK TO SAVEPOINT s');
+      }
+      // RLS: another org sees none of it.
+      await client.query("SELECT set_config('app.org_id', $1, true)", [orgB]);
+      const seen = await client.query(
+        `SELECT (SELECT count(*) FROM "ForemanReport") + (SELECT count(*) FROM "ForemanReportRevision")
+          + (SELECT count(*) FROM "ForemanAdoption") AS n`,
+      );
+      assert.equal(Number(seen.rows[0].n), 0);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+    // Append-only for the owner too (triggers, not only grants).
+    for (const [sql, id] of [
+      [`DELETE FROM "ForemanReportRevision" WHERE id=$1`, ids.revision],
+      [`UPDATE "ForemanAdoption" SET value=value WHERE id=$1`, ids.adoption],
+      [`DELETE FROM "ForemanReport" WHERE id=$1`, ids.report],
+    ])
+      await assert.rejects(owner.query(sql, [id]), (e) => e.code === 'P0001');
+    pass(
+      "a reader never gets foreman data (day or revision; the PM's submitted figure still shows); a replay re-runs authorization (NOT_FOREMAN once the role ended); the app role cannot update or delete revisions, adoptions or report headers (only currentN, forward by one); references stay in the same project (another project's device, a missing item, a non-work item refused); another org sees nothing; revisions, adoptions and headers are append-only for the owner too",
+    );
+  }
+
   // ================= redaction =================
   step('redaction');
   {
@@ -4159,7 +4929,7 @@ try {
   }
 
   console.log(
-    `Field roster/devices/entry and check-in/selfie HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. Foreman reports and the field web UI are later slices.`,
+    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. The field web UI is a later slice.`,
   );
   step('done');
 } catch (error) {
