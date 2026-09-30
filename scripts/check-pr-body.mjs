@@ -2,37 +2,67 @@
 // (AGENTS.md: requirement mapping and final behaviour, test commands and results, what was not
 // tested, migration and rollback). A section may say "不适用" / "N/A" but must not be missing
 // or empty. Reads the body from PR_BODY; prints only which sections are missing.
+// Order matters: "not tested" is classified before "tests" so a heading such as "未测试项"
+// counts only as the untested section.
 export const SECTIONS = [
   {
     name: 'requirement mapping and final behaviour / 需求映射与最终行为',
     heading: /最终行为|需求映射|requirement mapping|final behaviou?r/i,
   },
+  { name: 'not tested / 未测项', heading: /未测|未运行|not tested|untested/i },
   {
     name: 'tests (commands and results) / 测试命令与结果',
     heading: /测试|验证|\btests?\b/i,
   },
-  { name: 'not tested / 未测项', heading: /未测|not tested|untested/i },
   { name: 'migration and rollback / 迁移与回退', heading: /回退|rollback/i },
 ];
 
+/** Markdown text with HTML comments and fenced code blocks removed (they never count). */
+export function visibleText(body) {
+  const text = String(body ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/<!--[\s\S]*?(-->|$)/g, '');
+  const out = [];
+  let fence = null;
+  for (const line of text.split('\n')) {
+    const f = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length)
+        fence = null;
+      continue;
+    }
+    if (f) {
+      fence = f[1];
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/** The section a heading belongs to (first match in SECTIONS order), or null. */
+const classify = (heading) =>
+  SECTIONS.find((s) => s.heading.test(heading)) ?? null;
+
 /** Returns the names of required sections that are missing or have an empty body. */
 export function missingSections(body) {
-  const text = String(body ?? '').replace(/\r\n/g, '\n');
-  // Split on markdown headings (## or ###); keep each heading with its content.
-  const parts = [];
-  let current = null;
-  for (const line of text.split('\n')) {
-    const h = /^#{2,3}\s+(.+?)\s*#*\s*$/.exec(line);
-    if (h) {
-      current = { heading: h[1], content: [] };
-      parts.push(current);
-    } else if (current) current.content.push(line);
-  }
-  const hasText = (lines) =>
-    lines.some((l) => l.trim() && !/^<!--.*-->$/.test(l.trim()));
-  return SECTIONS.filter(
-    (s) => !parts.some((p) => s.heading.test(p.heading) && hasText(p.content)),
-  ).map((s) => s.name);
+  const lines = visibleText(body);
+  const headings = [];
+  lines.forEach((line, i) => {
+    const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) headings.push({ i, level: h[1].length, text: h[2] });
+  });
+  const filled = new Set();
+  headings.forEach((h, k) => {
+    const section = classify(h.text);
+    if (!section || h.level < 2 || h.level > 3) return;
+    // Content runs until the next heading of the same or a higher level (subsections count).
+    const next = headings.slice(k + 1).find((n) => n.level <= h.level);
+    const content = lines.slice(h.i + 1, next ? next.i : lines.length);
+    if (content.some((l) => l.trim() && !/^#{1,6}\s/.test(l)))
+      filled.add(section);
+  });
+  return SECTIONS.filter((s) => !filled.has(s)).map((s) => s.name);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

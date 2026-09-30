@@ -46,3 +46,29 @@ test('a mention in body text is not a heading', () => {
     ],
   );
 });
+
+test('fenced or commented-out headings do not count; multiline comments are not content', () => {
+  assert.equal(missingSections('```\n' + full + '\n```').length, 4);
+  assert.equal(missingSections('<!--\n' + full + '\n-->').length, 4);
+  assert.deepEqual(
+    missingSections(full.replace('不适用。', '<!--\nfill in\nlater\n-->')),
+    ['migration and rollback / 迁移与回退'],
+  );
+});
+
+test('an untested section never satisfies the tests section', () => {
+  const noTests = full.replace('## 测试命令与结果\npnpm check：通过。\n', '');
+  assert.deepEqual(
+    missingSections(noTests.replace('## 未测项', '## 未测试项')),
+    ['tests (commands and results) / 测试命令与结果'],
+  );
+});
+
+test('subsection content belongs to its parent section; CRLF is accepted', () => {
+  const nested = full.replace(
+    '## 测试命令与结果\npnpm check：通过。',
+    '## Tests\n### Unit suite\nnode --test: passed',
+  );
+  assert.deepEqual(missingSections(nested), []);
+  assert.deepEqual(missingSections(full.replace(/\n/g, '\r\n')), []);
+});

@@ -14,11 +14,22 @@ if (
 const url = (p) => new URL(p, base).toString();
 const results = [];
 const check = (name, ok, detail = '') => results.push({ name, ok, detail });
-const get = async (p, init = {}) => {
+const finish = () => {
+  const failed = results.filter((r) => !r.ok);
+  console.log(
+    JSON.stringify({
+      ok: failed.length === 0,
+      revision: expected.slice(0, 7),
+      checks: results.length,
+      failed,
+    }),
+  );
+  process.exit(failed.length ? 1 : 0);
+};
+const get = async (p, timeoutMs = 20_000) => {
   const r = await fetch(url(p), {
-    ...init,
     redirect: 'manual',
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
   });
   return {
     status: r.status,
@@ -26,87 +37,107 @@ const get = async (p, init = {}) => {
     text: await r.text(),
   };
 };
-
-// 1. health, allowing a cold start
-const started = Date.now();
-let health = null;
-while (Date.now() - started < 40_000) {
+/** A request that never throws: a transport failure becomes a failed check. */
+const tryGet = async (name, p) => {
   try {
-    const r = await get('/health/live');
-    if (r.status === 200) {
-      health = JSON.parse(r.text);
-      if (String(health.revision).startsWith(expected)) break;
-    }
-  } catch {
-    // not up yet
+    return await get(p);
+  } catch (error) {
+    check(name, false, `request failed: ${error?.name ?? 'error'}`);
+    return null;
   }
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-}
-const seconds = Math.round((Date.now() - started) / 1000);
-check(
-  'health reports the expected revision within 40 s',
-  health?.status === 'ok' &&
-    String(health?.revision ?? '').startsWith(expected),
-  `revision ${String(health?.revision ?? 'none').slice(0, 7)} after ${seconds}s`,
-);
+};
 
-// 2. page and its static assets
-const page = await get('/');
-check(
-  'page loads',
-  page.status === 200 && page.type.includes('text/html'),
-  `status ${page.status}`,
-);
-const assets = [...page.text.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(
-  (m) => m[1],
-);
-check(
-  'page references built assets',
-  assets.length > 0,
-  `${assets.length} assets`,
-);
-for (const a of assets) {
-  const r = await get(a);
-  check(`asset ${a.split('/').pop()}`, r.status === 200, `status ${r.status}`);
-}
-
-// 3. sign-in configuration (public by design; no secret)
-const cfg = await get('/api/auth-config');
-let config = {};
 try {
-  config = JSON.parse(cfg.text);
-} catch {
-  // reported below
-}
-check(
-  'auth config is enabled',
-  cfg.status === 200 &&
-    config.enabled === true &&
-    typeof config.clientId === 'string',
-  `status ${cfg.status}`,
-);
-
-// 4. business routes refuse a request without a token
-for (const p of [
-  '/api/report/projects',
-  '/api/report/day?projectId=00000000-0000-4000-8000-000000000000&businessDate=2026-01-01',
-  '/api/report/photos?projectId=00000000-0000-4000-8000-000000000000&businessDate=2026-01-01',
-]) {
-  const r = await get(p);
+  // 1. health, allowing a cold start; the 40 s deadline bounds every wait and request
+  const DEADLINE = 40_000;
+  const started = Date.now();
+  const left = () => DEADLINE - (Date.now() - started);
+  let health = null;
+  while (left() > 0) {
+    try {
+      const r = await get('/health/live', left());
+      if (r.status === 200) {
+        health = JSON.parse(r.text);
+        if (String(health.revision).startsWith(expected)) break;
+      }
+    } catch {
+      // not up yet
+    }
+    if (left() > 0)
+      await new Promise((res) => setTimeout(res, Math.min(2_000, left())));
+  }
+  const elapsed = Date.now() - started;
   check(
-    `no token → 401 ${p.split('?')[0]}`,
-    r.status === 401,
-    `status ${r.status}`,
+    'health reports the expected revision within 40 s',
+    elapsed <= DEADLINE &&
+      health?.status === 'ok' &&
+      String(health?.revision ?? '').startsWith(expected),
+    `revision ${String(health?.revision ?? 'none').slice(0, 7)} after ${Math.round(elapsed / 1000)}s`,
   );
-}
 
-const failed = results.filter((r) => !r.ok);
-console.log(
-  JSON.stringify({
-    ok: failed.length === 0,
-    revision: expected.slice(0, 7),
-    checks: results.length,
-    failed,
-  }),
-);
-process.exit(failed.length ? 1 : 0);
+  // 2. page and every script/stylesheet it references, with the right media type
+  const page = await tryGet('page loads', '/');
+  if (page) {
+    check(
+      'page loads',
+      page.status === 200 && page.type.includes('text/html'),
+      `status ${page.status}`,
+    );
+    const refs = [
+      ...page.text.matchAll(
+        /<(script|link)\b[^>]*?\b(?:src|href)\s*=\s*(["'])(\/[^"']+)\2/gi,
+      ),
+    ].map((m) => m[3]);
+    const assets = [
+      ...new Set(refs.filter((r) => /\.(m?js|css)(\?|$)/.test(r))),
+    ];
+    check(
+      'page references built scripts and stylesheets',
+      assets.length > 0,
+      `${assets.length} assets`,
+    );
+    for (const a of assets) {
+      const name = `asset ${a.split('/').pop()}`;
+      const r = await tryGet(name, a);
+      if (!r) continue;
+      const want = /\.css(\?|$)/.test(a) ? /text\/css/ : /javascript/;
+      check(
+        name,
+        r.status === 200 && want.test(r.type),
+        `status ${r.status} ${r.type.split(';')[0]}`,
+      );
+    }
+  }
+
+  // 3. sign-in configuration (public by design; no secret)
+  const cfg = await tryGet('auth config is enabled', '/api/auth-config');
+  if (cfg) {
+    let config = {};
+    try {
+      config = JSON.parse(cfg.text);
+    } catch {
+      // reported below
+    }
+    check(
+      'auth config is enabled',
+      cfg.status === 200 &&
+        config.enabled === true &&
+        typeof config.clientId === 'string',
+      `status ${cfg.status}`,
+    );
+  }
+
+  // 4. business routes refuse a request without a token
+  for (const p of [
+    '/api/report/projects',
+    '/api/report/day?projectId=00000000-0000-4000-8000-000000000000&businessDate=2026-01-01',
+    '/api/report/photos?projectId=00000000-0000-4000-8000-000000000000&businessDate=2026-01-01',
+  ]) {
+    const name = `no token → 401 ${p.split('?')[0]}`;
+    const r = await tryGet(name, p);
+    if (r) check(name, r.status === 401, `status ${r.status}`);
+  }
+} catch (error) {
+  check('smoke run', false, `unexpected: ${error?.name ?? 'error'}`);
+}
+finish();
