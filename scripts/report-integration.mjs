@@ -1125,12 +1125,15 @@ try {
       call(`/plan?projectId=${projectA}&targetBusinessDate=${date}`, bearer),
       200,
     );
-  // Every leaf value of a response body: a check for a draft figure must not match part of a
-  // random id or a timestamp in the same body (L7).
-  const leaves = (v) =>
-    v !== null && typeof v === 'object'
-      ? Object.values(v).flatMap(leaves)
-      : [String(v)];
+  // A response body as text without its random values: a string that is exactly an ISO
+  // timestamp or a UUID is left out, so a search for a draft figure cannot match digits inside
+  // one (L7), while the figure in any other form ("654 m", "654.0", a label) is still found.
+  const RANDOM =
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+  const withoutRandom = (v) =>
+    JSON.stringify(v, (_, x) =>
+      typeof x === 'string' && RANDOM.test(x) ? undefined : x,
+    );
   const blank = {
     weather: '',
     temperature: '',
@@ -1327,7 +1330,7 @@ try {
   const readerPlanD10 = await planOf(D10, exec);
   assert.equal(readerPlanD10.draft, null);
   assert.deepEqual(readerPlanD10.status, { status: 'none', n: null });
-  assert.ok(!leaves(readerPlanD10).includes('7771'));
+  assert.ok(!withoutRandom(readerPlanD10).includes('7771'));
   const writerPlanD10 = await planOf(D10, pm);
   assert.deepEqual(writerPlanD10.draft, [{ item: 'support', target: '7771' }]);
   assert.deepEqual(writerPlanD10.status, { status: 'draft', n: null });
@@ -1337,7 +1340,7 @@ try {
   assert.equal(readerPlanD9.draft, null);
   assert.deepEqual(readerPlanD9.versions, writerPlanD9.versions);
   assert.notEqual(readerPlanD9.status.status, 'draft');
-  assert.ok(!leaves(readerPlanD9).includes('654'));
+  assert.ok(!withoutRandom(readerPlanD9).includes('654'));
   assert.deepEqual(
     (await planOf(D1, exec)).versions.map((x) => x.n),
     [1, 2, 3],
