@@ -6,6 +6,7 @@ import type {
   SiteReferenceCommand,
 } from '@mje/contracts';
 import type { ReportApi } from '../api.js';
+import { OwnedCommands } from '../field/owned-commands.js';
 import { FieldSession, type Outcome } from '../field/session.js';
 import { currentDevice } from './site-form.js';
 
@@ -28,33 +29,34 @@ export type DeviceAction =
   | { kind: 'revoke'; device: FieldDeviceDto };
 
 /**
- * PM device commands with the identity of the unresolved one: while an action's outcome is
- * unknown, no other device's action starts, and its retry is offered as that action (device
- * and kind), never as another row's. Built the IssueSession way on the device list read.
+ * PM device commands (confirm by code, reject, revoke). Built on OwnedCommands: the action
+ * that starts a command owns it from the first moment, so an unresolved Retry is always that
+ * device's own action and key, even when another sheet was opened during a recovery read.
  */
 export class DeviceCommands {
   readonly session: FieldSession<FieldDeviceDto[]>;
-  /** The action whose command is kept for an unchanged retry. */
-  unresolved: DeviceAction | null = null;
+  private readonly owned: OwnedCommands<FieldDeviceDto[], DeviceAction>;
 
   constructor(
     private readonly api: SiteApi,
     private readonly projectId: string,
     notify: () => void,
-    private readonly newKey: () => string = () => crypto.randomUUID(),
+    newKey: () => string = () => crypto.randomUUID(),
   ) {
     this.session = new FieldSession(() => api.devices(projectId), notify);
+    this.owned = new OwnedCommands(this.session, newKey);
   }
-  /** A new action may start only when nothing is unresolved. */
+  /** The action whose own command is kept for an unchanged retry. */
+  get unresolved(): DeviceAction | null {
+    return this.owned.unresolved;
+  }
+  /** A new action may start only when no action is running or unresolved. */
   get canStart() {
-    return this.unresolved === null && !this.session.busy;
+    return this.owned.canStart;
   }
 
-  async run(a: DeviceAction): Promise<Outcome<unknown>> {
-    if (!this.canStart)
-      return { kind: 'failed', code: this.session.error ?? 'NETWORK' };
-    const key = this.newKey();
-    const r = await this.session.act((list) => {
+  run(a: DeviceAction): Promise<Outcome<unknown>> {
+    return this.owned.run(a, (list, key) => {
       if (a.kind === 'confirm')
         return {
           key,
@@ -87,22 +89,24 @@ export class DeviceCommands {
             : this.api.revokeDevice(c),
       };
     });
-    this.unresolved = r.kind === 'failed' && this.session.pending ? a : null;
-    return r;
   }
   /** Resend the unresolved action unchanged. */
-  async retry(): Promise<Outcome<unknown>> {
-    const r = await this.session.retry();
-    if (!this.session.pending) this.unresolved = null;
-    return r;
+  retry(): Promise<Outcome<unknown>> {
+    return this.owned.retry();
   }
   /** Give up the unresolved action (it may still have been applied; the list is reread). */
   discard() {
-    this.session.discard();
-    this.unresolved = null;
-    void this.session.load();
+    this.owned.discard();
   }
 }
+
+/** A settings form's save as sent: the version it was edited from and the values. */
+export interface FormSave<V> {
+  editedFrom: FieldSettingsDto;
+  value: V;
+}
+export type SiteValue = { lat: string; lon: string; radiusM: number };
+export type SettingsValue = { selfieEnabled: boolean; pmProxyDays: number };
 
 /**
  * The People page's command state, kept for the life of the workspace like the issue and plan
@@ -115,6 +119,12 @@ export class SiteSessions {
   readonly devices: DeviceCommands;
   readonly site: FieldSession<FieldSettingsDto>;
   readonly settings: FieldSession<FieldSettingsDto>;
+  /** Saves with their payloads: a form shown again shows what its Retry would send. */
+  readonly siteSave: OwnedCommands<FieldSettingsDto, FormSave<SiteValue>>;
+  readonly settingsSave: OwnedCommands<
+    FieldSettingsDto,
+    FormSave<SettingsValue>
+  >;
 
   constructor(api: SiteApi, projectId: string) {
     const notify = () => this.listeners.forEach((fn) => fn());
@@ -125,6 +135,8 @@ export class SiteSessions {
       () => api.fieldSettings(projectId),
       notify,
     );
+    this.siteSave = new OwnedCommands(this.site);
+    this.settingsSave = new OwnedCommands(this.settings);
   }
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn);
@@ -186,35 +198,34 @@ export function qrState(s: FieldSession<EntryCodeDto>): QrState {
 
 /**
  * Save the site location from a form edited on `editedFrom` (the component's snapshot). The
- * command is built when it runs but keeps the edited-from number, so a form that went stale
- * while a reread failed is refused (VERSION_CONFLICT) instead of overwriting the newer value.
+ * command keeps the edited-from number, so a form that went stale while a reread failed is
+ * refused (VERSION_CONFLICT) instead of overwriting the newer value. The payload is owned by
+ * the save, so a form shown again (another tab and back) shows what its Retry sends.
  */
 export function saveSiteReference(
-  session: FieldSession<FieldSettingsDto>,
+  commands: OwnedCommands<FieldSettingsDto, FormSave<SiteValue>>,
   api: Pick<SiteApi, 'setSiteReference'>,
   projectId: string,
   editedFrom: FieldSettingsDto,
-  value: { lat: string; lon: string; radiusM: number },
-  newKey: () => string = () => crypto.randomUUID(),
+  value: SiteValue,
 ): Promise<Outcome<unknown>> {
-  if (session.pending) return session.retry();
-  return session.act(() => {
-    const c = siteReferenceCommand(projectId, editedFrom, value, newKey());
-    return { key: c.clientMutationId, send: () => api.setSiteReference(c) };
+  if (commands.unresolved) return commands.retry();
+  return commands.run({ editedFrom, value }, (_d, key) => {
+    const c = siteReferenceCommand(projectId, editedFrom, value, key);
+    return { key, send: () => api.setSiteReference(c) };
   });
 }
 /** Save field settings from a form edited on `editedFrom`; see saveSiteReference. */
 export function saveSettings(
-  session: FieldSession<FieldSettingsDto>,
+  commands: OwnedCommands<FieldSettingsDto, FormSave<SettingsValue>>,
   api: Pick<SiteApi, 'setFieldSettings'>,
   projectId: string,
   editedFrom: FieldSettingsDto,
-  value: { selfieEnabled: boolean; pmProxyDays: number },
-  newKey: () => string = () => crypto.randomUUID(),
+  value: SettingsValue,
 ): Promise<Outcome<unknown>> {
-  if (session.pending) return session.retry();
-  return session.act(() => {
-    const c = settingsCommand(projectId, editedFrom, value, newKey());
-    return { key: c.clientMutationId, send: () => api.setFieldSettings(c) };
+  if (commands.unresolved) return commands.retry();
+  return commands.run({ editedFrom, value }, (_d, key) => {
+    const c = settingsCommand(projectId, editedFrom, value, key);
+    return { key, send: () => api.setFieldSettings(c) };
   });
 }
