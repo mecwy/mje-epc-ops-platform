@@ -32,7 +32,6 @@ import type { Identity } from './alpha-store.js';
 import {
   FieldError,
   FieldThrottle,
-  LIMITS,
   decisionTime,
   deviceEvent,
   fieldTransaction,
@@ -69,6 +68,8 @@ export interface SelfieBlobStore extends PhotoBlobStore {
   delete(key: string): Promise<void>;
 }
 export const SELFIE_MAX_BYTES = 3 * 1024 * 1024;
+/** Design §2: refused check-ins per device per hour. */
+export const FAILED_CHECKINS_PER_HOUR = 30;
 export const SELFIE_MEDIA_TYPES = [
   'image/jpeg',
   'image/png',
@@ -531,47 +532,17 @@ export class CheckInStore {
             occurredAt: cmd.occurredAt,
             fix: cmd.fix,
           };
-    // Design §2 (C29): 30 refused check-ins per hour per device. A unit is reserved in the
-    // throttle's own committed transaction before the business transaction, atomically while the
-    // count is below the limit, so concurrent requests can never share the last unit. A refused
-    // attempt keeps its unit (independent of the business rollback); anything else gives it
-    // back. With no unit left the device may only replay a committed success (C29).
-    const deviceId = await this.throttle.deviceOf(tokenHash);
-    const limit = deviceId ? LIMITS.failedCheckIns(deviceId) : null;
-    const reserved = limit ? await this.throttle.reserve(limit) : null;
-    const limited = limit !== null && reserved === null;
-    const counted = (code: string) =>
-      ![
-        'RATE_LIMITED',
-        'RETRY',
-        'FIELD_AUTH_REQUIRED',
-        'DEVICE_ENDED',
-        'DEVICE_PENDING',
-      ].includes(code);
-    let failed = false;
-    try {
-      const outcome = await this.deviceTransaction(
-        ip,
-        tokenHash,
-        kind,
-        cmd,
-        route,
-        event,
-        limited,
-      );
-      // A refused attempt committed its event; it is a request error, never a finding.
-      if (outcome.kind === 'refused') {
-        failed = true;
-        throw new FieldError(outcome.code);
-      }
-      return outcome.body;
-    } catch (error) {
-      if (error instanceof FieldError && counted(error.code)) failed = true;
-      throw error;
-    } finally {
-      if (limit && reserved && !failed)
-        await this.throttle.release(limit, reserved).catch(() => undefined);
-    }
+    const outcome = await this.deviceTransaction(
+      ip,
+      tokenHash,
+      kind,
+      cmd,
+      route,
+      event,
+    );
+    // A refused attempt committed its event; it is a request error, never a finding.
+    if (outcome.kind === 'refused') throw new FieldError(outcome.code);
+    return outcome.body;
   }
   private deviceTransaction(
     ip: string,
@@ -583,7 +554,6 @@ export class CheckInStore {
     },
     route: string,
     event: unknown,
-    limited: boolean,
   ): Promise<DeviceOutcome> {
     return fieldTransaction<DeviceOutcome>(
       this.pool,
@@ -597,6 +567,12 @@ export class CheckInStore {
         // lock (a submission) or the selfie row (a cleanup claim) is judged after the wait.
         afterLock: async (client, d) => {
           const subject = cmd.personId ?? d.personId;
+          // Level 2a: the device's failed-check-in lock, right after its row lock. Counting the
+          // device's refusal events and inserting a new one happen under it, in this transaction.
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [`${d.orgId}:field-checkin-refusals:${d.id}`],
+          );
           await lockReportDay(client, d.orgId, d.projectId, cmd.businessDate);
           await slotLock(client, d.orgId, subject, cmd.businessDate);
           if (cmd.stagedSelfieId)
@@ -608,11 +584,20 @@ export class CheckInStore {
       },
       async (client, { device: d, now: t, at }) => {
         const subject = cmd.personId ?? d.personId;
+        // Design §2 (C29): 30 refused check-ins per hour per device, counted as the device's
+        // committed CHECKIN_REFUSED events of the last hour (by the decision time). The count
+        // and any new refusal event are in this transaction, under the device's refusal lock
+        // (level 2a): a refusal counts if and only if its event committed; nothing to release.
         // A limited device is refused before anything else unless this is the exact replay of
         // a committed success; a changed command under a used key is RATE_LIMITED too, not
-        // IDEMPOTENCY_KEY_REUSED (C29).
+        // IDEMPOTENCY_KEY_REUSED.
+        const refused = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM "FieldDeviceEvent"
+          WHERE "orgId"=$1 AND "deviceId"=$2 AND kind='CHECKIN_REFUSED' AND at > $3::timestamptz - interval '1 hour'`,
+          [d.orgId, d.id, at],
+        );
         if (
-          limited &&
+          refused.rows[0]!.n >= FAILED_CHECKINS_PER_HOUR &&
           !(await priorOutcome(
             client,
             d.orgId,

@@ -112,14 +112,6 @@ export const LIMITS = {
     pendingDeviceToken: true,
   }),
   unknownToken: (ip: string): Limit => salted('unknown-token', ip, 600, 60),
-  /** Refused check-ins per device (design §2: 30 / h); counted in their own transaction. */
-  failedCheckIns: (deviceId: string): Limit => ({
-    name: 'checkin-fail',
-    value: deviceId,
-    windowSec: 3600,
-    max: 30,
-    salted: false,
-  }),
   /** Failed confirms per confirmer (device or account id); counted after the commit. */
   failedConfirms: (actorId: string): Limit => ({
     name: 'confirm-fail',
@@ -240,48 +232,6 @@ export class FieldThrottle {
       return (r.rows[0]?.count ?? 0) >= l.max;
     };
     return client ? read(client) : this.tx(read);
-  }
-  /**
-   * The device (any state) holding this current token hash, through the SELECT-only lookup
-   * policy, or null. Used only to key a per-device bucket before authentication.
-   */
-  async deviceOf(tokenHash: string): Promise<string | null> {
-    return this.tx(async (c) => {
-      await c.query("SELECT set_config('app.device_token_hash', $1, true)", [
-        tokenHash,
-      ]);
-      const r = await c.query<{ id: string }>(
-        `SELECT id FROM "FieldDevice" WHERE "tokenHash"=$1`,
-        [tokenHash],
-      );
-      return r.rows[0]?.id ?? null;
-    });
-  }
-  /**
-   * Reserves one unit of an unsalted bucket in its own committed transaction, atomically only
-   * while the window's count is below the limit (the row lock of the upsert serializes
-   * concurrent reservations). Returns the window reserved in, or null when the bucket is full.
-   */
-  async reserve(l: Limit): Promise<string | null> {
-    return this.tx(async (c) => {
-      const r = await c.query<{ windowStart: string }>(
-        `INSERT INTO "FieldThrottle"(bucket, "windowStart", count) VALUES ($1, ${WINDOW}, 1)
-        ON CONFLICT (bucket, "windowStart") DO UPDATE SET count = "FieldThrottle".count + 1
-          WHERE "FieldThrottle".count < $3
-        RETURNING "windowStart"::text AS "windowStart"`,
-        [await this.bucket(c, l), l.windowSec, l.max],
-      );
-      return r.rows[0]?.windowStart ?? null;
-    });
-  }
-  /** Gives a reserved unit back (the request turned out not to be a failure). */
-  async release(l: Limit, windowStart: string): Promise<void> {
-    await this.tx(async (c) => {
-      await c.query(
-        `UPDATE "FieldThrottle" SET count = count - 1 WHERE bucket = $1 AND "windowStart" = $2::timestamptz AND count > 0`,
-        [await this.bucket(c, l), windowStart],
-      );
-    });
   }
   /** Counts one failure, best-effort (after the request's own outcome is settled). */
   async add(l: Limit): Promise<void> {

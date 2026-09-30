@@ -276,6 +276,7 @@ try {
     'kd',
     'kr',
     'kz',
+    'kw',
     'kc1',
     'kc2',
     'kp',
@@ -322,8 +323,11 @@ try {
   // TEST seam on the app's own pool: a gate can hold one request right after a chosen
   // statement, so another transaction can commit between two statements of that request.
   let queryGate = null;
-  // TEST seam: when armed, the COMMIT of a transaction that inserted a selfie row runs, and then
-  // the client reports an error, as if the acknowledgement was lost on the way back.
+  // TEST seam: when armed, the COMMIT of the next transaction that inserted a selfie row (true)
+  // or a check-in write (a WorkerCheckIn, FieldDeviceEvent or FieldThrottle row: 'checkin') runs,
+  // and then the client reports an error, as if the acknowledgement was lost on the way back.
+  // 'checkin-abort' rolls that transaction back instead of committing it and reports an error,
+  // as if the process stopped before its COMMIT.
   let commitFault = false;
   const realConnect = appPool.connect.bind(appPool);
   appPool.connect = async (...args) => {
@@ -336,14 +340,29 @@ try {
         const text = typeof q[0] === 'string' ? q[0] : (q[0]?.text ?? '');
         if (text.includes('INSERT INTO "FieldSelfie"'))
           client.selfieInsert = true;
-        const result = await query(...q);
+        if (
+          /INSERT INTO "(WorkerCheckIn|FieldDeviceEvent|FieldThrottle)"/.test(
+            text,
+          )
+        )
+          client.checkInWrite = true;
+        const armed =
+          text === 'COMMIT' &&
+          ((commitFault === true && client.selfieInsert) ||
+            (typeof commitFault === 'string' && client.checkInWrite));
         if (text === 'COMMIT' || text === 'ROLLBACK') {
-          const lose = commitFault && text === 'COMMIT' && client.selfieInsert;
           client.selfieInsert = false;
-          if (lose) {
-            commitFault = false;
-            throw new Error('TEST lost COMMIT acknowledgement');
-          }
+          client.checkInWrite = false;
+        }
+        if (armed && commitFault === 'checkin-abort') {
+          commitFault = false;
+          await query('ROLLBACK');
+          throw new Error('TEST process stopped before COMMIT');
+        }
+        const result = await query(...q);
+        if (armed) {
+          commitFault = false;
+          throw new Error('TEST lost COMMIT acknowledgement');
         }
         const gate = queryGate;
         if (gate && gate.match(text)) {
@@ -2728,6 +2747,7 @@ try {
     'kd',
     'kr',
     'kz',
+    'kw',
     's1',
     's2',
     's3',
@@ -2970,10 +2990,9 @@ try {
 
   step('check-in: failed check-ins per device');
   {
-    // Design §2: 30 refused check-ins per hour per device, counted in their own transaction.
-    // Same-key retries of a refusal count; replays of a committed success never count and are
-    // still served once the device is limited.
-    await freshWindow(3600);
+    // Design §2: 30 refused check-ins per hour per device, counted as the device's committed
+    // refusal events. Same-key retries of a refusal count; replays of a committed success never
+    // count and are still served once the device is limited.
     const ok = await tap(dev.kr.token);
     const success = await expectStatus(Promise.resolve(ok.r), 200);
     const replay = () =>
@@ -3005,13 +3024,6 @@ try {
     );
     assert.deepEqual(await replay(), success);
     assert.equal((await refusals(dev.kr.id)).length, 30);
-    assert.equal(
-      await count(
-        `SELECT count::int AS n FROM "FieldThrottle" WHERE bucket=$1`,
-        [`checkin-fail:${dev.kr.id}`],
-      ),
-      30,
-    );
     pass(
       'failed check-ins: 30 refusals per hour per device (15 same-key retries and 15 new keys, each counted and logged); the 31st attempt, new key or same key, is RATE_LIMITED with no further event; replays of a committed success are never counted and are still served while the device is limited',
     );
@@ -3024,15 +3036,13 @@ try {
     // after the request would come too late): exactly one more refusal may be counted, the
     // other seven are RATE_LIMITED. A changed command under the successful key is RATE_LIMITED
     // too, and the success itself still replays.
-    await freshWindow(3600);
     const okTap = await tap(dev.kz.token);
     const success = await expectStatus(Promise.resolve(okTap.r), 200);
-    const bucket = `checkin-fail:${dev.kz.id}`;
+    // 29 committed refusals of this device in the last hour.
     await owner.query(
-      `INSERT INTO "FieldThrottle"(bucket, "windowStart", count)
-      VALUES ($1, to_timestamp(floor(extract(epoch FROM now()) / 3600) * 3600), 29)
-      ON CONFLICT (bucket, "windowStart") DO UPDATE SET count = 29`,
-      [bucket],
+      `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorDeviceId","actorPersonId")
+      SELECT gen_random_uuid(), $1, $2, $3, $4, 'CHECKIN_REFUSED', 'GEOFENCE_OUTSIDE', $3, $4 FROM generate_series(1, 29)`,
+      [orgA, projectA, dev.kz.id, person.kz],
     );
     const D = okTap.body.businessDate;
     const slotKey = `${orgA}:field-slot:${person.kz}:${D}`;
@@ -3087,7 +3097,7 @@ try {
       'GEOFENCE_OUTSIDE',
       ...Array(7).fill('RATE_LIMITED'),
     ]);
-    assert.equal((await refusals(dev.kz.id)).length, 1);
+    assert.equal((await refusals(dev.kz.id)).length, 30);
     await expectStatus(
       kpost('/checkin', dev.kz.token, {
         ...okTap.body,
@@ -3102,15 +3112,49 @@ try {
       await expectStatus(kpost('/checkin', dev.kz.token, okTap.body), 200),
       success,
     );
-    assert.equal(
-      await count(
-        `SELECT count::int AS n FROM "FieldThrottle" WHERE bucket=$1`,
-        [bucket],
-      ),
-      30,
-    );
     pass(
-      'failed check-ins at the threshold, concurrently, with housekeeping on and held: from 29 counted refusals, 8 queued refused attempts yield exactly one more counted refusal (one event) and 7 RATE_LIMITED; a changed command under the successful key is RATE_LIMITED (not IDEMPOTENCY_KEY_REUSED); the success still replays uncounted; the counter ends at 30',
+      'failed check-ins at the threshold, concurrently, with housekeeping on and held: from 29 committed refusal events, 8 queued refused attempts yield exactly one more refusal (one event) and 7 RATE_LIMITED; a changed command under the successful key is RATE_LIMITED (not IDEMPOTENCY_KEY_REUSED); the success still replays uncounted; the device ends at 30 refusal events',
+    );
+  }
+
+  step('check-in: failed check-ins after stops and lost acknowledgements');
+  {
+    // The count is the committed refusal events, nothing else: (1) a success whose COMMIT
+    // acknowledgement is lost charges nothing; (2) a refusal whose transaction stops before its
+    // COMMIT charges nothing; (3) a refusal committed with its acknowledgement lost charges one.
+    // Then exactly 29 more refusals are allowed.
+    const ok = await tapBody();
+    commitFault = 'checkin';
+    let r;
+    try {
+      r = await kpost('/checkin', dev.kw.token, ok);
+    } finally {
+      commitFault = false;
+    }
+    assert.equal(r.status, 500);
+    await expectStatus(kpost('/checkin', dev.kw.token, ok), 200);
+    const outside = () => tapBody({ m: 900 });
+    for (const mode of ['checkin-abort', 'checkin']) {
+      commitFault = mode;
+      try {
+        r = await kpost('/checkin', dev.kw.token, await outside());
+      } finally {
+        commitFault = false;
+      }
+      assert.equal(r.status, 500);
+    }
+    assert.equal((await refusals(dev.kw.id)).length, 1);
+    let allowed = 0;
+    for (let i = 0; i < 31; i++) {
+      const x = await kpost('/checkin', dev.kw.token, await outside());
+      if (x.status === 429) break;
+      assert.equal(x.body.code, 'GEOFENCE_OUTSIDE');
+      allowed++;
+    }
+    assert.equal(allowed, 29);
+    assert.equal((await refusals(dev.kw.id)).length, 30);
+    pass(
+      'failed check-ins count exactly the committed refusal events: a success with a lost COMMIT acknowledgement charges nothing (its replay is served), a refusal stopped before its COMMIT charges nothing, a refusal committed with a lost acknowledgement charges one, and then exactly 29 more refusals are allowed before RATE_LIMITED',
     );
   }
 
