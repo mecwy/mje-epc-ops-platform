@@ -21,54 +21,37 @@ import {
 } from './field-kit.js';
 import { audit, type Actor } from './store-kit.js';
 
-const iso = (d: Date | null) => (d ? d.toISOString() : null);
 /** Rows of a role that contain now (half-open). */
 export const NOW_IN = (a: string) =>
   `${a}."validFrom" <= now() AND (${a}."validUntil" IS NULL OR now() < ${a}."validUntil")`;
 
+/** ISO-8601 UTC with milliseconds, as `Date.toISOString()` writes it. */
+const isoSql = (column: string) =>
+  `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+/**
+ * The roster as one statement, so crews, intervals and the version come from one snapshot: a
+ * roster write committing meanwhile is either wholly in the answer or wholly absent, and the
+ * returned version always belongs to the returned rows (also on an idempotent replay).
+ */
 export async function readRoster(
   client: PoolClient,
   orgId: string,
   projectId: string,
 ): Promise<RosterDto> {
-  const crews = await client.query<{
-    id: string;
-    code: string;
-    name: string;
-    activeFrom: Date;
-    activeUntil: Date | null;
-  }>(
-    `SELECT id, code, name, "activeFrom", "activeUntil" FROM "Crew" WHERE "orgId"=$1 AND "projectId"=$2 ORDER BY code`,
+  const r = await client.query<Omit<RosterDto, 'projectId'>>(
+    `SELECT
+      COALESCE((SELECT version FROM "ProjectRoster" WHERE "orgId"=$1 AND "projectId"=$2), 0) AS "rosterVersion",
+      COALESCE((SELECT json_agg(json_build_object('id', c.id, 'code', c.code, 'name', c.name,
+          'activeFrom', ${isoSql('c."activeFrom"')}, 'activeUntil', ${isoSql('c."activeUntil"')}) ORDER BY c.code)
+        FROM "Crew" c WHERE c."orgId"=$1 AND c."projectId"=$2), '[]'::json) AS crews,
+      COALESCE((SELECT json_agg(json_build_object('id', a.id, 'crewId', a."crewId", 'personId', a."personId",
+          'displayName', p."displayName", 'role', a.role,
+          'validFrom', ${isoSql('a."validFrom"')}, 'validUntil', ${isoSql('a."validUntil"')}) ORDER BY a."validFrom", a.id)
+        FROM "CrewAssignment" a JOIN "Person" p ON p."orgId"=a."orgId" AND p.id=a."personId"
+        WHERE a."orgId"=$1 AND a."projectId"=$2), '[]'::json) AS assignments`,
     [orgId, projectId],
   );
-  const rows = await client.query<{
-    id: string;
-    crewId: string;
-    personId: string;
-    displayName: string;
-    role: 'MEMBER' | 'FOREMAN';
-    validFrom: Date;
-    validUntil: Date | null;
-  }>(
-    `SELECT a.id, a."crewId", a."personId", p."displayName", a.role, a."validFrom", a."validUntil"
-    FROM "CrewAssignment" a JOIN "Person" p ON p."orgId"=a."orgId" AND p.id=a."personId"
-    WHERE a."orgId"=$1 AND a."projectId"=$2 ORDER BY a."validFrom", a.id`,
-    [orgId, projectId],
-  );
-  return {
-    projectId,
-    rosterVersion: await rosterVersion(client, orgId, projectId),
-    crews: crews.rows.map((c) => ({
-      ...c,
-      activeFrom: c.activeFrom.toISOString(),
-      activeUntil: iso(c.activeUntil),
-    })),
-    assignments: rows.rows.map((a) => ({
-      ...a,
-      validFrom: a.validFrom.toISOString(),
-      validUntil: iso(a.validUntil),
-    })),
-  };
+  return { projectId, ...r.rows[0]! };
 }
 export async function rosterVersion(
   client: PoolClient,

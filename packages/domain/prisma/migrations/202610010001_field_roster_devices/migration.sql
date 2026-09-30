@@ -336,6 +336,9 @@ CREATE TABLE "FieldDeviceEvent" (
   CONSTRAINT "FieldDeviceEvent_orgId_projectId_deviceId_fkey" FOREIGN KEY ("orgId", "projectId", "deviceId") REFERENCES "FieldDevice"("orgId", "projectId", "id") ON DELETE RESTRICT ON UPDATE NO ACTION,
   CONSTRAINT "FieldDeviceEvent_orgId_personId_fkey" FOREIGN KEY ("orgId", "personId") REFERENCES "Person"("orgId", "id") ON DELETE RESTRICT ON UPDATE NO ACTION,
   CONSTRAINT "FieldDeviceEvent_orgId_actorAccountId_fkey" FOREIGN KEY ("orgId", "actorAccountId") REFERENCES "LoginAccount"("orgId", "id") ON DELETE RESTRICT ON UPDATE NO ACTION,
+  -- Actors are tenant references too: a person of the org, a device of the same project.
+  CONSTRAINT "FieldDeviceEvent_orgId_actorPersonId_fkey" FOREIGN KEY ("orgId", "actorPersonId") REFERENCES "Person"("orgId", "id") ON DELETE RESTRICT ON UPDATE NO ACTION,
+  CONSTRAINT "FieldDeviceEvent_orgId_projectId_actorDeviceId_fkey" FOREIGN KEY ("orgId", "projectId", "actorDeviceId") REFERENCES "FieldDevice"("orgId", "projectId", "id") ON DELETE RESTRICT ON UPDATE NO ACTION,
   CONSTRAINT "FieldDeviceEvent_kind_check" CHECK ("kind" IN ('BIND', 'CHALLENGE', 'CHALLENGE_FAILED', 'CHALLENGES_RESET', 'CONFIRM',
     'REJECT', 'REVOKE', 'RELEASE', 'ROTATE', 'EXPIRE', 'REPLACE', 'SUPERSEDE', 'UNASSIGN')),
   CONSTRAINT "FieldDeviceEvent_reason_check" CHECK ("reasonCode" ~ '^[A-Z_]{1,40}$')

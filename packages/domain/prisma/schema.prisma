@@ -383,6 +383,7 @@ model Person {
   FieldConfirmChallenge_person          FieldConfirmChallenge[] @relation("FieldConfirmChallenge_person")
   FieldPersonConfirm_person             FieldPersonConfirm[]    @relation("FieldPersonConfirm_person")
   FieldDeviceEvent_person               FieldDeviceEvent[]      @relation("FieldDeviceEvent_person")
+  FieldDeviceEvent_actorPerson          FieldDeviceEvent[]      @relation("FieldDeviceEvent_actorPerson")
 
   @@unique([orgId, id])
 }
@@ -1367,6 +1368,7 @@ model FieldDevice {
   tokenHashes          FieldTokenHash[]        @relation("FieldTokenHash_device")
   challenges           FieldConfirmChallenge[] @relation("FieldConfirmChallenge_device")
   events               FieldDeviceEvent[]      @relation("FieldDeviceEvent_device")
+  actorEvents          FieldDeviceEvent[]      @relation("FieldDeviceEvent_actorDevice")
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, id])
@@ -1435,6 +1437,8 @@ model FieldDeviceEvent {
   actorAccount   LoginAccount? @relation("FieldDeviceEvent_actorAccount", fields: [orgId, actorAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   actorPersonId  String?       @db.Uuid
   actorDeviceId  String?       @db.Uuid
+  actorPerson    Person?       @relation("FieldDeviceEvent_actorPerson", fields: [orgId, actorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actorDevice    FieldDevice?  @relation("FieldDeviceEvent_actorDevice", fields: [orgId, projectId, actorDeviceId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
   /// Append order (identity); never the clock.
   seq            BigInt        @default(autoincrement())
 
