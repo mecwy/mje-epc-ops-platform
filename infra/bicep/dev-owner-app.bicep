@@ -71,6 +71,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           // Photo bytes through the app's managed identity; no key or connection string.
           { name: 'BLOB_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
           { name: 'BLOB_EVIDENCE_CONTAINER', value: 'evidence' }
+          // Exactly one proxy (the Container Apps ingress) sits in front of the app, so the client
+          // address field throttles key on is the one that ingress appends.
+          { name: 'TRUST_PROXY_HOPS', value: '1' }
         ]
         probes: [{
           type: 'Liveness'
