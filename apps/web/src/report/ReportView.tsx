@@ -9,6 +9,7 @@ import type {
 } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
+import { narrativeText } from '@mje/ui';
 import { Chip, Kv } from '../ui.js';
 import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, photoPlacement, target } from './model.js';
@@ -229,8 +230,10 @@ function Issues({
   photos: PhotoAsOfDto[];
   otherIssues: IssueAsOf[];
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const n = c.facts.narrative;
+  const quality = narrativeText(n.quality, lang);
+  const safety = narrativeText(n.safety, lang);
   return (
     <section className="card">
       <div className="blk-row">
@@ -242,10 +245,10 @@ function Issues({
         withPhotos={otherIssues}
       />
       <Kv label={t('quality')}>
-        {n.quality.trim() || <span className="miss">{t('notFilled')}</span>}
+        {quality.trim() || <span className="miss">{t('notFilled')}</span>}
       </Kv>
       <Kv label={t('safety')}>
-        {n.safety.trim() || <span className="miss">{t('notFilled')}</span>}
+        {safety.trim() || <span className="miss">{t('notFilled')}</span>}
       </Kv>
     </section>
   );

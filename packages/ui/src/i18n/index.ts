@@ -5,9 +5,15 @@ import {
   type Lang,
   type MessageKey,
 } from './messages.js';
+import { isCheckedNoIssues } from './presets.js';
 
 export { LANGS, LOCALES, MESSAGES };
 export type { Lang, MessageKey };
+export {
+  CHECKED_NO_ISSUES,
+  LEGACY_CHECKED_NO_ISSUES,
+  isCheckedNoIssues,
+} from './presets.js';
 
 const ORDER: Lang[] = ['zh', 'en', 'sr', 'es'];
 
@@ -33,6 +39,14 @@ export function translate(
   return text.replace(/\{(\w+)\}/g, (match, name: string) =>
     Object.hasOwn(vars, name) ? String(vars[name]) : match,
   );
+}
+
+/**
+ * Display text for a stored quality/safety value: the preset code (or the exact legacy Chinese
+ * preset) in the reader's language; anything else is returned exactly as typed.
+ */
+export function narrativeText(stored: string, lang: Lang): string {
+  return isCheckedNoIssues(stored) ? translate(lang, 'noCheckFound') : stored;
 }
 
 export const makeT =

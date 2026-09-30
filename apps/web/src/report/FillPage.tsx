@@ -5,7 +5,7 @@ import type { DayView } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
 import { NumInput, TokenChips } from '../ui.js';
-import type { MessageKey } from '@mje/ui';
+import { CHECKED_NO_ISSUES, narrativeText, type MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
 import { CheckInsBeside } from './CheckInsBeside.js';
 import { ForemanLine } from './ForemanLine.js';
@@ -291,7 +291,7 @@ export function CheckList({
         t(m.key),
         <>
           {go(`f-${m.key}`)}
-          {set(`narrative.${m.key}`, t('noCheckFound'), t('noCheckFound'))}
+          {set(`narrative.${m.key}`, CHECKED_NO_ISSUES, t('noCheckFound'))}
         </>,
       ];
     else if (m.key === 'people')
@@ -450,7 +450,7 @@ export function FillPage({
   issues: IssuesHandle;
   canWrite: boolean;
 }) {
-  const { t, label, locale } = useI18n();
+  const { t, label, locale, lang } = useI18n();
   const [mm, setMm] = useState(false);
   const f = h.facts!;
   const locked = day.state === 'submitted' || busy;
@@ -473,7 +473,7 @@ export function FillPage({
         <textarea
           id={`f-${k}`}
           rows={2}
-          value={f.narrative[k]}
+          value={narrativeText(f.narrative[k], lang)}
           disabled={locked}
           onChange={(e) => h.edit(`narrative.${k}`, e.target.value)}
         />
@@ -483,7 +483,7 @@ export function FillPage({
           <button
             type="button"
             className="pill"
-            onClick={() => h.edit(`narrative.${k}`, t('noCheckFound'))}
+            onClick={() => h.edit(`narrative.${k}`, CHECKED_NO_ISSUES)}
           >
             {t('noCheckFound')}
           </button>
