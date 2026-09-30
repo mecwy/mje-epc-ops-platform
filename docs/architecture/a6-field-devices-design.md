@@ -1,6 +1,6 @@
 # A6 design: field devices, worker check-in and foreman quantities
 
-Status: design r5 for review. It answers Codex rounds 1–3 and records the user decisions of 2026-09-29. It contains no application code, migration or contract. All examples are synthetic TEST data; coordinates are `0.000000, 0.000000`-style placeholders.
+Status: design r5, approved; §5 clock and bootstrap edits and §11 clarifications added with A6a. It answers Codex rounds 1–3 and records the user decisions of 2026-09-29. It contains no application code, migration or contract. All examples are synthetic TEST data; coordinates are `0.000000, 0.000000`-style placeholders.
 
 Scope: U2.1 rules 1, 9, 11, 12, 13 and 14, the foreman quantity report and the PM "adopt" step.
 
@@ -214,7 +214,7 @@ Only `COMPLETE` can be adopted; the PM may still type any value. `foremanTotals`
 
 **Bootstrap (field routes, low-privilege `mje_alpha_app`):**
 
-1. Set `app.device_token_hash`, then do a **non-locking** SELECT through the lookup policy, which is SELECT-only and returns `orgId, id, personId`.
+1. Set `app.device_token_hash`, then do a **non-locking** SELECT through the lookup policy, which is SELECT-only and returns `orgId, id, projectId, personId`, whether the hash is the current or the previous one, and every field step 5 needs to choose its mode: `state`, `pendingUntil`, `expiresAt`, `memberUntil`, `lastSeenAt`, `rotatedAt`.
 2. Set `app.org_id` (transaction-local).
 3. Take the idempotency key lock (level I below; routes with a key only).
 4. Lifecycle routes take the person locks of the actor and the subject, sorted, before any device row lock.
@@ -222,6 +222,8 @@ Only `COMPLETE` can be adopted; the PM may still type any value. `foremanTotals`
 6. Look up the idempotency record (§3 order of processing). A replay returns here, after authorization.
 
 **No lock upgrades.** A request never upgrades its device lock from `FOR SHARE` to `FOR UPDATE`; the mode is chosen from the non-locking lookup before locking (step 5).
+
+**Clock and freshness.** Every deadline in a request is compared with `now()`, the **transaction start time**. The lookup, the locked re-read and the in-transaction activity write all use that one value, so a request is judged as of the instant it started, even if it commits later. The housekeeping `statement_timeout` and `lock_timeout` bound only the deferred UPDATE. Nothing bounds the interval between the bootstrap lookup and the locked re-read: lock waits, a stalled pool or process can stretch it. The 1-day margin therefore holds only if a `FOR SHARE` request is re-checked once it holds its lock. After the locked re-read it compares `clock_timestamp()` with `lastSeenAt + 29 days`. If the wall clock has crossed into the last day meanwhile, the request **reclassifies**: it rolls back and restarts from step 1 in a new transaction with a fresh `now()`, which then takes `FOR UPDATE` and records its activity in its own transaction. A request restarts at most once; a second crossing → 503 `RETRY`. Without this, the delayed request's deferred activity write would be skipped by its 29-day guard and a device in use could expire as idle.
 
 **Device activity and expiry.**
 
@@ -376,3 +378,25 @@ The user decided the earlier Q1–Q8 (§0). Two defaults remain for the user to 
 2. How far back a PM proxy may go. **Default: 7 days, reason required when the date is not today.**
 
 PR plan: A6.0 reader filter (OD18) → A6a roster, devices and entry → A6b check-in and selfie → A6c foreman reports and adopt → A6d web.
+
+## 11. A6a implementation clarifications
+
+Recorded while implementing A6a (roster, devices, entry). Each is consistent with §1–§9; none changes a rule.
+
+| #   | Clarification                                                                                                                                                                                                                                                                 |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | `FieldThrottle` and `FieldThrottleSalt` have no `orgId` and no RLS: they are written before authentication, when no org is known, and hold only salted hashes or device/account ids. The confirmer failure bucket is keyed by the actor id.                                   |
+| C2  | The foreman has no other field read route, so a confirmed foreman's `GET field/me` lists the members of the foreman's crew now, each with the current confirmed device id and the number of live pending devices. The foreman sends that id as `expectedCurrentDeviceId`.     |
+| C3  | Foreman `devices/reject {personId, code}` rejects the pending device whose live challenge matches; a wrong code counts like a failed confirm. PM reject and revoke act on a device row with `expectedVersion`, because the PM list shows rows.                                |
+| C4  | PM confirm uses the same ceremony, `{projectId, personId, code, expectedCurrentDeviceId}`. Its staleness check is `CONFIRM_STALE`; `expectedVersion` applies to PM reject and revoke.                                                                                         |
+| C5  | PM revoke of a PENDING device ends it REJECTED with reason REVOKED (the lifecycle has no PENDING → REVOKED). Release of a PENDING device ends it REJECTED with reason RELEASED. A terminal device or a stale version → `VERSION_CONFLICT`.                                    |
+| C6  | `FieldDevice.version` counts lifecycle transitions only. Rotation, activity and `memberUntil` leave it unchanged, so a PM revoke is never refused because the phone rotated.                                                                                                  |
+| C7  | Holding a device needs a `MEMBER` interval (`memberUntil` is defined on MEMBER runs); `FOREMAN` is authority on top. "One crew per foreman at a time" is enforced per project, like the person and roster locks.                                                              |
+| C8  | Roster writes: `crews`, `crews/end` and `roster/changes` (ordered opens and closes in one transaction; all closes are applied before the opens, so a transfer or handover at one instant is continuous). Each carries `expectedRosterVersion`. Times absent = `now()`.        |
+| C9  | Roster codes (409): `ASSIGNMENT_OVERLAP`, `ASSIGNMENT_CLOSED`, `ROSTER_TIME_INVALID` (backdated, or before the interval or crew start), `CREW_ENDED`, `CREW_NOT_EMPTY` (a crew ends only when no interval reaches past its end), `CREW_CODE_TAKEN`.                           |
+| C10 | The continuous MEMBER run is computed in SQL (`field_member_run`) on exact timestamps, so a microsecond gap between two transactions is a gap.                                                                                                                                |
+| C11 | The entry code is stored as designed and never audited. The rotation's idempotency record keeps only the code row id; a replay reads the code from its row. There is no PM read of the current code yet (A6d).                                                                |
+| C12 | Challenge codes are stored hashed, so only the challenge response carries the code; `GET field/me` does not. A challenge expires at `min(now + 5 min, pendingUntil)`. The failure counter restarts when a code is issued while the person has no live challenge.              |
+| C13 | The client IP for throttling honours `TRUST_PROXY_HOPS` (default 0). Behind the platform ingress it must be 1; that deployment setting is an infra follow-up.                                                                                                                 |
+| C14 | Deferred housekeeping runs after the commit and before the response, best-effort. Deadlock and serialization failures map to 503 `RETRY` on every route.                                                                                                                      |
+| C15 | Left to later slices, as their rows arrive: the shared roster lock in report submit and no-work submit (A6c, when the snapshot records `rosterVersion`), `FieldDeviceEvent.distanceBucketM` and `ProjectSiteReference` (A6b). `Person` gains SELECT and RLS for the app role. |

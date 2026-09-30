@@ -6,3 +6,5 @@ export type { Access, Actor } from './store-kit.js';
 export * from './photo-file.js';
 export * from './photo-store.js';
 export * from './reader-view.js';
+export { FieldError, FieldThrottle, type FieldErrorCode } from './field-kit.js';
+export * from './field-store.js';
