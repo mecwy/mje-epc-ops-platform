@@ -68,14 +68,15 @@ export class FieldSession<D> {
     const ticket = ++this.reads;
     try {
       const d = await this.read();
-      if (ticket <= this.applied) return false;
+      // Nothing read after the device ended (by an earlier or overlapping read) is applied.
+      if (this.endedCode || ticket <= this.applied) return false;
       this.applied = ticket;
       this.dataAt = ticket;
       this.data = d;
       this.readError = null;
       return true;
     } catch (e) {
-      if (ticket <= this.applied) return false;
+      if (this.endedCode || ticket <= this.applied) return false;
       this.applied = ticket;
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
       if (ENDED.has(code)) this.endedCode = code;
