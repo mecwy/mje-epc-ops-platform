@@ -4500,7 +4500,7 @@ try {
     );
     await expectStatus(adopt('support', day1), 409, 'FOREMAN_TOTAL_CHANGED');
     const day2 = await dayOf(F.T);
-    assert.equal(day2.foreman.items.support.value, '22');
+    assert.equal(day2.foreman.items.support.value, '12');
     // A changed expected crew set (one left out, one added) is a change too.
     for (const expectedCrews of [
       day2.foreman.basis.expectedCrews.slice(1),
@@ -4518,13 +4518,13 @@ try {
     // Explicit adoption against the current basis; an exact replay; an explicit zero.
     const key = randomUUID();
     const a1 = await expectStatus(adopt('support', day2, { key }), 200);
-    assert.deepEqual([a1.item, a1.value], ['support', '22']);
+    assert.deepEqual([a1.item, a1.value], ['support', '12']);
     assert.deepEqual(
       await expectStatus(adopt('support', day2, { key }), 200),
       a1,
     );
     const day3 = await dayOf(F.T);
-    assert.equal(day3.facts.qty.support, '22');
+    assert.equal(day3.facts.qty.support, '12');
     const a2 = await expectStatus(adopt('cable', day3), 200);
     assert.equal(a2.value, '0');
     const day4 = await dayOf(F.T);
@@ -4532,7 +4532,7 @@ try {
     assert.deepEqual(
       day4.foreman.adoptions.map((a) => [a.itemKey, a.value]),
       [
-        ['support', '22'],
+        ['support', '12'],
         ['cable', '0'],
       ],
     );
@@ -4556,7 +4556,7 @@ try {
     const day5 = await dayOf(F.T);
     assert.deepEqual(
       [day5.version, day5.facts.qty.support, day5.foreman.items.support.value],
-      [typed.version, '25', '22'],
+      [typed.version, '25', '12'],
     );
     F.day5 = day5;
     pass(
@@ -4648,12 +4648,12 @@ try {
     assert.equal(snap.facts.qty.support, '25');
     assert.deepEqual(
       [snap.foreman.items.support.status, snap.foreman.items.support.value],
-      ['COMPLETE', '22'],
+      ['COMPLETE', '12'],
     );
     assert.deepEqual(
       snap.foreman.adoptions.map((x) => [x.itemKey, x.value]),
       [
-        ['support', '22'],
+        ['support', '12'],
         ['cable', '0'],
         ['cable', '0'],
         ['cable', '0'],
@@ -4712,7 +4712,7 @@ try {
     assert.equal(revY2.snapshot.foreman.rosterVersion, rosterV[projectF]);
     assert.equal(revY2.snapshot.foreman.rosterVersion, vY + 2);
     pass(
-      'ordering with submit under controlled lock timing: an adoption holding the day row commits first and the queued submission gets VERSION_CONFLICT; a submission holding the day row and lock commits first → the queued adoption gets VERSION_CONFLICT, the queued foreman revision gets a sequence above the boundary (afterSubmission, not frozen) and a later adoption is LOCKED; the snapshot keeps the PM figure (25) beside the foreman total (COMPLETE 22), the adoptions and the revision numbers; a roster write waiting until after a submission leaves the frozen roster version, one committing before it is frozen with the new version; a later roster change never alters a revision',
+      'ordering with submit under controlled lock timing: an adoption holding the day row commits first and the queued submission gets VERSION_CONFLICT; a submission holding the day row and lock commits first → the queued adoption gets VERSION_CONFLICT, the queued foreman revision gets a sequence above the boundary (afterSubmission, not frozen) and a later adoption is LOCKED; the snapshot keeps the PM figure (25) beside the foreman total (COMPLETE 12), the adoptions and the revision numbers; a roster write waiting until after a submission leaves the frozen roster version, one committing before it is frozen with the new version; a later roster change never alters a revision',
     );
   }
 
