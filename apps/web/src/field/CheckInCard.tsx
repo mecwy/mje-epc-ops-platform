@@ -168,7 +168,7 @@ export function CheckInCard({
           )}
         </div>
       )}
-      <Status phase={phase} />
+      <CheckInStatus phase={phase} />
       {phase.kind === 'unsettled' ? (
         <button
           type="button"
@@ -197,7 +197,7 @@ export function CheckInCard({
   );
 }
 
-function Status({ phase }: { phase: Phase }) {
+export function CheckInStatus({ phase }: { phase: Phase }) {
   const { t } = useI18n();
   switch (phase.kind) {
     case 'idle':
@@ -247,7 +247,7 @@ function Status({ phase }: { phase: Phase }) {
               <br />
             </>
           )}
-          <ErrorText code={phase.code} />
+          <ErrorText code={phase.code} write />
         </div>
       );
     case 'unsettled': {
@@ -255,7 +255,7 @@ function Status({ phase }: { phase: Phase }) {
         phase.what === 'selfie' ? 'fd_selfieUnsettled' : 'fd_checkinUnsettled';
       return (
         <div className="banner warn" role="alert">
-          {t(key)} <ErrorText code={phase.code} />
+          {t(key)} <ErrorText code={phase.code} write />
         </div>
       );
     }

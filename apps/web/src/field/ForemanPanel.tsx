@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CHALLENGE_CODE,
   FOREMAN_NOTE_MAX,
@@ -8,32 +8,23 @@ import {
 import { useI18n } from '../i18n.js';
 import { NumInput, Sheet, TokenChips } from '../ui.js';
 import { fmtDay, fmtNum, fmtStamp, fmtTime } from '../report/format.js';
-import { locate } from '../report/geo.js';
 import { KindText } from './CheckInCard.js';
 import { ErrorText } from './ErrorText.js';
-import type { DeviceApi } from './field-api.js';
 import {
   checkDraft,
   draftFrom,
   qtyKind,
   type ReportDay,
-  ReportDays,
   reportDays,
   reportPayload,
   type Draft,
   type ReportSend,
 } from './foreman-report.js';
-import { ProxyFlow, type ProxyPhase } from './proxy-flow.js';
-import { CrewCommands } from './crew-commands.js';
-import type { FieldSession, Outcome } from './session.js';
+import type { ProxyFlow, ProxyPhase } from './proxy-flow.js';
+import type { CrewCommands } from './crew-commands.js';
+import type { Outcome } from './session.js';
+import type { ForemanOwners } from './foreman-owners.js';
 
-function localStore(): Storage | null {
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-}
 type Member = NonNullable<FieldMeDto['foreman']>['members'][number];
 
 /**
@@ -42,39 +33,19 @@ type Member = NonNullable<FieldMeDto['foreman']>['members'][number];
  * current crew is listed; the server re-checks authority on every request.
  */
 export function CrewCard({
-  api,
   me,
-  session,
-  onEnded,
+  owners,
 }: {
-  api: DeviceApi;
   me: FieldMeDto;
-  session: FieldSession<FieldMeDto>;
-  onEnded: (code: string) => void;
+  /** Kept by the device page (foreman-owners.ts): they outlive this card and the role. */
+  owners: ForemanOwners;
 }) {
-  const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [flow] = useState(
-    () =>
-      new ProxyFlow({
-        api,
-        deviceId: me.device.deviceId,
-        timeZone: me.project.timezone,
-        storage: localStore(),
-        locate: () => locate(navigator.geolocation),
-        now: () => Date.now(),
-        newKey: () => crypto.randomUUID(),
-        onEnded,
-        notify: rerender,
-      }),
-  );
   const [confirming, setConfirming] = useState<Member | null>(null);
-  // Kept with the card (mounted for the page's life): an unresolved decision keeps its key.
-  const [commands] = useState(() => new CrewCommands(session, api));
   return (
     <CrewList
       me={me}
-      commands={commands}
-      flow={flow}
+      commands={owners.crew}
+      flow={owners.proxy}
       confirming={confirming}
       onConfirming={setConfirming}
     />
@@ -147,6 +118,7 @@ export function CrewList({
           <b>{lastRefused.name}</b>:{' '}
           <ErrorText
             code={commands.refusal}
+            write
             uncertain={commands.refusalUncertain}
           />
         </div>
@@ -287,14 +259,13 @@ function ProxyStatus({ phase }: { phase: ProxyPhase }) {
     case 'refused':
       return (
         <span className="warn-t small" role="alert">
-          <ErrorText code={phase.code} uncertain={phase.uncertain} />
+          <ErrorText code={phase.code} write uncertain={phase.uncertain} />
         </span>
       );
     case 'unsettled':
       return (
         <span className="warn-t small" role="alert">
-          {t('fd_checkinUnsettled')} <ErrorText code={phase.code} />{' '}
-          {t('fm_proxyGiveUpHint')}
+          <ErrorText code={phase.code} write /> {t('fm_proxyGiveUpHint')}
         </span>
       );
   }
@@ -344,7 +315,7 @@ export function ConfirmSheet({
           {unresolved ? (
             <div className="banner warn" role="alert">
               {t('fm_attemptUnresolved')}{' '}
-              <ErrorText code={error?.code ?? commands.error ?? 'NETWORK'} />
+              <ErrorText code={commands.error ?? 'NETWORK'} write />
             </div>
           ) : (
             <p className="muted small">{t('saving')}</p>
@@ -424,7 +395,7 @@ function CrewCodeEdit({
       </label>
       {error && (
         <div className="banner err" role="alert">
-          <ErrorText code={error.code} uncertain={error.uncertain} />
+          <ErrorText code={error.code} write uncertain={error.uncertain} />
         </div>
       )}
       <div className="row2">
@@ -458,21 +429,17 @@ function CrewCodeEdit({
  * each item where the refused draft differs shows what was typed. No hours.
  */
 export function ReportCard({
-  api,
   me,
-  onEnded,
+  owners,
 }: {
-  api: DeviceApi;
   me: FieldMeDto;
-  onEnded: (code: string) => void;
+  /** Kept by the device page: each day's read and owned send outlive this card and the role. */
+  owners: ForemanOwners;
 }) {
   const { t, locale } = useI18n();
-  const [, rerender] = useReducer((n: number) => n + 1, 0);
   const days = reportDays(me.project.timezone, new Date());
   const [day, setDay] = useState(days[0]);
-  // Per site day, for the card's life: the read, its owned sends, the last refused payload.
-  const [byDay] = useState(() => new ReportDays(api, rerender, onEnded));
-  const e = byDay.get(day);
+  const e = owners.reports.get(day);
   useEffect(() => {
     if (!e.session.data && !e.session.readError) void e.session.load();
   }, [e]);
@@ -576,7 +543,8 @@ export function OwnedReport({
       {payload.note && <p className="para small">{payload.note}</p>}
       {unresolved ? (
         <div className="banner warn" role="alert">
-          {t('fm_sendUnresolved')}
+          {t('fm_sendUnresolved')}{' '}
+          <ErrorText code={report.session.error ?? 'NETWORK'} write />
         </div>
       ) : (
         <p className="muted small">{t('saving')}</p>
@@ -654,7 +622,11 @@ export function ReportForm({
       </p>
       {sends.refusal && (
         <div className="banner err" role="alert">
-          <ErrorText code={sends.refusal} uncertain={sends.refusalUncertain} />
+          <ErrorText
+            code={sends.refusal}
+            write
+            uncertain={sends.refusalUncertain}
+          />
         </div>
       )}
       {data.items.length === 0 && (
@@ -712,6 +684,134 @@ export function ReportForm({
       >
         {t('fm_send')}
       </button>
+    </>
+  );
+}
+
+/**
+ * The owned attempts while this phone's person is not a foreman (the role was removed while an
+ * attempt was running or unresolved): each keeps Retry / Give up, and the server decides
+ * whether a retry is still allowed. A result that ends an attempt stays shown here.
+ */
+export function OwnedActionsBar({ owners }: { owners: ForemanOwners }) {
+  const { t, locale } = useI18n();
+  const { crew, proxy, reports } = owners;
+  const rows: {
+    key: string;
+    what: string;
+    running: boolean;
+    unresolved: boolean;
+    code: string | null;
+    uncertain: boolean;
+    retry: () => void;
+    giveUp: () => void;
+  }[] = [];
+  const crewShown = crew.current ?? crew.refused;
+  if (crewShown)
+    rows.push({
+      key: 'crew',
+      what: t('fm_actConfirm', { name: crewShown.name }),
+      running: crew.current !== null && crew.busy,
+      unresolved: crew.unresolved !== null,
+      code: crew.current ? crew.error : crew.refusal,
+      uncertain: crew.current ? true : crew.refusalUncertain,
+      retry: () => void crew.retry(),
+      giveUp: () => crew.discard(),
+    });
+  if (proxy.person && proxy.phase.kind !== 'idle')
+    rows.push({
+      key: 'proxy',
+      what: t('fm_actProxy', { name: proxy.personName }),
+      running: proxy.busy,
+      unresolved: proxy.phase.kind === 'unsettled',
+      code:
+        proxy.phase.kind === 'unsettled' || proxy.phase.kind === 'refused'
+          ? proxy.phase.code
+          : null,
+      uncertain: proxy.phase.kind === 'refused' && proxy.phase.uncertain,
+      retry: () => void proxy.retry(),
+      giveUp: () => proxy.discard(),
+    });
+  for (const d of reports.all())
+    if (d.sends.current || d.sends.refusal)
+      rows.push({
+        key: `report:${d.day}`,
+        what: t('fm_actReport', { day: fmtDay(d.day, locale) }),
+        running: d.sends.current !== null && d.session.busy,
+        unresolved: d.sends.unresolved !== null,
+        code: d.sends.current ? d.session.error : d.sends.refusal,
+        uncertain: d.sends.current ? true : d.sends.refusalUncertain,
+        retry: () => void d.retry(),
+        giveUp: () => d.discard(),
+      });
+  if (rows.length === 0) return null;
+  return (
+    <section className="card">
+      <h2 className="blk">{t('fm_unresolvedTitle')}</h2>
+      <p className="muted small">{t('fm_unresolvedRoleNote')}</p>
+      <ul className="plainlist">
+        {rows.map((r) => (
+          <li key={r.key} className="devrow">
+            <span className="grow">
+              <b>{r.what}</b>
+              <span className="warn-t small" role="alert">
+                {r.running ? (
+                  t('saving')
+                ) : r.code ? (
+                  <ErrorText code={r.code} write uncertain={r.uncertain} />
+                ) : null}
+              </span>
+            </span>
+            {r.unresolved && (
+              <span className="chips">
+                <button
+                  type="button"
+                  className="pill"
+                  disabled={r.running}
+                  onClick={r.giveUp}
+                >
+                  {t('pm_giveUp')}
+                </button>
+                <button
+                  type="button"
+                  className="pill accent"
+                  disabled={r.running}
+                  onClick={r.retry}
+                >
+                  {t('retry')}
+                </button>
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The foreman parts of the device page: the crew and report cards while this person is a
+ * foreman, otherwise the owned-attempts bar. The owners come from the device page and outlive
+ * both (AGENTS.md), so losing and regaining the role never orphans an attempt.
+ */
+export function ForemanArea({
+  me,
+  owners,
+  tab,
+}: {
+  me: FieldMeDto;
+  owners: ForemanOwners;
+  tab: 'me' | 'crew' | 'report';
+}) {
+  if (!me.foreman) return <OwnedActionsBar owners={owners} />;
+  return (
+    <>
+      <div hidden={tab !== 'crew'}>
+        <CrewCard me={me} owners={owners} />
+      </div>
+      <div hidden={tab !== 'report'}>
+        <ReportCard me={me} owners={owners} />
+      </div>
     </>
   );
 }

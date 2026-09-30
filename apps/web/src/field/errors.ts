@@ -75,12 +75,33 @@ export const REFUSED_BEFORE_REPLAY = {
   PROXY_NOT_ALLOWED: 'fe_proxyMaybeRecorded',
 } as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
 
-/** The message for a refusal, told apart when an earlier attempt may have been recorded. */
-export function refusalKey(
+/**
+ * Unsettled codes of a write (session.ts UNSETTLED): the command is kept for an unchanged Retry
+ * and its outcome is not known, so each has an unknown-outcome message and never a failure
+ * ("did not succeed", "nothing was saved").
+ */
+export const UNKNOWN_OUTCOME = {
+  NETWORK: 'fu_network',
+  REQUEST_FAILED: 'fu_server',
+  RETRY: 'fu_busy',
+  RATE_LIMITED: 'fu_limited',
+} as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
+
+/**
+ * The one mapping for a command's outcome on every field surface (AGENTS.md):
+ * - a write whose code is unsettled → unknown outcome (UNKNOWN_OUTCOME);
+ * - a refusal made before the replay (REFUSED_BEFORE_REPLAY) after an unanswered attempt
+ *   (`uncertain`) → "may already have been recorded";
+ * - any other refusal (the server decided) → its own message.
+ * A read's error is not a write: it keeps its own message.
+ */
+export function outcomeKey(
   code: string | null | undefined,
-  uncertain: boolean,
+  o: { write: boolean; uncertain: boolean },
 ): MessageKey {
-  return uncertain && code && Object.hasOwn(REFUSED_BEFORE_REPLAY, code)
+  if (o.write && code && Object.hasOwn(UNKNOWN_OUTCOME, code))
+    return UNKNOWN_OUTCOME[code as keyof typeof UNKNOWN_OUTCOME];
+  return o.uncertain && code && Object.hasOwn(REFUSED_BEFORE_REPLAY, code)
     ? REFUSED_BEFORE_REPLAY[code as keyof typeof REFUSED_BEFORE_REPLAY]
     : fieldErrorKey(code);
 }
