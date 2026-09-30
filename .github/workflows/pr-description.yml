@@ -1,0 +1,19 @@
+name: pr-description
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  sections:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      # The body is passed through the environment, never interpolated into the script.
+      - run: node scripts/check-pr-body.mjs
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
