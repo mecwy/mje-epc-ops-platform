@@ -261,4 +261,21 @@ describe('FieldSession (IssueSession pattern)', () => {
     await session.load();
     expect(ended).toEqual(['DEVICE_ENDED']);
   });
+
+  it('round 3: an overlapping read landing after a terminal read never restores the device', async () => {
+    for (const code of ['DEVICE_ENDED', 'FIELD_AUTH_REQUIRED'])
+      for (const later of [new ApiError('NETWORK', 0), 2] as const) {
+        const { session, reads } = harness();
+        const r0 = session.load();
+        reads[0]!.settle(1);
+        await r0;
+        const a = session.load();
+        const b = session.load();
+        reads[0 + 1]!.settle(new ApiError(code, 401));
+        await a;
+        reads[2]!.settle(later);
+        expect(await b).toBe(false);
+        expect(session.readError).toBe(code);
+      }
+  });
 });

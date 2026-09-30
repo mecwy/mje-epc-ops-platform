@@ -1,18 +1,17 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CHALLENGE_CODE, type FieldDeviceDto } from '@mje/contracts';
 import type { MessageKey } from '@mje/ui';
-import type { Project, ReportApi } from '../api.js';
+import type { Project } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
-import { FieldSession } from '../field/session.js';
 import { fmtStamp } from '../report/format.js';
-import { currentDevice, groupDevices } from './site-form.js';
+import { groupDevices } from './site-form.js';
+import type { DeviceCommands, SiteSessions } from './site-sessions.js';
+import { useSessions } from './use-sessions.js';
 
-type Action =
-  | { kind: 'confirm'; device: FieldDeviceDto }
-  | { kind: 'reject'; device: FieldDeviceDto }
-  | { kind: 'revoke'; device: FieldDeviceDto };
+/** The sheet being shown: which device and which action (the code is typed in the sheet). */
+type Action = { kind: 'confirm' | 'reject' | 'revoke'; device: FieldDeviceDto };
 
 /**
  * The PM's device list (design §2, §6; U4): pending phones are confirmed with the code shown
@@ -20,18 +19,18 @@ type Action =
  * once confirmed. Foreman confirmations are marked for spot checks. Rows only; never a token.
  */
 export function DevicesCard({
-  api,
+  sessions,
   project,
 }: {
-  api: ReportApi;
+  sessions: SiteSessions;
   project: Project;
 }) {
   const { t, locale } = useI18n();
-  const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [session] = useState(
-    () => new FieldSession(() => api.devices(project.id), rerender),
-  );
+  useSessions(sessions);
+  const commands = sessions.devices;
+  const session = commands.session;
   useEffect(() => void session.load(), [session]);
+  const unresolved = commands.unresolved;
   const [action, setAction] = useState<Action | null>(null);
   const [showEnded, setShowEnded] = useState(false);
   const devices = session.data ?? [];
@@ -75,6 +74,7 @@ export function DevicesCard({
           <button
             type="button"
             className="pill accent"
+            disabled={!commands.canStart}
             onClick={() => setAction({ kind: 'confirm', device: d })}
           >
             {t('pm_confirm')}
@@ -82,6 +82,7 @@ export function DevicesCard({
           <button
             type="button"
             className="pill"
+            disabled={!commands.canStart}
             onClick={() => setAction({ kind: 'reject', device: d })}
           >
             {t('pm_reject')}
@@ -92,6 +93,7 @@ export function DevicesCard({
         <button
           type="button"
           className="pill"
+          disabled={!commands.canStart}
           onClick={() => setAction({ kind: 'revoke', device: d })}
         >
           {t('pm_revoke')}
@@ -111,6 +113,33 @@ export function DevicesCard({
           {t('pm_reload')}
         </button>
       </div>
+      {unresolved && !action && (
+        <div className="banner warn" role="alert">
+          <UnresolvedText
+            kind={unresolved.kind}
+            name={unresolved.device.displayName}
+          />{' '}
+          <ErrorText code={session.error} />
+          <div className="chips">
+            <button
+              type="button"
+              className="pill accent"
+              disabled={session.busy}
+              onClick={() => void commands.retry()}
+            >
+              {t('retry')}
+            </button>
+            <button
+              type="button"
+              className="pill"
+              disabled={session.busy}
+              onClick={() => commands.discard()}
+            >
+              {t('pm_giveUp')}
+            </button>
+          </div>
+        </div>
+      )}
       {session.readError && (
         <div className="banner err" role="alert">
           <ErrorText code={session.readError} />
@@ -147,9 +176,7 @@ export function DevicesCard({
       {action && (
         <ActionSheet
           action={action}
-          api={api}
-          project={project}
-          session={session}
+          commands={commands}
           onClose={() => setAction(null)}
         />
       )}
@@ -178,63 +205,55 @@ function EndText({ reason }: { reason: string | null }) {
   return <>{t(key)}</>;
 }
 
+function UnresolvedText({
+  kind,
+  name,
+}: {
+  kind: Action['kind'];
+  name: string;
+}) {
+  const { t } = useI18n();
+  const key =
+    kind === 'confirm'
+      ? 'pm_unresolvedConfirm'
+      : kind === 'reject'
+        ? 'pm_unresolvedReject'
+        : 'pm_unresolvedRevoke';
+  return <>{t(key, { name })}</>;
+}
+
+/**
+ * One device's action. Only started when nothing is unresolved (DeviceCommands); if its own
+ * command becomes unresolved, the sheet offers the retry of exactly that command.
+ */
 function ActionSheet({
   action,
-  api,
-  project,
-  session,
+  commands,
   onClose,
 }: {
   action: Action;
-  api: ReportApi;
-  project: Project;
-  session: FieldSession<FieldDeviceDto[]>;
+  commands: DeviceCommands;
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const session = commands.session;
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const d = action.device;
   const codeOk = CHALLENGE_CODE.test(code);
+  // A retry here is offered only for this sheet's own unresolved command.
+  const mine =
+    commands.unresolved?.device.id === d.id &&
+    commands.unresolved.kind === action.kind;
   const run = async () => {
     setError(null);
-    const r = session.pending
-      ? await session.retry()
-      : await session.act((list) => {
-          const key = crypto.randomUUID();
-          if (action.kind === 'confirm')
-            return {
-              key,
-              send: () =>
-                api.confirmDevice({
-                  projectId: project.id,
-                  clientMutationId: key,
-                  personId: d.personId,
-                  code,
-                  // Built from the newest list when it runs; an older view gets CONFIRM_STALE.
-                  expectedCurrentDeviceId: currentDevice(
-                    list ?? [],
-                    d.personId,
-                  ),
-                }),
-            };
-          // Reject and revoke act on the row at its current version.
-          const now = list?.find((x) => x.id === d.id);
-          if (!now) return null;
-          const c = {
-            projectId: project.id,
-            clientMutationId: key,
-            deviceId: d.id,
-            expectedVersion: now.version,
-          };
-          return {
-            key,
-            send: () =>
-              action.kind === 'reject'
-                ? api.rejectDevice(c)
-                : api.revokeDevice(c),
-          };
-        });
+    const r = mine
+      ? await commands.retry()
+      : await commands.run(
+          action.kind === 'confirm'
+            ? { kind: 'confirm', device: d, code }
+            : { kind: action.kind, device: d },
+        );
     if (r.kind === 'ok') onClose();
     else setError(r.code);
   };
@@ -275,10 +294,14 @@ function ActionSheet({
       <button
         type="button"
         className={`primary wide${action.kind === 'revoke' ? ' danger' : ''}`}
-        disabled={session.busy || (action.kind === 'confirm' && !codeOk)}
+        disabled={
+          session.busy ||
+          (!mine && !commands.canStart) ||
+          (!mine && action.kind === 'confirm' && !codeOk)
+        }
         onClick={() => void run()}
       >
-        {session.pending ? t('retry') : t(title)}
+        {mine ? t('retry') : t(title)}
       </button>
     </Sheet>
   );

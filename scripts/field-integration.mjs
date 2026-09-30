@@ -885,6 +885,12 @@ try {
       403,
       'FORBIDDEN',
     );
+    // A PM of another organization gets the same refusal and no code.
+    await expectStatus(
+      pget(`/entry-code?projectId=${projectA}`, pmB),
+      403,
+      'FORBIDDEN',
+    );
     // An empty roster still validates the code; a wrong code is refused either way.
     const empty = await expectStatus(
       fpost('/entry', null, { code: entryCode[projectA2] }),
@@ -906,7 +912,7 @@ try {
     );
     assert.equal(audits.rows.length, 4);
     pass(
-      'entry code: PM rotation is idempotent (replay returns the same code, one row), the previous code stops working, a reader gets READ_ONLY and another project FORBIDDEN; the PM read returns null before the first code and then only the active one (reader READ_ONLY, other project FORBIDDEN); an empty roster still validates the code, a wrong one is ENTRY_CODE_INVALID',
+      'entry code: PM rotation is idempotent (replay returns the same code, one row), the previous code stops working, a reader gets READ_ONLY and another project FORBIDDEN; the PM read returns null before the first code and then only the active one (reader READ_ONLY, other project and other org FORBIDDEN); an empty roster still validates the code, a wrong one is ENTRY_CODE_INVALID',
     );
   }
 
