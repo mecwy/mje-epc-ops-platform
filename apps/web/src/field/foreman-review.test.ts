@@ -15,7 +15,7 @@ import type { DeviceRecord } from './device-store.js';
 import { deviceView } from './flow.js';
 import { CrewList, ReportDayBody } from './ForemanPanel.js';
 import { ReportDay, ReportDays, reportPayload } from './foreman-report.js';
-import { fieldRequest } from './field-api.js';
+import { deviceApi } from './field-api.js';
 import { ProxyFlow } from './proxy-flow.js';
 import { FieldSession } from './session.js';
 
@@ -240,18 +240,9 @@ describe('#39 round 1 finding 1 (P1): a report is bound to the crew and day it w
         r.advance(60_000);
         out = await r.day.retry();
         // Authority is judged before any replay: the resend is refused, not replayed.
-        expect(out).toMatchObject({
-          kind: 'rejected',
-          code: 'NOT_FOREMAN',
-          uncertain: true,
-        });
+        expect(out).toMatchObject({ kind: 'rejected', code: 'NOT_FOREMAN' });
       } else if (c.decided === 'ok') expect(out.kind).toBe('ok');
-      else
-        expect(out).toMatchObject({
-          kind: 'rejected',
-          code: c.decided,
-          uncertain: false,
-        });
+      else expect(out).toMatchObject({ kind: 'rejected', code: c.decided });
       expect(r.day.sends.current).toBeNull(); // ownership ended; nothing resent by itself
       await r.day.session.load();
       for (const html of [r.body(), r.body()]) {
@@ -273,6 +264,8 @@ describe('#39 round 1 finding 1 (P1): a report is bound to the crew and day it w
       ).toBe(true);
       expect(r.sv.rev[B]).toEqual({ n: 1, qty: '30' });
       expect(r.sv.rev[A]!.n).toBe(c.stored ? nA + 1 : nA);
+      // And the outcome says so: uncertain exactly when an earlier attempt went unanswered.
+      expect(out.kind === 'rejected' && out.uncertain === true).toBe(c.retried);
     });
 
   it('the day is bound too: a payload for another day is refused on the phone', async () => {
@@ -581,7 +574,6 @@ describe('#39 round 1 finding 5: an owned attempt keeps its controls after its p
       expect(flow.phase).toMatchObject({
         kind: 'refused',
         code: 'PROXY_NOT_ALLOWED',
-        uncertain: earlier === 'unanswered',
       });
       const me = meWith([W2]); // W1 left the crew
       const session = new FieldSession<FieldMeDto>(
@@ -606,6 +598,9 @@ describe('#39 round 1 finding 5: an owned attempt keeps its controls after its p
         }
       }
       expect(flow.canStart(W2)).toBe(true);
+      expect(
+        flow.phase.kind === 'refused' && flow.phase.uncertain === true,
+      ).toBe(earlier === 'unanswered');
     });
 
   it('round 2: a confirmation refused NOT_FOREMAN on Retry after its person left is named, "may already have been recorded"', async () => {
@@ -637,11 +632,7 @@ describe('#39 round 1 finding 5: an owned attempt keeps its controls after its p
     await session.load();
     const flow = proxyFlow(async () => ({}) as never);
     const r = await commands.retry();
-    expect(r).toMatchObject({
-      kind: 'rejected',
-      code: 'NOT_FOREMAN',
-      uncertain: true,
-    });
+    expect(r).toMatchObject({ kind: 'rejected', code: 'NOT_FOREMAN' });
     expect(sent).toHaveLength(2);
     expect(sent[1]).toBe(sent[0]);
     expect(commands.current).toBeNull();
@@ -655,54 +646,60 @@ describe('#39 round 1 finding 5: an owned attempt keeps its controls after its p
       expect(html).toMatch(/earlier send may already have been recorded/);
       expect(html).not.toContain('<dialog');
     }
+    expect(r.kind === 'rejected' && r.uncertain).toBe(true);
   });
 });
 
 describe('#39 round 2: an answer after a lost transport attempt is uncertain too', () => {
-  it('fieldRequest marks a refusal that followed a lost attempt; the session reports it as uncertain', async () => {
-    const real = globalThis.fetch;
-    let calls = 0;
-    globalThis.fetch = (async () => {
-      calls++;
-      if (calls === 1) throw new TypeError('network');
-      return new Response(JSON.stringify({ code: 'NOT_FOREMAN' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }) as typeof fetch;
-    try {
-      const session = new FieldSession<null>(
-        async () => null,
-        () => {},
-      );
-      const r = await session.act(
-        () => ({
-          key: 'k',
-          send: () =>
-            fieldRequest('report', { key: 'k', body: () => ({ x: 1 }) }),
-        }),
-        false,
-      );
-      expect(calls).toBe(2);
-      expect(r).toMatchObject({
-        kind: 'rejected',
-        code: 'NOT_FOREMAN',
-        uncertain: true,
-      });
-      calls = 1; // the next request is answered at once
-      const once = await session.act(
-        () => ({
-          key: 'k2',
-          send: () =>
-            fieldRequest('report', { key: 'k2', body: () => ({ x: 2 }) }),
-        }),
-        false,
-      );
-      expect(once).toMatchObject({ kind: 'rejected', uncertain: false });
-    } finally {
-      globalThis.fetch = real;
-    }
-  });
+  for (const lostFirst of [true, false])
+    it(`the real device API: NOT_FOREMAN ${lostFirst ? 'after a lost request (transport resend)' : 'on the first request'}`, async () => {
+      const real = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls++;
+        if (lostFirst && calls === 1) throw new TypeError('network');
+        return new Response(JSON.stringify({ code: 'NOT_FOREMAN' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+      try {
+        const sv = reportServer();
+        const day = new ReportDay(
+          {
+            report: sv.api.report,
+            submitReport: deviceApi(() => 'fd1.TEST').submitReport,
+          },
+          DAY,
+          () => {},
+          () => {},
+        );
+        await day.session.load();
+        const r = await day.send(
+          reportPayload(
+            day.session.data!,
+            [{ itemKey: 'support', qty: '12' }],
+            '',
+          ),
+        );
+        expect(calls).toBe(lostFirst ? 2 : 1);
+        expect(r).toMatchObject({ kind: 'rejected', code: 'NOT_FOREMAN' });
+        const html = wrap(
+          createElement(ReportDayBody, { report: day, timeZone: TZ }),
+        );
+        if (lostFirst)
+          expect(html).toMatch(/earlier send may already have been recorded/);
+        else {
+          expect(html).toMatch(
+            /Only the current foreman of the crew can do this/,
+          );
+          expect(html).not.toMatch(/may already have been recorded/);
+        }
+        expect(r.kind === 'rejected' && r.uncertain === true).toBe(lostFirst);
+      } finally {
+        globalThis.fetch = real;
+      }
+    });
 });
 
 describe("#39 round 2 (not verified in round 1): day switch keeps each day's owned send", () => {
