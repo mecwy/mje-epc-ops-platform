@@ -34,8 +34,6 @@ import type {
   SiteReferenceCommand,
   CheckInListDto,
   CheckInResultDto,
-  ForemanAdoptCommand,
-  ForemanAdoptResultDto,
   ForemanDayDto,
   PmProxyCheckInCommand,
   RosterDto,
@@ -466,8 +464,6 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
       get<CheckInListDto>('field/checkins', { projectId, businessDate }),
     pmProxy: (c: PmProxyCheckInCommand) =>
       post<CheckInResultDto>('field/checkins/proxy', c),
-    adoptForeman: (c: ForemanAdoptCommand) =>
-      post<ForemanAdoptResultDto>('foreman/adopt', c),
     confirmPlan: (c: ConfirmPlanCommand) =>
       post<{ targetBusinessDate: string; n: number; rows: PlanRowDto[] }>(
         'plan/confirm',

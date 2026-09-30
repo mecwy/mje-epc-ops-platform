@@ -26,13 +26,12 @@ import { ReportBody, ReportView } from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
-import { DayRecovery } from './report/DayRecovery.js';
 import { useIssues } from './report/useIssues.js';
 import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
-import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
+import { PmOwnerRegistry } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/ForemanLine.js';
@@ -227,9 +226,9 @@ function Workspace({
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
   const photos = usePhotos(api, project.id, date, dayStamp);
   const busy = actionBusy || h.busy;
-  // The PM command owners (People page sessions and adoption flows) live as long as the
-  // workspace, one set per project (AGENTS.md): leaving a tab, losing write access or
-  // switching projects and back keeps an unresolved command, its key and its payload.
+  // The PM command owners (People page sessions) live as long as the workspace, one set per
+  // project (AGENTS.md): leaving a tab, losing write access or switching projects and back
+  // keeps an unresolved command, its key and its payload.
   const [pmRegistry] = useState(() => new PmOwnerRegistry(api));
   const pm = pmRegistry.get(project.id);
   const siteSessions = pm.site;
@@ -238,18 +237,11 @@ function Workspace({
   useEffect(() => {
     if (canWrite) void siteSessions.checkIns(date).list.load();
   }, [canWrite, siteSessions, date]);
-  // The PM's explicit adoption of foreman totals, one flow per day (PmOwners). Its day binding
-  // is made once per project against the workspace's day store: every lock and read goes to
-  // that project's own day entry, never to whatever day the page shows later.
-  pm.day ??= pmDayBinding(h.store, project.id);
-  const adoptFor = (d: string) => pm.adoptFor(d);
+  // The foreman totals (read-only) and the check-ins beside the headcount: writers only.
   const pmField: PmField | null =
     canWrite && h.day
       ? {
           foreman: h.day.foreman ?? null,
-          adopt: adoptFor(date),
-          canWrite,
-          dayState: h.day.state,
           timeZone: project.timezone,
           checkIns: siteSessions.checkIns(date).list.data?.summary ?? null,
         }
@@ -316,11 +308,6 @@ function Workspace({
     } catch (e) {
       // A conflict has already reloaded the day and told the user.
       if (e instanceof ActionAborted && e.outcome === 'conflict') return false;
-      // Another command holds the day's lock (an adoption, say): nothing was sent.
-      if (e instanceof ActionAborted && e.outcome === 'busy') {
-        say(t('dayBusy'));
-        return false;
-      }
       const code =
         e instanceof ActionAborted
           ? e.outcome === 'invalid'
@@ -613,8 +600,6 @@ function Workspace({
         <PhotoHost env={photoEnv}>
           {nav}
           <div className="content">
-            {/* The Fill and Check views too: a locked day's recovery is never hidden. */}
-            <DayRecovery h={h} />
             {task === 'fill' ? (
               <FillPage
                 h={h}
@@ -716,16 +701,9 @@ function Workspace({
             </button>
           </header>
           <main className={`page view-${view}`}>
-            <DayRecovery h={h} />
             {!canWrite && (
               // Write access went away while a PM attempt was owned: its Retry / Give up stay.
-              <PmOwnedBar
-                owners={pm}
-                itemLabel={(k) => {
-                  const it = day?.items.find((i) => i.key === k);
-                  return it ? label(it.label) : k;
-                }}
-              />
+              <PmOwnedBar owners={pm} />
             )}
             {signin.expired && (
               <div className="banner err" role="alert">

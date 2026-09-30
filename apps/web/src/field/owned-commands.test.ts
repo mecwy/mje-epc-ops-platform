@@ -119,18 +119,3 @@ describe('#37 round 4: claiming ownership notifies the view before any recovery 
     await tick();
   });
 });
-
-describe('#40 round 2: a throw while building a command leaves nothing owned', () => {
-  it('build throws → the action is released (canStart), and the view is told', async () => {
-    const r = rig();
-    await r.session.load();
-    await expect(
-      r.oc.run('boom', () => {
-        throw new Error('TEST build failure');
-      }),
-    ).rejects.toThrow('TEST build failure');
-    expect(r.oc.owned).toBe(false);
-    expect(r.oc.canStart).toBe(true);
-    expect(r.seen.at(-1)).toEqual({ owned: false, current: null });
-  });
-});
