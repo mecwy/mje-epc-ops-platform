@@ -1224,6 +1224,12 @@ export const MESSAGES = {
     'Potvrđeno {n}',
     'Confirmados {n}',
   ],
+  pm_attemptUnresolved: [
+    '这次操作未收到结果。重试会原样再发（同一个码）；要换码请先放弃。',
+    'No answer was received for this action. Retry sends it again unchanged (the same code); to use another code, give it up first.',
+    'Za ovu radnju nije stigao odgovor. Ponovni pokušaj je šalje nepromenjenu (isti kod); za drugi kod prvo odustanite.',
+    'No se recibió respuesta a esta acción. Reintentar la envía sin cambios (el mismo código); para usar otro código, descártala primero.',
+  ],
   pm_boundAt: [
     '登记于 {t}',
     'Registered {t}',
