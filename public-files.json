@@ -63,6 +63,7 @@
   "apps/web/src/field/foreman-report.test.ts",
   "apps/web/src/field/foreman-report.ts",
   "apps/web/src/field/main.tsx",
+  "apps/web/src/field/owned-commands.test.ts",
   "apps/web/src/field/owned-commands.ts",
   "apps/web/src/field/proxy-flow.test.ts",
   "apps/web/src/field/proxy-flow.ts",

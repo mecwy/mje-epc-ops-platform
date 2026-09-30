@@ -58,6 +58,9 @@ export class OwnedCommands<D, A> {
     // Claimed now, before any await: nothing else can start or adopt this command.
     this.owner = { action, key };
     this.refusal = null;
+    // Tell the view now: a mounted editor must give way to the owned payload before the
+    // wait for a recovery read (which notifies nobody until it lands).
+    this.session.changed();
     const r = await this.session.act((data) => build(data, key), reread);
     this.settle(r, key);
     return r;
