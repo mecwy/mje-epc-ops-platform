@@ -8,6 +8,7 @@ import {
 import type { Project, ReportApi } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { ErrorText } from '../field/ErrorText.js';
+import type { OwnedCommands } from '../field/owned-commands.js';
 import type { FieldSession } from '../field/session.js';
 import { locate } from '../report/geo.js';
 import {
@@ -19,12 +20,59 @@ import {
 import {
   saveSettings,
   saveSiteReference,
+  type FormSave,
+  type SettingsValue,
   type SiteSessions,
+  type SiteValue,
 } from './site-sessions.js';
 import { useSessions } from './use-sessions.js';
 
 type Settings = FieldSession<FieldSettingsDto>;
 
+/** A save whose answer was lost: the form shows its values, locked, until Retry or Give up. */
+function UnsavedBanner({ code }: { code: string | null }) {
+  const { t } = useI18n();
+  return (
+    <div className="banner warn" role="alert">
+      {t('pm_saveUnresolved')} <ErrorText code={code ?? 'NETWORK'} />
+    </div>
+  );
+}
+function SaveButtons({
+  pending,
+  busy,
+  onSave,
+  onGiveUp,
+}: {
+  pending: boolean;
+  busy: boolean;
+  onSave: () => void;
+  onGiveUp: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="row2">
+      {pending && (
+        <button
+          type="button"
+          className="ghost"
+          disabled={busy}
+          onClick={onGiveUp}
+        >
+          {t('pm_giveUp')}
+        </button>
+      )}
+      <button
+        type="button"
+        className="primary"
+        disabled={busy}
+        onClick={onSave}
+      >
+        {pending ? t('retry') : t('save')}
+      </button>
+    </div>
+  );
+}
 function Loading({ session }: { session: Settings }) {
   const { t } = useI18n();
   return (
@@ -64,6 +112,7 @@ export function SettingsCards({
           api={api}
           project={project}
           session={site}
+          commands={sessions.siteSave}
           data={site.data}
         />
       ) : (
@@ -75,6 +124,7 @@ export function SettingsCards({
           api={api}
           project={project}
           session={settings}
+          commands={sessions.settingsSave}
           data={settings.data}
         />
       ) : (
@@ -119,18 +169,26 @@ function SiteLocationCard({
   api,
   project,
   session,
+  commands,
   data,
 }: {
   api: ReportApi;
   project: Project;
   session: Settings;
+  commands: OwnedCommands<FieldSettingsDto, FormSave<SiteValue>>;
   data: FieldSettingsDto;
 }) {
   const { t } = useI18n();
   const ref = data.siteReference;
-  const [lat, setLat] = useState(ref?.lat ?? '');
-  const [lon, setLon] = useState(ref?.lon ?? '');
-  const [radius, setRadius] = useState(String(ref?.radiusM ?? 500));
+  // An unresolved save is shown as sent (locked): what is on screen is what Retry sends.
+  const pending = commands.unresolved?.value ?? null;
+  const sent = commands.current?.value ?? null;
+  const [lat, setLat] = useState(sent?.lat ?? ref?.lat ?? '');
+  const [lon, setLon] = useState(sent?.lon ?? ref?.lon ?? '');
+  const [radius, setRadius] = useState(
+    String(sent?.radiusM ?? ref?.radiusM ?? 500),
+  );
+  const locked = commands.owned;
   const [locating, setLocating] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -159,11 +217,11 @@ function SiteLocationCard({
   const save = async () => {
     setTried(true);
     setError(null);
-    if (!check.ok && !session.pending) return;
-    const r = session.pending
-      ? await session.retry()
+    if (!check.ok && !pending) return;
+    const r = pending
+      ? await commands.retry()
       : check.ok
-        ? await saveSiteReference(session, api, project.id, data, {
+        ? await saveSiteReference(commands, api, project.id, data, {
             lat: check.lat,
             lon: check.lon,
             radiusM: check.radiusM,
@@ -171,6 +229,13 @@ function SiteLocationCard({
         : null;
     if (!r) return;
     if (r.kind !== 'ok') setError(r.code);
+  };
+  const giveUp = () => {
+    commands.discard();
+    setError(null);
+    setLat(ref?.lat ?? '');
+    setLon(ref?.lon ?? '');
+    setRadius(String(ref?.radiusM ?? 500));
   };
   return (
     <section className="card noprint">
@@ -193,6 +258,7 @@ function SiteLocationCard({
             inputMode="decimal"
             autoComplete="off"
             value={lat}
+            readOnly={locked}
             aria-invalid={Boolean(tried && problems.lat) || undefined}
             onChange={(e) => setLat(e.target.value)}
           />
@@ -205,6 +271,7 @@ function SiteLocationCard({
             inputMode="decimal"
             autoComplete="off"
             value={lon}
+            readOnly={locked}
             aria-invalid={Boolean(tried && problems.lon) || undefined}
             onChange={(e) => setLon(e.target.value)}
           />
@@ -214,7 +281,7 @@ function SiteLocationCard({
       <button
         type="button"
         className="ghost"
-        disabled={locating}
+        disabled={locating || locked}
         onClick={() => void takeHere()}
       >
         {locating ? t('locating') : t('pm_useHere')}
@@ -227,25 +294,25 @@ function SiteLocationCard({
           inputMode="numeric"
           autoComplete="off"
           value={radius}
+          readOnly={locked}
           aria-invalid={Boolean(tried && problems.radius) || undefined}
           onChange={(e) => setRadius(e.target.value)}
         />
         {tried && <Problem field="radius" problem={problems.radius} />}
       </label>
       <p className="muted small">{t('pm_siteNote')}</p>
-      {error && (
+      {pending && <UnsavedBanner code={error ?? session.error} />}
+      {error && !pending && (
         <div className="banner err" role="alert">
           <ErrorText code={error} />
         </div>
       )}
-      <button
-        type="button"
-        className="primary"
-        disabled={session.busy}
-        onClick={() => void save()}
-      >
-        {session.pending ? t('retry') : t('save')}
-      </button>
+      <SaveButtons
+        pending={pending !== null}
+        busy={session.busy || (commands.owned && !pending)}
+        onSave={() => void save()}
+        onGiveUp={giveUp}
+      />
     </section>
   );
 }
@@ -255,16 +322,25 @@ function FieldSettingsCard({
   api,
   project,
   session,
+  commands,
   data,
 }: {
   api: ReportApi;
   project: Project;
   session: Settings;
+  commands: OwnedCommands<FieldSettingsDto, FormSave<SettingsValue>>;
   data: FieldSettingsDto;
 }) {
   const { t } = useI18n();
-  const [selfie, setSelfie] = useState(data.settings.selfieEnabled);
-  const [days, setDays] = useState(String(data.settings.pmProxyDays));
+  const pending = commands.unresolved?.value ?? null;
+  const sent = commands.current?.value ?? null;
+  const [selfie, setSelfie] = useState(
+    sent?.selfieEnabled ?? data.settings.selfieEnabled,
+  );
+  const [days, setDays] = useState(
+    String(sent?.pmProxyDays ?? data.settings.pmProxyDays),
+  );
+  const locked = commands.owned;
   const [error, setError] = useState<string | null>(null);
   const parsedDays = checkProxyDays(days);
   const changed =
@@ -272,16 +348,22 @@ function FieldSettingsCard({
     parsedDays !== data.settings.pmProxyDays;
   const save = async () => {
     setError(null);
-    const r = session.pending
-      ? await session.retry()
+    const r = pending
+      ? await commands.retry()
       : parsedDays !== null
-        ? await saveSettings(session, api, project.id, data, {
+        ? await saveSettings(commands, api, project.id, data, {
             selfieEnabled: selfie,
             pmProxyDays: parsedDays,
           })
         : null;
     if (!r) return;
     if (r.kind !== 'ok') setError(r.code);
+  };
+  const giveUp = () => {
+    commands.discard();
+    setError(null);
+    setSelfie(data.settings.selfieEnabled);
+    setDays(String(data.settings.pmProxyDays));
   };
   return (
     <section className="card noprint">
@@ -296,6 +378,7 @@ function FieldSettingsCard({
           role="switch"
           aria-checked={selfie}
           className={`switch${selfie ? ' on' : ''}`}
+          disabled={locked}
           onClick={() => setSelfie(!selfie)}
         >
           {selfie ? t('pm_on') : t('pm_off')}
@@ -308,6 +391,7 @@ function FieldSettingsCard({
           inputMode="numeric"
           autoComplete="off"
           value={days}
+          readOnly={locked}
           aria-invalid={parsedDays === null || undefined}
           onChange={(e) => setDays(e.target.value)}
         />
@@ -317,22 +401,22 @@ function FieldSettingsCard({
           </span>
         )}
       </label>
-      {error && (
+      {pending && <UnsavedBanner code={error ?? session.error} />}
+      {error && !pending && (
         <div className="banner err" role="alert">
           <ErrorText code={error} />
         </div>
       )}
-      <button
-        type="button"
-        className="primary"
-        disabled={
+      <SaveButtons
+        pending={pending !== null}
+        busy={
           session.busy ||
-          (!session.pending && (!changed || parsedDays === null))
+          (commands.owned && !pending) ||
+          (!pending && (!changed || parsedDays === null))
         }
-        onClick={() => void save()}
-      >
-        {session.pending ? t('retry') : t('save')}
-      </button>
+        onSave={() => void save()}
+        onGiveUp={giveUp}
+      />
     </section>
   );
 }

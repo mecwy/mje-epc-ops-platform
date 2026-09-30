@@ -1411,6 +1411,12 @@ export const MESSAGES = {
     'Telefon od sada ne može da se prijavljuje ni da izveštava. Već upisane prijave ostaju.',
     'El teléfono ya no podrá fichar ni informar. Los fichajes ya registrados se mantienen.',
   ],
+  pm_saveUnresolved: [
+    '保存未收到结果。下面是这次发送的值，重试会原样再发；要修改请先放弃。',
+    'No answer was received for this save. These are the values sent; Retry sends them again unchanged. To edit, give it up first.',
+    'Za ovo čuvanje nije stigao odgovor. Ovo su poslate vrednosti; ponovni pokušaj ih šalje nepromenjene. Za izmenu prvo odustanite.',
+    'No se recibió respuesta a este guardado. Estos son los valores enviados; reintentar los envía sin cambios. Para editar, descártalo primero.',
+  ],
   pm_selfie: [
     '签到自拍（可选）',
     'Check-in selfie (optional)',

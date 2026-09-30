@@ -6,6 +6,7 @@ import type {
   SiteReferenceCommand,
 } from '@mje/contracts';
 import { ApiError } from '../api.js';
+import { OwnedCommands } from '../field/owned-commands.js';
 import { FieldSession } from '../field/session.js';
 import {
   DeviceCommands,
@@ -52,7 +53,7 @@ describe('#1 settings save against the version the form was edited from', () => 
     };
     // The form was edited on n=1 (radius 300).
     const save = () =>
-      saveSiteReference(session, api, P, editedFrom, {
+      saveSiteReference(new OwnedCommands(session), api, P, editedFrom, {
         lat: '1.000000',
         lon: '1.000000',
         radiusM: 300,
@@ -81,7 +82,7 @@ describe('#1 settings save against the version the form was edited from', () => 
     await session.load();
     const sent: number[] = [];
     const r = await saveSettings(
-      session,
+      new OwnedCommands(session),
       {
         setFieldSettings: async (c) => {
           sent.push(c.expectedN);
