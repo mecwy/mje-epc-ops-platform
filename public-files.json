@@ -128,6 +128,7 @@
   "packages/domain/prisma/migrations/202610020001_field_clock_high_water/migration.sql",
   "packages/domain/prisma/migrations/202610030001_pin_function_search_path/migration.sql",
   "packages/domain/prisma/migrations/202610040001_field_checkin_selfie/migration.sql",
+  "packages/domain/prisma/migrations/202610050001_field_checkin_refusal_decided_at/migration.sql",
   "packages/domain/prisma/migrations/202610060001_field_foreman_reports/migration.sql",
   "packages/domain/prisma/migrations/migration_lock.toml",
   "packages/domain/prisma/schema.prisma",
