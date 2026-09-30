@@ -6,8 +6,13 @@
  * 100.64.0.0/10 is appended after it. A fixed hop count is therefore wrong on cold starts.
  * TRUST_PROXY_SUBNETS (for example "loopback,100.64.0.0/10") trusts only those addresses, so
  * the client is the rightmost X-Forwarded-For entry outside them, whatever the hop count;
- * client-supplied entries sit to its left and are never reached. Without it, TRUST_PROXY_HOPS
- * (default 0: trust nothing, use the socket address) applies.
+ * client-supplied entries sit to its left and are not reached - provided the address the
+ * ingress records for the client is itself outside the trusted ranges. A client whose
+ * ingress-observed address fell inside 100.64.0.0/10 could make a forged entry count.
+ * Deployment assumptions (re-check after any networking change): the ingress's internal
+ * hops stay inside 100.64.0.0/10, and no untrusted caller reaches the app from inside that
+ * range. Native IPv6 proxy hops are not covered. Without TRUST_PROXY_SUBNETS,
+ * TRUST_PROXY_HOPS (default 0: trust nothing, use the socket address) applies.
  */
 export function trustProxySetting(
   env: Record<string, string | undefined>,
