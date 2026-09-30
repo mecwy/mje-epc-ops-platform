@@ -91,6 +91,8 @@ export function dayServer() {
   const read = gate();
   const adoptPlan: (ApiError | 'lost')[] = [];
   const readPlan: ApiError[] = [];
+  /** Failures for the next fact saves (autosave or a command's pre-save). */
+  const savePlan: ApiError[] = [];
   const adoptLog: ForemanAdoptCommand[] = [];
   const commands: string[] = [];
   /** Answers for the next day commands (no-work, submit): a refusal or a lost answer. */
@@ -130,6 +132,8 @@ export function dayServer() {
     revision: async () => ({}) as never,
     saveFacts: async (c: SaveFactsCommand) => {
       await pass(save);
+      const failSave = savePlan.shift();
+      if (failSave) throw failSave;
       const d = at(c.projectId);
       if (c.expectedVersion !== d.version)
         throw new ApiError('VERSION_CONFLICT', 409);
@@ -162,6 +166,7 @@ export function dayServer() {
     read,
     adoptPlan,
     readPlan,
+    savePlan,
     adoptLog,
     commands,
     commandPlan,

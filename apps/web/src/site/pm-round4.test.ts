@@ -128,3 +128,46 @@ describe('round 4 finding 2: a refusal after a lost attempt keeps the recovery w
       if (afterLostAttempt) expect(html).not.toMatch(/refused and not saved/);
     });
 });
+
+describe('#42 round 1 (P1): a second release never re-authorizes an older replacement read', () => {
+  for (const path of ['a second adoption', 'a day command'] as const)
+    it(`Refresh twice, A frees the day, 7 typed, ${path} fails its pre-save (NETWORK), then B lands`, async () => {
+      const sv = dayServer();
+      const w = workspace(sv);
+      await w.load();
+      // 1. Adopt; the read after it fails (the day stays locked).
+      sv.readPlan.push(new ApiError('NETWORK', 0));
+      expect((await w.flow().adopt('support', shown)).kind).toBe('ok');
+      const e = w.entry();
+      expect(e.stale).toBe(true);
+      // 2. Refresh twice: replacement reads A and B, both held.
+      sv.read.hold = true;
+      const a = w.store.reloadLocked(e);
+      const b = w.store.reloadLocked(e);
+      await tick();
+      // 3. A answers first: the day is free; B stays in flight.
+      sv.answerOldestRead();
+      await a;
+      await tick();
+      expect(e.lock).toBeNull();
+      // 4. 7 typed, then the second command before autosave.
+      expect(w.type('7')).toBe(true);
+      // 5. Its pre-save fails (NETWORK): nothing is sent, the lock is abandoned.
+      sv.savePlan.push(new ApiError('NETWORK', 0));
+      if (path === 'a second adoption')
+        expect((await w.flow().adopt('support', shown)).kind).toBe('failed');
+      else await expect(w.noWork()).rejects.toThrow();
+      expect(sv.adoptLog).toHaveLength(1);
+      expect(sv.commands).toEqual([]);
+      expect(e.lock).toBeNull();
+      // 6. B lands: it started before the first barrier, so it may not erase the 7.
+      sv.read.hold = false;
+      open(sv.read);
+      await b;
+      await tick();
+      expect(e.session.facts.people.workers).toBe('7');
+      await w.autosave();
+      expect(sv.facts().people.workers).toBe('7');
+      expect(sv.facts().qty.support).toBe('10');
+    });
+});

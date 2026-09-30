@@ -119,4 +119,31 @@ describe('ReadFence: applied / superseded × order × success / failure × edit 
     expect(f.settle(f.begin(), true, true)).toBe('applied');
     expect(f.fresh).toBe(true);
   });
+  // #42 round 1 (P1): successive barriers. Two or three lock/release cycles; after each
+  // barrier an edit is accepted or not; reads outstanding from every epoch (started before
+  // barrier 1, between barriers, after the last). A read may overwrite at the end iff no
+  // barrier it started before was followed by an accepted edit.
+  for (const cycles of [2, 3])
+    for (let mask = 0; mask < 1 << cycles; mask++) {
+      const edits = [...Array(cycles).keys()].map((i) => (mask >> i) & 1);
+      it(`${cycles} barriers · edited after each: ${edits.join('')}`, () => {
+        const f = new ReadFence();
+        let generation = 0;
+        const reads: number[] = [];
+        const barriers: { ticket: number; generation: number }[] = [];
+        for (let i = 0; i < cycles; i++) {
+          reads.push(f.begin()); // outstanding from the epoch before barrier i
+          f.barrier(generation);
+          barriers.push({ ticket: reads[reads.length - 1]!, generation });
+          if (edits[i]) generation++;
+        }
+        reads.push(f.begin()); // after the last barrier
+        for (const t of reads) {
+          const barred = barriers.some(
+            (b) => t <= b.ticket && generation !== b.generation,
+          );
+          expect(f.mayOverwrite(t, generation), `read ${t}`).toBe(!barred);
+        }
+      });
+    }
 });

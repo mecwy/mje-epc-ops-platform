@@ -11,6 +11,9 @@
  *   or an applied response the local state refused (unsaved edits, say), never counts.
  * - A **barrier** (a day unlocked for editing, say) records the local edit generation: a read
  *   started before the barrier may not overwrite local edits accepted after it (`mayOverwrite`).
+ *   The protection is monotonic across successive barriers: once an edit was accepted after a
+ *   barrier, reads started before that barrier stay barred for good, whatever later barriers
+ *   record (a second lock released while an older read is still in flight, say).
  * - `supersedeAll` fences every read in flight (a device that ended).
  */
 export type ReadVerdict = 'applied' | 'superseded';
@@ -26,6 +29,11 @@ export class ReadFence {
   /** The last barrier: reads up to this ticket may not overwrite edits made after it. */
   private barrierTicket = 0;
   private barrierGeneration = 0;
+  /**
+   * Reads up to this ticket may never overwrite: a barrier they started before was followed by
+   * an accepted edit. Only grows.
+   */
+  private barredUpTo = 0;
 
   /** A read starts: its ticket. */
   begin(): number {
@@ -64,14 +72,19 @@ export class ReadFence {
    * overwrite edits accepted after this point.
    */
   barrier(generation: number) {
+    // Edits accepted since the previous barrier: reads started before it stay barred.
+    if (generation !== this.barrierGeneration)
+      this.barredUpTo = Math.max(this.barredUpTo, this.barrierTicket);
     this.barrierTicket = this.started;
     this.barrierGeneration = generation;
   }
   /**
    * Whether a read with `ticket` may overwrite local state whose edit generation is now
-   * `generation`: not when it started before the last barrier and something was edited since.
+   * `generation`: not when it started before the last barrier and something was edited since,
+   * and never when it started before an earlier barrier that was followed by an edit.
    */
   mayOverwrite(ticket: number, generation: number): boolean {
+    if (ticket <= this.barredUpTo) return false;
     return ticket > this.barrierTicket || generation === this.barrierGeneration;
   }
   /** Fence every read in flight: none of them may be applied any more. */
