@@ -49,6 +49,8 @@ export const FIELD_ERRORS = {
   REVISION_CONFLICT: 'fe_revisionConflict',
   NUMBER_INVALID: 'numberInvalid',
   ITEM_NOT_FOUND: 'fe_itemNotFound',
+  // client-only: a report typed for another crew or day is never sent (C57)
+  CREW_CHANGED: 'fe_crewChanged',
   // adoption (report store) and the shared transport codes
   FOREMAN_TOTAL_CHANGED: 'fe_totalChanged',
   ADOPT_NOT_COMPLETE: 'fe_adoptIncomplete',
@@ -62,6 +64,47 @@ export const FIELD_ERRORS = {
   REQUEST_FAILED: 'fe_failed',
 } as const satisfies Record<string, MessageKey>;
 export type KnownFieldCode = keyof typeof FIELD_ERRORS;
+
+/**
+ * Refusals the server makes before it replays a key's stored answer (authority is re-checked
+ * first, C57): after an earlier attempt of the same command went unanswered, such a refusal
+ * does not mean nothing was recorded, so it gets its own message and nothing is resent.
+ */
+export const REFUSED_BEFORE_REPLAY = {
+  NOT_FOREMAN: 'fe_notForemanMaybeRecorded',
+  PROXY_NOT_ALLOWED: 'fe_proxyMaybeRecorded',
+} as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
+
+/**
+ * Unsettled codes of a write (session.ts UNSETTLED): the command is kept for an unchanged Retry
+ * and its outcome is not known, so each has an unknown-outcome message and never a failure
+ * ("did not succeed", "nothing was saved").
+ */
+export const UNKNOWN_OUTCOME = {
+  NETWORK: 'fu_network',
+  REQUEST_FAILED: 'fu_server',
+  RETRY: 'fu_busy',
+  RATE_LIMITED: 'fu_limited',
+} as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
+
+/**
+ * The one mapping for a command's outcome on every field surface (AGENTS.md):
+ * - a write whose code is unsettled → unknown outcome (UNKNOWN_OUTCOME);
+ * - a refusal made before the replay (REFUSED_BEFORE_REPLAY) after an unanswered attempt
+ *   (`uncertain`) → "may already have been recorded";
+ * - any other refusal (the server decided) → its own message.
+ * A read's error is not a write: it keeps its own message.
+ */
+export function outcomeKey(
+  code: string | null | undefined,
+  o: { write: boolean; uncertain: boolean },
+): MessageKey {
+  if (o.write && code && Object.hasOwn(UNKNOWN_OUTCOME, code))
+    return UNKNOWN_OUTCOME[code as keyof typeof UNKNOWN_OUTCOME];
+  return o.uncertain && code && Object.hasOwn(REFUSED_BEFORE_REPLAY, code)
+    ? REFUSED_BEFORE_REPLAY[code as keyof typeof REFUSED_BEFORE_REPLAY]
+    : fieldErrorKey(code);
+}
 
 /** The message for any code; an unknown code gets the generic failure, never its raw text. */
 export function fieldErrorKey(code: string | null | undefined): MessageKey {

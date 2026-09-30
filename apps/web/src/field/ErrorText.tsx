@@ -1,9 +1,22 @@
 import { useI18n } from '../i18n.js';
-import { fieldErrorKey } from './errors.js';
+import { outcomeKey } from './errors.js';
 
-/** The user message for a field or PM error code (never the raw code or body). */
-export function ErrorText({ code }: { code: string | null }) {
+/**
+ * The user message for a field or PM error code (never the raw code or body), through the one
+ * outcome mapping (errors.ts `outcomeKey`): pass `write` for a command's outcome, so an
+ * unsettled code reads as an unknown outcome, and `uncertain` when an earlier attempt of the
+ * refused command went unanswered.
+ */
+export function ErrorText({
+  code,
+  write = false,
+  uncertain = false,
+}: {
+  code: string | null;
+  write?: boolean;
+  uncertain?: boolean;
+}) {
   const { t } = useI18n();
-  const key = fieldErrorKey(code);
+  const key = outcomeKey(code, { write, uncertain });
   return <>{t(key)}</>;
 }

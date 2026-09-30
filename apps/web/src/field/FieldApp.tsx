@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import type { EntryDto, FieldMeDto } from '@mje/contracts';
 import { LANGS, isLang } from '@mje/ui';
 import { ApiError } from '../api.js';
 import { I18nProvider, useI18n } from '../i18n.js';
 import { Sheet } from '../ui.js';
 import { fmtDay, siteToday } from '../report/format.js';
+import { locate } from '../report/geo.js';
 import { DeviceStore, newToken, type DeviceRecord } from './device-store.js';
 import { ErrorText } from './ErrorText.js';
 import { deviceApi, type DeviceApi } from './field-api.js';
@@ -19,6 +27,8 @@ import {
 import { ENDED, FieldSession } from './session.js';
 import { releaseDevice } from './release.js';
 import { CheckInCard } from './CheckInCard.js';
+import { ForemanArea } from './ForemanPanel.js';
+import { foremanOwners, type ForemanOwners } from './foreman-owners.js';
 
 function storage(kind: 'local' | 'session'): Storage | null {
   try {
@@ -283,7 +293,7 @@ function RosterPage({
           <p className="para muted small">{t('fd_bindWarn')}</p>
           {error && (
             <div className="banner err" role="alert">
-              <ErrorText code={error} />
+              <ErrorText code={error} write />
             </div>
           )}
           <button
@@ -298,6 +308,14 @@ function RosterPage({
       )}
     </>
   );
+}
+
+function localStore(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 function DevicePage({
@@ -369,6 +387,22 @@ function DevicePage({
     }
   };
   const endDevice = (code: string) => session.end(code);
+  // The foreman's command owners live for this device session (AGENTS.md), never for the
+  // role or a tab: made once, the first time `me` is known, and kept while the role comes
+  // and goes, so an unresolved attempt keeps its key, payload, Retry and Give up.
+  const owners = useRef<ForemanOwners | null>(null);
+  if (!owners.current && session.data)
+    owners.current = foremanOwners({
+      api,
+      session,
+      me: session.data,
+      storage: localStore(),
+      locate: () => locate(navigator.geolocation),
+      notify: rerender,
+      onEnded: endDevice,
+    });
+  // A foreman's page has three parts: own check-in, the crew, the quantity report.
+  const [tab, setTab] = useState<'me' | 'crew' | 'report'>('me');
   const today = siteToday(session.data?.project.timezone ?? 'UTC');
   const title = session.data?.person.displayName ?? record.displayName;
   const sub = session.data?.project.name ?? record.projectName;
@@ -440,7 +474,37 @@ function DevicePage({
             <span>{view.me.crew?.name ?? t('fd_noCrew')}</span>
           </div>
         </section>
-        <CheckInCard api={api} me={view.me} onEnded={endDevice} />
+        {view.me.foreman && (
+          <div className="seg" role="tablist">
+            {(['me', 'crew', 'report'] as const).map((k) => {
+              const key =
+                k === 'me'
+                  ? 'fm_tabMe'
+                  : k === 'crew'
+                    ? 'fm_tabCrew'
+                    : 'fm_tabReport';
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === k}
+                  className={tab === k ? 'on' : ''}
+                  onClick={() => setTab(k)}
+                >
+                  {t(key)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {/* Kept mounted: an unresolved command and its retry survive a tab switch. */}
+        <div hidden={Boolean(view.me.foreman) && tab !== 'me'}>
+          <CheckInCard api={api} me={view.me} onEnded={endDevice} />
+        </div>
+        {owners.current && (
+          <ForemanArea me={view.me} owners={owners.current} tab={tab} />
+        )}
         {releaseButton}
       </>
     );
@@ -456,7 +520,7 @@ function DevicePage({
           <p className="para">{t('fd_releaseWarn')}</p>
           {releases.error && (
             <div className="banner err" role="alert">
-              <ErrorText code={releases.error} />
+              <ErrorText code={releases.error} write />
             </div>
           )}
           <button
@@ -556,7 +620,7 @@ function PendingCard({
       )}
       {error && (
         <div className="banner err" role="alert">
-          <ErrorText code={error} />
+          <ErrorText code={error} write />
         </div>
       )}
       <button

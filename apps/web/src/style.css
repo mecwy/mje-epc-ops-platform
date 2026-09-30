@@ -1567,3 +1567,14 @@ input.codein {
 ul.plainlist:not(.card) {
   padding: 0;
 }
+/* foreman report rows (A6d-3) */
+.fmrow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-2);
+}
+.fmrow .blk-row input {
+  flex: none;
+}
