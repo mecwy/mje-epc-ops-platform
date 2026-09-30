@@ -226,4 +226,15 @@ describe('reader view: whether a photo has a position, not where (OD20)', () => 
     });
     expect(stored).toEqual(copy);
   });
+  it('never passes on frozen foreman reports or adoptions (writer data)', () => {
+    const stored = {
+      businessDate: '2026-10-05',
+      facts: blankFacts(),
+      foreman: { rosterVersion: 3, items: { support: { value: '120' } } },
+    };
+    const shown = readerSnapshot(stored);
+    expect(shown).not.toHaveProperty('foreman');
+    expect(shown).toEqual({ businessDate: '2026-10-05', facts: blankFacts() });
+    expect(stored).toHaveProperty('foreman');
+  });
 });

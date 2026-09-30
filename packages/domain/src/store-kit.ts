@@ -48,7 +48,10 @@ export class ReportError extends Error {
       | 'PHOTO_TOO_LARGE'
       | 'PHOTO_ELSEWHERE'
       | 'ISSUE_NOT_FOUND'
-      | 'NOT_LINKED',
+      | 'NOT_LINKED'
+      // foreman adoption (A6c)
+      | 'FOREMAN_TOTAL_CHANGED'
+      | 'ADOPT_NOT_COMPLETE',
   ) {
     super(code);
   }

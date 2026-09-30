@@ -185,7 +185,7 @@ const slotLock = (
     `${orgId}:field-slot:${personId}:${businessDate}`,
   ]);
 /** Level 7: the next field sequence number of the day (the caller holds the day lock, level 4). */
-async function nextSeq(
+export async function nextSeq(
   client: PoolClient,
   orgId: string,
   projectId: string,
@@ -203,7 +203,7 @@ async function nextSeq(
  * The field sequence frozen by the day's latest submitted revision, or null when the day was
  * never submitted. A revision from before check-ins existed froze none (0).
  */
-async function submittedBoundary(
+export async function submittedBoundary(
   client: PoolClient,
   orgId: string,
   projectId: string,

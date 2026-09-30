@@ -18,6 +18,7 @@ import {
   CheckInStore,
   FieldError,
   FieldStore,
+  ForemanStore,
   IssueStore,
   PhotoStore,
   ReportError,
@@ -34,6 +35,10 @@ import {
   CheckInAdminController,
   CheckInController,
 } from './checkin.controller.js';
+import {
+  ForemanAdoptController,
+  ForemanFieldController,
+} from './foreman.controller.js';
 import {
   TokenVerifier,
   type TokenConfiguration,
@@ -65,6 +70,7 @@ const FIELD_STATUS: Partial<Record<string, number>> = {
   FEATURE_OFF: 403,
   SELFIE_TOO_LARGE: 413,
   UNSUPPORTED_MEDIA: 415,
+  ITEM_NOT_FOUND: 404,
   RATE_LIMITED: 429,
   RETRY: 503,
 };
@@ -150,6 +156,8 @@ export interface AlphaRuntime {
   fieldStore?: FieldStore;
   /** Worker check-in and staged selfie (A6b); served only together with the field slice. */
   checkInStore?: CheckInStore;
+  /** Foreman quantity reports (A6c); served only together with the field slice. */
+  foremanStore?: ForemanStore;
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
@@ -181,6 +189,9 @@ export async function createApp(alpha?: AlphaRuntime) {
       ...(alpha?.reportStore && alpha.fieldStore && alpha.checkInStore
         ? [CheckInController, CheckInAdminController]
         : []),
+      ...(alpha?.reportStore && alpha.fieldStore && alpha.foremanStore
+        ? [ForemanFieldController, ForemanAdoptController]
+        : []),
     ],
     providers: alpha
       ? [
@@ -203,6 +214,9 @@ export async function createApp(alpha?: AlphaRuntime) {
             : []),
           ...(alpha.reportStore && alpha.fieldStore && alpha.checkInStore
             ? [{ provide: CheckInStore, useValue: alpha.checkInStore }]
+            : []),
+          ...(alpha.reportStore && alpha.fieldStore && alpha.foremanStore
+            ? [{ provide: ForemanStore, useValue: alpha.foremanStore }]
             : []),
         ]
       : [],

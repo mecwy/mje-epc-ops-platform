@@ -4,6 +4,9 @@ import type {
   CancelCorrectionCommand,
   ConfirmPlanCommand,
   DayFactsDto,
+  ForemanAdoptCommand,
+  ForemanAdoptResultDto,
+  ForemanDayDto,
   NoWorkCommand,
   PlanRowDto,
   ReportItemDto,
@@ -22,6 +25,7 @@ import {
   hasFacts,
   planRows,
   planStatus,
+  sameForemanBasis,
   shiftDate,
   carryCumulative,
   carryMaterial,
@@ -62,7 +66,9 @@ import {
   type ReportProjectRow,
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
-import { fieldDayAsOf } from './checkin-store.js';
+import { fieldDayAsOf, nextSeq } from './checkin-store.js';
+import { FieldError, rosterLock } from './field-kit.js';
+import { foremanDayAsOf } from './foreman-store.js';
 import {
   frozenPhotos,
   photoAsOf,
@@ -406,6 +412,16 @@ export class ReportStore {
       project.id,
       businessDate,
     );
+    // Design §4: the foreman claims beside the PM's facts (never merged into them). The caller
+    // holds the shared roster lock; a submission also holds the day lock.
+    const foreman = await foremanDayAsOf(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+      project.timezone,
+      ReportStore.keys(items, 'work'),
+    );
     return {
       coverage: cov,
       photos,
@@ -431,6 +447,7 @@ export class ReportStore {
         issues,
         photos: evidence.map(photoAsOf),
         coverage: cov,
+        foreman,
         actorAccountId: actor.accountId,
         actorPersonId: actor.personId,
       },
@@ -513,6 +530,9 @@ export class ReportStore {
       const day = await this.day(client, actor.orgId, projectId, businessDate);
       if (access === 'read')
         return this.readerDay(client, actor, project, businessDate, day);
+      // Level 0 shared (design §5): the expected crew set and its roster version are read
+      // while no roster write can commit in between.
+      await rosterLock(client, actor.orgId, projectId, true);
       const facts = day ? await this.facts(client, actor.orgId, day.id) : null;
       const items = await this.items(client, actor.orgId, projectId);
       const revisions = day
@@ -565,8 +585,46 @@ export class ReportStore {
           by: r.updatedBy,
           reason: r.reason,
         })),
+        foreman: ReportStore.foremanView(
+          snapshot.foreman,
+          revisions.find((r) => r.revisionNumber === day?.currentRevisionNumber)
+            ?.snapshot ?? null,
+        ),
       };
     });
+  }
+  /**
+   * The live foreman view for a writer. Revisions and adoptions numbered after the latest
+   * submission's boundary are marked `afterSubmission` (they enter only through a correction),
+   * and the live expected crew set is compared with the one that submission froze (a roster
+   * change after submission never alters the revision). Null marks: never submitted.
+   */
+  private static foremanView(
+    live: ForemanDayDto,
+    submitted: Record<string, unknown> | null,
+  ) {
+    const frozen = submitted?.['foreman'] as ForemanDayDto | undefined;
+    const field = submitted?.['field'] as { seqBoundary?: number } | undefined;
+    // A revision from before field sequences existed froze none (0).
+    const boundary = submitted ? (field?.seqBoundary ?? 0) : null;
+    const after = (daySeq: number) => boundary !== null && daySeq > boundary;
+    const ids = (d: ForemanDayDto) =>
+      d.expectedCrews.map((c) => c.crewId).sort();
+    return {
+      ...live,
+      revisions: live.revisions.map((r) => ({
+        ...r,
+        afterSubmission: after(r.daySeq),
+      })),
+      adoptions: live.adoptions.map((a) => ({
+        ...a,
+        afterSubmission: after(a.daySeq),
+      })),
+      submittedExpectedCrews: frozen ? ids(frozen) : null,
+      expectedCrewsChanged: frozen
+        ? ids(frozen).join(',') !== ids(live).join(',')
+        : null,
+    };
   }
 
   /**
@@ -838,6 +896,8 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          // Level 0 shared before the DailyClose row (level 3), never after (design §5).
+          await rosterLock(client, actor.orgId, project.id, true);
           const day = await this.dayForWrite(
             client,
             actor,
@@ -875,6 +935,8 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          // Level 0 shared before the DailyClose row (level 3), never after (design §5).
+          await rosterLock(client, actor.orgId, project.id, true);
           const day = await this.dayForWrite(
             client,
             actor,
@@ -900,6 +962,115 @@ export class ReportStore {
             'REPORT_NO_WORK',
             command.clientMutationId,
           );
+        },
+      );
+    });
+  }
+
+  /**
+   * Design §4: the PM adopts a COMPLETE foreman total as the day's quantity, explicitly and
+   * against the exact basis it saw. Under the lock order (roster shared → DailyClose → day lock)
+   * the roster version, the expected crew set and the latest revisions are recomputed: any
+   * difference → FOREMAN_TOTAL_CHANGED; a total that is not COMPLETE → ADOPT_NOT_COMPLETE; a
+   * locked day → LOCKED unless a correction is open. Nothing is adopted automatically.
+   */
+  async adoptForeman(
+    identity: Identity,
+    command: ForemanAdoptCommand,
+  ): Promise<ForemanAdoptResultDto> {
+    return this.transaction(identity, async (client, actor) => {
+      const project = await this.writer(client, actor, command.projectId);
+      return this.idempotent(
+        client,
+        actor,
+        'REPORT_FOREMAN_ADOPT',
+        command.clientMutationId,
+        command,
+        async () => {
+          await rosterLock(client, actor.orgId, project.id, true);
+          const day = await this.dayForWrite(
+            client,
+            actor,
+            project,
+            command.businessDate,
+            command.expectedVersion,
+          );
+          await lockReportDay(
+            client,
+            actor.orgId,
+            project.id,
+            command.businessDate,
+          );
+          const items = await this.items(client, actor.orgId, project.id);
+          const work = ReportStore.keys(items, 'work');
+          if (!work.includes(command.item))
+            throw new FieldError('ITEM_NOT_FOUND');
+          const view = await foremanDayAsOf(
+            client,
+            actor.orgId,
+            project.id,
+            command.businessDate,
+            project.timezone,
+            work,
+          );
+          if (!sameForemanBasis(command.basis, view.basis))
+            throw new ReportError('FOREMAN_TOTAL_CHANGED');
+          const total = view.items[command.item];
+          if (total?.status !== 'COMPLETE' || total.value === null)
+            throw new ReportError('ADOPT_NOT_COMPLETE');
+          if (day.state === 'SUBMITTED' && day.correctionReason === null)
+            throw new ReportError('LOCKED');
+          const before =
+            (await this.facts(client, actor.orgId, day.id)) ?? blankFacts();
+          const facts: DayFacts = {
+            ...before,
+            qty: { ...before.qty, [command.item]: total.value },
+          };
+          await this.saveDraft(client, actor, day.id, facts);
+          const daySeq = await nextSeq(
+            client,
+            actor.orgId,
+            project.id,
+            command.businessDate,
+          );
+          const adoptionId = randomUUID();
+          await client.query(
+            `INSERT INTO "ForemanAdoption"(id,"orgId","projectId","businessDate","itemKey",value,basis,"daySeq","byAccountId")
+            VALUES($1,$2,$3,$4::date,$5,$6::numeric,$7,$8,$9)`,
+            [
+              adoptionId,
+              actor.orgId,
+              project.id,
+              command.businessDate,
+              command.item,
+              total.value,
+              JSON.stringify(view.basis),
+              daySeq,
+              actor.accountId,
+            ],
+          );
+          await this.audit(
+            client,
+            actor,
+            { type: 'SITE_DAILY_CLOSE', id: day.id, version: day.version },
+            'REPORT_FOREMAN_ADOPT',
+            '',
+            { item: command.item, qty: before.qty[command.item] ?? '' },
+            {
+              item: command.item,
+              qty: total.value,
+              adoptionId,
+              basis: view.basis,
+            },
+            command.clientMutationId,
+          );
+          return {
+            businessDate: command.businessDate,
+            version: day.version,
+            item: command.item,
+            value: total.value,
+            adoptionId,
+          };
         },
       );
     });

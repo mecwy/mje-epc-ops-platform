@@ -21,3 +21,4 @@ export {
 export * from './field-store.js';
 export * from './checkin-rules.js';
 export * from './checkin-store.js';
+export * from './foreman-store.js';

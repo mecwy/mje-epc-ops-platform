@@ -172,11 +172,13 @@ function frozenPhotoFields(p: PhotoAsOfDto): PhotoAsOfDto {
 export function readerSnapshot(
   snapshot: Record<string, unknown>,
 ): Record<string, unknown> {
-  // Check-ins are writer data (A6.0): a reader never gets them, frozen or live.
+  // Check-ins, foreman reports and adoptions are writer data (A6.0): a reader never gets them,
+  // frozen or live.
   let rest = snapshot;
-  if ('field' in snapshot) {
+  if ('field' in snapshot || 'foreman' in snapshot) {
     rest = { ...snapshot };
     delete rest['field'];
+    delete rest['foreman'];
   }
   const photos = rest['photos'];
   if (!Array.isArray(photos)) return rest;

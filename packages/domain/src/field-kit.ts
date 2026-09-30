@@ -56,7 +56,11 @@ export type FieldErrorCode =
   | 'REASON_REQUIRED'
   | 'SELFIE_EXPIRED'
   | 'SELFIE_TOO_LARGE'
-  | 'UNSUPPORTED_MEDIA';
+  | 'UNSUPPORTED_MEDIA'
+  // foreman reports and adoption (A6c)
+  | 'REVISION_CONFLICT'
+  | 'NUMBER_INVALID'
+  | 'ITEM_NOT_FOUND';
 export class FieldError extends Error {
   constructor(
     public readonly code: FieldErrorCode,
