@@ -965,7 +965,7 @@ figure .phbtn .ph {
   height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--tabs, 4), minmax(0, 1fr));
   background: var(--surface);
   border-top: 1px solid var(--line);
 }
@@ -1430,4 +1430,109 @@ fieldset.bare {
   padding: 0;
   margin: 0;
   min-width: 0;
+}
+/* field device page (A6d) and the PM site page */
+select.lang {
+  flex: none;
+  max-width: 120px;
+  min-height: 40px;
+  border: 1px solid var(--field);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 0 8px;
+  font-size: 14px;
+}
+ul.plainlist {
+  list-style: none;
+  margin: 0;
+}
+.plainlist > li + li {
+  border-top: 1px solid var(--line-2);
+}
+.rowbtn.person {
+  border: 0;
+  border-radius: 0;
+  padding-left: 4px;
+}
+.challenge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 8px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+.challenge b {
+  font-size: 44px;
+  letter-spacing: 4px;
+  color: var(--accent);
+}
+.checked {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.checked b {
+  font-size: 20px;
+  color: var(--ok);
+}
+.selfie {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.selfie img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+}
+label.ghost.off {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.primary.danger {
+  background: var(--err);
+}
+.code {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+svg.qr {
+  width: min(280px, 100%);
+  height: auto;
+  align-self: center;
+}
+.print-only {
+  display: none;
+}
+@media print {
+  .noprint,
+  .page > :not(.qr-poster) {
+    display: none !important;
+  }
+  .content {
+    margin: 0;
+  }
+  .qr-poster {
+    border: 0;
+    align-items: center;
+    text-align: center;
+  }
+  .qr-poster .print-only {
+    display: block;
+  }
+  svg.qr {
+    width: 12cm;
+  }
+}
+#app > main.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding-bottom: 32px;
+}
+.qr-poster .kv {
+  grid-template-columns: 96px minmax(0, 1fr);
 }

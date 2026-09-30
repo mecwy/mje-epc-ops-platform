@@ -6,6 +6,9 @@
 // database, login role and blob container; DEV_API_PORT / DEV_WEB_PORT move its ports.
 // Photos use the local blob emulator (Azurite, BLOB_CONNECTION_STRING) in its own private
 // container; without a local emulator connection the photo routes are simply not served.
+// The field slice (A6) is served too: a TEST crew (one foreman, three workers), a TEST site
+// reference at 1.000000, 1.000000 (radius 500 m; never a real place) and an entry code, whose
+// /field/#e=… link is printed. Browsers can emulate that position for local checks.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -18,6 +21,9 @@ import {
 } from './local-db.mjs';
 import {
   AlphaStore,
+  CheckInStore,
+  FieldStore,
+  ForemanStore,
   IssueStore,
   PhotoStore,
   ReportStore,
@@ -99,9 +105,17 @@ await q(
   'INSERT INTO "Organization"(id,name,"updatedAt","updatedBy") VALUES($1,$2,now(),$3) ON CONFLICT DO NOTHING',
   [org, 'TEST Organization', seed],
 );
+// Field roster persons (TEST names only).
+const crewPeople = [
+  [id('foreman-a'), 'TEST 工头 A'],
+  [id('worker-1'), 'TEST 工人 1'],
+  [id('worker-2'), 'TEST 工人 2'],
+  [id('worker-3'), 'TEST 工人 3'],
+];
 for (const [pid, name] of [
   [pmPerson, 'TEST 项目经理'],
   [execPerson, 'TEST 总经理'],
+  ...crewPeople,
 ])
   await q(
     'INSERT INTO "Person"(id,"orgId","updatedAt","updatedBy","displayName") VALUES($1,$2,now(),$3,$4) ON CONFLICT DO NOTHING',
@@ -211,6 +225,7 @@ const key = { ...(await exportJWK(keys.publicKey)), alg: 'RS256', kid: 'DEV' };
 const auth = { tenantId, audience, clientId, scope: 'access_as_user' };
 const verifier = new TokenVerifier(auth, createLocalJWKSet({ keys: [key] }));
 let photoStore;
+let blobs = null;
 if (blobConnection) {
   // The same SDK copy the API uses; its client decides where requests go, so that URL is
   // checked (loopback only) before any storage call.
@@ -221,10 +236,49 @@ if (blobConnection) {
     blobConnection,
   ).getContainerClient(`evidence-dev${instance ? `-${instance}` : ''}`);
   assertLocalUrl(container.url);
-  const blobs = new AzurePhotoBlobStore(container);
+  blobs = new AzurePhotoBlobStore(container);
   await blobs.ensureContainer();
   photoStore = new PhotoStore(pool, blobs);
 }
+const fieldStore = new FieldStore(pool);
+const checkInStore = new CheckInStore(pool, blobs);
+const roster = await fieldStore.roster(pmIdentity, project);
+if (!roster.crews.length) {
+  // A TEST crew with a foreman and three workers, the TEST site reference and an entry code.
+  const crew = await fieldStore.createCrew(pmIdentity, {
+    projectId: project,
+    clientMutationId: randomUUID(),
+    expectedRosterVersion: roster.rosterVersion,
+    code: 'A',
+    name: 'TEST 班组 A',
+  });
+  const crewId = crew.crews[0].id;
+  await fieldStore.changeRoster(pmIdentity, {
+    projectId: project,
+    clientMutationId: randomUUID(),
+    expectedRosterVersion: crew.rosterVersion,
+    changes: crewPeople.flatMap(([personId], i) => [
+      { op: 'open', crewId, personId, role: 'MEMBER', from: null },
+      ...(i === 0
+        ? [{ op: 'open', crewId, personId, role: 'FOREMAN', from: null }]
+        : []),
+    ]),
+  });
+  await checkInStore.setSiteReference(pmIdentity, {
+    projectId: project,
+    clientMutationId: randomUUID(),
+    expectedN: 0,
+    lat: '1.000000',
+    lon: '1.000000',
+    radiusM: 500,
+  });
+}
+let entry = await fieldStore.entryCode(pmIdentity, project);
+if (!entry.code)
+  entry = await fieldStore.rotateEntryCode(pmIdentity, {
+    projectId: project,
+    clientMutationId: randomUUID(),
+  });
 const app = await createApp({
   auth,
   verifier,
@@ -232,6 +286,9 @@ const app = await createApp({
   reportStore,
   issueStore: new IssueStore(pool),
   ...(photoStore ? { photoStore } : {}),
+  fieldStore,
+  checkInStore,
+  foremanStore: new ForemanStore(pool),
 });
 await app.listen(apiPort, '127.0.0.1');
 const token = async (oid) => {
@@ -260,6 +317,9 @@ console.log(
 );
 console.log(
   `executive:       http://localhost:${webPort}/#dev-token=${await token(execObject)}`,
+);
+console.log(
+  `field (TEST QR): http://localhost:${webPort}/field/#e=${entry.code}`,
 );
 const stop = async () => {
   await app.close();

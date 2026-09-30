@@ -128,6 +128,8 @@ export interface FieldMeDto {
   device: FieldDeviceSelfDto;
   person: { id: string; displayName: string };
   project: { id: string; name: string; timezone: string };
+  /** What the device page needs to offer (A6d): the optional selfie only when enabled (U1). */
+  settings: { selfieEnabled: boolean };
   crew: { id: string; name: string } | null;
   /** Present for a confirmed device whose person is FOREMAN of a crew now. */
   foreman: {
@@ -151,6 +153,11 @@ export interface DeviceDecisionDto {
   deviceId: string;
   personId: string;
   state: 'CONFIRMED' | 'REJECTED';
+}
+/** The project's active entry code as its PM reads it (A6d, C11); null = none yet. */
+export interface EntryCodeDto {
+  code: string | null;
+  createdAt: string | null;
 }
 export interface RotateResultDto {
   generation: number;

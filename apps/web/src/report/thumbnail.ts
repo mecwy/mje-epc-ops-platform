@@ -45,15 +45,21 @@ async function decode(file: Blob): Promise<
 }
 
 /**
- * A small JPEG for lists, made on the device (the server never decodes images). A photo the
- * browser cannot decode (for example HEIC outside Safari) gets no thumbnail; that is allowed.
+ * A JPEG no longer than `edge` pixels on its long side and at most `maxBytes`, made on the
+ * device (the server never decodes images). Re-encoding also leaves the file's metadata
+ * behind. A photo the browser cannot decode (for example HEIC outside Safari) gets null.
  */
-export async function makeThumbnail(file: Blob): Promise<Blob | null> {
+export async function resizeJpeg(
+  file: Blob,
+  edge: number,
+  maxBytes: number,
+  quality = 0.75,
+): Promise<Blob | null> {
   try {
     const img = await decode(file);
     const long = Math.max(img.width, img.height);
     if (!long) return null;
-    const k = Math.min(1, THUMB_EDGE / long);
+    const k = Math.min(1, edge / long);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(img.width * k));
     canvas.height = Math.max(1, Math.round(img.height * k));
@@ -62,10 +68,13 @@ export async function makeThumbnail(file: Blob): Promise<Blob | null> {
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     if ('close' in img && typeof img.close === 'function') img.close();
     const blob = await new Promise<Blob | null>((r) =>
-      canvas.toBlob(r, 'image/jpeg', 0.75),
+      canvas.toBlob(r, 'image/jpeg', quality),
     );
-    return blob && blob.size > 0 && blob.size <= THUMB_MAX_BYTES ? blob : null;
+    return blob && blob.size > 0 && blob.size <= maxBytes ? blob : null;
   } catch {
     return null;
   }
 }
+/** A small JPEG for lists; a photo without one is allowed. */
+export const makeThumbnail = (file: Blob) =>
+  resizeJpeg(file, THUMB_EDGE, THUMB_MAX_BYTES);
