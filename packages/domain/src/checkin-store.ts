@@ -32,6 +32,7 @@ import type { Identity } from './alpha-store.js';
 import {
   FieldError,
   FieldThrottle,
+  LIMITS,
   decisionTime,
   deviceEvent,
   fieldTransaction,
@@ -530,7 +531,60 @@ export class CheckInStore {
             occurredAt: cmd.occurredAt,
             fix: cmd.fix,
           };
-    const outcome = await fieldTransaction<DeviceOutcome>(
+    // Design §2: 30 refused check-ins per hour per device. Every refused attempt counts (same-key
+    // retries too), in its own transaction after the request, so a business rollback never
+    // undoes it; a replayed success never counts and is still served while the device is limited.
+    let actorId: string | null = null;
+    const counted = (code: string) =>
+      ![
+        'RATE_LIMITED',
+        'RETRY',
+        'FIELD_AUTH_REQUIRED',
+        'DEVICE_ENDED',
+        'DEVICE_PENDING',
+      ].includes(code);
+    const countFailure = () =>
+      actorId
+        ? this.throttle
+            .add(LIMITS.failedCheckIns(actorId))
+            .catch(() => undefined)
+        : undefined;
+    let outcome: DeviceOutcome;
+    try {
+      outcome = await this.deviceTransaction(
+        ip,
+        tokenHash,
+        kind,
+        cmd,
+        route,
+        event,
+        (id) => (actorId = id),
+      );
+    } catch (error) {
+      if (error instanceof FieldError && counted(error.code))
+        await countFailure();
+      throw error;
+    }
+    // A refused attempt committed its event; it is a request error, never a finding.
+    if (outcome.kind === 'refused') {
+      await countFailure();
+      throw new FieldError(outcome.code);
+    }
+    return outcome.body;
+  }
+  private deviceTransaction(
+    ip: string,
+    tokenHash: string,
+    kind: 'SELF' | 'FOREMAN_PROXY',
+    cmd: Omit<CheckInCommand, 'stagedSelfieId'> & {
+      personId: string | null;
+      stagedSelfieId: string | null;
+    },
+    route: string,
+    event: unknown,
+    actor: (deviceId: string) => void,
+  ): Promise<DeviceOutcome> {
+    return fieldTransaction<DeviceOutcome>(
       this.pool,
       this.throttle,
       tokenHash,
@@ -552,7 +606,22 @@ export class CheckInStore {
         },
       },
       async (client, { device: d, now: t, at }) => {
+        actor(d.id);
         const subject = cmd.personId ?? d.personId;
+        // A limited device is refused before anything else, unless this is a replay of a
+        // committed success (read-only lookup here; it is re-read below after the resource checks).
+        if (
+          (await this.throttle.full(LIMITS.failedCheckIns(d.id), client)) &&
+          !(await priorOutcome(
+            client,
+            d.orgId,
+            d.id,
+            route,
+            cmd.clientMutationId,
+            event,
+          ))
+        )
+          throw new FieldError('RATE_LIMITED');
         // Resource authorization (before the idempotency lookup, so a replay re-runs it).
         let crewId: string | null;
         if (kind === 'FOREMAN_PROXY') {
@@ -756,9 +825,6 @@ export class CheckInStore {
         return { kind: 'ok', body };
       },
     );
-    // A refused attempt committed its event; it is a request error, never a finding.
-    if (outcome.kind === 'refused') throw new FieldError(outcome.code);
-    return outcome.body;
   }
 
   // ---------- project manager ----------

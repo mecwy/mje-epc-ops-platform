@@ -2966,6 +2966,55 @@ try {
     );
   }
 
+  step('check-in: failed check-ins per device');
+  {
+    // Design §2: 30 refused check-ins per hour per device, counted in their own transaction.
+    // Same-key retries of a refusal count; replays of a committed success never count and are
+    // still served once the device is limited.
+    await freshWindow(3600);
+    const ok = await tap(dev.kr.token);
+    const success = await expectStatus(Promise.resolve(ok.r), 200);
+    const replay = () =>
+      expectStatus(kpost('/checkin', dev.kr.token, ok.body), 200);
+    const outside = await tapBody({ m: 900 });
+    for (let i = 0; i < 30; i++) {
+      // 15 retries under one key, then 15 new keys, with successful replays in between.
+      const body =
+        i < 15 ? outside : { ...outside, clientMutationId: randomUUID() };
+      await expectStatus(
+        kpost('/checkin', dev.kr.token, body),
+        409,
+        'GEOFENCE_OUTSIDE',
+      );
+      if (i % 10 === 0) assert.deepEqual(await replay(), success);
+    }
+    await expectStatus(
+      kpost('/checkin', dev.kr.token, {
+        ...outside,
+        clientMutationId: randomUUID(),
+      }),
+      429,
+      'RATE_LIMITED',
+    );
+    await expectStatus(
+      kpost('/checkin', dev.kr.token, outside),
+      429,
+      'RATE_LIMITED',
+    );
+    assert.deepEqual(await replay(), success);
+    assert.equal((await refusals(dev.kr.id)).length, 30);
+    assert.equal(
+      await count(
+        `SELECT count::int AS n FROM "FieldThrottle" WHERE bucket=$1`,
+        [`checkin-fail:${dev.kr.id}`],
+      ),
+      30,
+    );
+    pass(
+      'failed check-ins: 30 refusals per hour per device (15 same-key retries and 15 new keys, each counted and logged); the 31st attempt, new key or same key, is RATE_LIMITED with no further event; replays of a committed success are never counted and are still served while the device is limited',
+    );
+  }
+
   step('check-in: local midnight');
   {
     const midnight = async () =>

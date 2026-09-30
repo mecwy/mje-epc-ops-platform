@@ -112,6 +112,14 @@ export const LIMITS = {
     pendingDeviceToken: true,
   }),
   unknownToken: (ip: string): Limit => salted('unknown-token', ip, 600, 60),
+  /** Refused check-ins per device (design §2: 30 / h); counted in their own transaction. */
+  failedCheckIns: (deviceId: string): Limit => ({
+    name: 'checkin-fail',
+    value: deviceId,
+    windowSec: 3600,
+    max: 30,
+    salted: false,
+  }),
   /** Failed confirms per confirmer (device or account id); counted after the commit. */
   failedConfirms: (actorId: string): Limit => ({
     name: 'confirm-fail',
