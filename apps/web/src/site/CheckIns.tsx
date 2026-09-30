@@ -170,10 +170,18 @@ export function ProxySheet(props: {
   const { t, locale } = useI18n();
   const cmds = props.sessions.checkIns(props.date).proxy;
   const sent = cmds.current;
-  const [error, setError] = useState<string | null>(null);
   if (!sent)
     return (
-      <ProxyEdit key={cmds.generation} {...props} refusal={cmds.refusal} />
+      <ProxyEdit
+        key={cmds.generation}
+        {...props}
+        // One source for a first send's and a Retry's refusal: the owner (OwnedCommands).
+        refusal={
+          cmds.refusal
+            ? { code: cmds.refusal, uncertain: cmds.refusalUncertain }
+            : null
+        }
+      />
     );
   const tz = props.project.timezone;
   const unresolved = cmds.unresolved !== null;
@@ -209,15 +217,11 @@ export function ProxySheet(props: {
       {sent.actorFix && <p className="muted small">{t('ci_fixNote')}</p>}
       {unresolved ? (
         <div className="banner warn" role="alert">
-          {t('pm_saveUnresolved')} <ErrorText code={cmds.session.error} />
+          {t('pm_saveUnresolved')}{' '}
+          <ErrorText code={cmds.session.error ?? 'NETWORK'} write />
         </div>
       ) : (
         <p className="muted small">{t('saving')}</p>
-      )}
-      {error && (
-        <div className="banner err" role="alert">
-          <ErrorText code={error} />
-        </div>
       )}
       {unresolved && (
         <div className="row2">
@@ -234,9 +238,9 @@ export function ProxySheet(props: {
             className="primary"
             disabled={busy}
             onClick={() =>
+              // A refusal ends ownership; the edit form then shows it (from the owner).
               void cmds.retry().then((r) => {
                 if (r.kind === 'ok') props.onClose();
-                else if (r.kind === 'rejected') setError(r.code);
               })
             }
           >
@@ -261,7 +265,7 @@ function ProxyEdit({
   sessions: SiteSessions;
   date: string;
   onClose: () => void;
-  refusal: string | null;
+  refusal: { code: string; uncertain: boolean } | null;
 }) {
   const { t, locale } = useI18n();
   const tz = project.timezone;
@@ -278,7 +282,10 @@ function ProxyEdit({
   const [reason, setReason] = useState('');
   const [fix, setFix] = useState<FixInput | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(refusal);
+  const [error, setError] = useState<{
+    code: string;
+    uncertain: boolean;
+  } | null>(refusal);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {
     void sessions.roster.load();
@@ -330,7 +337,8 @@ function ProxyEdit({
     });
     // A lost answer: the sheet now shows the owned payload (ProxySheet).
     if (r.kind === 'ok') onClose();
-    else if (r.kind === 'rejected') setError(r.code);
+    else if (r.kind === 'rejected')
+      setError({ code: r.code, uncertain: r.uncertain });
   };
   const problemKey =
     problem === 'person'
@@ -432,7 +440,7 @@ function ProxyEdit({
       )}
       {error && (
         <div className="banner err" role="alert">
-          <ErrorText code={error} />
+          <ErrorText code={error.code} write uncertain={error.uncertain} />
         </div>
       )}
       <button

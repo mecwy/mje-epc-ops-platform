@@ -43,7 +43,9 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
   const { t, locale } = useI18n();
   const pm = usePmField();
   const [open, setOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Only a failure before anything was sent (typed facts not saved, busy); an adoption's own
+  // outcome comes from its owner (AdoptFlow), the same for a first send and a Retry.
+  const [problem, setProblem] = useState<string | null>(null);
   if (!pm?.foreman) return null;
   const f = pm.foreman;
   const v = itemView(f, itemKey);
@@ -56,6 +58,14 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
     flow?.owned.current?.item === itemKey ? flow.owned.current : null;
   const unresolved = owned !== null && flow?.owned.unresolved !== null;
   const busy = flow?.owned.session.busy ?? false;
+  const refused =
+    flow &&
+    !owned &&
+    flow.owned.refused?.item === itemKey &&
+    flow.owned.refusal &&
+    flow.owned.refusal !== 'FOREMAN_TOTAL_CHANGED'
+      ? { code: flow.owned.refusal, uncertain: flow.owned.refusalUncertain }
+      : null;
   const total =
     v.status === 'COMPLETE' && v.value !== null
       ? t('fa_total', { v: fmtNum(v.value, locale) })
@@ -68,11 +78,11 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
             : t('fa_partial');
   const use = async () => {
     if (!flow || v.value === null) return;
-    setError(null);
+    setProblem(null);
     const r = unresolved
       ? await flow.retry()
       : await flow.adopt(itemKey, { basis: f.basis, value: v.value });
-    if (r.kind === 'rejected' || r.kind === 'failed') setError(r.code);
+    if (r.kind === 'failed' && !flow.owned.current) setProblem(r.code);
   };
   return (
     <div className="fline">
@@ -131,16 +141,26 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
       {f.expectedCrewsChanged && (
         <p className="muted small">{t('fa_crewsChanged')}</p>
       )}
-      {error && (
+      {problem && (
         <div className="banner err" role="alert">
-          <ErrorText code={error} />
+          <ErrorText code={problem} />
+        </div>
+      )}
+      {refused && (
+        <div className="banner err" role="alert">
+          <ErrorText code={refused.code} write uncertain={refused.uncertain} />
         </div>
       )}
       {owned && (
         <div className="banner warn" role="alert">
-          {unresolved
-            ? t('fa_adoptUnresolved', { v: fmtNum(owned.value, locale) })
-            : t('saving')}
+          {unresolved ? (
+            <>
+              {t('fa_adoptUnresolved', { v: fmtNum(owned.value, locale) })}{' '}
+              <ErrorText code={flow?.owned.session.error ?? 'NETWORK'} write />
+            </>
+          ) : (
+            t('saving')
+          )}
         </div>
       )}
       {flow && owned && unresolved && (

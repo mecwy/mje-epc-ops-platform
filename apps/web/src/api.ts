@@ -212,6 +212,8 @@ export class ApiError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
+    /** This answer came after an earlier attempt of the same request was lost (a resend). */
+    public readonly afterLostAttempt = false,
   ) {
     super(code);
   }
@@ -276,6 +278,7 @@ async function request<T>(
       throw new ApiError(
         responseCode(response.status, await response.text().catch(() => '')),
         response.status,
+        attempt > 0,
       );
     return (await response.json()) as T;
   }

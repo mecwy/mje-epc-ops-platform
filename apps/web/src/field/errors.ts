@@ -73,6 +73,11 @@ export type KnownFieldCode = keyof typeof FIELD_ERRORS;
 export const REFUSED_BEFORE_REPLAY = {
   NOT_FOREMAN: 'fe_notForemanMaybeRecorded',
   PROXY_NOT_ALLOWED: 'fe_proxyMaybeRecorded',
+  // PM writes (report-store `writer`, checkin-store `pm`, field-store `pm`): project access
+  // is checked before the replay, and sign-in before the request reaches the store.
+  FORBIDDEN: 'fe_accessMaybeRecorded',
+  READ_ONLY: 'fe_accessMaybeRecorded',
+  LOGIN_REQUIRED: 'fe_signInMaybeRecorded',
 } as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
 
 /**

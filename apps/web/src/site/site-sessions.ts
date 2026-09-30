@@ -68,25 +68,31 @@ export class DeviceCommands {
   get canStart() {
     return this.owned.canStart;
   }
+  /** The last refused action, its code, and whether it may have been applied anyway. */
+  get refused(): DeviceAction | null {
+    return this.owned.refused;
+  }
+  get refusal(): string | null {
+    return this.owned.refusal;
+  }
+  get refusalUncertain(): boolean {
+    return this.owned.refusalUncertain;
+  }
 
   run(a: DeviceAction): Promise<Outcome<unknown>> {
     return this.owned.run(a, (list, key) => {
-      if (a.kind === 'confirm')
-        return {
-          key,
-          send: () =>
-            this.api.confirmDevice({
-              projectId: this.projectId,
-              clientMutationId: key,
-              personId: a.device.personId,
-              code: a.code,
-              // From the newest list when it runs; an older view gets CONFIRM_STALE.
-              expectedCurrentDeviceId: currentDevice(
-                list ?? [],
-                a.device.personId,
-              ),
-            }),
+      if (a.kind === 'confirm') {
+        // Fixed once: a Retry under this key sends the same body (AGENTS.md).
+        const c = {
+          projectId: this.projectId,
+          clientMutationId: key,
+          personId: a.device.personId,
+          code: a.code,
+          // From the newest list when it runs; an older view gets CONFIRM_STALE.
+          expectedCurrentDeviceId: currentDevice(list ?? [], a.device.personId),
         };
+        return { key, send: () => this.api.confirmDevice(c) };
+      }
       const row = list?.find((x) => x.id === a.device.id);
       if (!row) return null;
       const c = {
@@ -177,6 +183,20 @@ export class SiteSessions {
       this.days.set(businessDate, d);
     }
     return d;
+  }
+  /** Every site day read so far, with its proxy owner (for the owned-actions bar). */
+  proxyDays(): [
+    string,
+    {
+      list: FieldSession<CheckInListDto>;
+      proxy: OwnedCommands<CheckInListDto, ProxyAction>;
+    },
+  ][] {
+    return [...this.days.entries()];
+  }
+  /** Tell the page that state kept with these sessions changed (adoption flows). */
+  changed() {
+    this.notify();
   }
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn);

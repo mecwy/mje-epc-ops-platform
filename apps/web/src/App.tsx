@@ -31,9 +31,9 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
-import { SiteSessions } from './site/site-sessions.js';
+import { PmOwnerRegistry } from './site/pm-owners.js';
+import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
-import { AdoptFlow } from './report/foreman-adopt.js';
 import { PmFieldContext, type PmField } from './report/ForemanLine.js';
 
 import { Sheet } from './ui.js';
@@ -226,42 +226,32 @@ function Workspace({
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
   const photos = usePhotos(api, project.id, date, dayStamp);
   const busy = actionBusy || h.busy;
-  // The People page's sessions live as long as the workspace (like the issue and plan
-  // sessions): leaving the tab keeps an unresolved command and its key.
-  const [siteSessions] = useState(() => new SiteSessions(api, project.id));
+  // The PM command owners (People page sessions and adoption flows) live as long as the
+  // workspace, one set per project (AGENTS.md): leaving a tab, losing write access or
+  // switching projects and back keeps an unresolved command, its key and its payload.
+  const [pmRegistry] = useState(() => new PmOwnerRegistry(api));
+  const pm = pmRegistry.get(project.id);
+  const siteSessions = pm.site;
   useSessions(siteSessions);
   // Check-ins beside the headcount (writers only; a reader never gets them, OD20).
   useEffect(() => {
     if (canWrite) void siteSessions.checkIns(date).list.load();
   }, [canWrite, siteSessions, date]);
-  // The PM's explicit adoption of foreman totals, one flow per day for the workspace's life.
-  const [, rerenderAdopt] = useReducer((n: number) => n + 1, 0);
+  // The PM's explicit adoption of foreman totals, one flow per day (PmOwners): the flows act
+  // on this workspace's day handle, bound here on every render.
   const latestDay = useRef(h);
   latestDay.current = h;
-  const adopts = useRef(new Map<string, AdoptFlow>());
-  const adoptFor = (d: string) => {
-    let flow = adopts.current.get(d);
-    if (!flow) {
-      flow = new AdoptFlow(
-        {
-          api,
-          projectId: project.id,
-          businessDate: d,
-          flush: () => latestDay.current.flush(),
-          current: () => {
-            const day = latestDay.current.day;
-            return day && day.businessDate === d
-              ? { foreman: day.foreman ?? null, version: day.version }
-              : null;
-          },
-          reload: () => latestDay.current.reload(),
-        },
-        rerenderAdopt,
-      );
-      adopts.current.set(d, flow);
-    }
-    return flow;
+  pm.day = {
+    flush: () => latestDay.current.flush(),
+    current: (d) => {
+      const day = latestDay.current.day;
+      return day && day.businessDate === d
+        ? { foreman: day.foreman ?? null, version: day.version }
+        : null;
+    },
+    reload: () => latestDay.current.reload(),
   };
+  const adoptFor = (d: string) => pm.adoptFor(d);
   const pmField: PmField | null =
     canWrite && h.day
       ? {
@@ -728,6 +718,16 @@ function Workspace({
             </button>
           </header>
           <main className={`page view-${view}`}>
+            {!canWrite && (
+              // Write access went away while a PM attempt was owned: its Retry / Give up stay.
+              <PmOwnedBar
+                owners={pm}
+                itemLabel={(k) => {
+                  const it = day?.items.find((i) => i.key === k);
+                  return it ? label(it.label) : k;
+                }}
+              />
+            )}
             {signin.expired && (
               <div className="banner err" role="alert">
                 {signin.failure ? (

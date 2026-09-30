@@ -183,7 +183,11 @@ export function EntryCodeCard({
           <p className="para muted small">{t('site_qrNames')}</p>
           {session.error && session.error !== 'STALE' && (
             <div className="banner err" role="alert">
-              <ErrorText code={session.error} />
+              <ErrorText
+                code={session.error}
+                write
+                uncertain={session.errorUncertain}
+              />
             </div>
           )}
           <button

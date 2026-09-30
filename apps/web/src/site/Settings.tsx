@@ -58,7 +58,7 @@ function OwnedSave({
       {unresolved ? (
         <div className="banner warn" role="alert">
           {t('pm_saveUnresolved')}{' '}
-          <ErrorText code={commands.session.error ?? 'NETWORK'} />
+          <ErrorText code={commands.session.error ?? 'NETWORK'} write />
         </div>
       ) : (
         <p className="muted small">{t('saving')}</p>
@@ -203,11 +203,17 @@ function Problem({
   );
 }
 /** The last definite refusal of this form's save, shown after editing restarted. */
-function Refusal({ code }: { code: string | null }) {
+function Refusal({
+  code,
+  uncertain,
+}: {
+  code: string | null;
+  uncertain: boolean;
+}) {
   if (!code) return null;
   return (
     <div className="banner err" role="alert">
-      <ErrorText code={code} />
+      <ErrorText code={code} write uncertain={uncertain} />
     </div>
   );
 }
@@ -330,7 +336,7 @@ function SiteLocationCard({
         {tried && <Problem field="radius" problem={problems.radius} />}
       </label>
       <p className="muted small">{t('pm_siteNote')}</p>
-      <Refusal code={commands.refusal} />
+      <Refusal code={commands.refusal} uncertain={commands.refusalUncertain} />
       <button
         type="button"
         className="primary"
@@ -406,7 +412,7 @@ function FieldSettingsCard({
           </span>
         )}
       </label>
-      <Refusal code={commands.refusal} />
+      <Refusal code={commands.refusal} uncertain={commands.refusalUncertain} />
       <button
         type="button"
         className="primary"

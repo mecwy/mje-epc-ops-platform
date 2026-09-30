@@ -788,6 +788,12 @@ export const MESSAGES = {
     'Fichaje en obra',
   ],
   fd_withSelfie: ['附自拍', 'With selfie', 'Sa selfijem', 'Con selfi'],
+  fe_accessMaybeRecorded: [
+    '重发被拒：你已没有这个项目的写入权限。之前那次发送可能已经记录，请有权限的人核对；不会再自动发送。',
+    'The resend was refused: you no longer have write access to this project. The earlier send may already have been recorded; ask someone with access to check. Nothing is sent again.',
+    'Ponovno slanje je odbijeno: više nemate pravo upisa za ovaj projekat. Ranije slanje je možda već zabeleženo; zamolite nekoga s pristupom da proveri. Ništa se više ne šalje.',
+    'El reenvío fue rechazado: ya no tienes permiso de escritura en este proyecto. El envío anterior puede que ya se haya registrado; pide a alguien con acceso que lo compruebe. No se vuelve a enviar nada.',
+  ],
   fe_adoptIncomplete: [
     '合计不完整（有缺报、未知或没有数值），不能采用；可以手填数值。',
     'The total is not complete (missing, unknown or no value) and cannot be used; you can type a value.',
@@ -1009,6 +1015,12 @@ export const MESSAGES = {
     'The selfie is over 3 MB; not uploaded.',
     'Selfi je veći od 3 MB; nije otpremljen.',
     'El selfi supera 3 MB; no se subió.',
+  ],
+  fe_signInMaybeRecorded: [
+    '重发被拒：登录已过期。之前那次发送可能已经记录；重新登录后先核对，再决定是否重新提交。',
+    'The resend was refused: your sign-in expired. The earlier send may already have been recorded; sign in again and check before sending anything new.',
+    'Ponovno slanje je odbijeno: prijava je istekla. Ranije slanje je možda već zabeleženo; prijavite se ponovo i proverite pre novog slanja.',
+    'El reenvío fue rechazado: tu sesión caducó. El envío anterior puede que ya se haya registrado; vuelve a iniciar sesión y compruébalo antes de enviar algo nuevo.',
   ],
   fe_siteNotSet: [
     '工地位置尚未设置，请联系项目经理。',
@@ -1651,11 +1663,53 @@ export const MESSAGES = {
   planN: ['计划 {n}', 'plan {n}', 'plan {n}', 'plan {n}'],
   planTab: ['明天计划', "Tomorrow's plan", 'Plan za sutra', 'Plan de mañana'],
   planned: ['计划', 'Planned', 'Plan', 'Previsto'],
+  pm_actAdopt: [
+    '采用工头合计：{item}（{day}）',
+    'Using the foreman total: {item} ({day})',
+    'Korišćenje zbira poslovođa: {item} ({day})',
+    'Uso del total de encargados: {item} ({day})',
+  ],
   pm_activeN: [
     '已确认 {n}',
     'Confirmed {n}',
     'Potvrđeno {n}',
     'Confirmados {n}',
+  ],
+  pm_actProxy: [
+    '为 {name} 代签到（{day}）',
+    'PM check-in for {name} ({day})',
+    'Prijava rukovodioca za {name} ({day})',
+    'Fichaje del jefe de proyecto para {name} ({day})',
+  ],
+  pm_actReject: [
+    '拒绝 {name} 的手机',
+    'Rejecting the phone of {name}',
+    'Odbijanje telefona za {name}',
+    'Rechazo del teléfono de {name}',
+  ],
+  pm_actRevoke: [
+    '注销 {name} 的手机',
+    'Revoking the phone of {name}',
+    'Opoziv telefona za {name}',
+    'Revocación del teléfono de {name}',
+  ],
+  pm_actRotate: [
+    '更换二维码',
+    'Changing the QR code',
+    'Promena QR koda',
+    'Cambio del código QR',
+  ],
+  pm_actSettings: [
+    '保存现场设置',
+    'Saving the field settings',
+    'Čuvanje podešavanja terena',
+    'Guardar los ajustes de campo',
+  ],
+  pm_actSite: [
+    '保存现场位置',
+    'Saving the site location',
+    'Čuvanje lokacije gradilišta',
+    'Guardar la ubicación de la obra',
   ],
   pm_attemptUnresolved: [
     '这次操作未收到结果。重试会原样再发（同一个码）；要换码请先放弃。',
@@ -1805,6 +1859,12 @@ export const MESSAGES = {
   ],
   pm_off: ['关', 'Off', 'Isključeno', 'Desactivado'],
   pm_on: ['开', 'On', 'Uključeno', 'Activado'],
+  pm_ownedRoleNote: [
+    '你已没有这个项目的写入权限。仍可重试或放弃这些操作；是否仍被接受由服务器决定。',
+    'You no longer have write access to this project. You can still retry or give up these actions; the server decides whether a retry is still allowed.',
+    'Više nemate pravo upisa za ovaj projekat. I dalje možete ponoviti ili odustati od ovih radnji; server odlučuje da li je ponovni pokušaj još dozvoljen.',
+    'Ya no tienes permiso de escritura en este proyecto. Aún puedes reintentar o descartar estas acciones; el servidor decide si el reintento sigue permitido.',
+  ],
   pm_pendingN: [
     '待确认 {n}',
     'Waiting for confirmation {n}',

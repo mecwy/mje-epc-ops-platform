@@ -59,6 +59,8 @@ export class FieldSession<D> {
   busy = false;
   /** Last definite refusal, an unsettled code while `pending`, or 'STALE' (no fresh read). */
   error: string | null = null;
+  /** Whether `error` is a refusal that followed an unanswered attempt (Outcome.uncertain). */
+  errorUncertain = false;
   pending: (Command<unknown> & { reread: boolean; uncertain: boolean }) | null =
     null;
   private reads = 0;
@@ -206,6 +208,7 @@ export class FieldSession<D> {
     this.pending = pending;
     this.busy = true;
     this.error = null;
+    this.errorUncertain = false;
     this.notify();
     try {
       const value = await c.send();
@@ -227,6 +230,7 @@ export class FieldSession<D> {
       }
       this.pending = null;
       this.error = code;
+      this.errorUncertain = pending.uncertain;
       // The command's own answer ends the device: latched here, whatever the rereads get.
       if (ENDED.has(code)) {
         this.end(code);
