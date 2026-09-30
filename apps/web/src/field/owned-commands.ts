@@ -83,6 +83,14 @@ export class OwnedCommands<D, A> {
     this.settle(r, o.key);
     return r;
   }
+  /** Stop showing the last refusal (the user has read it); nothing is sent. */
+  clearRefusal() {
+    if (this.refusal === null && this.refused === null) return;
+    this.refusal = null;
+    this.refusalUncertain = false;
+    this.refused = null;
+    this.session.changed();
+  }
   /** Give up the unresolved action (it may still have been applied); the data is reread. */
   discard() {
     if (this.session.busy) return;
