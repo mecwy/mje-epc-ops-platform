@@ -236,30 +236,162 @@ export function suggestCumulative(
     ? { base: decText(base), qty: decText(q), sum: decText(base + q) }
     : null;
 }
+// ---------- foreman quantity reports (A6 design §4) ----------
+/** One crew's report for a day: its latest revision `n` (a higher n supersedes a lower one). */
 export interface ForemanReport {
   crew: string;
+  n: number;
   rows: { item: string; qty: Reported }[];
-  at: string;
 }
 /**
- * Totals from the latest report of each crew; earlier reports of the same crew are superseded.
- * Tokens and blanks are skipped, so a total is a known subtotal. A total outside Decimal(20,6)
- * is reported as null rather than a number the contract would reject.
+ * What one crew said about one item: no report at all, the item absent or blank, `unknown`,
+ * `na`, an explicit zero or a positive value.
+ */
+export type CrewItemStatus =
+  'MISSING_REPORT' | 'OMITTED' | 'UNKNOWN' | 'NA' | 'ZERO' | 'VALUE';
+/**
+ * COMPLETE: every expected crew gave a number or `na`, at least one a number, and the sum fits
+ * Decimal(20,6). ALL_NA: every expected crew said `na` (not a number). PARTIAL: some crew is
+ * missing, omitted the item or said `unknown` (or the expected crew set is empty). OVERFLOW:
+ * the sum leaves Decimal(20,6). Only COMPLETE may be adopted.
+ */
+export type ForemanTotalStatus = 'COMPLETE' | 'ALL_NA' | 'PARTIAL' | 'OVERFLOW';
+export interface ForemanItemTotal {
+  status: ForemanTotalStatus;
+  /** COMPLETE only: the exact sum. */
+  value: string | null;
+  /** PARTIAL only: the sum of the numbers that were given, shown as "≥"; null when none fit. */
+  atLeast: string | null;
+  /** Per crew: expected crews always; a report outside the expected set too (`expected` false). */
+  crews: Record<
+    string,
+    { status: CrewItemStatus; qty: Reported | null; expected: boolean }
+  >;
+}
+function crewItemStatus(qty: Reported | undefined): CrewItemStatus {
+  if (qty === undefined || qty === '') return 'OMITTED';
+  if (qty === 'na') return 'NA';
+  const n = dec(qty);
+  // 'unknown', and anything that is not a number, is never read as one.
+  if (n === null) return 'UNKNOWN';
+  return n === 0n ? 'ZERO' : 'VALUE';
+}
+/**
+ * Per-item completeness of the foreman reports against the expected crew set (every crew with a
+ * MEMBER or FOREMAN interval overlapping the day, with or without a foreman). A crew without a
+ * report is MISSING_REPORT, never zero; blanks and `unknown` are never read as numbers; the
+ * total is a number only when it is COMPLETE. A report from a crew outside the expected set is
+ * never dropped silently: a number or `unknown` from it makes the item PARTIAL. Items are the
+ * given ones (in order) followed by any other item a report names.
  */
 export function foremanTotals(
+  expectedCrews: string[],
   reports: ForemanReport[],
-): Record<string, string | null> {
-  const latest = new Map<string, ForemanReport>();
-  for (const r of reports) latest.set(r.crew, r);
-  const totals = new Map<string, bigint>();
-  for (const rep of latest.values())
-    for (const row of rep.rows) {
-      const q = dec(row.qty);
-      if (q !== null) totals.set(row.item, (totals.get(row.item) ?? 0n) + q);
+  items: string[],
+): Record<string, ForemanItemTotal> {
+  const latest = new Map<string, Map<string, Reported>>();
+  const latestN = new Map<string, number>();
+  for (const r of reports)
+    if ((latestN.get(r.crew) ?? -1) < r.n) {
+      latestN.set(r.crew, r.n);
+      latest.set(r.crew, new Map(r.rows.map((x) => [x.item, x.qty])));
     }
-  return Object.fromEntries(
-    [...totals].map(([k, v]) => [k, inRange(v) ? decText(v) : null]),
+  const expected = [...new Set(expectedCrews)];
+  const outside = [...latest.keys()].filter((c) => !expected.includes(c));
+  const keys = [...new Set(items)];
+  const extra = new Set<string>();
+  for (const rows of latest.values())
+    for (const item of rows.keys()) if (!keys.includes(item)) extra.add(item);
+  const out: Record<string, ForemanItemTotal> = {};
+  for (const item of [...keys, ...[...extra].sort()]) {
+    const crews: ForemanItemTotal['crews'] = {};
+    // An empty expected set is never complete (and never "all n/a").
+    let partial = expected.length === 0;
+    let allNa = expected.length > 0;
+    let numbers = 0;
+    let sum = 0n;
+    for (const crew of expected) {
+      const rows = latest.get(crew);
+      const qty = rows ? (rows.get(item) ?? '') : null;
+      const status = rows ? crewItemStatus(rows.get(item)) : 'MISSING_REPORT';
+      crews[crew] = { status, qty, expected: true };
+      if (status !== 'NA') allNa = false;
+      if (status === 'ZERO' || status === 'VALUE') {
+        sum += dec(qty)!;
+        numbers++;
+      } else if (status !== 'NA') partial = true;
+    }
+    for (const crew of outside) {
+      const qty = latest.get(crew)!.get(item) ?? '';
+      const status = crewItemStatus(qty);
+      crews[crew] = { status, qty, expected: false };
+      if (status === 'UNKNOWN' || status === 'ZERO' || status === 'VALUE')
+        partial = true;
+    }
+    out[item] = partial
+      ? {
+          status: 'PARTIAL',
+          value: null,
+          atLeast: numbers && inRange(sum) ? decText(sum) : null,
+          crews,
+        }
+      : allNa
+        ? { status: 'ALL_NA', value: null, atLeast: null, crews }
+        : inRange(sum)
+          ? { status: 'COMPLETE', value: decText(sum), atLeast: null, crews }
+          : { status: 'OVERFLOW', value: null, atLeast: null, crews };
+  }
+  return out;
+}
+/**
+ * What an adoption was decided on: the roster version, the expected crews and each expected
+ * crew's latest revision number (null = no report). Order does not matter.
+ */
+export interface ForemanBasis {
+  rosterVersion: number;
+  expectedCrews: string[];
+  revisions: { crewId: string; n: number | null }[];
+}
+/** Whether a client's basis is exactly the current one (any difference is a change). */
+export function sameForemanBasis(a: ForemanBasis, b: ForemanBasis): boolean {
+  const crews = (x: ForemanBasis) => [...new Set(x.expectedCrews)].sort();
+  const revs = (x: ForemanBasis) =>
+    [...x.revisions]
+      .map((r) => `${r.crewId}:${r.n ?? '-'}`)
+      .sort()
+      .join(',');
+  return (
+    a.rosterVersion === b.rosterVersion &&
+    a.expectedCrews.length === crews(a).length &&
+    b.expectedCrews.length === crews(b).length &&
+    crews(a).join(',') === crews(b).join(',') &&
+    a.revisions.length === b.revisions.length &&
+    revs(a) === revs(b)
   );
+}
+/** The site's calendar date (YYYY-MM-DD) at an instant. */
+export function siteDate(at: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const part = (t: string) => parts.find((p) => p.type === t)!.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+/**
+ * A foreman writes only for the site's today or yesterday at the decision time (§1 historical
+ * writes); older days are PM-only and a future day is not a report.
+ */
+export function foremanDateAllowed(
+  businessDate: string,
+  at: Date,
+  timeZone: string,
+): 'ok' | 'future' | 'tooOld' {
+  const today = siteDate(at, timeZone);
+  if (businessDate > today) return 'future';
+  return businessDate >= shiftDate(today, -1) ? 'ok' : 'tooOld';
 }
 
 // ---------- coverage (what is still missing; never blocks submission) ----------

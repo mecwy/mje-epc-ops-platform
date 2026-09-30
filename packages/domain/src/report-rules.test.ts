@@ -12,6 +12,7 @@ import {
   dec,
   decText,
   distanceM,
+  foremanDateAllowed,
   foremanTotals,
   hasFacts,
   isDeviceFix,
@@ -22,8 +23,13 @@ import {
   photoAcceptable,
   planRows,
   planStatus,
+  sameForemanBasis,
   shiftDate,
+  siteDate,
   suggestCumulative,
+  type ForemanBasis,
+  type ForemanItemTotal,
+  type ForemanReport,
   type PlanState,
 } from './report-rules.js';
 
@@ -145,41 +151,197 @@ describe('quantities', () => {
     expect(suggestCumulative(undefined, '260')).toBeNull();
     expect(suggestCumulative('5120', 'unknown')).toBeNull();
   });
-  it('sums outside Decimal(20,6) are not offered: suggestion null, foreman total null', () => {
+  it('sums outside Decimal(20,6) are not offered as a suggestion', () => {
     expect(suggestCumulative('99999999999999.999999', '0.000001')).toBeNull();
     expect(suggestCumulative('99999999999999.999998', '0.000001')).toEqual({
       base: '99999999999999.999998',
       qty: '0.000001',
       sum: '99999999999999.999999',
     });
-    expect(
-      foremanTotals([
-        { crew: 'A', rows: [{ item: 'x', qty: '99999999999999' }], at: '1' },
-        {
-          crew: 'B',
-          rows: [
-            { item: 'x', qty: '1' },
-            { item: 'y', qty: '1' },
-          ],
-          at: '2',
-        },
-      ]),
-    ).toEqual({ x: null, y: '1' });
   });
-  it('foreman totals take the latest report per crew', () => {
-    const t = foremanTotals([
-      {
-        crew: 'B',
-        rows: [
-          { item: 'support', qty: '260' },
-          { item: 'rail', qty: '180' },
-        ],
-        at: '1',
-      },
-      { crew: 'B', rows: [{ item: 'support', qty: '265' }], at: '2' },
-      { crew: 'C', rows: [{ item: 'support', qty: '40' }], at: '3' },
+});
+
+describe('foreman totals (completeness, not a bare sum)', () => {
+  const rep = (
+    crew: string,
+    n: number,
+    rows: Record<string, string>,
+  ): ForemanReport => ({
+    crew,
+    n,
+    rows: Object.entries(rows).map(([item, qty]) => ({ item, qty })),
+  });
+  const status = (t: Record<string, ForemanItemTotal>, item: string) => [
+    t[item]!.status,
+    t[item]!.value,
+    t[item]!.atLeast,
+  ];
+  it('a crew without a report is MISSING_REPORT: the item is PARTIAL, never a total', () => {
+    const t = foremanTotals(
+      ['B', 'C'],
+      [rep('B', 1, { support: '260' })],
+      ['support'],
+    );
+    expect(status(t, 'support')).toEqual(['PARTIAL', null, '260']);
+    expect(t['support']!.crews['C']).toEqual({
+      status: 'MISSING_REPORT',
+      qty: null,
+      expected: true,
+    });
+  });
+  it('absent, blank and unknown are OMITTED/OMITTED/UNKNOWN and make the item PARTIAL', () => {
+    const t = foremanTotals(
+      ['B', 'C', 'D'],
+      [
+        rep('B', 1, { support: '10', rail: '' }),
+        rep('C', 1, { support: 'unknown', rail: '4' }),
+        rep('D', 1, { support: '5', rail: '6' }),
+      ],
+      ['support', 'rail', 'modules'],
+    );
+    expect(status(t, 'support')).toEqual(['PARTIAL', null, '15']);
+    expect(t['support']!.crews['C']!.status).toBe('UNKNOWN');
+    expect(status(t, 'rail')).toEqual(['PARTIAL', null, '10']);
+    expect(t['rail']!.crews['B']).toEqual({
+      status: 'OMITTED',
+      qty: '',
+      expected: true,
+    });
+    expect(status(t, 'modules')).toEqual(['PARTIAL', null, null]);
+    expect(t['modules']!.crews['D']!.status).toBe('OMITTED');
+  });
+  it('an explicit zero from every expected crew is COMPLETE 0 (adoptable), not "no data"', () => {
+    const t = foremanTotals(
+      ['B', 'C'],
+      [rep('B', 1, { support: '0' }), rep('C', 2, { support: '0.000' })],
+      ['support'],
+    );
+    expect(status(t, 'support')).toEqual(['COMPLETE', '0', null]);
+    expect(t['support']!.crews['B']!.status).toBe('ZERO');
+  });
+  it('numbers and n/a together are COMPLETE; all n/a is ALL_NA and not a number', () => {
+    const t = foremanTotals(
+      ['B', 'C'],
+      [
+        rep('B', 1, { support: '120.5', rail: 'na' }),
+        rep('C', 1, { support: 'na', rail: 'na' }),
+      ],
+      ['support', 'rail'],
+    );
+    expect(status(t, 'support')).toEqual(['COMPLETE', '120.5', null]);
+    expect(status(t, 'rail')).toEqual(['ALL_NA', null, null]);
+  });
+  it('a sum outside Decimal(20,6) is OVERFLOW with no number; a PARTIAL subtotal outside it is not shown', () => {
+    const t = foremanTotals(
+      ['B', 'C'],
+      [
+        rep('B', 1, { x: '99999999999999', y: '99999999999999' }),
+        rep('C', 1, { x: '1', y: 'unknown' }),
+      ],
+      ['x', 'y'],
+    );
+    expect(status(t, 'x')).toEqual(['OVERFLOW', null, null]);
+    expect(status(t, 'y')).toEqual(['PARTIAL', null, '99999999999999']);
+    const big = foremanTotals(
+      ['B', 'C', 'D'],
+      [
+        rep('B', 1, { x: '99999999999999' }),
+        rep('C', 1, { x: '99999999999999' }),
+      ],
+      ['x'],
+    );
+    expect(status(big, 'x')).toEqual(['PARTIAL', null, null]);
+  });
+  it('an empty expected crew set is never COMPLETE nor ALL_NA', () => {
+    expect(status(foremanTotals([], [], ['x']), 'x')).toEqual([
+      'PARTIAL',
+      null,
+      null,
     ]);
-    expect(t).toEqual({ support: '305' });
+  });
+  it('the latest revision of each crew counts, by n (not by array order)', () => {
+    const t = foremanTotals(
+      ['B', 'C'],
+      [
+        rep('B', 2, { support: '265' }),
+        rep('B', 1, { support: '260', rail: '180' }),
+        rep('C', 1, { support: '40', rail: '0' }),
+      ],
+      ['support', 'rail'],
+    );
+    expect(status(t, 'support')).toEqual(['COMPLETE', '305', null]);
+    // B's second revision left rail out: omitted now, not the superseded 180.
+    expect(status(t, 'rail')).toEqual(['PARTIAL', null, '0']);
+  });
+  it('a report outside the expected set is never dropped: a number from it makes the item PARTIAL', () => {
+    const t = foremanTotals(
+      ['B'],
+      [rep('B', 1, { x: '5', y: '5' }), rep('Z', 1, { x: '7', y: 'na' })],
+      ['x', 'y'],
+    );
+    expect(status(t, 'x')).toEqual(['PARTIAL', null, '5']);
+    expect(t['x']!.crews['Z']).toEqual({
+      status: 'VALUE',
+      qty: '7',
+      expected: false,
+    });
+    expect(status(t, 'y')).toEqual(['COMPLETE', '5', null]);
+  });
+  it('items named only by a report are listed after the given ones; a stored non-number is UNKNOWN', () => {
+    const t = foremanTotals(
+      ['B'],
+      [rep('B', 1, { zz: '1O', aa: '2' })],
+      ['support'],
+    );
+    expect(Object.keys(t)).toEqual(['support', 'aa', 'zz']);
+    expect(t['zz']!.crews['B']!.status).toBe('UNKNOWN');
+  });
+  it('a basis is the same only when the roster version, crew set and revisions all match', () => {
+    const b: ForemanBasis = {
+      rosterVersion: 4,
+      expectedCrews: ['B', 'C'],
+      revisions: [
+        { crewId: 'B', n: 2 },
+        { crewId: 'C', n: null },
+      ],
+    };
+    expect(
+      sameForemanBasis(b, {
+        rosterVersion: 4,
+        expectedCrews: ['C', 'B'],
+        revisions: [
+          { crewId: 'C', n: null },
+          { crewId: 'B', n: 2 },
+        ],
+      }),
+    ).toBe(true);
+    expect(sameForemanBasis(b, { ...b, rosterVersion: 5 })).toBe(false);
+    expect(sameForemanBasis(b, { ...b, expectedCrews: ['B'] })).toBe(false);
+    expect(sameForemanBasis(b, { ...b, expectedCrews: ['B', 'C', 'C'] })).toBe(
+      false,
+    );
+    expect(
+      sameForemanBasis(b, {
+        ...b,
+        revisions: [
+          { crewId: 'B', n: 2 },
+          { crewId: 'C', n: 1 },
+        ],
+      }),
+    ).toBe(false);
+  });
+  it('a foreman writes for the site today or yesterday only, by the site calendar', () => {
+    // 23:30 UTC on 30 Sep is 1 Oct 01:30 in Belgrade (UTC+2).
+    const at = new Date('2026-09-30T23:30:00Z');
+    expect(siteDate(at, 'Europe/Belgrade')).toBe('2026-10-01');
+    expect(foremanDateAllowed('2026-10-01', at, 'Europe/Belgrade')).toBe('ok');
+    expect(foremanDateAllowed('2026-09-30', at, 'Europe/Belgrade')).toBe('ok');
+    expect(foremanDateAllowed('2026-09-29', at, 'Europe/Belgrade')).toBe(
+      'tooOld',
+    );
+    expect(foremanDateAllowed('2026-10-02', at, 'Europe/Belgrade')).toBe(
+      'future',
+    );
   });
 });
 
