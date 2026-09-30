@@ -30,6 +30,7 @@ const photo = (
   deviceCapturedAt: null,
   file: { takenLocal: null, takenAt: null, gps: null },
   location: 'none',
+  coordinates: 'exact',
   hasThumbnail: true,
   receivedAt: '2026-10-01T08:00:00.000Z',
   uploadedByPersonId: 'TEST-person',
@@ -530,6 +531,38 @@ describe('photo session', () => {
     expect(s.photos?.map((p) => p.id)).toEqual(['u']);
     expect(s.unlinked).toBe(0);
     expect(s.photographed()).toEqual(new Set(['a']));
+  });
+
+  it('the photo card counts only a complete list: after an upload whose refresh reads fail, the photos are shown but not counted', async () => {
+    const f = fake([photo('x', 0)]);
+    const s = session(f.api);
+    expect(s.counts).toBeNull(); // nothing read yet
+    await s.load();
+    expect(s.counts).toEqual({ total: 1, noLink: 1 });
+    f.manualReads(true);
+    await s.addAlbum([file()], null);
+    await settle();
+    f.set([
+      photo('x', 0),
+      photo('u', 0),
+      photo('y', 1, { type: 'item', id: 'a' }),
+    ]);
+    f.uploads[0]!.settle(stored(f.uploads[0]!.upload, 'u'));
+    await settle();
+    for (let i = 0; i < 3; i++) {
+      f.reads[i]?.settle(new ApiError('NETWORK', 0));
+      await settle();
+    }
+    // Known: x and the upload. Not the day's total (y exists): no "Photos 2" / "2 unlinked".
+    expect(s.photos?.map((p) => p.id)).toEqual(['x', 'u']);
+    expect(s.counts).toBeNull();
+    expect(s.unlinked).toBeNull();
+    // A complete list read after the upload lands: counted again.
+    const again = s.retry();
+    await settle();
+    f.reads.at(-1)!.settle();
+    expect(await again).toBe('ok');
+    expect(s.counts).toEqual({ total: 3, noLink: 2 });
   });
 
   it('a failed list load is reported with a retry that reads again; counts stay unknown', async () => {

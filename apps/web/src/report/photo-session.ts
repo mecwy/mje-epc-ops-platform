@@ -199,6 +199,19 @@ export class PhotoSession {
   get unlinked(): number | null {
     return this.current ? this.listUnlinked : null;
   }
+  /**
+   * What the photo card and rows count: all photos of the day and those without a link. Null
+   * while the list is not complete (none read yet, or no read after the last write landed, e.g.
+   * the reads after an upload failed): the photos known then are shown, never counted.
+   */
+  get counts(): { total: number; noLink: number } | null {
+    const photos = this.current ? this.photos : null;
+    if (!photos) return null;
+    return {
+      total: photos.length,
+      noLink: photos.filter((p) => !p.link).length,
+    };
+  }
 
   find(id: string) {
     return this.photos?.find((p) => p.id === id) ?? null;

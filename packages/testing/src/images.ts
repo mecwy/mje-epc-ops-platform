@@ -24,13 +24,20 @@ export interface TestExif {
     lonRef: string;
     lon: [Rational, Rational, Rational];
   };
+  /** IFD0 Orientation (1–8), as a SHORT. */
+  orientation?: number;
   littleEndian?: boolean;
 }
 
 /** A TIFF/EXIF block (IFD0 → Exif IFD + GPS IFD) with only the requested tags. */
 export function exifTiff(e: TestExif): Buffer {
   const le = e.littleEndian ?? false;
-  type Entry = { tag: number; type: 2 | 4 | 5; count: number; data: Buffer };
+  type Entry = {
+    tag: number;
+    type: 2 | 3 | 4 | 5;
+    count: number;
+    data: Buffer;
+  };
   const ascii = (s: string) => Buffer.from(`${s}\0`, 'latin1');
   const rationals = (rs: Rational[]) => {
     const b = Buffer.alloc(rs.length * 8);
@@ -71,7 +78,10 @@ export function exifTiff(e: TestExif): Buffer {
   const ifdSize = (n: number) => 2 + n * 12 + 4;
   const ifd0: Entry[] = [];
   const ifd0At = 8;
-  const ifd0Count = (exif.length ? 1 : 0) + (gps.length ? 1 : 0);
+  const ifd0Count =
+    (e.orientation !== undefined ? 1 : 0) +
+    (exif.length ? 1 : 0) +
+    (gps.length ? 1 : 0);
   const exifAt = ifd0At + ifdSize(ifd0Count);
   const gpsAt = exifAt + (exif.length ? ifdSize(exif.length) : 0);
   let dataAt = gpsAt + (gps.length ? ifdSize(gps.length) : 0);
@@ -80,6 +90,11 @@ export function exifTiff(e: TestExif): Buffer {
     u32(d, at, 0);
     ifd0.push({ tag, type: 4, count: 1, data: d });
   };
+  if (e.orientation !== undefined) {
+    const d = Buffer.alloc(2);
+    u16(d, e.orientation, 0);
+    ifd0.push({ tag: 0x0112, type: 3, count: 1, data: d });
+  }
   if (exif.length) pointer(0x8769, exifAt);
   if (gps.length) pointer(0x8825, gpsAt);
   const tail: Buffer[] = [];
