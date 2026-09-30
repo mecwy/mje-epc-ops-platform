@@ -1101,8 +1101,25 @@ try {
 
   // ---------- OD20: a reader sees whether a photo has a position, not where ----------
   // The TEST positions (fix 44.800000/20.400000, file GPS 44.800000/20.410000) never reach a reader.
-  const noCoordinates = (label, body) =>
-    assert.ok(!/44\.8|20\.4/.test(JSON.stringify(body)), label);
+  // Look for the coordinate values themselves (numbers, or numeric strings), not a text match:
+  // an ISO timestamp whose seconds read 44.8xx or 20.4xx would otherwise match by chance.
+  const TEST_COORDINATES = [44.8, 20.4, 20.41];
+  const isTestCoordinate = (v) => {
+    const n =
+      typeof v === 'number'
+        ? v
+        : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v)
+          ? Number(v)
+          : NaN;
+    return TEST_COORDINATES.some((c) => Math.abs(n - c) < 1e-9);
+  };
+  const coordinatesIn = (value) =>
+    Array.isArray(value)
+      ? value.some(coordinatesIn)
+      : value && typeof value === 'object'
+        ? Object.values(value).some(coordinatesIn)
+        : isTestCoordinate(value);
+  const noCoordinates = (label, body) => assert.ok(!coordinatesIn(body), label);
   const execRev1 = await expectStatus(
     call(`/revision?projectId=${projectA}&businessDate=${D1}&n=1`, exec),
     200,

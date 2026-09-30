@@ -15,7 +15,7 @@
     "lint": "eslint apps packages scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test scripts/publication-policy.test.mjs scripts/cloud-migrate.test.mjs scripts/i18n-scan.test.mjs scripts/local-db.test.mjs scripts/cloud-bootstrap.test.mjs scripts/entra-mapping.test.mjs && vitest run --passWithNoTests",
+    "test": "node --test scripts/publication-policy.test.mjs scripts/cloud-migrate.test.mjs scripts/i18n-scan.test.mjs scripts/local-db.test.mjs scripts/cloud-bootstrap.test.mjs scripts/cloud-add-member.test.mjs scripts/entra-mapping.test.mjs && vitest run --passWithNoTests",
     "test:integration": "node --env-file=.env scripts/integration.mjs",
     "schema:validate": "prisma validate",
     "schema:format": "prisma format",
@@ -30,7 +30,8 @@
     "check:web-bundle": "node scripts/check-web-bundle.mjs",
     "test:issues": "node --env-file=.env scripts/issue-integration.mjs",
     "test:photos": "node --env-file=.env scripts/photo-integration.mjs",
-    "test:field": "node --env-file=.env scripts/field-integration.mjs"
+    "test:field": "node --env-file=.env scripts/field-integration.mjs",
+    "test:add-member": "node --env-file=.env scripts/add-member-integration.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",

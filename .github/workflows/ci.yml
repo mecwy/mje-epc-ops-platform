@@ -34,5 +34,6 @@ jobs:
       - run: pnpm test:issues
       - run: pnpm test:photos
       - run: pnpm test:field
+      - run: pnpm test:add-member
       - if: always()
         run: docker compose down
