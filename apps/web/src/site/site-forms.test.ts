@@ -325,3 +325,153 @@ describe('#37 round 3 finding 3: an unresolved confirmation shows its own code, 
     expect(sent).toEqual(['111111', '111111']);
   });
 });
+
+/**
+ * A persistently mounted page re-renders only when told (useSessions). Model it: render once,
+ * then re-render on every notification and nothing else. `latest()` is what the mounted page
+ * shows; no unrelated render is ever forced.
+ */
+function mounted(s: SiteSessions, render: () => string) {
+  let html = render();
+  let renders = 0;
+  s.subscribe(() => {
+    html = render();
+    renders++;
+  });
+  return { latest: () => html, renders: () => renders };
+}
+const sheet = (s: SiteSessions, device: FieldDeviceDto) =>
+  renderToString(
+    createElement(
+      I18nProvider,
+      null,
+      createElement(ActionSheet, {
+        action: { kind: 'confirm', device },
+        commands: s.devices,
+        onClose: () => {},
+      }),
+    ),
+  );
+
+describe('#37 round 4: a mounted editor gives way to the owned payload before a recovery read', () => {
+  it('field settings: refused with failed rereads, then a save while the recovery read is held → no inputs, 5 days shown', async () => {
+    const sv = server(at(1, 7));
+    const s = new SiteSessions(sv.api as never, P);
+    await s.settings.load();
+    sv.failReads(true);
+    sv.otherPm(11);
+    await edit(s, sv.api, 4); // refused; its rereads fail
+    const page = mounted(s, () => settingsCard(mount(s, sv.api)));
+    expect(page.latest()).toContain('<input');
+    sv.failReads(false);
+    sv.holdReads(true);
+    const save = edit(s, sv.api, 5);
+    await tick();
+    expect(sv.readHolds.length).toBe(1); // the recovery read is held
+    expect(page.renders()).toBeGreaterThan(0);
+    expect(page.latest()).not.toContain('<input');
+    expect(page.latest()).toContain('>5<');
+    sv.holdReads(false);
+    while (sv.readHolds.length) sv.readHolds.shift()!();
+    await save;
+    expect(sv.log.every((l) => l.startsWith('N1:'))).toBe(true);
+  });
+
+  it('site location: refused with failed rereads, then a save while the recovery read is held → no inputs, radius 300 shown', async () => {
+    const sv = server(at(1, 7));
+    let refuse = true;
+    const sent: number[] = [];
+    const api = {
+      ...sv.api,
+      setSiteReference: async (c: { radiusM: number }) => {
+        sent.push(c.radiusM);
+        if (refuse) throw new ApiError('VERSION_CONFLICT', 409);
+        return { n: 2 };
+      },
+    };
+    const s = new SiteSessions(api as never, P);
+    await s.site.load();
+    const value = (radiusM: number) => ({
+      lat: '1.000000',
+      lon: '1.000000',
+      radiusM,
+    });
+    sv.failReads(true);
+    await saveSiteReference(s.siteSave, api, P, s.site.data!, value(200));
+    const page = mounted(s, () => mount(s, api));
+    expect(page.latest()).toContain('<input');
+    sv.failReads(false);
+    sv.holdReads(true);
+    refuse = false;
+    const save = saveSiteReference(
+      s.siteSave,
+      api,
+      P,
+      s.site.data!,
+      value(300),
+    );
+    await tick();
+    expect(sv.readHolds.length).toBe(1);
+    const site = page.latest().slice(0, page.latest().lastIndexOf('<section'));
+    expect(site).not.toContain('<input');
+    expect(site).toContain('>300<');
+    sv.holdReads(false);
+    while (sv.readHolds.length) sv.readHolds.shift()!();
+    await save;
+    expect(sent).toEqual([200, 300]);
+  });
+
+  it('confirm sheet reopened after a refusal: a confirm while the recovery read is held → no code input, 111111 shown', async () => {
+    const device: FieldDeviceDto = {
+      id: 'A',
+      personId: 'pA',
+      displayName: 'TEST A',
+      state: 'PENDING',
+      effectiveState: 'PENDING',
+      endReason: null,
+      version: 1,
+      createdAt: '2026-10-01T08:00:00.000Z',
+      confirmedAt: null,
+      confirmedBy: null,
+      lastSeenAt: '2026-10-01T08:00:00.000Z',
+      expiresAt: '2027-03-30T08:00:00.000Z',
+      memberUntil: null,
+    };
+    let readsFail = false;
+    let hold = false;
+    const holds: (() => void)[] = [];
+    const sent: string[] = [];
+    const api = {
+      entryCode: async () => ({ code: null, createdAt: null }),
+      fieldSettings: async () => at(1, 7),
+      devices: async () => {
+        if (hold) await new Promise<void>((r) => holds.push(r));
+        if (readsFail) throw new ApiError('NETWORK', 0);
+        return [device];
+      },
+      confirmDevice: async (c: { code: string }) => {
+        sent.push(c.code);
+        if (sent.length === 1)
+          throw new ApiError('CONFIRMATION_CODE_WRONG', 400);
+        return { ...device, state: 'ACTIVE', effectiveState: 'ACTIVE' };
+      },
+    };
+    const s = new SiteSessions(api as never, P);
+    await s.devices.session.load();
+    readsFail = true;
+    await s.devices.run({ kind: 'confirm', device, code: '999999' }); // refused
+    const page = mounted(s, () => sheet(s, device));
+    expect(page.latest()).toContain('<input');
+    readsFail = false;
+    hold = true;
+    const run = s.devices.run({ kind: 'confirm', device, code: '111111' });
+    await tick();
+    expect(holds.length).toBe(1);
+    expect(page.latest()).not.toContain('<input');
+    expect(page.latest()).toContain('>111111<');
+    hold = false;
+    while (holds.length) holds.shift()!();
+    await run;
+    expect(sent).toEqual(['999999', '111111']);
+  });
+});

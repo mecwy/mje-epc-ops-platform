@@ -57,6 +57,7 @@
   "apps/web/src/field/flow.test.ts",
   "apps/web/src/field/flow.ts",
   "apps/web/src/field/main.tsx",
+  "apps/web/src/field/owned-commands.test.ts",
   "apps/web/src/field/owned-commands.ts",
   "apps/web/src/field/release.test.ts",
   "apps/web/src/field/release.ts",
