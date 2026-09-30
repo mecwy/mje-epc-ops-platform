@@ -29,6 +29,8 @@
   "apps/api/src/photo-blobs.ts",
   "apps/api/src/photo.controller.ts",
   "apps/api/src/report.controller.ts",
+  "apps/api/src/trust-proxy.test.ts",
+  "apps/api/src/trust-proxy.ts",
   "apps/api/tsconfig.json",
   "apps/web/index.html",
   "apps/web/package.json",
