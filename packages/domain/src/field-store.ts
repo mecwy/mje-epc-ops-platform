@@ -264,6 +264,11 @@ export class FieldStore {
           [d.orgId, d.personId, d.projectId],
         );
         const crew = await this.crewNow(client, d, 'MEMBER', at);
+        // U1: the selfie is offered only while the project's latest setting enables it.
+        const selfie = await client.query<{ selfieEnabled: boolean }>(
+          `SELECT "selfieEnabled" FROM "ProjectFieldSetting" WHERE "orgId"=$1 AND "projectId"=$2 ORDER BY n DESC LIMIT 1`,
+          [d.orgId, d.projectId],
+        );
         const foremanOf =
           d.state === 'CONFIRMED'
             ? await this.crewNow(client, d, 'FOREMAN', at)
@@ -305,6 +310,7 @@ export class FieldStore {
           },
           person: { id: d.personId, displayName: i.displayName },
           project: { id: d.projectId, name: i.name, timezone: i.timezone },
+          settings: { selfieEnabled: selfie.rows[0]?.selfieEnabled ?? false },
           crew,
           foreman,
         };

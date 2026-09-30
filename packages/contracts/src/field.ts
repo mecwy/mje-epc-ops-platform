@@ -128,6 +128,8 @@ export interface FieldMeDto {
   device: FieldDeviceSelfDto;
   person: { id: string; displayName: string };
   project: { id: string; name: string; timezone: string };
+  /** What the device page needs to offer (A6d): the optional selfie only when enabled (U1). */
+  settings: { selfieEnabled: boolean };
   crew: { id: string; name: string } | null;
   /** Present for a confirmed device whose person is FOREMAN of a crew now. */
   foreman: {

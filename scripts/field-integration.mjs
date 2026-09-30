@@ -3841,13 +3841,21 @@ try {
   step('selfie: staged, attached, feature off, ownership');
   {
     const jpeg = (tag) => testJpeg({ tag });
-    // U1: off by default.
+    // U1: off by default, and the device page is told so (A6d).
+    assert.equal(
+      (await expectStatus(me(dev.s1.token), 200)).settings.selfieEnabled,
+      false,
+    );
     await expectStatus(
       selfieUpload(dev.s1.token, jpeg('s1')),
       403,
       'FEATURE_OFF',
     );
     await enableSelfie(true, 2);
+    assert.equal(
+      (await expectStatus(me(dev.s1.token), 200)).settings.selfieEnabled,
+      true,
+    );
     // A file carrying GPS: its location metadata never reaches storage.
     const gpsJpeg = testJpeg({
       tag: 's1',
@@ -5297,7 +5305,7 @@ try {
   }
 
   console.log(
-    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. The field web UI is a later slice.`,
+    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
   );
   step('done');
 } catch (error) {
