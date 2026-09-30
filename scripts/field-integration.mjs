@@ -309,6 +309,9 @@ try {
   // TEST seam on the app's own pool: a gate can hold one request right after a chosen
   // statement, so another transaction can commit between two statements of that request.
   let queryGate = null;
+  // TEST seam: when armed, the COMMIT of a transaction that inserted a selfie row runs, and then
+  // the client reports an error, as if the acknowledgement was lost on the way back.
+  let commitFault = false;
   const realConnect = appPool.connect.bind(appPool);
   appPool.connect = async (...args) => {
     if (typeof args[0] === 'function') return realConnect(...args);
@@ -317,8 +320,18 @@ try {
       client.gated = true;
       const query = client.query.bind(client);
       client.query = async (...q) => {
-        const result = await query(...q);
         const text = typeof q[0] === 'string' ? q[0] : (q[0]?.text ?? '');
+        if (text.includes('INSERT INTO "FieldSelfie"'))
+          client.selfieInsert = true;
+        const result = await query(...q);
+        if (text === 'COMMIT' || text === 'ROLLBACK') {
+          const lose = commitFault && text === 'COMMIT' && client.selfieInsert;
+          client.selfieInsert = false;
+          if (lose) {
+            commitFault = false;
+            throw new Error('TEST lost COMMIT acknowledgement');
+          }
+        }
         const gate = queryGate;
         if (gate && gate.match(text)) {
           queryGate = null;
@@ -3625,6 +3638,57 @@ try {
     assert.equal(selfieBlobs.map.has(claimed.blobKey), false);
     pass(
       'selfie attach vs cleanup, controlled lock timing: an attach holding the selfie row lock before expiry makes a cleanup pass with an eligible cutoff skip the row at once (no wait), the attach then commits ATTACHED and a later pass ignores it; a claim committed first makes the later attach SELFIE_EXPIRED; a failed blob delete leaves the row DELETING and the next sweep deletes it',
+    );
+  }
+
+  step('selfie: lost COMMIT acknowledgement, cleanup without a blob store');
+  {
+    // The upload's COMMIT succeeds but its acknowledgement is lost: the image of the committed
+    // row must stay, and the request settles to the stored result under the key lock.
+    const key = randomUUID();
+    const bytes = testJpeg({ tag: 's3-lost-ack' });
+    commitFault = true;
+    let up;
+    try {
+      up = await expectStatus(
+        selfieUpload(dev.s3.token, bytes, 'image/jpeg', key),
+        200,
+      );
+    } finally {
+      commitFault = false;
+    }
+    const committed = await selfieRow(up.selfieId);
+    assert.equal(committed.state, 'STAGED');
+    assert.equal(selfieBlobs.map.has(committed.blobKey), true);
+    assert.deepEqual(
+      await expectStatus(
+        selfieUpload(dev.s3.token, bytes, 'image/jpeg', key),
+        200,
+      ),
+      up,
+    );
+    // Without a blob store nothing is claimed, deleted or audited; the row stays retryable.
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '70 minutes', "expiresAt" = clock_timestamp() - interval '10 minutes' WHERE id=$1`,
+      [up.selfieId],
+    );
+    const audited = () =>
+      count(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='FIELD_SELFIE_DELETED' AND "entityId"=$1`,
+        [up.selfieId],
+      );
+    await assert.rejects(
+      new CheckInStore(appPool, null, fieldOptions).cleanupSelfies(orgA),
+    );
+    assert.equal((await selfieRow(up.selfieId)).state, 'STAGED');
+    assert.equal(selfieBlobs.map.has(committed.blobKey), true);
+    assert.equal(await audited(), 0);
+    await checkInStore.cleanupSelfies(orgA);
+    assert.equal((await selfieRow(up.selfieId)).state, 'DELETED');
+    assert.equal(selfieBlobs.map.has(committed.blobKey), false);
+    assert.equal(await audited(), 1);
+    pass(
+      'selfie upload whose COMMIT acknowledgement is lost: the committed row keeps its image and the request settles to the stored result (a same-key retry returns it); a cleanup without a blob store refuses before claiming, so the row stays retryable, the image stays and nothing is audited, and a later sweep with the store deletes it',
     );
   }
 

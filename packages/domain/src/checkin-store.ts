@@ -367,6 +367,9 @@ export class CheckInStore {
       mediaType: file.mediaType,
     };
     let written: string | null = null;
+    // Set once `work` has returned: the COMMIT is then sent and its outcome may be unknown.
+    let committing = false;
+    let owner: { orgId: string; deviceId: string } | null = null;
     try {
       return await fieldTransaction(
         this.pool,
@@ -379,6 +382,7 @@ export class CheckInStore {
         },
         async (client, { device: d, at, now }) => {
           if (!this.blobs) throw new FieldError('FEATURE_OFF');
+          owner = { orgId: d.orgId, deviceId: d.id };
           const settings = await fieldSettings(client, d.orgId, d.projectId);
           if (!settings.selfieEnabled) throw new FieldError('FEATURE_OFF');
           const prior = await priorOutcome<SelfieUploadDto>(
@@ -410,8 +414,8 @@ export class CheckInStore {
               expiresAt.toISOString(),
             ],
           );
-          await this.blobs.put(key, stored, file.mediaType);
           written = key;
+          await this.blobs.put(key, stored, file.mediaType);
           const body: SelfieUploadDto = {
             selfieId: id,
             expiresAt: expiresAt.toISOString(),
@@ -425,15 +429,54 @@ export class CheckInStore {
             command,
             { status: 200, body },
           );
+          committing = true;
           return body;
         },
       );
     } catch (error) {
-      // The row did not commit: remove the image it would have named (best-effort).
-      if (written && this.blobs)
+      if (!written || !this.blobs || !owner) throw error;
+      if (!committing) {
+        // `work` failed before any COMMIT was sent: the row cannot have committed, so the
+        // image it would have named is removed (best-effort).
         await this.blobs.delete(written).catch(() => undefined);
+        throw error;
+      }
+      // The COMMIT was sent but its acknowledgement was lost: settle the outcome under the same
+      // key lock (so an in-flight original finishes first). Committed → the stored result;
+      // certainly not committed → remove the image; unknown → leave it (never delete an image
+      // a committed row may name).
+      const settled = await this.settleUpload(
+        owner,
+        route,
+        cmd.clientMutationId,
+        command,
+        written,
+      ).catch(() => undefined);
+      if (settled) return settled;
       throw error;
     }
+  }
+  private async settleUpload(
+    owner: { orgId: string; deviceId: string },
+    route: string,
+    key: string,
+    command: unknown,
+    blobKey: string,
+  ): Promise<SelfieUploadDto | null> {
+    const prior = await this.orgTx(owner.orgId, async (c) => {
+      await keyLock(c, owner.orgId, owner.deviceId, route, key);
+      return priorOutcome<SelfieUploadDto>(
+        c,
+        owner.orgId,
+        owner.deviceId,
+        route,
+        key,
+        command,
+      );
+    });
+    if (prior) return prior.body as SelfieUploadDto;
+    await this.blobs!.delete(blobKey);
+    return null;
   }
 
   // ---------- device: self and foreman-proxy check-in ----------
@@ -1254,6 +1297,9 @@ export class CheckInStore {
     orgId: string,
     options: { cutoff?: string; limit?: number } = {},
   ): Promise<{ claimed: number; deleted: number; failed: number }> {
+    // Without a blob store nothing can be deleted: claim nothing, record nothing.
+    if (!this.blobs) throw new Error('Selfie cleanup needs a blob store');
+    const blobs = this.blobs;
     const limit = options.limit ?? 100;
     const cutoff = options.cutoff ?? null;
     const claimed = await this.orgTx(orgId, async (c) => {
@@ -1280,7 +1326,7 @@ export class CheckInStore {
     let failed = 0;
     for (const row of pending.rows) {
       try {
-        if (this.blobs) await this.blobs.delete(row.blobKey);
+        await blobs.delete(row.blobKey);
       } catch {
         failed++;
         continue;
