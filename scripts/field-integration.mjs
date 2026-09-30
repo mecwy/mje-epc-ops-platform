@@ -5324,12 +5324,12 @@ try {
           'process output carried a secret, name or coordinate',
         );
     pass(
-      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} (ALREADY_CHECKED_IN adds only the existing time and kind) with no code, entry code, name or coordinate; challenge codes only in the challenge response and entry codes only in the rotation response; audit, event (including refused check-ins) and idempotency rows and all process output carry none of them, nor any coordinate`,
+      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} (ALREADY_CHECKED_IN adds only the existing time and kind) with no code, entry code, name or coordinate; challenge codes only in the challenge response and entry codes only in the PM rotation and read responses; audit, event (including refused check-ins) and idempotency rows and all process output carry none of them, nor any coordinate`,
     );
   }
 
   console.log(
-    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. The field web UI is a later slice.`,
+    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
   );
   step('done');
 } catch (error) {
