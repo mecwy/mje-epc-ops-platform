@@ -75,6 +75,8 @@ export function useDay(
     busy: e.lock !== null,
     /** The lock's post-write read failed: the day waits for `reloadLocked`. */
     stale: e.stale,
+    /** What the command under the lock did (the wording while `stale`). */
+    staleOutcome: e.staleOutcome,
     error: e.error,
     edit,
     flush,

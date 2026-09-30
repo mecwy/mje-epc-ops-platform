@@ -108,6 +108,7 @@ function harness(initial: ForemanDayView) {
         reloads++;
         return true;
       },
+      abandon: () => {},
     },
     () => {},
     () => `k${++n}`,

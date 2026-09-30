@@ -108,7 +108,12 @@ export interface AdoptContext {
    * Release the lock held by `owner`: read the day again and free it once that read has
    * landed. False while the read fails (the day stays locked and offers a reload).
    */
-  release: (owner: string) => Promise<boolean>;
+  release: (
+    owner: string,
+    outcome: 'saved' | 'refused' | 'unknown',
+  ) => Promise<boolean>;
+  /** Free the lock held by `owner` when nothing was sent under it. */
+  abandon: (owner: string) => void;
 }
 let adoptTokens = 0;
 export type AdoptResult =
@@ -189,7 +194,10 @@ export class AdoptFlow {
       ) {
         this.changed = { ...this.changed, [item]: shown.value };
         held = false;
-        await this.releaseDay();
+        // Nothing was sent: the day is freed as it is (it was just saved and read).
+        const t = this.token;
+        this.token = null;
+        if (t) this.ctx.abandon(t);
         return { kind: 'changed' };
       }
       // The version of the held session's own save (typed facts saved just now included).
@@ -198,7 +206,7 @@ export class AdoptFlow {
       return r;
     } catch (err) {
       // A throw anywhere after the hold (building the command, say) frees the day again.
-      if (held) await this.releaseDay();
+      if (held) await this.releaseDay('unknown');
       throw err;
     } finally {
       this.setPhase(null);
@@ -206,10 +214,10 @@ export class AdoptFlow {
   }
   /** The owner token of the day lock this flow holds, if any. */
   private token: string | null = null;
-  private async releaseDay() {
+  private async releaseDay(outcome: 'saved' | 'refused' | 'unknown') {
     const t = this.token;
     this.token = null;
-    if (t) await this.ctx.release(t);
+    if (t) await this.ctx.release(t, outcome);
   }
   private async send(
     item: string,
@@ -260,7 +268,8 @@ export class AdoptFlow {
     this.owned.discard();
     this.setPhase({ item: a.item, value: a.value });
     try {
-      await this.releaseDay();
+      // Given up: it may or may not have been applied.
+      await this.releaseDay('unknown');
     } finally {
       this.setPhase(null);
     }
@@ -278,7 +287,7 @@ export class AdoptFlow {
     this.setPhase({ item: a.item, value: a.value });
     if (r.kind === 'rejected' && r.code === 'FOREMAN_TOTAL_CHANGED')
       this.changed = { ...this.changed, [a.item]: a.value };
-    await this.releaseDay();
+    await this.releaseDay(r.kind === 'ok' ? 'saved' : 'refused');
     return r;
   }
 }

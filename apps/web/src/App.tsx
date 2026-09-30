@@ -26,6 +26,7 @@ import { ReportBody, ReportView } from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
+import { DayRecovery } from './report/DayRecovery.js';
 import { useIssues } from './report/useIssues.js';
 import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
@@ -612,6 +613,8 @@ function Workspace({
         <PhotoHost env={photoEnv}>
           {nav}
           <div className="content">
+            {/* The Fill and Check views too: a locked day's recovery is never hidden. */}
+            <DayRecovery h={h} />
             {task === 'fill' ? (
               <FillPage
                 h={h}
@@ -713,19 +716,7 @@ function Workspace({
             </button>
           </header>
           <main className={`page view-${view}`}>
-            {h.stale && (
-              // A change was saved but the day could not be read again: editing waits for it.
-              <div className="banner warn" role="alert">
-                {t('dayRereadFailed')}{' '}
-                <button
-                  type="button"
-                  className="textbtn"
-                  onClick={() => void h.reloadLocked()}
-                >
-                  {t('pm_reload')}
-                </button>
-              </div>
-            )}
+            <DayRecovery h={h} />
             {!canWrite && (
               // Write access went away while a PM attempt was owned: its Retry / Give up stay.
               <PmOwnedBar

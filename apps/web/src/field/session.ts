@@ -1,4 +1,5 @@
 import { ApiError } from '../api.js';
+import { ReadFence } from '../read-fence.js';
 
 /**
  * Outcomes that are not a decision about the command: the request may or may not have
@@ -63,12 +64,8 @@ export class FieldSession<D> {
   errorUncertain = false;
   pending: (Command<unknown> & { reread: boolean; uncertain: boolean }) | null =
     null;
-  private reads = 0;
-  /** Ticket of the newest response applied (success or failure). */
-  private applied = 0;
-  /** Ticket of the newest successful read applied. */
-  private dataAt = 0;
-  private writtenAt = 0;
+  /** Read tickets, applied vs superseded, freshness after a write (the shared fence). */
+  private readonly fence = new ReadFence();
   private queue: Promise<unknown> = Promise.resolve();
   /** The code by which this device ended, latched for the life of this session. */
   private endedCode: string | null = null;
@@ -84,19 +81,18 @@ export class FieldSession<D> {
       this.notify();
       return false;
     }
-    const ticket = ++this.reads;
+    const ticket = this.fence.begin();
     try {
       const d = await this.read();
       // Nothing read after the device ended (by an earlier or overlapping read) is applied.
-      if (this.endedCode || ticket <= this.applied) return false;
-      this.applied = ticket;
-      this.dataAt = ticket;
+      if (this.endedCode || this.fence.settle(ticket, true) !== 'applied')
+        return false;
       this.data = d;
       this.readError = null;
       return true;
     } catch (e) {
-      if (this.endedCode || ticket <= this.applied) return false;
-      this.applied = ticket;
+      if (this.endedCode || this.fence.settle(ticket, false) !== 'applied')
+        return false;
       const code = e instanceof ApiError ? e.code : 'REQUEST_FAILED';
       this.readError = code;
       if (ENDED.has(code)) {
@@ -112,9 +108,8 @@ export class FieldSession<D> {
 
   /** True once a read started after the last write has been applied (bounded rereads). */
   private async fresh(): Promise<boolean> {
-    for (let i = 0; i < 3 && this.dataAt <= this.writtenAt; i++)
-      await this.load();
-    return this.dataAt > this.writtenAt;
+    for (let i = 0; i < 3 && !this.fence.fresh; i++) await this.load();
+    return this.fence.fresh;
   }
 
   /**
@@ -122,7 +117,7 @@ export class FieldSession<D> {
    * as the newest reading, so no older response still in flight can bring the device back.
    */
   end(code: string) {
-    this.applied = ++this.reads;
+    this.fence.supersedeAll();
     this.endedCode ??= code;
     this.readError = this.endedCode;
     this.notify();
@@ -214,7 +209,7 @@ export class FieldSession<D> {
       const value = await c.send();
       this.pending = null;
       if (reread) {
-        this.writtenAt = this.reads;
+        this.fence.wrote();
         if (!(await this.fresh())) this.error = 'STALE';
       }
       return { kind: 'ok', value };
@@ -238,7 +233,7 @@ export class FieldSession<D> {
       }
       if (reread) {
         // A refusal may mean the view is old (a conflict): the next command waits for a reread.
-        this.writtenAt = this.reads;
+        this.fence.wrote();
         await this.fresh();
       }
       return { kind: 'rejected', code, error: e, uncertain: pending.uncertain };

@@ -93,15 +93,20 @@ export function dayServer() {
   const readPlan: ApiError[] = [];
   const adoptLog: ForemanAdoptCommand[] = [];
   const commands: string[] = [];
+  /** Answers for the next day commands (no-work, submit): a refusal or a lost answer. */
+  const commandPlan: (ApiError | 'lost')[] = [];
   let reads = 0;
   const command =
     (name: string) =>
     async (c: { projectId: string; expectedVersion: number }) => {
       commands.push(name);
+      const planned = commandPlan.shift();
+      if (planned instanceof ApiError) throw planned;
       const d = at(c.projectId);
       if (c.expectedVersion !== d.version)
         throw new ApiError('VERSION_CONFLICT', 409);
       d.version++;
+      if (planned === 'lost') throw new ApiError('NETWORK', 0);
       return { version: d.version } as never;
     };
   const api = {
@@ -159,7 +164,16 @@ export function dayServer() {
     readPlan,
     adoptLog,
     commands,
+    commandPlan,
     reads: () => reads,
+    /** Another person saves the day meanwhile (its version moves on). */
+    otherSave: (p = P) => {
+      at(p).version++;
+    },
+    /** Let the oldest held read answer (reads are held while `read.hold`). */
+    answerOldestRead: () => read.waiting.shift()?.(),
+    /** Let the newest held read answer. */
+    answerNewestRead: () => read.waiting.pop()?.(),
     facts: (p = P) => at(p).facts,
     version: (p = P) => at(p).version,
   };

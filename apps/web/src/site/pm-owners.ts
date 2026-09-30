@@ -1,5 +1,5 @@
 import type { ForemanDayView, ReportApi } from '../api.js';
-import type { DayStore } from '../report/day-store.js';
+import type { CommandOutcome, DayStore } from '../report/day-store.js';
 import { AdoptFlow } from '../report/foreman-adopt.js';
 import { SiteSessions } from './site-sessions.js';
 
@@ -13,8 +13,17 @@ export interface DayBinding {
   current: (
     businessDate: string,
   ) => { foreman: ForemanDayView | null; version: number } | null;
-  /** Release `owner`'s lock after a landed read (DayStore.release). */
-  release: (businessDate: string, owner: string) => Promise<boolean>;
+  /**
+   * Release `owner`'s lock after its command: freed once a read started after it is applied
+   * (DayStore.release); `outcome` words the page while that read fails.
+   */
+  release: (
+    businessDate: string,
+    owner: string,
+    outcome: CommandOutcome,
+  ) => Promise<boolean>;
+  /** Free `owner`'s lock when nothing was sent under it (DayStore.abandon). */
+  abandon: (businessDate: string, owner: string) => void;
 }
 
 /**
@@ -31,8 +40,10 @@ export function pmDayBinding(store: DayStore, projectId: string): DayBinding {
         ? { foreman: e.day.foreman ?? null, version: e.session.version }
         : null;
     },
-    release: (date, owner) =>
-      store.release(store.entry(projectId, date), owner),
+    release: (date, owner, outcome) =>
+      store.release(store.entry(projectId, date), owner, outcome),
+    abandon: (date, owner) =>
+      store.abandon(store.entry(projectId, date), owner),
   };
 }
 
@@ -70,8 +81,10 @@ export class PmOwners {
             this.day?.hold(businessDate, owner) ??
             Promise.resolve({ outcome: 'failed', version: 0 }),
           current: () => this.day?.current(businessDate) ?? null,
-          release: (owner) =>
-            this.day?.release(businessDate, owner) ?? Promise.resolve(false),
+          release: (owner, outcome) =>
+            this.day?.release(businessDate, owner, outcome) ??
+            Promise.resolve(false),
+          abandon: (owner) => this.day?.abandon(businessDate, owner),
         },
         () => this.site.changed(),
         this.newKey,

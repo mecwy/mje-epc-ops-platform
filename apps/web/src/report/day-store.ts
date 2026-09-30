@@ -6,6 +6,8 @@ import {
   type ReportContent,
 } from '../api.js';
 import { DraftSession, type FlushOutcome } from './draft.js';
+import { ReadFence } from '../read-fence.js';
+import { UNSETTLED } from '../field/session.js';
 import { setFact } from './model.js';
 import { restoreDecision, type DraftStash } from '../signin.js';
 
@@ -44,6 +46,11 @@ export function reconcileDraft(
 }
 
 export type ActionOutcome = FlushOutcome | 'busy';
+/**
+ * What a command under the lock did, as known: 'saved' only for a confirmed success;
+ * 'refused' for a definite refusal; 'unknown' when no answer (or a throw) left it open.
+ */
+export type CommandOutcome = 'saved' | 'refused' | 'unknown';
 export class ActionAborted extends Error {
   constructor(public readonly outcome: ActionOutcome) {
     super(outcome);
@@ -56,8 +63,8 @@ export interface DayEntry {
   day: DayView | null;
   frozen: ReportContent | null;
   error: string | null;
-  /** Only the newest read of a day may be applied. */
-  reads: number;
+  /** The day's read fence (the shared one): applied vs superseded, freshness, barrier. */
+  fence: ReadFence;
   /**
    * The day's one mutation lock (AGENTS.md, C63): the owner token of the command holding it
    * (a submission, a correction, no-work, a foreman adoption), or null. Edits and autosave
@@ -67,6 +74,8 @@ export interface DayEntry {
   lock: string | null;
   /** The lock's post-write read failed: the day stays locked until a read lands (Reload). */
   stale: boolean;
+  /** What the command under the lock did, for the page's wording while `stale`. */
+  staleOutcome: CommandOutcome;
 }
 
 export const AUTOSAVE_MS = 700;
@@ -119,9 +128,10 @@ export class DayStore {
         day: null,
         frozen: null,
         error: null,
-        reads: 0,
+        fence: new ReadFence(),
         lock: null,
         stale: false,
+        staleOutcome: 'unknown',
       };
       this.entries.set(k, e);
     }
@@ -132,12 +142,17 @@ export class DayStore {
   }
 
   /**
-   * Read the day from the server; `replace` only after a conflict or a finished command.
-   * Resolves true once a read has landed (this one, or a newer one that superseded it).
+   * Read the day from the server; `replace` only after a conflict or a finished command. The
+   * shared fence decides: 'applied' (this response is now the day), 'superseded' (a newer
+   * response was applied, or local edits were accepted after a barrier since this read
+   * started: nothing changes), or 'failed'.
    */
-  async read(e: DayEntry, replace: boolean): Promise<boolean> {
+  async read(
+    e: DayEntry,
+    replace: boolean,
+  ): Promise<'applied' | 'superseded' | 'failed'> {
     const s = e.session;
-    const ticket = ++e.reads;
+    const ticket = e.fence.begin();
     const startedAt = s.editGeneration;
     try {
       const d = await this.api.day(s.projectId, s.businessDate);
@@ -151,8 +166,13 @@ export class DayStore {
               )
             ).snapshot
           : null;
-      if (ticket !== e.reads) return true;
-      if (!replace && d.version < s.version) return true; // older than what we already saved
+      if (
+        !e.fence.current(ticket) ||
+        !e.fence.mayOverwrite(ticket, s.editGeneration) ||
+        (!replace && d.version < s.version) // older than what we already saved
+      )
+        return 'superseded';
+      e.fence.settle(ticket, true);
       if (replace) s.reset(d.version, d.facts);
       else s.adopt(d, startedAt);
       e.day = d;
@@ -166,11 +186,11 @@ export class DayStore {
           () => this.hooks.conflict(),
           (o) => void this.settleAfter(e, o),
         );
-      return true;
+      return 'applied';
     } catch (err) {
-      if (ticket === e.reads)
+      if (e.fence.settle(ticket, false) === 'applied')
         e.error = err instanceof ApiError ? err.code : 'REQUEST_FAILED';
-      return false;
+      return 'failed';
     } finally {
       this.notify();
     }
@@ -193,41 +213,60 @@ export class DayStore {
     this.notify();
     return true;
   }
-  /** Free the lock without a read: only when nothing was written under it. */
-  private unlock(e: DayEntry, owner: string) {
+  /**
+   * Free the lock without a read: only by its owner, and only when nothing was written under
+   * it. From here on, reads started earlier may not overwrite what is typed (the barrier).
+   */
+  abandon(e: DayEntry, owner: string) {
     if (e.lock !== owner) return;
     e.session.release();
+    e.fence.barrier(e.session.editGeneration);
     e.lock = null;
     e.stale = false;
     this.notify();
   }
-  /**
-   * Release after a write: only by the lock's owner, and only once a fresh read of the day has
-   * landed. If the read fails the day stays locked (`stale`) until `reloadLocked` lands one.
-   */
-  async release(e: DayEntry, owner: string): Promise<boolean> {
+  /** Free the lock once a read started after the write has been applied (the fence). */
+  private async freeWhenFresh(e: DayEntry, owner: string): Promise<boolean> {
     if (e.lock !== owner) return false;
-    const landed = await this.read(e, true);
-    if (e.lock !== owner) return false;
-    if (!landed) {
+    if (!e.fence.fresh) {
       e.stale = true;
       this.notify();
       return false;
     }
-    this.unlock(e, owner);
+    this.abandon(e, owner);
     return true;
   }
-  /** The Reload of a day locked after a failed post-write read. */
+  /**
+   * Release after a command: only by the lock's owner, and only once a read started after the
+   * command has been applied. A superseded or failed read never frees it: the day stays locked
+   * (`stale`, worded by `outcome`) until `reloadLocked` lands one.
+   */
+  async release(
+    e: DayEntry,
+    owner: string,
+    outcome: CommandOutcome = 'unknown',
+  ): Promise<boolean> {
+    if (e.lock !== owner) return false;
+    e.fence.wrote();
+    e.staleOutcome = outcome;
+    await this.read(e, true);
+    return this.freeWhenFresh(e, owner);
+  }
+  /** The Refresh of a day locked after a failed post-write read. */
   async reloadLocked(e: DayEntry): Promise<boolean> {
-    return e.lock !== null && e.stale
-      ? this.release(e, e.lock)
-      : this.read(e, false);
+    const owner = e.lock;
+    if (owner === null || !e.stale)
+      return (await this.read(e, false)) !== 'failed';
+    await this.read(e, true);
+    return this.freeWhenFresh(e, owner);
   }
 
   /**
    * Hold the day for a command owned outside it (a foreman adoption): acquire, then save what
    * was typed. On 'ok' the day stays locked for `owner` and `version` is the version of that
-   * save (the held session's own), which the command must send. Anything else frees it.
+   * save (the held session's own), which the command must send. If the save conflicted, the
+   * day stays locked until its replacement read is applied (then it is free); any other
+   * failure frees it (nothing was written).
    */
   async hold(
     e: DayEntry,
@@ -237,14 +276,15 @@ export class DayStore {
       return { outcome: 'busy', version: e.session.version };
     try {
       const outcome = await e.session.hold();
-      if (outcome !== 'ok') {
-        this.unlock(e, owner);
-        await this.settleAfter(e, outcome);
-      }
+      if (outcome === 'conflict') {
+        // Refused: the day changed elsewhere. Edits stay refused until its read is applied.
+        this.hooks.conflict();
+        await this.release(e, owner, 'refused');
+      } else if (outcome !== 'ok') this.abandon(e, owner);
       return { outcome, version: e.session.version };
     } catch (err) {
       // A throw before anything was sent under the lock (the pre-save itself threw).
-      this.unlock(e, owner);
+      this.abandon(e, owner);
       throw err;
     }
   }
@@ -257,9 +297,13 @@ export class DayStore {
     const owner = ownerToken('act');
     const held = await this.hold(e, owner);
     if (held.outcome !== 'ok') throw new ActionAborted(held.outcome);
+    let outcome: CommandOutcome = 'unknown';
     try {
       await fn(held.version);
+      outcome = 'saved';
     } catch (err) {
+      if (err instanceof ApiError && !UNSETTLED.has(err.code))
+        outcome = 'refused';
       if (
         err instanceof ApiError &&
         (err.code === 'VERSION_CONFLICT' || err.code === 'LOCKED')
@@ -267,7 +311,7 @@ export class DayStore {
         this.hooks.conflict();
       throw err;
     } finally {
-      await this.release(e, owner);
+      await this.release(e, owner, outcome);
     }
   }
 

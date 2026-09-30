@@ -126,6 +126,7 @@ describe('A6d-4 follows the rule: form state = the owned command payload', () =>
         hold: async () => ({ outcome: 'ok', version: 3 }),
         current: () => ({ foreman: current, version: 3 }),
         release: async () => true,
+        abandon: () => {},
       },
       () => {},
     );

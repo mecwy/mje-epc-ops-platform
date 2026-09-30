@@ -410,6 +410,18 @@ export const MESSAGES = {
     'Izmena je sačuvana, ali dan nije mogao ponovo da se učita. Izmene čekaju dok se ne učita.',
     'El cambio se guardó, pero el día no se pudo volver a leer. La edición espera hasta que se lea.',
   ],
+  dayRereadFailedRefused: [
+    '这次修改被拒绝，没有保存；这一天也没能重新读取。重新读取成功前不能编辑。',
+    'The change was refused and not saved, and the day could not be read again. Editing waits until it has been read.',
+    'Izmena je odbijena i nije sačuvana, a dan nije mogao ponovo da se učita. Izmene čekaju dok se ne učita.',
+    'El cambio fue rechazado y no se guardó, y el día no se pudo volver a leer. La edición espera hasta que se lea.',
+  ],
+  dayRereadFailedUnknown: [
+    '不确定这次修改是否已保存，这一天也没能重新读取。重新读取成功前不能编辑。',
+    'It is not known whether the change was saved, and the day could not be read again. Editing waits until it has been read.',
+    'Nije poznato da li je izmena sačuvana, a dan nije mogao ponovo da se učita. Izmene čekaju dok se ne učita.',
+    'No se sabe si el cambio se guardó, y el día no se pudo volver a leer. La edición espera hasta que se lea.',
+  ],
   demoCheckin: [
     '演示：工人签到',
     'Demo: worker check-in',
