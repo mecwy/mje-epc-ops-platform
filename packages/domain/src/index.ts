@@ -19,3 +19,5 @@ export {
   type FieldErrorCode,
 } from './field-kit.js';
 export * from './field-store.js';
+export * from './checkin-rules.js';
+export * from './checkin-store.js';

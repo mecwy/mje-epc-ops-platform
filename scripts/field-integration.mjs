@@ -1,4 +1,5 @@
-// Field roster, devices and entry (A6a) HTTP + database integration test. Synthetic TEST data
+// Field roster, devices and entry (A6a), worker check-in and staged selfie (A6b) HTTP + database
+// integration test. Synthetic TEST data
 // only (TEST names, generated tokens and codes; no coordinates). Runs against an isolated
 // database created for this run; the application connects with a low-privilege role (no
 // ownership, no RLS bypass) exactly as deployed. Concurrency cases line requests up on the
@@ -16,8 +17,12 @@ import {
   ReportStore,
   clearPreviousHash,
   recordActivity,
+  CheckInStore,
+  readFileClaims,
 } from '../packages/domain/dist/index.js';
+import { exifTiff, testJpeg } from '../packages/testing/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
+import { AzurePhotoBlobStore } from '../apps/api/dist/photo-blobs.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 
 const requireApi = createRequire(
@@ -74,7 +79,7 @@ const step = (name) => {
   currentStep = name;
 };
 const STEP_MS = 30_000;
-const WATCHDOG_MS = Number(process.env.FIELD_TEST_WATCHDOG_MS ?? 300_000);
+const WATCHDOG_MS = Number(process.env.FIELD_TEST_WATCHDOG_MS ?? 600_000);
 function withTimeout(promise, ms, label) {
   let timer;
   const expired = new Promise((_, reject) => {
@@ -260,8 +265,12 @@ try {
   for (let i = 1; i <= 8; i++) workersA.push(`w${i}`);
   for (let i = 1; i <= 40; i++) workersA.push(`o${i}`);
   workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1', 'c1', 'c2', 'c3');
+  // A6b check-in and selfie people.
+  workersA.push('kf', 'kf2', 'kx', 'kt', 'kl', 'km', 'kc1', 'kc2', 'kp');
+  for (let i = 1; i <= 8; i++) workersA.push(`k${i}`);
+  for (let i = 1; i <= 5; i++) workersA.push(`s${i}`);
   for (const k of workersA) await addPerson(k, orgA);
-  for (const k of ['pmB', 'wb']) await addPerson(k, orgB);
+  for (const k of ['pmB', 'wb', 'wb2']) await addPerson(k, orgB);
   const accounts = {};
   const objects = {};
   for (const [key, orgId, personKey] of [
@@ -339,12 +348,33 @@ try {
     housekeeping: true,
   };
   const fieldStore = new FieldStore(appPool, fieldOptions);
+  // TEST selfie blob store in memory; deletes can be made to fail. The Azure implementation's
+  // delete is checked against Azurite at the end of the A6b steps when it is configured.
+  const selfieBlobs = {
+    map: new Map(),
+    failDeletes: false,
+    async put(key, bytes, contentType) {
+      const prior = this.map.get(key);
+      if (prior && !prior.bytes.equals(Buffer.from(bytes)))
+        throw new Error('TEST blob key holds other bytes');
+      this.map.set(key, { bytes: Buffer.from(bytes), contentType });
+    },
+    async get(key) {
+      return this.map.get(key) ?? null;
+    },
+    async delete(key) {
+      if (this.failDeletes) throw new Error('TEST blob delete failure');
+      this.map.delete(key);
+    },
+  };
+  const checkInStore = new CheckInStore(appPool, selfieBlobs, fieldOptions);
   app = await createApp({
     auth,
     verifier,
     store: new AlphaStore(appPool),
     reportStore: new ReportStore(appPool),
     fieldStore,
+    checkInStore,
   });
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
@@ -394,6 +424,8 @@ try {
     'roster read is one snapshot',
     'challenge expiry, reuse, wrong version',
     'stale confirmation, revoke before confirm',
+    'selfie: attach vs cleanup',
+    'check-in: submission boundary under concurrency',
   ]);
   async function http(path, options) {
     const until = Date.now() + 10_000;
@@ -2575,6 +2607,1338 @@ try {
     );
   }
 
+  // ================= A6b: worker check-in and staged selfie =================
+  // Synthetic TEST coordinates around an invented site at -33.900000, -18.400000; every
+  // coordinate string sent is collected for the redaction scan at the end.
+  const KIP = '10.6.6.6';
+  const kpost = (path, token, body) => fpost(path, token, body, { ip: KIP });
+  const LON = '-18.400000';
+  const coords = ['-33.900000', LON];
+  const northOf = (m) => {
+    const s = (-33.9 + (m / 6_371_000) * (180 / Math.PI)).toFixed(6);
+    coords.push(s);
+    return s;
+  };
+  const clockNow = async () =>
+    new Date(
+      (await owner.query('SELECT clock_timestamp() AS t')).rows[0].t.getTime(),
+    );
+  const siteDay = async (d) =>
+    (
+      await owner.query(
+        `SELECT to_char(($1::timestamptz AT TIME ZONE 'Europe/Belgrade')::date, 'YYYY-MM-DD') AS d`,
+        [d.toISOString()],
+      )
+    ).rows[0].d;
+  const shiftDay = (date, n) =>
+    new Date(Date.parse(`${date}T00:00:00Z`) + n * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+  const MIN = 60_000,
+    HOUR = 60 * MIN;
+  /** A check-in body from the database clock: occurredAt = now + at, deviceSentAt = now + sent. */
+  async function tapBody(o = {}) {
+    const t = o.now ?? (await clockNow());
+    const occurredAt = new Date(t.getTime() + (o.at ?? -5_000));
+    const body = {
+      clientMutationId: o.key ?? randomUUID(),
+      businessDate: o.date ?? (await siteDay(occurredAt)),
+      occurredAt: occurredAt.toISOString(),
+      fix: {
+        lat: northOf(o.m ?? 200),
+        lon: LON,
+        accuracyM: o.acc ?? '10',
+        fixAt: new Date(
+          occurredAt.getTime() - (o.fixLag ?? 10_000),
+        ).toISOString(),
+      },
+      deviceSentAt: new Date(t.getTime() + (o.sent ?? 0)).toISOString(),
+    };
+    if (o.personId) body.personId = o.personId;
+    else body.stagedSelfieId = o.selfie ?? null;
+    return body;
+  }
+  const tap = async (token, o = {}) => {
+    const body = await tapBody(o);
+    const r = await kpost(
+      o.personId ? '/checkin/proxy' : '/checkin',
+      token,
+      body,
+    );
+    return { body, r };
+  };
+  const checkInRow = async (id) =>
+    (
+      await owner.query(
+        `SELECT c.*, c."businessDate"::text AS day, c.lat::text AS lat_t, c."actorLat"::text AS "actorLat_t" FROM "WorkerCheckIn" c WHERE id=$1`,
+        [id],
+      )
+    ).rows[0];
+  const refusals = async (deviceId) =>
+    (
+      await owner.query(
+        `SELECT "reasonCode", "distanceBucketM", "personId", to_jsonb(e)::text AS j FROM "FieldDeviceEvent" e
+        WHERE "deviceId"=$1 AND kind='CHECKIN_REFUSED' ORDER BY seq`,
+        [deviceId],
+      )
+    ).rows;
+  const K = {};
+  const kPeople = [
+    'kf',
+    'k1',
+    'k2',
+    'k3',
+    'k4',
+    'k5',
+    'k6',
+    'k7',
+    'k8',
+    'kt',
+    'kl',
+    'km',
+    'kc1',
+    'kc2',
+    'kp',
+    's1',
+    's2',
+    's3',
+    's4',
+    's5',
+  ];
+
+  step('check-in: site reference, geofence, accuracy, duplicates');
+  {
+    K.K1 = await crew(projectA, 'K1');
+    K.K2 = await crew(projectA, 'K2');
+    await expectStatus(
+      change([
+        open(K.K1, person.kf, 'FOREMAN'),
+        open(K.K2, person.kf2, 'FOREMAN'),
+        ...kPeople.map((k) => open(K.K1, person[k])),
+        open(K.K2, person.kf2),
+        open(K.K2, person.kx),
+      ]),
+      200,
+    );
+    // Membership cannot be backdated through the API; the TEST database moves these intervals
+    // back (10 days; kx only 2) so that past taps and day proxies have history to be judged by.
+    await travel(
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '10 days' WHERE "personId" = ANY($1::uuid[])`,
+      [[...kPeople, 'kf2'].map((k) => person[k])],
+    );
+    await travel(
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '2 days' WHERE "personId" = $1`,
+      [person.kx],
+    );
+    for (const k of [...kPeople.filter((k) => k !== 'kp'), 'kf2', 'kx'])
+      dev[k] = await onboard(person[k], { ip: KIP });
+    const pending = await bind(person.kp, { ip: KIP });
+    assert.equal(pending.status, 200);
+    dev.kp = { token: pending.token, id: pending.body.deviceId };
+
+    // No reference yet: refused and logged, never treated as distance 0.
+    let x = await tap(dev.k1.token);
+    await expectStatus(Promise.resolve(x.r), 409, 'SITE_NOT_CONFIGURED');
+    const ref = (over = {}) => ({
+      projectId: projectA,
+      clientMutationId: randomUUID(),
+      expectedN: 0,
+      lat: '-33.900000',
+      lon: LON,
+      radiusM: 500,
+      ...over,
+    });
+    assert.deepEqual(
+      await expectStatus(ppost('/site-reference', pm, ref()), 200),
+      { n: 1 },
+    );
+    await expectStatus(
+      ppost('/site-reference', pm, ref()),
+      409,
+      'VERSION_CONFLICT',
+    );
+    await expectStatus(
+      ppost('/site-reference', exec, ref({ expectedN: 1 })),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      ppost('/site-reference', pmB, ref({ expectedN: 1 })),
+      403,
+      'FORBIDDEN',
+    );
+    const settings = await expectStatus(
+      pget(`/settings?projectId=${projectA}`, pm),
+      200,
+    );
+    assert.deepEqual(settings.settings, {
+      n: 0,
+      selfieEnabled: false,
+      pmProxyDays: 7,
+    });
+    assert.equal(settings.siteReference.radiusM, 500);
+    await expectStatus(
+      pget(`/settings?projectId=${projectA}`, exec),
+      403,
+      'READ_ONLY',
+    );
+    // Outside by 1 m, then coarse accuracy inside: both refused and logged in 100 m buckets.
+    x = await tap(dev.k1.token, { m: 501 });
+    await expectStatus(Promise.resolve(x.r), 409, 'GEOFENCE_OUTSIDE');
+    x = await tap(dev.k1.token, { m: 250, acc: '100.01' });
+    await expectStatus(Promise.resolve(x.r), 409, 'LOCATION_TOO_COARSE');
+    const ev = await refusals(dev.k1.id);
+    assert.deepEqual(
+      ev.map((e) => [e.reasonCode, e.distanceBucketM, e.personId]),
+      [
+        ['SITE_NOT_CONFIGURED', null, person.k1],
+        ['GEOFENCE_OUTSIDE', 500, person.k1],
+        ['LOCATION_TOO_COARSE', 200, person.k1],
+      ],
+    );
+    for (const e of ev)
+      for (const c of coords)
+        assert.ok(!e.j.includes(c), 'event carried a coordinate');
+    // At the edge, inside by 1 m with 5 m accuracy: accepted and flagged NEAR_EDGE.
+    const edge = await tap(dev.k1.token, { m: 499, acc: '5' });
+    const ok = await expectStatus(Promise.resolve(edge.r), 200);
+    K.k1CheckIn = ok.checkInId;
+    assert.deepEqual(
+      [ok.kind, ok.flags, ok.timePrecision, ok.hasSelfie, ok.afterSubmission],
+      ['SELF', ['NEAR_EDGE'], 'EXACT', false, false],
+    );
+    const stored = await checkInRow(ok.checkInId);
+    assert.equal(stored.siteTimezone, 'Europe/Belgrade');
+    assert.equal(stored.day, edge.body.businessDate);
+    assert.equal(stored.occurredAt.toISOString(), edge.body.occurredAt);
+    assert.equal(stored.fixAt.toISOString(), edge.body.fix.fixAt);
+    assert.equal(stored.deviceSentAt.toISOString(), edge.body.deviceSentAt);
+    assert.ok(stored.recordedAt >= stored.receivedAt);
+    assert.equal(
+      stored.clockSkewMs,
+      stored.receivedAt.getTime() - stored.deviceSentAt.getTime(),
+    );
+    assert.equal(stored.lat_t, edge.body.fix.lat);
+    assert.deepEqual(
+      [stored.distanceM, stored.siteRefN, stored.actorLat, stored.crewId],
+      [499, 1, null, K.K1],
+    );
+    // A new key the same day: ALREADY_CHECKED_IN with only the existing time and kind.
+    x = await tap(dev.k1.token);
+    assert.equal(x.r.status, 409);
+    assert.deepEqual(x.r.body.existing, {
+      occurredAt: edge.body.occurredAt,
+      kind: 'SELF',
+    });
+    // The same key with a refreshed deviceSentAt (6 minutes of skew) replays; a changed event
+    // under the same key is refused.
+    const again = await expectStatus(
+      kpost('/checkin', dev.k1.token, {
+        ...edge.body,
+        deviceSentAt: new Date(
+          Date.parse(edge.body.deviceSentAt) + 6 * MIN,
+        ).toISOString(),
+      }),
+      200,
+    );
+    assert.deepEqual(again, ok);
+    await expectStatus(
+      kpost('/checkin', dev.k1.token, {
+        ...edge.body,
+        occurredAt: new Date(
+          Date.parse(edge.body.occurredAt) + 1,
+        ).toISOString(),
+      }),
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+    );
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "WorkerCheckIn" WHERE "personId"=$1`,
+        [person.k1],
+      ),
+      1,
+    );
+    x = await tap(dev.kp.token);
+    await expectStatus(Promise.resolve(x.r), 403, 'DEVICE_PENDING');
+    pass(
+      'check-in: without a site reference the tap is refused (SITE_NOT_CONFIGURED), never distance 0; the PM sets the reference (stale number VERSION_CONFLICT, reader READ_ONLY, other org FORBIDDEN); 501 m is GEOFENCE_OUTSIDE and accuracy 100.01 m LOCATION_TOO_COARSE, each logged with a 100 m bucket and no coordinates; 499 m ±5 m is accepted and flagged NEAR_EDGE; occurred, fix, device-sent, received and recorded times, site timezone and business day are stored apart; a new key is ALREADY_CHECKED_IN with only {occurredAt, kind}; the same key replays even with 6 min of skew; a changed event under the key is refused; a pending device is DEVICE_PENDING',
+    );
+  }
+
+  step('check-in: time admission');
+  {
+    const cases = [
+      [{ fixLag: -1_000 }, 'FIX_TIME_INVALID'], // a fix from after the tap
+      [{ fixLag: 2 * MIN + 10_000 }, 'FIX_TIME_INVALID'], // staler than 2 minutes
+      [{ at: 2_000 }, 'TIME_ORDER_INVALID'], // occurredAt after deviceSentAt
+      [{ at: 6 * MIN, sent: 6 * MIN + 1_000 }, 'DEVICE_CLOCK_SKEW'],
+      [{ at: -6 * MIN - 5_000, sent: -6 * MIN - 1_000 }, 'DEVICE_CLOCK_SKEW'],
+      [{ at: -25 * HOUR }, 'TOO_LATE'], // a first attempt 25 h after the tap
+    ];
+    for (const [o, code] of cases) {
+      const x = await tap(dev.k2.token, o);
+      await expectStatus(Promise.resolve(x.r), 409, code);
+    }
+    const today = await siteDay(await clockNow());
+    const mismatch = await tap(dev.k2.token, { date: shiftDay(today, -1) });
+    await expectStatus(
+      Promise.resolve(mismatch.r),
+      409,
+      'BUSINESS_DAY_MISMATCH',
+    );
+    const late = await tap(dev.k2.token, { at: -20 * MIN });
+    const body = await expectStatus(Promise.resolve(late.r), 200);
+    assert.deepEqual(body.flags, ['LATE']);
+    assert.deepEqual(
+      (await refusals(dev.k2.id)).map((e) => [e.reasonCode, e.distanceBucketM]),
+      [
+        ...cases.map(([, code]) => [code, null]),
+        ['BUSINESS_DAY_MISMATCH', null],
+      ],
+    );
+    pass(
+      'check-in time admission (first attempt): a future fix, a fix staler than 2 min, occurredAt after deviceSentAt, device clock skew of +6 and -6 min, a first attempt 25 h after the tap and a client business day that differs from the site-zone day are refused and logged; 20 min after the tap is accepted and flagged LATE',
+    );
+  }
+
+  step('check-in: retries beyond 5 min and 24 h');
+  {
+    // Accepted 2 s before the 24 h limit, then retried with the same key and event when a
+    // first attempt would be refused: after 24 h (TOO_LATE) and with 6 min of skew.
+    const now = await clockNow();
+    const first = await tapBody({ now, at: -(24 * HOUR - 2_000) });
+    const ok = await expectStatus(kpost('/checkin', dev.k3.token, first), 200);
+    assert.deepEqual(ok.flags, ['LATE']);
+    const after24h = new Date(Date.parse(first.occurredAt) + 24 * HOUR + MIN);
+    for (const deviceSentAt of [
+      after24h.toISOString(),
+      new Date(now.getTime() + 6 * MIN + 5_000).toISOString(),
+    ])
+      assert.deepEqual(
+        await expectStatus(
+          kpost('/checkin', dev.k3.token, { ...first, deviceSentAt }),
+          200,
+        ),
+        ok,
+      );
+    // The same event under a new key is a first attempt: refused at that age.
+    await expectStatus(
+      kpost('/checkin', dev.k3.token, {
+        ...first,
+        clientMutationId: randomUUID(),
+        deviceSentAt: after24h.toISOString(),
+      }),
+      409,
+      'TOO_LATE',
+    );
+    const row = await checkInRow(ok.checkInId);
+    assert.equal(row.deviceSentAt.toISOString(), first.deviceSentAt);
+    pass(
+      'retries: a check-in accepted just inside 24 h replays its stored result for the same key and event when retried beyond 24 h and with 6 min of skew (no time rule re-run; the committing attempt keeps its deviceSentAt); the same event under a new key is a first attempt and TOO_LATE',
+    );
+  }
+
+  step('check-in: local midnight');
+  {
+    const midnight = async () =>
+      (
+        await owner.query(
+          `SELECT (date_trunc('day', clock_timestamp() AT TIME ZONE 'Europe/Belgrade') AT TIME ZONE 'Europe/Belgrade') AS m, clock_timestamp() AS now`,
+        )
+      ).rows[0];
+    let { m, now } = await midnight();
+    // The tap after midnight must be in the past and the one before it inside 24 h: wait out
+    // the first 3 minutes after a midnight, or the last 2 before one (rare; at most ~5 min).
+    if (now - m < 3 * MIN)
+      await untilDb(new Date(m.getTime() + 3 * MIN).toISOString(), 4 * MIN);
+    else if (now - m > 23 * HOUR + 58 * MIN)
+      await untilDb(
+        new Date(m.getTime() + 24 * HOUR + 3 * MIN).toISOString(),
+        6 * MIN,
+      );
+    ({ m, now } = await midnight());
+    const D = await siteDay(now);
+    const before = await tapBody({ now, at: m - now - 30_000 });
+    const after = await tapBody({ now, at: m - now + 30_000 });
+    assert.equal(before.businessDate, shiftDay(D, -1));
+    assert.equal(after.businessDate, D);
+    const a = await expectStatus(kpost('/checkin', dev.k4.token, before), 200);
+    const b = await expectStatus(kpost('/checkin', dev.k4.token, after), 200);
+    assert.deepEqual(
+      [
+        (await checkInRow(a.checkInId)).day,
+        (await checkInRow(b.checkInId)).day,
+      ],
+      [shiftDay(D, -1), D],
+    );
+    await expectStatus(
+      kpost('/checkin', dev.k5.token, {
+        ...(await tapBody({ now, at: m - now + 30_000 })),
+        businessDate: shiftDay(D, -1),
+      }),
+      409,
+      'BUSINESS_DAY_MISMATCH',
+    );
+    pass(
+      'local midnight: taps 30 s before and after Belgrade midnight get the previous and the current business day (one each for the same person); a client date of the previous day for a tap after midnight is BUSINESS_DAY_MISMATCH (DST transitions: unit-tested, checkin-rules.test.ts)',
+    );
+  }
+
+  step('check-in: foreman proxy');
+  {
+    const x = await tap(dev.kf.token, { personId: person.k6, m: 120 });
+    const ok = await expectStatus(Promise.resolve(x.r), 200);
+    assert.equal(ok.kind, 'FOREMAN_PROXY');
+    const row = await checkInRow(ok.checkInId);
+    // The foreman's fix is the actor's location, never the worker's.
+    assert.deepEqual(
+      [
+        row.lat,
+        row.lon,
+        row.accuracyM,
+        row.distanceM,
+        row.actorLat_t,
+        row.actorDistanceM,
+      ],
+      [null, null, null, null, x.body.fix.lat, 120],
+    );
+    assert.deepEqual(
+      [row.deviceId, row.actorPersonId, row.personId, row.crewId],
+      [dev.kf.id, person.kf, person.k6, K.K1],
+    );
+    for (const [token, subject, status, code] of [
+      [dev.kf.token, person.kx, 403, 'PROXY_NOT_ALLOWED'], // another crew
+      [dev.k7.token, person.k8, 403, 'PROXY_NOT_ALLOWED'], // a worker device
+      [dev.kf.token, person.kf, 403, 'PROXY_NOT_ALLOWED'], // oneself
+      [dev.kf.token, person.wb, 404, 'NOT_FOUND'], // another org
+      [dev.kf.token, randomUUID(), 404, 'NOT_FOUND'], // nobody
+    ]) {
+      const r = await tap(token, { personId: subject });
+      await expectStatus(Promise.resolve(r.r), status, code);
+    }
+    // Off site: refused and logged under the foreman's device for the subject.
+    const off = await tap(dev.kf.token, { personId: person.k8, m: 640 });
+    await expectStatus(Promise.resolve(off.r), 409, 'GEOFENCE_OUTSIDE');
+    assert.deepEqual(
+      (await refusals(dev.kf.id)).map((e) => [
+        e.reasonCode,
+        e.distanceBucketM,
+        e.personId,
+      ]),
+      [['GEOFENCE_OUTSIDE', 600, person.k8]],
+    );
+    await expectStatus(
+      Promise.resolve((await tap(dev.kf2.token, { personId: person.kx })).r),
+      200,
+    );
+    pass(
+      "foreman proxy: the crew's foreman on site checks in a member (FOREMAN_PROXY; the foreman's fix kept as the actor's location, the worker's location empty); another crew's member, a proxy from a worker device and a self-proxy are PROXY_NOT_ALLOWED; another org's person and a nonexistent one the same NOT_FOUND; a foreman off site (640 m) is GEOFENCE_OUTSIDE, logged for the subject",
+    );
+  }
+
+  step('check-in: PM proxy');
+  {
+    const now = await clockNow();
+    const D = await siteDay(now);
+    const { rows } = await owner.query(
+      `SELECT (date_trunc('day', clock_timestamp() AT TIME ZONE 'Europe/Belgrade') AT TIME ZONE 'Europe/Belgrade') AS m`,
+    );
+    const m = rows[0].m;
+    const fixNow = (metres, acc = '10') => ({
+      lat: northOf(metres),
+      lon: LON,
+      accuracyM: acc,
+      fixAt: now.toISOString(),
+    });
+    const body = (over) => ({
+      projectId: projectA,
+      clientMutationId: randomUUID(),
+      personId: person.k8,
+      businessDate: D,
+      source: 'OBSERVED_ON_SITE',
+      reason: '',
+      ...over,
+    });
+    const proxy = (b, bearer = pm) => ppost('/checkins/proxy', bearer, b);
+    await expectStatus(proxy(body()), 409, 'REASON_REQUIRED');
+    const dayBody = body({ reason: 'TEST seen at the gate' });
+    const day = await expectStatus(proxy(dayBody), 200);
+    assert.deepEqual(
+      [day.kind, day.timePrecision, day.occurredAt, day.flags],
+      ['PM_PROXY', 'DAY', null, ['PROXY_LOCATION_UNAVAILABLE']],
+    );
+    assert.deepEqual(await expectStatus(proxy(dayBody), 200), day);
+    let row = await checkInRow(day.checkInId);
+    assert.deepEqual(
+      [
+        row.occurredAt,
+        row.crewAttribution,
+        row.crewId,
+        row.source,
+        row.actorAccountId,
+      ],
+      [null, 'ONLY_CREW_OF_DAY', K.K1, 'OBSERVED_ON_SITE', accounts.pm],
+    );
+    // Yesterday, exact time, from 5 km away: REMOTE_PROXY; the PM's fix is the actor's only.
+    const remote = await expectStatus(
+      proxy(
+        body({
+          personId: person.k7,
+          businessDate: shiftDay(D, -1),
+          occurredAt: new Date(m.getTime() - 2 * HOUR).toISOString(),
+          source: 'FOREMAN_REPORTED',
+          reason: 'TEST phoned in',
+          actorFix: fixNow(5000, '50'),
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual(
+      [remote.timePrecision, remote.flags],
+      ['EXACT', ['REMOTE_PROXY']],
+    );
+    row = await checkInRow(remote.checkInId);
+    assert.deepEqual(
+      [row.lat, row.lon, row.actorDistanceM > 4900],
+      [null, null, true],
+    );
+    // The 7-day window (configurable), a coarse fix, an inside fix without reason today.
+    await expectStatus(
+      proxy(
+        body({
+          personId: person.k7,
+          businessDate: shiftDay(D, -8),
+          reason: 'TEST',
+        }),
+      ),
+      409,
+      'TOO_LATE',
+    );
+    await expectStatus(
+      proxy(
+        body({
+          personId: person.k7,
+          businessDate: shiftDay(D, -7),
+          reason: 'TEST',
+        }),
+      ),
+      200,
+    );
+    const coarse = await expectStatus(
+      proxy(
+        body({
+          personId: person.k7,
+          businessDate: shiftDay(D, -2),
+          reason: 'TEST',
+          actorFix: fixNow(100, '150'),
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual(coarse.flags, ['PROXY_LOCATION_COARSE']);
+    const inside = await expectStatus(
+      proxy(body({ personId: person.k5, actorFix: fixNow(100) })),
+      200,
+    );
+    assert.deepEqual(inside.flags, []);
+    // No interval that day; transferred today (ambiguous crew); left the project today.
+    await expectStatus(
+      proxy(
+        body({
+          personId: person.kx,
+          businessDate: shiftDay(D, -5),
+          reason: 'TEST',
+        }),
+      ),
+      404,
+      'PERSON_NOT_ROSTERED',
+    );
+    await expectStatus(
+      change([close(assignment(person.kt)), open(K.K2, person.kt)]),
+      200,
+    );
+    const moved = await expectStatus(
+      proxy(body({ personId: person.kt, reason: 'TEST' })),
+      200,
+    );
+    row = await checkInRow(moved.checkInId);
+    assert.deepEqual([row.crewAttribution, row.crewId], ['UNKNOWN', null]);
+    await expectStatus(change([close(assignment(person.kl))]), 200);
+    const left = await expectStatus(
+      proxy(body({ personId: person.kl, reason: 'TEST' })),
+      200,
+    );
+    assert.equal(
+      (await checkInRow(left.checkInId)).crewAttribution,
+      'ONLY_CREW_OF_DAY',
+    );
+    for (const [b, status, code, bearer] of [
+      [
+        body({
+          personId: person.k6,
+          occurredAt: new Date(now.getTime() + MIN).toISOString(),
+          reason: 'T',
+        }),
+        409,
+        'TIME_ORDER_INVALID',
+      ],
+      [
+        body({
+          personId: person.k6,
+          businessDate: shiftDay(D, 1),
+          reason: 'T',
+        }),
+        409,
+        'TIME_ORDER_INVALID',
+      ],
+      [
+        body({
+          personId: person.k6,
+          actorFix: {
+            ...fixNow(10),
+            fixAt: new Date(now.getTime() - 3 * MIN).toISOString(),
+          },
+        }),
+        409,
+        'FIX_TIME_INVALID',
+      ],
+      [body({ personId: person.k6, reason: 'T' }), 403, 'READ_ONLY', exec],
+      [body({ personId: person.k6, reason: 'T' }), 403, 'FORBIDDEN', pm2],
+      [body({ personId: randomUUID(), reason: 'T' }), 404, 'NOT_FOUND'],
+      [body({ personId: person.wb, reason: 'T' }), 404, 'NOT_FOUND'],
+    ])
+      await expectStatus(proxy(b, bearer), status, code);
+    // The window is a project setting.
+    const set = (over) =>
+      ppost('/settings', pm, {
+        projectId: projectA,
+        clientMutationId: randomUUID(),
+        expectedN: 0,
+        selfieEnabled: false,
+        pmProxyDays: 3,
+        ...over,
+      });
+    await expectStatus(set(), 200);
+    await expectStatus(
+      proxy(
+        body({
+          personId: person.k6,
+          businessDate: shiftDay(D, -4),
+          reason: 'TEST',
+        }),
+      ),
+      409,
+      'TOO_LATE',
+    );
+    await expectStatus(set({ expectedN: 1, pmProxyDays: 7 }), 200);
+    const audits = await owner.query(
+      `SELECT concat_ws(' ', before::text, after::text, reason) AS t FROM "AuditLog" WHERE action='FIELD_PM_PROXY'`,
+    );
+    assert.equal(audits.rows.length, 7);
+    pass(
+      "PM proxy: without a time it is DAY precision (occurredAt null, never invented) and needs a reason when no in-fence fix exists; the replay returns the same result; a 5 km fix yesterday with an exact time is REMOTE_PROXY and stays the actor's location only; 8 days back is TOO_LATE, 7 days is allowed, and a 3-day project window refuses 4 days; a 150 m-accuracy fix is PROXY_LOCATION_COARSE; an inside fix today needs no reason; a day without a member interval is PERSON_NOT_ROSTERED, a person transferred today gets crewAttribution UNKNOWN, one who left today is still accepted; a future time or date, a stale PM fix, a reader, another project's PM, a nonexistent and another org's person are refused; every proxy is audited",
+    );
+  }
+
+  step('check-in: other project, other org, revoked device');
+  {
+    K.KM = await crew(projectA2, 'KM', pm2);
+    await expectStatus(change([open(K.KM, person.km)], projectA2, pm2), 200);
+    await travel(
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '1 day' WHERE "personId" = $1 AND "projectId" = $2`,
+      [person.km, projectA2],
+    );
+    await expectStatus(
+      ppost('/site-reference', pm2, {
+        projectId: projectA2,
+        clientMutationId: randomUUID(),
+        expectedN: 0,
+        lat: '-33.900000',
+        lon: LON,
+        radiusM: 800,
+      }),
+      200,
+    );
+    // Fresh entry codes: the throttling steps may have filled the old codes' bind buckets.
+    for (const [projectId, bearer] of [
+      [projectA2, pm2],
+      [projectB, pmB],
+    ]) {
+      entryCode[projectId] = (
+        await expectStatus(rotateEntry(projectId, bearer), 200)
+      ).code;
+      secret.entry.push(entryCode[projectId]);
+    }
+    dev.kmA2 = await onboard(person.km, {
+      ip: KIP,
+      code: entryCode[projectA2],
+      bearer: pm2,
+      projectId: projectA2,
+    });
+    const inA2 = await expectStatus(
+      Promise.resolve((await tap(dev.kmA2.token)).r),
+      200,
+    );
+    assert.deepEqual(inA2.flags, []);
+    const inA = await expectStatus(
+      Promise.resolve((await tap(dev.km.token)).r),
+      200,
+    );
+    assert.deepEqual(inA.flags, ['MULTI_PROJECT_DAY']);
+    // A device of another project or org names a person of project A: the same 404 as nobody.
+    K.KB = await crew(projectB, 'KB', pmB);
+    await expectStatus(
+      change(
+        [open(K.KB, person.wb2, 'FOREMAN'), open(K.KB, person.wb2)],
+        projectB,
+        pmB,
+      ),
+      200,
+    );
+    dev.wb2 = await onboard(person.wb2, {
+      ip: KIP,
+      code: entryCode[projectB],
+      bearer: pmB,
+      projectId: projectB,
+    });
+    for (const token of [dev.kmA2.token, dev.wb2.token])
+      await expectStatus(
+        Promise.resolve((await tap(token, { personId: person.k2 })).r),
+        404,
+        'NOT_FOUND',
+      );
+    // Revoked: the next tap is DEVICE_ENDED; an unknown token FIELD_AUTH_REQUIRED.
+    await expectStatus(
+      pmDevice('revoke', dev.k8.id, (await row(dev.k8.id)).version),
+      200,
+    );
+    await expectStatus(
+      Promise.resolve((await tap(dev.k8.token)).r),
+      401,
+      'DEVICE_ENDED',
+    );
+    await expectStatus(
+      Promise.resolve(
+        (await tap('fd1.' + randomBytes(32).toString('base64url'))).r,
+      ),
+      401,
+      'FIELD_AUTH_REQUIRED',
+    );
+    pass(
+      "check-in scope: the project is always the device's; the same person checked in on another project the same day is accepted and flagged MULTI_PROJECT_DAY; a device of another project or another org naming a person of project A gets the same NOT_FOUND as a nonexistent person; a revoked device is DEVICE_ENDED and an unknown token FIELD_AUTH_REQUIRED",
+    );
+  }
+
+  // ---------- staged selfie ----------
+  const selfieUpload = async (
+    token,
+    bytes,
+    type = 'image/jpeg',
+    key = randomUUID(),
+  ) => {
+    const form = new FormData();
+    form.set('clientMutationId', key);
+    form.set('selfie', new Blob([bytes], { type }), 'selfie');
+    const r = await withTimeout(
+      fetch(`${base}/api/field/selfie`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Idempotency-Key': key,
+          'X-Forwarded-For': KIP,
+        },
+        body: form,
+        signal: AbortSignal.timeout(STEP_MS),
+      }),
+      STEP_MS,
+      'selfie upload',
+    );
+    const text = await r.text();
+    responses.push({ path: '/api/field/selfie', status: r.status, text });
+    return { status: r.status, body: text ? JSON.parse(text) : null, key };
+  };
+  const selfieRow = async (id) =>
+    (await owner.query(`SELECT * FROM "FieldSelfie" WHERE id=$1`, [id]))
+      .rows[0];
+  const pmSelfie = async (checkInId) => {
+    const r = await fetch(
+      `${base}/api/report/field/checkins/selfie?projectId=${projectA}&checkInId=${checkInId}`,
+      {
+        headers: { Authorization: `Bearer ${pm}` },
+        signal: AbortSignal.timeout(STEP_MS),
+      },
+    );
+    const bytes = Buffer.from(await r.arrayBuffer());
+    responses.push({
+      path: '/api/report/field/checkins/selfie',
+      status: r.status,
+      text: r.status === 200 ? '' : bytes.toString(),
+    });
+    return { status: r.status, bytes };
+  };
+  const enableSelfie = (on, expectedN) =>
+    expectStatus(
+      ppost('/settings', pm, {
+        projectId: projectA,
+        clientMutationId: randomUUID(),
+        expectedN,
+        selfieEnabled: on,
+        pmProxyDays: 7,
+      }),
+      200,
+    );
+  const S = {};
+
+  step('selfie: staged, attached, feature off, ownership');
+  {
+    const jpeg = (tag) => testJpeg({ tag });
+    // U1: off by default.
+    await expectStatus(
+      selfieUpload(dev.s1.token, jpeg('s1')),
+      403,
+      'FEATURE_OFF',
+    );
+    await enableSelfie(true, 2);
+    // A file carrying GPS: its location metadata never reaches storage.
+    const gpsJpeg = testJpeg({
+      tag: 's1',
+      exif: exifTiff({
+        gps: {
+          latRef: 'S',
+          lat: [
+            [33, 1],
+            [54, 1],
+            [0, 1],
+          ],
+          lonRef: 'W',
+          lon: [
+            [18, 1],
+            [24, 1],
+            [0, 1],
+          ],
+        },
+      }),
+    });
+    const up = await expectStatus(selfieUpload(dev.s1.token, gpsJpeg), 200);
+    S.s1 = up.selfieId;
+    // Idempotent on key + sha256: the same file replays, another file under the key is refused.
+    const key = randomUUID();
+    const a1 = await expectStatus(
+      selfieUpload(dev.s2.token, jpeg('s2'), 'image/jpeg', key),
+      200,
+    );
+    assert.deepEqual(
+      await expectStatus(
+        selfieUpload(dev.s2.token, jpeg('s2'), 'image/jpeg', key),
+        200,
+      ),
+      a1,
+    );
+    await expectStatus(
+      selfieUpload(dev.s2.token, jpeg('s2-other'), 'image/jpeg', key),
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+    );
+    S.s2 = a1.selfieId;
+    await expectStatus(
+      selfieUpload(dev.s1.token, Buffer.from('TEST not an image')),
+      415,
+      'UNSUPPORTED_MEDIA',
+    );
+    const big = Buffer.alloc(3 * 1024 * 1024 + 1);
+    jpeg('big').copy(big);
+    await expectStatus(
+      selfieUpload(dev.s1.token, big),
+      413,
+      'SELFIE_TOO_LARGE',
+    );
+    await expectStatus(
+      selfieUpload(dev.kp.token, jpeg('kp')),
+      403,
+      'DEVICE_PENDING',
+    );
+    // Someone else's staged selfie, another project's device: the same NOT_FOUND.
+    await expectStatus(
+      Promise.resolve((await tap(dev.s2.token, { selfie: S.s1 })).r),
+      404,
+      'NOT_FOUND',
+    );
+    await expectStatus(
+      Promise.resolve(
+        (await tap(dev.kmA2.token, { selfie: S.s1, key: randomUUID() })).r,
+      ),
+      404,
+      'NOT_FOUND',
+    );
+    // Own selfie: attached inside the check-in.
+    const ok = await expectStatus(
+      Promise.resolve((await tap(dev.s1.token, { selfie: S.s1 })).r),
+      200,
+    );
+    assert.equal(ok.hasSelfie, true);
+    S.s1CheckIn = ok.checkInId;
+    const s = await selfieRow(S.s1);
+    assert.deepEqual(
+      [s.state, s.blobKey],
+      ['ATTACHED', `selfie/${orgA}/${S.s1}`],
+    );
+    const read = await pmSelfie(ok.checkInId);
+    assert.equal(read.status, 200);
+    assert.notDeepEqual(read.bytes, gpsJpeg);
+    assert.equal(readFileClaims(read.bytes).gps, null);
+    assert.equal(readFileClaims(gpsJpeg).gps !== null, true);
+    // A reader never gets it; a check-in without a selfie has none to read.
+    const denied = await fetch(
+      `${base}/api/report/field/checkins/selfie?projectId=${projectA}&checkInId=${ok.checkInId}`,
+      { headers: { Authorization: `Bearer ${exec}` } },
+    );
+    assert.equal(denied.status, 403);
+    assert.equal((await pmSelfie(K.k1CheckIn)).status, 404);
+    assert.equal((await pmSelfie(randomUUID())).status, 404);
+    // Selfie switched off again: a staged selfie cannot be attached.
+    await enableSelfie(false, 3);
+    await expectStatus(
+      Promise.resolve((await tap(dev.s2.token, { selfie: S.s2 })).r),
+      403,
+      'FEATURE_OFF',
+    );
+    assert.equal((await selfieRow(S.s2)).state, 'STAGED');
+    await enableSelfie(true, 4);
+    pass(
+      "selfie: off by default (FEATURE_OFF); once enabled a confirmed device stages one (location metadata removed before storage), idempotent on key + sha256 (another file under the key is refused); a non-image is 415, over 3 MB 413, a pending device DEVICE_PENDING; another person's staged selfie and another project's device get NOT_FOUND; the own selfie is attached inside the check-in and readable by the PM only (reader 403); with the switch off again a staged selfie cannot be attached",
+    );
+  }
+
+  step('selfie: expiry grace and cleanup');
+  {
+    // E ≤ t < E + 5 min: attach refused, cleanup does not claim; t ≥ E + 5 min: claimed, deleted.
+    const up = await expectStatus(
+      selfieUpload(dev.s3.token, testJpeg({ tag: 's3' })),
+      200,
+    );
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '61 minutes', "expiresAt" = clock_timestamp() - interval '1 minute' WHERE id=$1`,
+      [up.selfieId],
+    );
+    await expectStatus(
+      Promise.resolve((await tap(dev.s3.token, { selfie: up.selfieId })).r),
+      409,
+      'SELFIE_EXPIRED',
+    );
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "WorkerCheckIn" WHERE "personId"=$1`,
+        [person.s3],
+      ),
+      0,
+    );
+    await checkInStore.cleanupSelfies(orgA);
+    assert.equal((await selfieRow(up.selfieId)).state, 'STAGED');
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '67 minutes', "expiresAt" = clock_timestamp() - interval '6 minutes' WHERE id=$1`,
+      [up.selfieId],
+    );
+    const swept = await checkInStore.cleanupSelfies(orgA);
+    assert.ok(swept.claimed >= 1 && swept.failed === 0);
+    const s = await selfieRow(up.selfieId);
+    assert.deepEqual(
+      [s.state, s.claimedAt !== null, s.deletedAt !== null],
+      ['DELETED', true, true],
+    );
+    assert.equal(selfieBlobs.map.has(s.blobKey), false);
+    await expectStatus(
+      Promise.resolve((await tap(dev.s3.token, { selfie: up.selfieId })).r),
+      409,
+      'SELFIE_EXPIRED',
+    );
+    pass(
+      'selfie grace: one minute after expiry the attach is refused (SELFIE_EXPIRED, nothing written) and cleanup does not claim it; six minutes after, cleanup claims it (DELETING, committed), deletes the blob and marks it DELETED; it is never attachable again',
+    );
+  }
+
+  step('selfie: attach vs cleanup');
+  {
+    // (a) The attach holds the row lock before E: a cleanup pass whose cutoff makes the row
+    // eligible skips it at once (SKIP LOCKED); after the attach commits, a pass ignores it.
+    const up = await expectStatus(
+      selfieUpload(dev.s4.token, testJpeg({ tag: 's4' })),
+      200,
+    );
+    const future = new Date(Date.parse(up.expiresAt) + 6 * MIN).toISOString();
+    let hit, release;
+    const reached = new Promise((resolve) => (hit = resolve));
+    const opened = new Promise((resolve) => (release = resolve));
+    const openGate = async () => {
+      held.delete(openGate);
+      release();
+    };
+    held.add(openGate);
+    queryGate = {
+      match: (text) =>
+        text.includes('FROM "FieldSelfie"') && text.includes('FOR UPDATE'),
+      hit,
+      opened,
+    };
+    const attaching = tap(dev.s4.token, { selfie: up.selfieId });
+    await withTimeout(reached, STEP_MS, 'attach reaches the selfie row lock');
+    const started = Date.now();
+    const pass1 = await withTimeout(
+      checkInStore.cleanupSelfies(orgA, { cutoff: future }),
+      5_000,
+      'cleanup must not wait for the attach',
+    );
+    assert.ok(Date.now() - started < 5_000);
+    assert.equal((await selfieRow(up.selfieId)).state, 'STAGED');
+    await openGate();
+    const ok = await expectStatus(Promise.resolve((await attaching).r), 200);
+    assert.equal(ok.hasSelfie, true);
+    await checkInStore.cleanupSelfies(orgA, { cutoff: future });
+    assert.equal((await selfieRow(up.selfieId)).state, 'ATTACHED');
+    // It may claim other eligible rows (an older staged selfie), never the locked one.
+    assert.ok(pass1.failed === 0);
+    // (b) A committed claim first: the later attach sees DELETING and is refused. A failed blob
+    // delete leaves the row DELETING (not attachable), and the next sweep finishes it.
+    const up5 = await expectStatus(
+      selfieUpload(dev.s5.token, testJpeg({ tag: 's5' })),
+      200,
+    );
+    selfieBlobs.failDeletes = true;
+    try {
+      const r = await checkInStore.cleanupSelfies(orgA, {
+        cutoff: new Date(Date.parse(up5.expiresAt) + 6 * MIN).toISOString(),
+      });
+      assert.ok(r.claimed >= 1 && r.failed >= 1);
+    } finally {
+      selfieBlobs.failDeletes = false;
+    }
+    const claimed = await selfieRow(up5.selfieId);
+    assert.equal(claimed.state, 'DELETING');
+    assert.equal(selfieBlobs.map.has(claimed.blobKey), true);
+    await expectStatus(
+      Promise.resolve((await tap(dev.s5.token, { selfie: up5.selfieId })).r),
+      409,
+      'SELFIE_EXPIRED',
+    );
+    await checkInStore.cleanupSelfies(orgA);
+    assert.equal((await selfieRow(up5.selfieId)).state, 'DELETED');
+    assert.equal(selfieBlobs.map.has(claimed.blobKey), false);
+    pass(
+      'selfie attach vs cleanup, controlled lock timing: an attach holding the selfie row lock before expiry makes a cleanup pass with an eligible cutoff skip the row at once (no wait), the attach then commits ATTACHED and a later pass ignores it; a claim committed first makes the later attach SELFIE_EXPIRED; a failed blob delete leaves the row DELETING and the next sweep deletes it',
+    );
+  }
+
+  step('check-in: submission boundary under concurrency');
+  const R = {};
+  {
+    const now = await clockNow();
+    R.D = await siteDay(now);
+    const dayKey = `${orgA}:day:${projectA}:${R.D}`;
+    const submit = () =>
+      http('/api/report/submit', {
+        method: 'POST',
+        bearer: pm,
+        body: {
+          projectId: projectA,
+          businessDate: R.D,
+          expectedVersion: 0,
+          clientMutationId: randomUUID(),
+        },
+      });
+    // c1 waits on the day lock first, the submission second; c1 commits before the snapshot.
+    // The submission is then held right after reading the day's sequence (holding the day
+    // lock) while c2 queues behind it; c2 must land after the boundary.
+    const unlock = await holdAdvisory(dayKey);
+    const c1 = tap(dev.kc1.token);
+    await advisoryWaiters(dayKey, 1);
+    let hit, release;
+    const reached = new Promise((resolve) => (hit = resolve));
+    const opened = new Promise((resolve) => (release = resolve));
+    const openGate = async () => {
+      held.delete(openGate);
+      release();
+    };
+    held.add(openGate);
+    queryGate = {
+      match: (text) => text.includes('SELECT "lastSeq" FROM "FieldDay"'),
+      hit,
+      opened,
+    };
+    const submitting = submit();
+    await advisoryWaiters(dayKey, 2);
+    await unlock();
+    const first = await expectStatus(Promise.resolve((await c1).r), 200);
+    assert.equal(first.afterSubmission, false);
+    await withTimeout(reached, STEP_MS, 'submission reads the field sequence');
+    const c2 = tap(dev.kc2.token);
+    await advisoryWaiters(dayKey, 1);
+    await openGate();
+    const submitted = await expectStatus(submitting, 200);
+    const second = await expectStatus(Promise.resolve((await c2).r), 200);
+    assert.equal(second.afterSubmission, true);
+    const rev = await expectStatus(
+      http(
+        `/api/report/revision?projectId=${projectA}&businessDate=${R.D}&n=${submitted.revisionNumber}`,
+        {
+          method: 'GET',
+          bearer: pm,
+        },
+      ),
+      200,
+    );
+    R.snapshot = rev.snapshot;
+    const field = R.snapshot.field;
+    assert.ok(field, 'the revision froze the field part');
+    const frozen = field.checkIns.map((c) => c.checkInId);
+    assert.ok(frozen.includes(first.checkInId));
+    assert.ok(!frozen.includes(second.checkInId));
+    assert.ok(frozen.includes(S.s1CheckIn));
+    assert.equal(
+      field.checkIns.find((c) => c.checkInId === S.s1CheckIn).hasSelfie,
+      true,
+    );
+    const list = await expectStatus(
+      pget(`/checkins?projectId=${projectA}&businessDate=${R.D}`, pm),
+      200,
+    );
+    assert.equal(list.seqBoundary, field.seqBoundary);
+    const byId = Object.fromEntries(list.checkIns.map((c) => [c.checkInId, c]));
+    assert.equal(byId[first.checkInId].afterSubmission, false);
+    assert.equal(byId[second.checkInId].afterSubmission, true);
+    assert.equal(byId[second.checkInId].daySeq > field.seqBoundary, true);
+    // Headcount is never filled from check-ins; the frozen summary only counts claims.
+    assert.equal(field.summary.present, field.checkIns.length);
+    assert.equal(JSON.stringify(R.snapshot.facts.people ?? {}), '{}');
+    R.revisionNumber = submitted.revisionNumber;
+    R.rev = rev;
+    pass(
+      "submission boundary: a check-in queued on the day lock before the submission is frozen in the revision; one queued while the submission holds the day lock (after it read the sequence) gets a higher sequence and is afterSubmission, not in the revision; the list shows the boundary and each row's side; the attached selfie is frozen as hasSelfie; report facts (people) are untouched",
+    );
+  }
+
+  step('check-in: after submission, void, snapshot, reader, retention');
+  {
+    const reread = async () =>
+      expectStatus(
+        http(
+          `/api/report/revision?projectId=${projectA}&businessDate=${R.D}&n=${R.revisionNumber}`,
+          {
+            method: 'GET',
+            bearer: pm,
+          },
+        ),
+        200,
+      );
+    // Void: PM only, reason required, once; takes the next sequence (after the boundary).
+    const voidBody = (checkInId, over = {}) => ({
+      projectId: projectA,
+      clientMutationId: randomUUID(),
+      checkInId,
+      reason: 'TEST wrong person',
+      ...over,
+    });
+    await expectStatus(
+      ppost('/checkins/void', pm, voidBody(S.s1CheckIn, { reason: '' })),
+      400,
+      'INVALID_INPUT',
+    );
+    await expectStatus(
+      ppost('/checkins/void', exec, voidBody(S.s1CheckIn)),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      ppost('/checkins/void', pm2, voidBody(S.s1CheckIn)),
+      403,
+      'FORBIDDEN',
+    );
+    await expectStatus(
+      ppost('/checkins/void', pm, voidBody(randomUUID())),
+      404,
+      'NOT_FOUND',
+    );
+    const v = voidBody(S.s1CheckIn);
+    const voided = await expectStatus(ppost('/checkins/void', pm, v), 200);
+    assert.equal(voided.afterSubmission, true);
+    assert.deepEqual(
+      await expectStatus(ppost('/checkins/void', pm, v), 200),
+      voided,
+    );
+    await expectStatus(
+      ppost('/checkins/void', pm, voidBody(S.s1CheckIn)),
+      409,
+      'VERSION_CONFLICT',
+    );
+    // The voided check-in's selfie is spent: no reattachment.
+    await expectStatus(
+      Promise.resolve((await tap(dev.s1.token, { selfie: S.s1 })).r),
+      409,
+      'SELFIE_EXPIRED',
+    );
+    // Retention: 30 days after attachment the image is deleted; hasSelfie stays frozen.
+    await travel(
+      `UPDATE "FieldSelfie" SET "attachedAt" = clock_timestamp() - interval '31 days' WHERE id=$1`,
+      [S.s1],
+    );
+    selfieBlobs.failDeletes = true;
+    try {
+      await checkInStore.cleanupSelfies(orgA);
+    } finally {
+      selfieBlobs.failDeletes = false;
+    }
+    assert.equal((await selfieRow(S.s1)).state, 'DELETING');
+    assert.equal((await pmSelfie(S.s1CheckIn)).status, 404);
+    await checkInStore.cleanupSelfies(orgA);
+    const gone = await selfieRow(S.s1);
+    assert.equal(gone.state, 'DELETED');
+    assert.equal(selfieBlobs.map.has(gone.blobKey), false);
+    assert.equal(
+      await count(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='FIELD_SELFIE_DELETED' AND "entityId"=$1 AND reason='RETENTION'`,
+        [S.s1],
+      ),
+      1,
+    );
+    const list = await expectStatus(
+      pget(`/checkins?projectId=${projectA}&businessDate=${R.D}`, pm),
+      200,
+    );
+    const s1 = list.checkIns.find((c) => c.checkInId === S.s1CheckIn);
+    assert.deepEqual(
+      [s1.selfie, s1.voided.reason],
+      ['DELETED', 'TEST wrong person'],
+    );
+    // Later check-ins, voids, roster and site-reference changes never touch the revision.
+    await expectStatus(
+      ppost('/site-reference', pm, {
+        projectId: projectA,
+        clientMutationId: randomUUID(),
+        expectedN: 1,
+        lat: '-33.900000',
+        lon: LON,
+        radiusM: 700,
+      }),
+      200,
+    );
+    await expectStatus(change([close(assignment(person.k6))]), 200);
+    assert.deepEqual(await reread(), R.rev);
+    // A reader never gets the frozen check-ins, nor the list.
+    const readerRev = await expectStatus(
+      http(
+        `/api/report/revision?projectId=${projectA}&businessDate=${R.D}&n=${R.revisionNumber}`,
+        {
+          method: 'GET',
+          bearer: exec,
+        },
+      ),
+      200,
+    );
+    assert.equal(JSON.stringify(readerRev).includes('"field"'), false);
+    assert.equal(JSON.stringify(readerRev).includes(S.s1CheckIn), false);
+    await expectStatus(
+      pget(`/checkins?projectId=${projectA}&businessDate=${R.D}`, exec),
+      403,
+      'READ_ONLY',
+    );
+    pass(
+      'after submission: void needs a reason and the PM of the project (reader READ_ONLY, other PM FORBIDDEN, unknown NOT_FOUND), replays, happens once (VERSION_CONFLICT) and lands after the boundary; a voided check-in\'s selfie is never reattached; after 30 days the image is claimed, a failed delete leaves it DELETING and unreadable, the next sweep deletes it (audited RETENTION) and the list shows "deleted"; the submitted revision is byte-for-byte unchanged by the void, retention, a site-reference change and a roster change, and still says hasSelfie; a reader gets neither the frozen check-ins nor the list',
+    );
+  }
+
+  step('check-in: history is append-only');
+  {
+    const ci = S.s1CheckIn;
+    const app = await appPool.connect();
+    const refused = async (sql, params) => {
+      await app.query('BEGIN');
+      await app.query("SELECT set_config('app.org_id', $1, true)", [orgA]);
+      try {
+        await app.query(sql, params);
+        assert.fail(`the app role could run: ${sql}`);
+      } catch (error) {
+        assert.ok(
+          ['P0001', '42501'].includes(error.code),
+          `${error.code} ${error.message}`,
+        );
+      } finally {
+        await app.query('ROLLBACK');
+      }
+    };
+    try {
+      for (const [sql, params] of [
+        [
+          `UPDATE "WorkerCheckIn" SET "voidReason"='TEST again' WHERE id=$1`,
+          [ci],
+        ],
+        [`UPDATE "WorkerCheckIn" SET "occurredAt"=now() WHERE id=$1`, [ci]],
+        [`DELETE FROM "WorkerCheckIn" WHERE id=$1`, [ci]],
+        [`UPDATE "FieldSelfie" SET state='STAGED' WHERE id=$1`, [S.s1]],
+        [
+          `UPDATE "FieldSelfie" SET "expiresAt"=now() + interval '1 day' WHERE id=$1`,
+          [S.s2],
+        ],
+        [`DELETE FROM "FieldSelfie" WHERE id=$1`, [S.s2]],
+        [
+          `UPDATE "FieldSelfie" SET state='ATTACHED', "attachedAt"=now() WHERE state='DELETED'`,
+          [],
+        ],
+        [`DELETE FROM "CheckInSelfie" WHERE "checkInId"=$1`, [ci]],
+        [`UPDATE "ProjectSiteReference" SET "radiusM"=2000`, []],
+        [`DELETE FROM "ProjectFieldSetting"`, []],
+        [`UPDATE "FieldDay" SET "lastSeq"=1`, []],
+        [`DELETE FROM "FieldDay"`, []],
+        [`UPDATE "FieldDeviceEvent" SET "distanceBucketM"=0`, []],
+      ])
+        await refused(sql, params);
+      // RLS: another org sees none of it.
+      await app.query('BEGIN');
+      await app.query("SELECT set_config('app.org_id', $1, true)", [orgB]);
+      const seen = await app.query(
+        `SELECT (SELECT count(*) FROM "WorkerCheckIn")::int + (SELECT count(*) FROM "FieldSelfie")::int
+          + (SELECT count(*) FROM "ProjectSiteReference" WHERE "projectId"<>$1)::int AS n`,
+        [projectB],
+      );
+      await app.query('ROLLBACK');
+      assert.equal(seen.rows[0].n, 0);
+    } finally {
+      app.release();
+    }
+    // Append-only for the owner too (triggers, not only grants).
+    for (const sql of [
+      `DELETE FROM "WorkerCheckIn" WHERE id=$1`,
+      `UPDATE "CheckInSelfie" SET "createdAt"=now() WHERE "checkInId"=$1`,
+      `UPDATE "WorkerCheckIn" SET "businessDate"='2000-01-01' WHERE id=$1`,
+    ])
+      await assert.rejects(owner.query(sql, [ci]), (e) => e.code === 'P0001');
+    pass(
+      'history: the app role cannot change or delete a check-in (a voided one cannot be voided again), move a selfie backwards or change its deadline, delete selfie rows or links, change site references, settings or refusal events, or move a day sequence back; another org sees no check-ins, selfies or site references',
+    );
+  }
+
+  if (process.env.BLOB_CONNECTION_STRING) {
+    step('selfie blob delete (Azurite)');
+    const container = `field-test-${suffix}`;
+    const azure = AzurePhotoBlobStore.fromConnectionString(
+      process.env.BLOB_CONNECTION_STRING,
+      container,
+    );
+    await azure.ensureContainer();
+    try {
+      const k = `selfie/${orgA}/${randomUUID()}`;
+      await azure.put(k, testJpeg({ tag: 'azure' }), 'image/jpeg');
+      assert.ok(await azure.get(k));
+      await azure.delete(k);
+      await azure.delete(k); // already gone = deleted
+      assert.equal(await azure.get(k), null);
+      await assert.rejects(azure.delete(`${orgA}/${'0'.repeat(64)}`));
+    } finally {
+      await azure.deleteContainer();
+    }
+    pass(
+      'Azure selfie blob delete (Azurite): deletes, a missing blob counts as deleted, and only selfie/ keys can ever be deleted',
+    );
+  }
+
   // ================= redaction =================
   step('redaction');
   {
@@ -2585,6 +3949,16 @@ try {
         assert.ok(!text.includes(s), `${path} carried a token or hash`);
       if (status >= 400) {
         const body = JSON.parse(text);
+        for (const c of coords)
+          assert.ok(!text.includes(c), `${path} error carried a coordinate`);
+        // Only ALREADY_CHECKED_IN adds the existing check-in's time and kind (design §3).
+        if (body.code === 'ALREADY_CHECKED_IN') {
+          assert.deepEqual(Object.keys(body.existing).sort(), [
+            'kind',
+            'occurredAt',
+          ]);
+          delete body.existing;
+        }
         assert.deepEqual(
           Object.keys(body).sort(),
           ['code', 'correlationId'],
@@ -2633,21 +4007,30 @@ try {
       ...secret.entry,
       ...secret.codes.map((c) => `"${c}"`),
       ...names,
+      ...coords,
     ])
       assert.ok(
         !stored.rows[0].all.includes(s),
-        'audit, event or idempotency rows carried a secret or name',
+        'audit, event or idempotency rows carried a secret, name or coordinate',
       );
     for (const line of printed)
-      for (const s of [...forbiddenEverywhere, ...secret.entry, ...names])
-        assert.ok(!line.includes(s), 'process output carried a secret or name');
+      for (const s of [
+        ...forbiddenEverywhere,
+        ...secret.entry,
+        ...names,
+        ...coords,
+      ])
+        assert.ok(
+          !line.includes(s),
+          'process output carried a secret, name or coordinate',
+        );
     pass(
-      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} with no code, entry code or name; challenge codes only in the challenge response and entry codes only in the rotation response; audit, event and idempotency rows and all process output carry none of them`,
+      `redaction: across ${responses.length} responses no token or hash ever appears; every error is exactly {code, correlationId} (ALREADY_CHECKED_IN adds only the existing time and kind) with no code, entry code, name or coordinate; challenge codes only in the challenge response and entry codes only in the rotation response; audit, event (including refused check-ins) and idempotency rows and all process output carry none of them, nor any coordinate`,
     );
   }
 
   console.log(
-    `Field roster/devices/entry HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. Check-in, foreman reports and the field web UI are later slices.`,
+    `Field roster/devices/entry and check-in/selfie HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. Foreman reports and the field web UI are later slices.`,
   );
   step('done');
 } catch (error) {
