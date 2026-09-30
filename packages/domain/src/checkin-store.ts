@@ -782,11 +782,13 @@ export class CheckInStore {
         // except for the exact replay of a committed success.
         const refused = await client.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM "FieldDeviceEvent"
-          WHERE "orgId"=$1 AND "deviceId"=$2 AND kind='CHECKIN_REFUSED' AND "decidedAt" > $3::timestamptz - interval '1 hour'`,
+          WHERE "orgId"=$1 AND "deviceId"=$2 AND kind='CHECKIN_REFUSED' AND "decidedAt" > $3::timestamptz - interval '1 hour'
+            AND "decidedAt" <= $3::timestamptz`,
           [d.orgId, d.id, auth.at],
         );
+        const limited = refused.rows[0]!.n >= FAILED_CHECKINS_PER_HOUR;
         if (
-          refused.rows[0]!.n >= FAILED_CHECKINS_PER_HOUR &&
+          limited &&
           !(await priorOutcome(
             client,
             d.orgId,
@@ -804,11 +806,19 @@ export class CheckInStore {
         // the attempt are undone to the savepoint and only its refusal event commits.
         await client.query('SAVEPOINT check_in');
         try {
-          return await decide(client, auth);
+          const outcome = await decide(client, auth);
+          // A limited device is only ever served an authorized replay: a replay whose
+          // re-checked authorization now refuses is RATE_LIMITED and writes nothing (C29).
+          if (limited && outcome.kind === 'refused') {
+            await client.query('ROLLBACK TO SAVEPOINT check_in');
+            throw new FieldError('RATE_LIMITED');
+          }
+          return outcome;
         } catch (error) {
           if (!(error instanceof FieldError) || !countedRefusal(error.code))
             throw error;
           await client.query('ROLLBACK TO SAVEPOINT check_in');
+          if (limited) throw new FieldError('RATE_LIMITED');
           const subject = cmd.personId ?? d.personId;
           await deviceEvent(client, {
             orgId: d.orgId,
