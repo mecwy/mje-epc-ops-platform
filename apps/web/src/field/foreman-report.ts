@@ -176,7 +176,11 @@ export function sendReport(
 export class ReportDay {
   readonly session: FieldSession<ForemanReportDto>;
   readonly sends: OwnedCommands<ForemanReportDto, ReportSend>;
-  /** The payload of the last definite refusal (shown beside the latest read). */
+  /**
+   * The payload of the last established REVISION_CONFLICT (its "you had typed … not saved"
+   * hints are shown beside the latest read). Never set for another refusal, nor for any
+   * outcome after an unanswered attempt (`uncertain`): that send may have been recorded.
+   */
   refused: ReportSend | null = null;
 
   constructor(
@@ -213,7 +217,8 @@ export class ReportDay {
     this.sends.discard();
   }
   private settle(payload: ReportSend, r: Outcome<unknown>) {
-    if (r.kind === 'rejected') this.refused = payload;
+    if (r.kind === 'rejected' && r.code === 'REVISION_CONFLICT' && !r.uncertain)
+      this.refused = payload;
     this.notify();
     return r;
   }
@@ -232,6 +237,14 @@ export class ReportDays {
     private readonly now?: () => Date,
     private readonly newKey?: () => string,
   ) {}
+  /** The days with a send running or unresolved. */
+  owned(): ReportDay[] {
+    return this.all().filter((d) => d.sends.current !== null);
+  }
+  /** Every day read so far (for the owned-actions bar). */
+  all(): ReportDay[] {
+    return [...this.days.values()];
+  }
   get(day: string): ReportDay {
     let d = this.days.get(day);
     if (!d) {
