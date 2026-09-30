@@ -33,6 +33,10 @@ export class CrewCommands {
   get busy() {
     return this.owned.session.busy;
   }
+  /** The last send's error (an unsettled code while unresolved). */
+  get error() {
+    return this.owned.session.error;
+  }
   /** The attempt kept for an unchanged retry (settled without an answer). */
   get unresolved(): CrewAttempt | null {
     return this.owned.unresolved;
@@ -43,6 +47,10 @@ export class CrewCommands {
   }
   get canStart() {
     return this.owned.canStart;
+  }
+  /** Moves whenever an attempt's ownership ends (the code field restarts empty). */
+  get generation() {
+    return this.owned.generation;
   }
   isUnresolved(personId: string) {
     return this.unresolved?.personId === personId;

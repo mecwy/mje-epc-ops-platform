@@ -7,7 +7,11 @@ import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
 import { fmtStamp } from '../report/format.js';
 import { groupDevices } from './site-form.js';
-import type { DeviceCommands, SiteSessions } from './site-sessions.js';
+import type {
+  DeviceAction,
+  DeviceCommands,
+  SiteSessions,
+} from './site-sessions.js';
 import { useSessions } from './use-sessions.js';
 
 /** The sheet being shown: which device and which action (the code is typed in the sheet). */
@@ -226,7 +230,7 @@ function UnresolvedText({
  * One device's action. Only started when nothing is unresolved (DeviceCommands); if its own
  * command becomes unresolved, the sheet offers the retry of exactly that command.
  */
-function ActionSheet({
+export function ActionSheet({
   action,
   commands,
   onClose,
@@ -237,26 +241,100 @@ function ActionSheet({
 }) {
   const { t } = useI18n();
   const session = commands.session;
-  const [code, setCode] = useState('');
+  const d = action.device;
+  // This sheet's own action while it runs or is unresolved: shown as sent, no inputs.
+  const owned =
+    commands.current?.device.id === d.id &&
+    commands.current.kind === action.kind
+      ? commands.current
+      : null;
+  const unresolved = owned !== null && commands.unresolved !== null;
   const [error, setError] = useState<string | null>(null);
+  const title =
+    action.kind === 'confirm'
+      ? 'pm_confirmTitle'
+      : action.kind === 'reject'
+        ? 'pm_rejectTitle'
+        : 'pm_revokeTitle';
+  const settle = (r: { kind: string; code?: string }) => {
+    if (r.kind === 'ok') onClose();
+    else setError(r.code ?? null);
+  };
+  return (
+    <Sheet title={t(title)} onClose={() => !session.busy && onClose()}>
+      <p className="big">{d.displayName}</p>
+      {owned ? (
+        <>
+          {owned.kind === 'confirm' && (
+            <div className="kv">
+              <span>{t('pm_code')}</span>
+              <b className="num">{owned.code}</b>
+            </div>
+          )}
+          {unresolved ? (
+            <div className="banner warn" role="alert">
+              {t('pm_attemptUnresolved')}{' '}
+              <ErrorText code={session.error ?? 'NETWORK'} />
+            </div>
+          ) : (
+            <p className="muted small">{t('saving')}</p>
+          )}
+          {unresolved && (
+            <div className="row2">
+              <button
+                type="button"
+                className="ghost"
+                disabled={session.busy}
+                onClick={() => {
+                  commands.discard();
+                  setError(null);
+                }}
+              >
+                {t('pm_giveUp')}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={session.busy}
+                onClick={() => void commands.retry().then(settle)}
+              >
+                {t('retry')}
+              </button>
+            </div>
+          )}
+        </>
+      ) : (
+        <ActionEdit
+          // A new edit (empty code) whenever an earlier action's ownership ended.
+          key={commands.generation}
+          action={action}
+          commands={commands}
+          error={error}
+          onRun={(a) => {
+            setError(null);
+            void commands.run(a).then(settle);
+          }}
+        />
+      )}
+    </Sheet>
+  );
+}
+
+function ActionEdit({
+  action,
+  commands,
+  error,
+  onRun,
+}: {
+  action: Action;
+  commands: DeviceCommands;
+  error: string | null;
+  onRun: (a: DeviceAction) => void;
+}) {
+  const { t } = useI18n();
+  const [code, setCode] = useState('');
   const d = action.device;
   const codeOk = CHALLENGE_CODE.test(code);
-  // A retry here is offered only for this sheet's own unresolved command.
-  const mine =
-    commands.unresolved?.device.id === d.id &&
-    commands.unresolved.kind === action.kind;
-  const run = async () => {
-    setError(null);
-    const r = mine
-      ? await commands.retry()
-      : await commands.run(
-          action.kind === 'confirm'
-            ? { kind: 'confirm', device: d, code }
-            : { kind: action.kind, device: d },
-        );
-    if (r.kind === 'ok') onClose();
-    else setError(r.code);
-  };
   const title =
     action.kind === 'confirm'
       ? 'pm_confirmTitle'
@@ -264,8 +342,7 @@ function ActionSheet({
         ? 'pm_rejectTitle'
         : 'pm_revokeTitle';
   return (
-    <Sheet title={t(title)} onClose={() => !session.busy && onClose()}>
-      <p className="big">{d.displayName}</p>
+    <>
       {action.kind === 'confirm' ? (
         <>
           <p className="para muted small">{t('pm_confirmHint')}</p>
@@ -294,15 +371,17 @@ function ActionSheet({
       <button
         type="button"
         className={`primary wide${action.kind === 'revoke' ? ' danger' : ''}`}
-        disabled={
-          session.busy ||
-          (!mine && !commands.canStart) ||
-          (!mine && action.kind === 'confirm' && !codeOk)
+        disabled={!commands.canStart || (action.kind === 'confirm' && !codeOk)}
+        onClick={() =>
+          onRun(
+            action.kind === 'confirm'
+              ? { kind: 'confirm', device: d, code }
+              : { kind: action.kind, device: d },
+          )
         }
-        onClick={() => void run()}
       >
-        {mine ? t('retry') : t(title)}
+        {t(title)}
       </button>
-    </Sheet>
+    </>
   );
 }

@@ -125,6 +125,11 @@ export class FieldSession<D> {
     });
   }
 
+  /** Tell the view that state around this session changed (command ownership). */
+  changed() {
+    this.notify();
+  }
+
   /** Drop a kept command the user no longer wants (it may still have been stored). */
   discard() {
     this.pending = null;

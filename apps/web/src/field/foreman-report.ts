@@ -7,6 +7,9 @@ import type {
 } from '@mje/contracts';
 import { dec, isToken } from '@mje/domain/rules';
 import { shift, siteToday } from '../report/format.js';
+import type { DeviceApi } from './field-api.js';
+import type { OwnedCommands } from './owned-commands.js';
+import type { Outcome } from './session.js';
 
 /** item key → quantity as typed: a decimal, 'unknown', 'na' or '' (blank). */
 export type Draft = Record<string, string>;
@@ -102,4 +105,40 @@ export function crewDecision(
         },
       }
     : { kind: 'reject', command: { clientMutationId: key, personId, code } };
+}
+
+/** A report send as sent: its rows (blanks kept), note and the revision it was edited from. */
+export interface ReportSend {
+  rows: { itemKey: string; qty: string }[];
+  note: string;
+  editedFrom: number;
+}
+/**
+ * Send a report as edited (AGENTS.md: form state = the owned command's payload): the command
+ * carries the revision the draft was edited from, never a newer one read later, so a stale
+ * draft gets REVISION_CONFLICT instead of replacing a revision the foreman has not seen.
+ */
+export function sendReport(
+  sends: OwnedCommands<ForemanReportDto, ReportSend>,
+  api: Pick<DeviceApi, 'submitReport'>,
+  businessDate: string,
+  payload: ReportSend,
+  now: () => Date = () => new Date(),
+): Promise<Outcome<unknown>> {
+  return sends.run(payload, (d, key) => {
+    if (!d) return null;
+    return {
+      key,
+      send: () =>
+        api.submitReport({
+          clientMutationId: key,
+          businessDate,
+          crewId: d.crewId,
+          expectedRevision: payload.editedFrom,
+          rows: payload.rows,
+          note: payload.note,
+          occurredAt: now().toISOString(),
+        }),
+    };
+  });
 }
