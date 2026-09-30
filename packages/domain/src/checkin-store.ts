@@ -165,16 +165,21 @@ async function projectTimezone(
   new Intl.DateTimeFormat('en', { timeZone: tz });
   return tz;
 }
-/** Level 5: one writer per (project, person, business day) slot. */
+/**
+ * Level 5: one check-in writer per (org, person, business day), across the org's projects and
+ * for every check-in path (self, foreman proxy, PM proxy). It covers the project's slot and the
+ * cross-project MULTI_PROJECT_DAY read, so two projects' check-ins of one person that day never
+ * both miss each other. Taken after the project's day lock (level 4); no transaction holds it
+ * and then waits on a day lock, so the per-project day locks cannot form a cycle through it.
+ */
 const slotLock = (
   client: PoolClient,
   orgId: string,
-  projectId: string,
   personId: string,
   businessDate: string,
 ) =>
   client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-    `${orgId}:field-slot:${projectId}:${personId}:${businessDate}`,
+    `${orgId}:field-slot:${personId}:${businessDate}`,
   ]);
 /** Level 7: the next field sequence number of the day (the caller holds the day lock, level 4). */
 async function nextSeq(
@@ -538,13 +543,7 @@ export class CheckInStore {
         afterLock: async (client, d) => {
           const subject = cmd.personId ?? d.personId;
           await lockReportDay(client, d.orgId, d.projectId, cmd.businessDate);
-          await slotLock(
-            client,
-            d.orgId,
-            d.projectId,
-            subject,
-            cmd.businessDate,
-          );
+          await slotLock(client, d.orgId, subject, cmd.businessDate);
           if (cmd.stagedSelfieId)
             await client.query(
               `SELECT id FROM "FieldSelfie" WHERE "orgId"=$1 AND id=$2 FOR UPDATE`,
@@ -804,7 +803,7 @@ export class CheckInStore {
       );
       if (prior) return prior.body as CheckInResultDto;
       await lockReportDay(client, orgId, projectId, cmd.businessDate);
-      await slotLock(client, orgId, projectId, cmd.personId, cmd.businessDate);
+      await slotLock(client, orgId, cmd.personId, cmd.businessDate);
       const { t, at } = await decisionTime(client, orgId, projectId);
       const today = localDate(t, timeZone);
       const back = daysBetween(cmd.businessDate, today);

@@ -266,7 +266,19 @@ try {
   for (let i = 1; i <= 40; i++) workersA.push(`o${i}`);
   workersA.push('a2only', 'unrostered', 'r1', 'r2', 'p1', 'c1', 'c2', 'c3');
   // A6b check-in and selfie people.
-  workersA.push('kf', 'kf2', 'kx', 'kt', 'kl', 'km', 'kc1', 'kc2', 'kp');
+  workersA.push(
+    'kf',
+    'kf2',
+    'kx',
+    'kt',
+    'kl',
+    'km',
+    'kd',
+    'kr',
+    'kc1',
+    'kc2',
+    'kp',
+  );
   for (let i = 1; i <= 8; i++) workersA.push(`k${i}`);
   for (let i = 1; i <= 5; i++) workersA.push(`s${i}`);
   for (const k of workersA) await addPerson(k, orgA);
@@ -2712,6 +2724,8 @@ try {
     'kc1',
     'kc2',
     'kp',
+    'kd',
+    'kr',
     's1',
     's2',
     's3',
@@ -3257,10 +3271,13 @@ try {
   step('check-in: other project, other org, revoked device');
   {
     K.KM = await crew(projectA2, 'KM', pm2);
-    await expectStatus(change([open(K.KM, person.km)], projectA2, pm2), 200);
+    await expectStatus(
+      change([open(K.KM, person.km), open(K.KM, person.kd)], projectA2, pm2),
+      200,
+    );
     await travel(
-      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '1 day' WHERE "personId" = $1 AND "projectId" = $2`,
-      [person.km, projectA2],
+      `UPDATE "CrewAssignment" SET "validFrom" = "validFrom" - interval '1 day' WHERE "personId" = ANY($1::uuid[]) AND "projectId" = $2`,
+      [[person.km, person.kd], projectA2],
     );
     await expectStatus(
       ppost('/site-reference', pm2, {
@@ -3299,6 +3316,54 @@ try {
       200,
     );
     assert.deepEqual(inA.flags, ['MULTI_PROJECT_DAY']);
+    // Concurrent: kd's project A check-in is held right after its cross-project read (before
+    // its insert) while kd checks in on project A2. The A2 check-in must wait on the org-wide
+    // person/day lock and then see A's row; without that lock both miss each other.
+    dev.kdA2 = await onboard(person.kd, {
+      ip: KIP,
+      code: entryCode[projectA2],
+      bearer: pm2,
+      projectId: projectA2,
+    });
+    {
+      let hit, release;
+      const reached = new Promise((resolve) => (hit = resolve));
+      const opened = new Promise((resolve) => (release = resolve));
+      const openGate = async () => {
+        held.delete(openGate);
+        release();
+      };
+      held.add(openGate);
+      queryGate = {
+        match: (text) =>
+          text.includes('"WorkerCheckIn"') &&
+          text.includes('"projectId" <> $2'),
+        hit,
+        opened,
+      };
+      const inProjectA = tap(dev.kd.token);
+      await withTimeout(reached, STEP_MS, 'A check-in reads other projects');
+      const D = await siteDay(await clockNow());
+      const slotKey = `${orgA}:field-slot:${person.kd}:${D}`;
+      const inProjectA2 = tap(dev.kdA2.token);
+      const seen = await Promise.race([
+        inProjectA2.then(() => 'finished'),
+        advisoryWaiters(slotKey, 1).then(
+          () => 'waiting',
+          () => 'not waiting',
+        ),
+      ]);
+      await openGate();
+      const a = await expectStatus(Promise.resolve((await inProjectA).r), 200);
+      const a2 = await expectStatus(
+        Promise.resolve((await inProjectA2).r),
+        200,
+      );
+      assert.deepEqual(
+        [a.flags, a2.flags, seen],
+        [[], ['MULTI_PROJECT_DAY'], 'waiting'],
+      );
+    }
     // A device of another project or org names a person of project A: the same 404 as nobody.
     K.KB = await crew(projectB, 'KB', pmB);
     await expectStatus(
