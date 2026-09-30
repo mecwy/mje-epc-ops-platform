@@ -499,7 +499,7 @@ export function RetainedReports({
       {retained.map((d) => {
         const owned = d.sends.current;
         return (
-          <div key={d.day} className="qline">
+          <div key={d.day} className="retained-day">
             <b>{t('fm_actReport', { day: fmtDay(d.day, locale) })}</b>
             {owned ? (
               <OwnedReport data={d.session.data} report={d} payload={owned} />
