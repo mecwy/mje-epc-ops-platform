@@ -393,11 +393,13 @@ export async function deviceEvent(
     actor?: EventActor;
     /** Refused check-ins only: the distance in 100 m buckets (never coordinates). */
     distanceBucketM?: number | null;
+    /** Refused check-ins only: the decision time the refusal was judged at (C29). */
+    decidedAt?: string | null;
   },
 ) {
   await client.query(
-    `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorAccountId","actorPersonId","actorDeviceId","distanceBucketM")
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId","deviceId","personId",kind,"reasonCode","actorAccountId","actorPersonId","actorDeviceId","distanceBucketM","decidedAt")
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::timestamptz)`,
     [
       randomUUID(),
       e.orgId,
@@ -410,6 +412,7 @@ export async function deviceEvent(
       e.actor?.personId ?? null,
       e.actor?.deviceId ?? null,
       e.distanceBucketM ?? null,
+      e.decidedAt ?? null,
     ],
   );
 }
