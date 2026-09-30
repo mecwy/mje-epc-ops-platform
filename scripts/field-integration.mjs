@@ -6,7 +6,7 @@
 // move stored timestamps as the owner with triggers disabled (TEST database only).
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
 import {
@@ -88,7 +88,10 @@ function withTimeout(promise, ms, label) {
 }
 const git = (...args) => {
   try {
-    return execFileSync('git', args, { stdio: ['ignore', 'pipe', 'ignore'] })
+    return execFileSync('git', args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    })
       .toString()
       .trim();
   } catch {
@@ -96,6 +99,49 @@ const git = (...args) => {
   }
 };
 const revision = `${git('rev-parse', '--short', 'HEAD') || 'unknown'}${git('status', '--porcelain') ? '+uncommitted' : ''}`;
+/**
+ * Runs a child process in its own process group and kills the whole group on timeout. Never
+ * synchronous: a blocked event loop would keep the watchdog from firing.
+ */
+/** Process groups of running children; the watchdog and cleanup kill whatever is left. */
+const children = new Set();
+function killChildren() {
+  for (const pid of children) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+    children.delete(pid);
+  }
+}
+function runBounded(command, args, env, ms, label) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: true,
+    });
+    children.add(child.pid);
+    const timer = setTimeout(() => {
+      killChildren();
+      reject(
+        new Error(`timed out after ${ms} ms: ${label} (process group killed)`),
+      );
+    }, ms);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      children.delete(child.pid);
+      if (code === 0) resolve();
+      else reject(new Error(`${label} failed (${signal ?? `exit ${code}`})`));
+    });
+  });
+}
+const MIGRATE_MS = Number(process.env.FIELD_TEST_MIGRATE_MS ?? 180_000);
 const failure = (why) =>
   console.error(
     `FIELD TEST FAILED at step "${currentStep}": ${why}; source ${revision}; TEST database ${database}`,
@@ -135,6 +181,7 @@ async function dropTestDatabase() {
 }
 const watchdog = setTimeout(() => {
   failure(`watchdog: the run did not finish within ${WATCHDOG_MS} ms`);
+  killChildren();
   void withTimeout(
     releaseHeld().then(dropTestDatabase),
     20_000,
@@ -147,10 +194,13 @@ const watchdog = setTimeout(() => {
 try {
   await admin.query(`CREATE DATABASE "${database}"`);
   dbCreated = true;
-  execFileSync('pnpm', ['db:migrate'], {
-    env: { ...process.env, DATABASE_URL: isolated.toString() },
-    stdio: 'pipe',
-  });
+  await runBounded(
+    'pnpm',
+    ['db:migrate'],
+    { ...process.env, DATABASE_URL: isolated.toString() },
+    MIGRATE_MS,
+    'db:migrate',
+  );
   owner = tolerateShutdown(new Pool({ connectionString: isolated.toString() }));
   await admin.query(
     `CREATE ROLE "${username}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${password}'`,
@@ -242,6 +292,31 @@ try {
   await membership(orgA, accounts.exec, 'EXECUTIVE_READER', null);
   await membership(orgA, accounts.pm2, 'PROJECT_MANAGER', projectA2);
   await membership(orgB, accounts.pmB, 'PROJECT_MANAGER', projectB);
+
+  // TEST seam on the app's own pool: a gate can hold one request right after a chosen
+  // statement, so another transaction can commit between two statements of that request.
+  let queryGate = null;
+  const realConnect = appPool.connect.bind(appPool);
+  appPool.connect = async (...args) => {
+    if (typeof args[0] === 'function') return realConnect(...args);
+    const client = await realConnect();
+    if (!client.gated) {
+      client.gated = true;
+      const query = client.query.bind(client);
+      client.query = async (...q) => {
+        const result = await query(...q);
+        const text = typeof q[0] === 'string' ? q[0] : (q[0]?.text ?? '');
+        const gate = queryGate;
+        if (gate && gate.match(text)) {
+          queryGate = null;
+          gate.hit();
+          await gate.opened;
+        }
+        return result;
+      };
+    }
+    return client;
+  };
 
   const keys = await generateKeyPair('RS256');
   const jwk = {
@@ -805,6 +880,49 @@ try {
     );
   }
 
+  // ================= roster read is one snapshot =================
+  step('roster read is one snapshot');
+  {
+    // Hold a roster read right after it has read the intervals; commit a roster write; then
+    // let the read finish. The version it returns must belong to the intervals it returns.
+    let hit, release;
+    const reached = new Promise((resolve) => (hit = resolve));
+    const opened = new Promise((resolve) => (release = resolve));
+    const openGate = async () => {
+      held.delete(openGate);
+      release();
+    };
+    held.add(openGate);
+    queryGate = {
+      match: (text) =>
+        text.includes('"CrewAssignment"') &&
+        text.includes('"Person"') &&
+        !/^\s*(INSERT|UPDATE)/.test(text),
+      hit,
+      opened,
+    };
+    const reading = pget(`/roster?projectId=${projectA}`, pm);
+    await withTimeout(reached, STEP_MS, 'roster read reaches the gate');
+    const written = await expectStatus(
+      change([open(C.C4, person.a2only)]),
+      200,
+    );
+    const added = written.assignments.find(
+      (a) => a.personId === person.a2only && a.validUntil === null,
+    ).id;
+    await openGate();
+    const read = await expectStatus(reading, 200);
+    const hasAdded = read.assignments.some((a) => a.id === added);
+    assert.equal(
+      hasAdded,
+      read.rosterVersion === written.rosterVersion,
+      `roster version ${read.rosterVersion} returned ${hasAdded ? 'with' : 'without'} the interval written at version ${written.rosterVersion}`,
+    );
+    pass(
+      'a roster read held between its statements while a roster write commits returns a version that belongs to the crews and intervals it returns (one snapshot), so a stale view can never carry a current expectedRosterVersion',
+    );
+  }
+
   // ================= throttling =================
   step('throttling');
   {
@@ -845,11 +963,35 @@ try {
     // Wrong codes count against the IP too; a whole crew behind one NAT is far below the limit.
     r = await burst(40, () => entry(entryCode[projectA], '10.5.0.1'));
     assert.ok(r.every((x) => x.status === 200));
+    // Thousands of distinct invalid codes from one IP, far beyond its limit, leave a bounded
+    // number of throttle rows: the IP bucket counts every request; a code bucket exists only
+    // for a code that exists.
+    await freshWindow(600);
+    const rowsBefore = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    const guesses = await burst(2000, () =>
+      fpost(
+        '/entry',
+        null,
+        { code: randomBytes(16).toString('base64url') },
+        { ip: '10.6.0.1' },
+      ),
+    );
+    assert.ok(guesses.every((x) => x.status === 404 || x.status === 429));
+    assert.equal(guesses.filter((x) => x.status === 404).length, 300);
+    const rowsAfter = await count(
+      `SELECT count(*)::int AS n FROM "FieldThrottle"`,
+    );
+    assert.ok(
+      rowsAfter - rowsBefore <= 2,
+      `${rowsAfter - rowsBefore} new throttle rows`,
+    );
     const buckets = await owner.query(`SELECT bucket FROM "FieldThrottle"`);
     for (const { bucket } of buckets.rows)
       assert.match(bucket, /^[a-z-]+:[0-9a-f]{64}$/);
     pass(
-      'throttles: entry 300/10 min per IP and 600/10 min per code (refused requests count) → 429 RATE_LIMITED; 40 people behind one NAT read the roster without a 429; buckets hold only salted hashes',
+      'throttles: entry 300/10 min per IP and 600/10 min per code (refused requests count) → 429 RATE_LIMITED; 40 people behind one NAT read the roster without a 429; 2000 distinct invalid codes from one IP get 300 × 404 then 429 and add at most 2 throttle rows (no bucket per guessed code); buckets hold only salted hashes',
     );
   }
 
@@ -886,6 +1028,35 @@ try {
         ),
         /closed, once/,
       );
+      await app.query('ROLLBACK TO SAVEPOINT s');
+      // Event actors are tenant references: another org's or a nonexistent actor person or
+      // device is refused (23503); an actor of the same org and project is accepted.
+      const actorEvent = (actor) =>
+        app.query(
+          `INSERT INTO "FieldDeviceEvent"(id,"orgId","projectId",kind,"actorPersonId","actorDeviceId") VALUES($1,$2,$3,'BIND',$4,$5)`,
+          [
+            randomUUID(),
+            orgA,
+            projectA,
+            actor.person ?? null,
+            actor.device ?? null,
+          ],
+        );
+      for (const actor of [
+        { person: person.wb },
+        { person: randomUUID() },
+        { device: randomUUID() },
+      ]) {
+        await app.query('SAVEPOINT s');
+        await assert.rejects(
+          actorEvent(actor),
+          (e) => e.code === '23503',
+          `actor ${JSON.stringify(actor)} was accepted`,
+        );
+        await app.query('ROLLBACK TO SAVEPOINT s');
+      }
+      await app.query('SAVEPOINT s');
+      await actorEvent({ person: person.w1 });
       await app.query('ROLLBACK TO SAVEPOINT s');
       // RLS: another org's rows are invisible, and cannot be inserted.
       const other = await app.query(
@@ -925,7 +1096,7 @@ try {
       for (const c of pooled) c.release();
     }
     pass(
-      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code (column grants on the tables A6a-2 will use); an interval closes once; intervals are append-only for the owner too; RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
+      "the app role cannot update or delete events, token hashes or intervals, nor change a device's identity or a challenge's code (column grants on the tables A6a-2 will use); an interval closes once; intervals are append-only for the owner too; device-event actors must be people and devices of the same org (and project), never another tenant's or nonexistent ones; RLS hides and refuses another org; no pooled connection keeps a hash, entry code or org",
     );
   }
 
@@ -981,18 +1152,34 @@ try {
   console.error(error);
   process.exitCode = 1;
 } finally {
+  killChildren();
   // Held locks first: a request blocked on one could keep app.close() waiting, and a
   // checked-out client keeps pool.end() waiting forever.
   await releaseHeld();
-  const bounded = (promise, label) =>
-    withTimeout(promise, 10_000, label).catch((error) =>
-      console.error(`cleanup: ${error.message}`),
-    );
-  if (app) await bounded(app.close(), 'app.close');
-  if (appPool) await bounded(appPool.end(), 'appPool.end');
-  if (owner) await bounded(owner.end(), 'owner.end');
+  // Every step is bounded; an incomplete step is reported and makes the run fail.
+  const incomplete = [];
+  const bounded = (work, label) =>
+    withTimeout(Promise.resolve().then(work), 10_000, label).catch((error) => {
+      incomplete.push(label);
+      console.error(`cleanup: ${error.message}`);
+    });
+  if (app) await bounded(() => app.close(), 'app.close');
+  if (appPool) await bounded(() => appPool.end(), 'appPool.end');
+  if (owner) await bounded(() => owner.end(), 'owner.end');
   // DROP ... WITH (FORCE) also ends any connection a bounded close left behind.
-  await bounded(dropTestDatabase(), 'drop TEST database');
-  await bounded(admin.end(), 'admin.end');
+  await bounded(dropTestDatabase, 'drop TEST database');
+  await bounded(() => admin.end(), 'admin.end');
+  if (incomplete.length) {
+    failure(
+      `cleanup incomplete (${incomplete.join(', ')}); TEST database and role ${dbCreated || roleCreated ? 'NOT dropped' : 'dropped'}`,
+    );
+    process.exitCode = 1;
+  }
+  // The watchdog stays armed until cleanup is over; then a last deadline ends a process that
+  // anything still keeps alive (it never keeps the process alive itself).
   clearTimeout(watchdog);
+  setTimeout(() => {
+    failure('open handles kept the process alive after cleanup; forced exit');
+    process.exit(1);
+  }, 10_000).unref();
 }

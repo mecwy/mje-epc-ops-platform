@@ -36,10 +36,18 @@ export interface Limit {
   max: number;
   /** Hash the value with the daily salt (client IP, entry code). */
   salted: boolean;
+  /**
+   * Count only when the value is an active entry code. Arbitrary values would otherwise each
+   * create a bucket (unbounded rows from one caller); the IP bucket still counts every request.
+   */
+  onlyActiveEntryCode?: boolean;
 }
 export const LIMITS = {
   entryIp: (ip: string): Limit => salted('entry-ip', ip, 600, 300),
-  entryCode: (code: string): Limit => salted('entry-code', code, 600, 600),
+  entryCode: (code: string): Limit => ({
+    ...salted('entry-code', code, 600, 600),
+    onlyActiveEntryCode: true,
+  }),
 };
 function salted(name: string, value: string, windowSec: number, max: number) {
   return { name, value, windowSec, max, salted: true };
@@ -78,6 +86,16 @@ export class FieldThrottle {
     );
     return `${l.name}:${hashSecret(`${s.rows[0]!.salt}:${l.value}`)}`;
   }
+  /** Whether the value is an active entry code (through the SELECT-only lookup policy). */
+  private async activeEntryCode(c: PoolClient, code: string): Promise<boolean> {
+    await c.query("SELECT set_config('app.entry_code', $1, true)", [code]);
+    const r = await c.query(
+      `SELECT 1 FROM "FieldEntryCode" WHERE "retiredAt" IS NULL AND code=$1`,
+      [code],
+    );
+    await c.query("SELECT set_config('app.entry_code', '', true)");
+    return r.rowCount === 1;
+  }
   /** Counts the request in every bucket first, so a refused request still counts. */
   async hit(limits: Limit[]): Promise<void> {
     const over = await this.tx(async (c) => {
@@ -94,7 +112,8 @@ export class FieldThrottle {
       }
       const keyed = [];
       for (const l of limits)
-        keyed.push({ l, bucket: await this.bucket(c, l) });
+        if (!l.onlyActiveEntryCode || (await this.activeEntryCode(c, l.value)))
+          keyed.push({ l, bucket: await this.bucket(c, l) });
       keyed.sort((a, b) => (a.bucket < b.bucket ? -1 : 1));
       let exceeded = false;
       for (const { l, bucket } of keyed) {
