@@ -172,10 +172,16 @@ function frozenPhotoFields(p: PhotoAsOfDto): PhotoAsOfDto {
 export function readerSnapshot(
   snapshot: Record<string, unknown>,
 ): Record<string, unknown> {
-  const photos = snapshot['photos'];
-  if (!Array.isArray(photos)) return snapshot;
+  // Check-ins are writer data (A6.0): a reader never gets them, frozen or live.
+  let rest = snapshot;
+  if ('field' in snapshot) {
+    rest = { ...snapshot };
+    delete rest['field'];
+  }
+  const photos = rest['photos'];
+  if (!Array.isArray(photos)) return rest;
   return {
-    ...snapshot,
+    ...rest,
     photos: (photos as PhotoAsOfDto[]).map(frozenPhotoFields),
   };
 }

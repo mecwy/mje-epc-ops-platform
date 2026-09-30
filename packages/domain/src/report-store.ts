@@ -62,6 +62,7 @@ import {
   type ReportProjectRow,
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
+import { fieldDayAsOf } from './checkin-store.js';
 import {
   frozenPhotos,
   photoAsOf,
@@ -745,6 +746,14 @@ export class ReportStore {
       throw new ReportError('LOCKED');
     // A photo upload for this day either lands before the snapshot or finds the day locked.
     await lockReportDay(client, actor.orgId, project.id, businessDate);
+    // Design §5 submission boundary: the field rows numbered up to the day's sequence as read
+    // under the day lock (never by receipt time); later rows are afterSubmission.
+    const field = await fieldDayAsOf(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+    );
     const items = await this.items(client, actor.orgId, project.id);
     const { snapshot, coverage: cov } = await this.snapshot(
       client,
@@ -771,6 +780,7 @@ export class ReportStore {
         reason,
         {
           ...snapshot,
+          field,
           revisionNumber,
           correctionReason: reason,
           aggregateVersion: day.version,

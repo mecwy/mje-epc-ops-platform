@@ -4,7 +4,7 @@ import {
   type ContainerClient,
 } from '@azure/storage-blob';
 import type { TokenCredential } from '@azure/identity';
-import type { PhotoBlob, PhotoBlobStore } from '@mje/domain';
+import type { PhotoBlob, SelfieBlobStore } from '@mje/domain';
 
 export const EVIDENCE_CONTAINER = 'evidence';
 
@@ -16,7 +16,7 @@ export const EVIDENCE_CONTAINER = 'evidence';
  * In Azure the app authenticates with its managed identity (no account key); the connection
  * string form is for the local Azurite emulator only.
  */
-export class AzurePhotoBlobStore implements PhotoBlobStore {
+export class AzurePhotoBlobStore implements SelfieBlobStore {
   constructor(private readonly container: ContainerClient) {}
 
   static fromConnectionString(
@@ -73,6 +73,17 @@ export class AzurePhotoBlobStore implements PhotoBlobStore {
     const properties = await blob.getProperties();
     if (properties.contentType !== contentType)
       await blob.setHTTPHeaders({ blobContentType: contentType });
+  }
+
+  /**
+   * Selfie retention only (A6b; keys under `selfie/`): a key that is already gone counts as
+   * deleted. Evidence photos are never deleted. Needs delete permission on the container
+   * (an infra item for the worker identity).
+   */
+  async delete(key: string) {
+    if (!key.startsWith('selfie/'))
+      throw new Error('Only selfie blobs are ever deleted');
+    await this.container.getBlockBlobClient(key).deleteIfExists();
   }
 
   async get(key: string): Promise<PhotoBlob | null> {
