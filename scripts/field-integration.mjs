@@ -782,24 +782,37 @@ try {
         [ms],
       )
     ).rows[0].t;
-  const untilDb = async (iso, timeoutMs = STEP_MS) => {
+  // Wait until the database clock is past `iso` by `clearanceMs` (also by that clock: a host
+  // timer says nothing about how far the database clock has moved).
+  const untilDb = async (iso, timeoutMs = STEP_MS, clearanceMs = 0) => {
     const until = Date.now() + timeoutMs;
     for (;;) {
       const r = await withTimeout(
-        owner.query('SELECT clock_timestamp() > $1::timestamptz AS past', [
-          iso,
-        ]),
+        owner.query(
+          `SELECT clock_timestamp() > $1::timestamptz + $2 * interval '1 millisecond' AS past`,
+          [iso, clearanceMs],
+        ),
         5_000,
         'database clock poll',
       );
       if (r.rows[0].past) return;
       if (Date.now() > until)
         throw new Error(
-          `timed out waiting for the database clock to pass ${iso} (step: ${currentStep})`,
+          `timed out waiting for the database clock to pass ${iso} + ${clearanceMs} ms (step: ${currentStep})`,
         );
       await sleep(100);
     }
   };
+  /** How long ago `t` was, by the database clock that wrote it (the host's may differ). */
+  const dbAgeMs = async (t) =>
+    Number(
+      (
+        await owner.query(
+          `SELECT extract(epoch FROM clock_timestamp() - $1::timestamptz) * 1000 AS ms`,
+          [t],
+        )
+      ).rows[0].ms,
+    );
 
   /**
    * Throttles use fixed, clock-aligned windows. Wait (by the database clock) until at least a
@@ -985,24 +998,12 @@ try {
     );
     // Nothing is backdated.
     await expectStatus(
-      change([
-        open(
-          C.C3,
-          person.w1,
-          'MEMBER',
-          new Date(Date.now() - 60_000).toISOString(),
-        ),
-      ]),
+      change([open(C.C3, person.w1, 'MEMBER', await dbFuture(-60_000))]),
       409,
       'ROSTER_TIME_INVALID',
     );
     await expectStatus(
-      change([
-        close(
-          assignment(person.w1),
-          new Date(Date.now() - 60_000).toISOString(),
-        ),
-      ]),
+      change([close(assignment(person.w1), await dbFuture(-60_000))]),
       409,
       'ROSTER_TIME_INVALID',
     );
@@ -1507,8 +1508,7 @@ try {
     const releaseW4 = await holdAdvisory(personKey(person.w4));
     const acrossE = fConfirm(dev.f1.token, person.w4, '123456');
     await advisoryWaiters(personKey(person.w4), 1);
-    await untilDb(E);
-    await sleep(200);
+    await untilDb(E, STEP_MS, 200);
     await releaseW4();
     await expectStatus(acrossE, 403, 'NOT_FOREMAN');
     await expectStatus(
@@ -1784,9 +1784,8 @@ try {
       [dev.f2.id],
     );
     await expectStatus(me(dev.f2.token), 200);
-    assert.ok(
-      Date.now() - (await row(dev.f2.id)).lastSeenAt.getTime() < 60_000,
-    );
+    const seenAge = await dbAgeMs((await row(dev.f2.id)).lastSeenAt);
+    assert.ok(Number.isFinite(seenAge) && seenAge >= 0 && seenAge < 60_000);
     pass(
       'idle deadline: requests that decide just before the deadline serialize FOR UPDATE and the first records activity, so a request after the original deadline is still served; B first → EXPIRED(IDLE) committed, then A sees it (never revived); a FOR SHARE request whose wall clock crossed into the last day while it waited reclassifies and records its activity; the deferred update refuses an older authAt, a terminal row and a row within a day of its deadline',
     );
@@ -1889,10 +1888,16 @@ try {
           [projectA],
         )
       ).rows[0].m;
-    // Field requests advance the mark (at most once a second), never past the clock.
+    // Field requests advance the mark (at most once a second), never past the clock. The roster
+    // write above refreshed it already, so stale it first: the request must advance it itself.
+    await travel(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = now() - interval '1 hour' WHERE "projectId"=$1`,
+      [projectA],
+    );
     await expectStatus(me(dev.c1.token), 200);
     const observed = await mark();
-    assert.ok(observed && Date.now() - observed.getTime() < 60_000);
+    const markAge = observed ? await dbAgeMs(observed) : NaN;
+    assert.ok(Number.isFinite(markAge) && markAge >= 0 && markAge < 60_000);
     await travel(
       `UPDATE "ProjectRoster" SET "clockHighWater" = now() + interval '1 hour' WHERE "projectId"=$1`,
       [projectA],
@@ -2010,8 +2015,7 @@ try {
     let unlock = await holdRow(dev.c2.id);
     const waiting = me(dev.c2.token);
     await rowWaiters(1);
-    await untilDb(D);
-    await sleep(300);
+    await untilDb(D, STEP_MS, 300);
     await markPast(D);
     await unlock();
     await expectStatus(waiting, 401, 'DEVICE_ENDED');
@@ -2024,8 +2028,7 @@ try {
     unlock = await holdAdvisory(personKey(person.c3));
     const continuing = change([open(C.C1, person.c3, 'MEMBER', D2)]);
     await advisoryWaiters(personKey(person.c3), 1);
-    await untilDb(D2);
-    await sleep(300);
+    await untilDb(D2, STEP_MS, 300);
     await markPast(D2);
     await unlock();
     await expectStatus(continuing, 200);
