@@ -10,13 +10,16 @@
 // config file that is never committed (default private/dev-deploy.json; values are kept in the
 // private runbook). The signed-in az account must be that tenant and subscription. Only a commit
 // already on origin/main is built, from a `git archive` export (no working-tree files, no .env).
-// Prints no secrets; az runs with the operator's own login.
+// az runs with the operator's own login. Output: own progress lines and stop messages only; the
+// stderr of git / az / the smoke is captured, never printed, and kept in a local error log (its
+// path is printed). Every wait has an elapsed-time deadline and every subprocess a timeout.
 import { execFileSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,7 +35,6 @@ export interface DeployConfig {
   apiClientId: string;
   spaClientId: string;
   storageAccountName: string;
-  migrationJobName: string;
 }
 export type Command = 'migrate' | 'app' | 'all';
 export interface Options {
@@ -76,7 +78,8 @@ export function parseArgs(argv: readonly string[]): Options {
     else if (flag === '--config') options.config = value();
     else if (flag === '--record') options.record = value();
     else if (flag === '--dry-run') options.dryRun = true;
-    else throw new DeployStop(`unknown option ${String(flag)}`);
+    // The value is not echoed: a mistyped argument may be something the operator pasted.
+    else throw new DeployStop('unknown option');
   }
   return options;
 }
@@ -94,11 +97,10 @@ export function validateConfig(raw: unknown): DeployConfig {
     apiClientId: GUID,
     spaClientId: GUID,
     storageAccountName: STORAGE_OR_REGISTRY,
-    migrationJobName: AZURE_NAME,
   };
   const record = raw as Record<string, unknown>;
   for (const key of Object.keys(record))
-    if (!(key in shapes))
+    if (!Object.hasOwn(shapes, key))
       throw new DeployStop(`unknown deploy config key ${key}`);
   for (const [key, shape] of Object.entries(shapes)) {
     const v = record[key];
@@ -173,8 +175,9 @@ export function deployMigrationJob(
     `registryName=${c.registryName}`,
     `postgresFqdn=${c.postgresFqdn}`,
     `imageReference=${image}`,
+    // The job the template created (its `jobName` output): start and poll exactly that job.
     '--query',
-    'properties.provisioningState',
+    'properties.outputs.jobName.value',
     '-o',
     'tsv',
   ];
@@ -219,58 +222,122 @@ export function jobOutcome(status: string): 'wait' | 'ok' | 'stop' {
   return 'stop';
 }
 
-// ---------- side effects (not unit-tested; dry-run prints instead of running az) ----------
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const run = (file: string, args: readonly string[], cwd?: string) =>
-  execFileSync(file, args, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
-    maxBuffer: 16 * 1024 * 1024,
-  }).trim();
+/** Our own stop messages only; anything else is reported by its type, never its details. */
+export function failureMessage(error: unknown): string {
+  return error instanceof DeployStop
+    ? `dev-deploy stopped: ${error.message}`
+    : `dev-deploy failed: ${error instanceof Error ? error.name : 'error'}`;
+}
+
+/** True when this module is the program being run, also through a symlink. */
+export function isEntryPoint(
+  argv1: string | undefined,
+  moduleUrl: string,
+): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+// ---------- side effects (dry-run prints az commands instead of running them) ----------
+export const ERROR_LOG = join(tmpdir(), 'mje-dev-deploy-errors.log');
+const MINUTE = 60_000;
+const sleep = (ms: number) =>
+  new Promise((r) => setTimeout(r, Math.max(0, ms)));
+
+/**
+ * Runs a subprocess with a timeout; stderr is captured. On failure the details go to the local
+ * error log and only `label` and the kind of failure are reported.
+ */
+function run(
+  label: string,
+  file: string,
+  args: readonly string[],
+  timeoutMs: number,
+  input?: Buffer,
+): Buffer {
+  try {
+    return execFileSync(file, args, {
+      ...(input ? { input } : {}),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: Math.max(1, timeoutMs),
+      killSignal: 'SIGKILL',
+      maxBuffer: 512 * 1024 * 1024,
+    });
+  } catch (error) {
+    const e = error as {
+      status?: number | null;
+      signal?: string | null;
+      stderr?: Buffer;
+    };
+    appendFileSync(
+      ERROR_LOG,
+      `${new Date().toISOString()} ${label}\n${String(e.stderr ?? '')}\n`,
+    );
+    const why = e.signal
+      ? 'timed out or was stopped'
+      : `failed (exit ${String(e.status)})`;
+    throw new DeployStop(`${label} ${why}; details in ${ERROR_LOG}`);
+  }
+}
+const text = (b: Buffer) => b.toString('utf8').trim();
 
 async function main(options: Options) {
   const repo = resolve(fileURLToPath(new URL('..', import.meta.url)));
-  if (!existsSync(join(repo, options.config)) && !existsSync(options.config))
-    throw new DeployStop(`deploy config not found: ${options.config}`);
-  const configPath = existsSync(options.config)
-    ? options.config
-    : join(repo, options.config);
-  const config = validateConfig(JSON.parse(readFileSync(configPath, 'utf8')));
-  const az = (args: string[]) => {
+  const configPath = [options.config, join(repo, options.config)].find((p) =>
+    existsSync(p),
+  );
+  if (!configPath) throw new DeployStop('deploy config not found');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(configPath, 'utf8'));
+  } catch {
+    throw new DeployStop('the deploy config is not valid JSON');
+  }
+  const config = validateConfig(raw);
+  const az = (label: string, args: string[], timeoutMs = 5 * MINUTE) => {
     if (options.dryRun) {
       console.log(`[dry-run] az ${args.join(' ')}`);
       return '';
     }
-    return run('az', args);
+    return text(run(`az ${label}`, 'az', args, timeoutMs));
   };
+  const git = (label: string, args: string[]) =>
+    run(`git ${label}`, 'git', ['-C', repo, ...args], 2 * MINUTE);
 
-  run('git', ['-C', repo, 'fetch', '-q', 'origin']);
-  const sha = run('git', [
-    '-C',
-    repo,
-    'rev-parse',
-    `${options.sha ?? 'origin/main'}^{commit}`,
-  ]);
+  git('fetch', ['fetch', '-q', 'origin']);
+  const sha = text(
+    git('rev-parse', [
+      'rev-parse',
+      '--verify',
+      '--end-of-options',
+      `${options.sha ?? 'origin/main'}^{commit}`,
+    ]),
+  );
   if (!SHA.test(sha)) throw new DeployStop('the commit could not be resolved');
   try {
-    run('git', ['-C', repo, 'merge-base', '--is-ancestor', sha, 'origin/main']);
+    git('merge-base', ['merge-base', '--is-ancestor', sha, 'origin/main']);
   } catch {
     throw new DeployStop('only a commit already on origin/main is deployed');
   }
   console.log(`commit = ${sha}`);
 
   if (!options.dryRun) {
-    const tenant = run('az', [
+    const account = az('account show', [
       'account',
       'show',
       '--query',
-      'tenantId',
+      '[tenantId, name]',
       '-o',
       'tsv',
-    ]);
-    const name = run('az', ['account', 'show', '--query', 'name', '-o', 'tsv']);
-    if (tenant !== config.tenantId || name !== config.subscriptionName)
+    ]).split('\n');
+    if (
+      account[0] !== config.tenantId ||
+      account[1] !== config.subscriptionName
+    )
       throw new DeployStop(
         'the signed-in az account is not the configured tenant and subscription',
       );
@@ -279,20 +346,17 @@ async function main(options: Options) {
   const source = mkdtempSync(join(tmpdir(), 'mje-deploy-'));
   const lines: string[] = [];
   try {
-    const tar = execFileSync(
-      'git',
-      ['-C', repo, 'archive', '--format=tar', sha],
-      {
-        maxBuffer: 512 * 1024 * 1024,
-      },
-    );
-    execFileSync('tar', ['-x', '-C', source], { input: tar });
+    const tar = git('archive', ['archive', '--format=tar', sha]);
+    run('tar -x', 'tar', ['-x', '-C', source], 2 * MINUTE, tar);
     if (existsSync(join(source, '.env')))
       throw new DeployStop('the exported source contains .env');
 
     const image = (repository: 'mje-migrate' | 'mje-app') => {
-      az(buildImage(config, repository, sha, source));
-      const digest = az(imageDigest(config, repository, sha));
+      az('acr build', buildImage(config, repository, sha, source), 30 * MINUTE);
+      const digest = az(
+        'acr repository show',
+        imageDigest(config, repository, sha),
+      );
       if (!options.dryRun && !/^sha256:[0-9a-f]{64}$/.test(digest))
         throw new DeployStop(`no digest for ${repository}:${sha}`);
       return `${config.registryName}.azurecr.io/${repository}@${digest || 'sha256:<dry-run>'}`;
@@ -300,13 +364,20 @@ async function main(options: Options) {
 
     if (options.command !== 'app') {
       const migrateImage = image('mje-migrate');
-      az(deployMigrationJob(config, sha, source, migrateImage));
-      const execution = az([
+      const job =
+        az(
+          'deployment group create (migration job)',
+          deployMigrationJob(config, sha, source, migrateImage),
+          15 * MINUTE,
+        ) || '<dry-run>';
+      if (!options.dryRun && !/^[a-z0-9][a-z0-9-]{1,62}$/.test(job))
+        throw new DeployStop('the migration deployment returned no job name');
+      const execution = az('containerapp job start', [
         'containerapp',
         'job',
         'start',
         '-n',
-        config.migrationJobName,
+        job,
         '-g',
         config.resourceGroup,
         '--query',
@@ -316,23 +387,33 @@ async function main(options: Options) {
       ]);
       let status = '';
       if (!options.dryRun) {
-        for (let i = 0; i < 60; i++) {
-          status = az([
-            'containerapp',
-            'job',
-            'execution',
-            'show',
-            '-n',
-            config.migrationJobName,
-            '-g',
-            config.resourceGroup,
-            '--job-execution-name',
-            execution,
-            '--query',
-            'properties.status',
-            '-o',
-            'tsv',
-          ]);
+        if (!/^[a-z0-9][a-z0-9-]{1,80}$/.test(execution))
+          throw new DeployStop('the job start returned no execution name');
+        // Elapsed-time deadline: 600 s in all, each poll bounded by what is left.
+        const deadline = Date.now() + 10 * MINUTE;
+        for (;;) {
+          const left = deadline - Date.now();
+          if (left <= 0) break;
+          status = az(
+            'containerapp job execution show',
+            [
+              'containerapp',
+              'job',
+              'execution',
+              'show',
+              '-n',
+              job,
+              '-g',
+              config.resourceGroup,
+              '--job-execution-name',
+              execution,
+              '--query',
+              'properties.status',
+              '-o',
+              'tsv',
+            ],
+            Math.min(MINUTE, left),
+          );
           console.log(`migration ${execution}: ${status || '(no status)'}`);
           const outcome = jobOutcome(status);
           if (outcome === 'ok') break;
@@ -340,7 +421,7 @@ async function main(options: Options) {
             throw new DeployStop(
               `migration ${status}; the app is not deployed`,
             );
-          await sleep(10_000);
+          await sleep(Math.min(10_000, deadline - Date.now()));
         }
         if (jobOutcome(status) !== 'ok')
           throw new DeployStop(
@@ -348,40 +429,61 @@ async function main(options: Options) {
           );
       }
       lines.push(
-        `migration main@${sha.slice(0, 7)} (${migrateImage.split('@')[1]}) execution ${execution || '<dry-run>'}: ${status || 'dry-run'}`,
+        `migration main@${sha.slice(0, 7)} (${migrateImage.split('@')[1]}) job ${job} execution ${execution || '<dry-run>'}: ${status || 'dry-run'}`,
       );
     }
 
     if (options.command !== 'migrate') {
       const appImage = image('mje-app');
-      const url = az(deployApp(config, sha, source, appImage));
+      const url = az(
+        'deployment group create (app)',
+        deployApp(config, sha, source, appImage),
+        15 * MINUTE,
+      );
       let smoke = 'dry-run';
       if (!options.dryRun) {
         if (!/^https:\/\/[a-z0-9.-]+$/i.test(url))
           throw new DeployStop('the app deployment returned no https URL');
-        // Bounded wait (<= 120 s) for the new revision, so a cold start is not a failed smoke.
-        let waited = 0;
-        for (; waited <= 120; waited += 5) {
+        // Elapsed-time deadline (120 s) for the new revision, so a cold start is not a failed
+        // smoke; each request is bounded by what is left.
+        const started = Date.now();
+        const deadline = started + 2 * MINUTE;
+        for (;;) {
+          const left = deadline - Date.now();
+          if (left <= 0) break;
           const live = await fetch(`${url}/health/live`, {
-            signal: AbortSignal.timeout(10_000),
+            signal: AbortSignal.timeout(Math.min(10_000, left)),
           })
             .then((r) => r.text())
             .catch(() => '');
           if (live.includes(`"revision":"${sha}"`)) break;
-          await sleep(5_000);
+          await sleep(Math.min(5_000, deadline - Date.now()));
         }
-        console.log(`revision wait ${Math.min(waited, 120)} s`);
-        let out: string;
+        console.log(
+          `revision wait ${Math.round((Date.now() - started) / 1000)} s`,
+        );
+        let out = '';
         try {
-          out = run(process.execPath, [
-            join(source, 'scripts/dev-smoke.mjs'),
-            url,
-            sha,
-          ]);
+          out = text(
+            execFileSync(
+              process.execPath,
+              [join(source, 'scripts/dev-smoke.mjs'), url, sha],
+              {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                timeout: 3 * MINUTE,
+                killSignal: 'SIGKILL',
+              },
+            ),
+          );
         } catch (error) {
-          out = String((error as { stdout?: unknown }).stdout ?? '').trim();
+          // The smoke exits 1 on a failed check; its stdout is still its one JSON summary.
+          const e = error as { stdout?: Buffer; stderr?: Buffer };
+          out = text(e.stdout ?? Buffer.alloc(0));
+          appendFileSync(
+            ERROR_LOG,
+            `${new Date().toISOString()} smoke\n${String(e.stderr ?? '')}\n`,
+          );
         }
-        console.log(out);
         const parsed = (() => {
           try {
             return JSON.parse(out) as {
@@ -393,6 +495,7 @@ async function main(options: Options) {
             return null;
           }
         })();
+        if (parsed) console.log(out);
         smoke = parsed
           ? `smoke ok=${String(parsed.ok)} ${String(parsed.checks)} checks, ${String(parsed.failed?.length ?? '?')} failed`
           : 'smoke output unreadable';
@@ -412,17 +515,14 @@ async function main(options: Options) {
     appendFileSync(options.record, `- ${summary}\n`);
 }
 
-if (
-  process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
-  main(parseArgs(process.argv.slice(2))).catch((error: unknown) => {
-    // Our own stop messages only; anything else is reported by its type, never its details.
-    console.error(
-      error instanceof DeployStop
-        ? `dev-deploy stopped: ${error.message}`
-        : `dev-deploy failed: ${error instanceof Error ? error.name : 'error'}`,
-    );
-    process.exitCode = 1;
-  });
+if (isEntryPoint(process.argv[1], import.meta.url)) {
+  void (async () => {
+    try {
+      // Arguments are parsed inside the same boundary: a bad option is a stop message too.
+      await main(parseArgs(process.argv.slice(2)));
+    } catch (error) {
+      console.error(failureMessage(error));
+      process.exitCode = 1;
+    }
+  })();
 }
