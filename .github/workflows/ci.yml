@@ -33,6 +33,7 @@ jobs:
       - run: pnpm test:report
       - run: pnpm test:issues
       - run: pnpm test:photos
+      - run: pnpm test:report-lookups
       - run: pnpm test:field
       - run: pnpm test:add-member
       - run: pnpm test:authz-version

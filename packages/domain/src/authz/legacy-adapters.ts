@@ -161,42 +161,6 @@ export interface LegacyAdapter {
 const READS = 'A7-0e';
 
 export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
-  {
-    file: `${D}photo-store.ts`,
-    site: 'latestFrozen / isFrozen / latestFrozenAs / upload',
-    table: 'DailyClose',
-    access: 'read',
-    why: 'which photos a submission froze; whether a day is open for upload',
-    replacement: 'reportReader frozen-photo and day-state lookups',
-    removal: READS,
-  },
-  {
-    file: `${D}photo-store.ts`,
-    site: 'latestFrozen / isFrozen / latestFrozenAs',
-    table: 'Revision',
-    access: 'read',
-    why: 'the photos frozen in the latest submitted revision',
-    replacement: 'reportReader frozen-photo lookup',
-    removal: READS,
-  },
-  {
-    file: `${D}checkin-store.ts`,
-    site: 'submittedBoundary',
-    table: 'DailyClose',
-    access: 'read',
-    why: 'the field sequence boundary frozen by the latest submission',
-    replacement: 'reportReader submitted-boundary lookup',
-    removal: READS,
-  },
-  {
-    file: `${D}checkin-store.ts`,
-    site: 'submittedBoundary',
-    table: 'Revision',
-    access: 'read',
-    why: 'the field sequence boundary frozen by the latest submission',
-    replacement: 'reportReader submitted-boundary lookup',
-    removal: READS,
-  },
   ...(['DailyClose', 'Revision'] as const).map((table): LegacyAdapter => ({
     file: `${D}alpha-store.ts`,
     site: 'AlphaStore (list / get / record / save)',

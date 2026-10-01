@@ -23,9 +23,15 @@ import {
 } from './photo-file.js';
 import { withoutLocationMetadata } from './photo-strip.js';
 import { siteIssueExists } from './issue-lookups.js';
-import { activeWorkItemExists, activeWorkItemKeys } from './report-lookups.js';
 import {
-  REPORT_SCOPE,
+  activeWorkItemExists,
+  activeWorkItemKeys,
+  reportFrozenPhotos,
+  reportPhotoWasFrozen,
+  latestReportFrozenPhoto,
+  reportUploadDayState,
+} from './report-lookups.js';
+import {
   ReportError,
   audit,
   idempotent,
@@ -283,48 +289,24 @@ async function latestFrozen(
   projectId: string,
   businessDate: string,
 ): Promise<PhotoAsOfDto[]> {
-  const r = await client.query<{ photos: PhotoAsOfDto[] | null }>(
-    `SELECT r.snapshot->'photos' AS photos FROM "DailyClose" d
-    JOIN "Revision" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
-    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."businessDate"=$3::date AND d."scopeKey"=$4`,
-    [orgId, projectId, businessDate, REPORT_SCOPE],
-  );
-  return r.rows[0]?.photos ?? [];
-}
-/** Whether a photo is frozen in any submitted revision of a report day of the project (OD18). */
+  return reportFrozenPhotos(client, orgId, projectId, businessDate);
+} /** Whether a photo is frozen in any submitted revision of a report day of the project (OD18). */
 async function isFrozen(
   client: PoolClient,
   orgId: string,
   projectId: string,
   photoId: string,
 ): Promise<boolean> {
-  const r = await client.query<{ frozen: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM "Revision" r JOIN "DailyClose" d ON d."orgId"=r."orgId" AND d.id=r."dailyCloseId"
-      WHERE r."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
-        AND r.snapshot->'photos' @> jsonb_build_array(jsonb_build_object('id', $4::text))) AS frozen`,
-    [orgId, projectId, REPORT_SCOPE, photoId],
-  );
-  return r.rows[0]!.frozen;
-}
-/** The photo as the latest submitted revision that froze it has it; null if none did. */
+  return reportPhotoWasFrozen(client, orgId, projectId, photoId);
+} /** The photo as the latest submitted revision that froze it has it; null if none did. */
 async function latestFrozenAs(
   client: PoolClient,
   orgId: string,
   projectId: string,
   photoId: string,
 ): Promise<PhotoAsOfDto | null> {
-  const r = await client.query<{ photo: PhotoAsOfDto }>(
-    `SELECT e AS photo FROM "Revision" r JOIN "DailyClose" d ON d."orgId"=r."orgId" AND d.id=r."dailyCloseId"
-      CROSS JOIN LATERAL jsonb_array_elements(r.snapshot->'photos') e
-      WHERE r."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
-        AND r.snapshot->'photos' @> jsonb_build_array(jsonb_build_object('id', $4::text))
-        AND e->>'id'=$4::text
-      ORDER BY d."businessDate" DESC, r."revisionNumber" DESC LIMIT 1`,
-    [orgId, projectId, REPORT_SCOPE, photoId],
-  );
-  return r.rows[0]?.photo ?? null;
-}
-/** What a submission freezes of a photo: source, position kind, times and the current link. */
+  return latestReportFrozenPhoto(client, orgId, projectId, photoId);
+} /** What a submission freezes of a photo: source, position kind, times and the current link. */
 export function photoAsOf(p: PhotoDto): PhotoAsOfDto {
   return {
     id: p.id,
@@ -655,15 +637,12 @@ export class PhotoStore {
             project.id,
             command.businessDate,
           );
-          const day = await client.query<{
-            state: string;
-            correctionReason: string | null;
-          }>(
-            `SELECT state, "correctionReason" FROM "DailyClose"
-            WHERE "orgId"=$1 AND "projectId"=$2 AND "businessDate"=$3::date AND "scopeKey"=$4`,
-            [actor.orgId, project.id, command.businessDate, REPORT_SCOPE],
+          const d = await reportUploadDayState(
+            client,
+            actor.orgId,
+            project.id,
+            command.businessDate,
           );
-          const d = day.rows[0];
           if (d?.state === 'SUBMITTED' && d.correctionReason === null)
             throw new ReportError('LOCKED');
           if (command.link)
