@@ -92,6 +92,10 @@ export function useDay(
           facts: d.facts,
         })),
     reload: () => store.read(e, false),
+    /** Inputs a conflict reload set aside: filled in again or ignored by the user, never auto-written. */
+    retained: s.retained,
+    refill: (path: string) => store.refill(e, path),
+    dismiss: (path: string) => store.dismiss(e, path),
     reloadLocked: () => store.reloadLocked(e),
     submit: () =>
       store.act(e, (v) => api.submit({ ...base(), expectedVersion: v })),

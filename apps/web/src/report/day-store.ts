@@ -5,7 +5,7 @@ import {
   type ReportApi,
   type ReportContent,
 } from '../api.js';
-import { DraftSession, type FlushOutcome } from './draft.js';
+import { DraftSession, leaf, type FlushOutcome } from './draft.js';
 import { ReadFence } from '../read-fence.js';
 import { UNSETTLED } from '../field/session.js';
 import { setFact } from './model.js';
@@ -352,6 +352,24 @@ export class DayStore {
     const outcome = await e.session.flush();
     await this.settleAfter(e, outcome);
     return outcome;
+  }
+  /**
+   * Fill a retained input in again, as an edit of the user's (autosaved on the day's current
+   * version); refused while the day is locked. Nothing else ever writes a retained input.
+   */
+  refill(e: DayEntry, path: string): boolean {
+    if (e.lock !== null) return false;
+    const r = e.session.retained.find((x) => x.path === path);
+    if (!r) return false;
+    if (leaf(e.session.facts, path) === r.mine) {
+      e.session.dismiss(path);
+      return true;
+    }
+    return this.edit(e, path, r.mine);
+  }
+  /** Drop a retained input without writing it. */
+  dismiss(e: DayEntry, path: string) {
+    e.session.dismiss(path);
   }
   cancelAutosave() {
     if (this.timer) clearTimeout(this.timer);

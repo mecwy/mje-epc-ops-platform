@@ -193,3 +193,101 @@ describe('draft session: reads and locks', () => {
     expect(s.dirty).toBe(false);
   });
 });
+
+describe('input set aside by a conflict reload', () => {
+  const withPeople = (f: DayFactsDto, n: string) =>
+    setFact(f, 'people.installer', n);
+  /** Type, let the save conflict, then adopt what the server holds now. */
+  async function conflicted(serverFacts: DayFactsDto, version = 3) {
+    const srv = server();
+    const s = session('d', srv);
+    s.edit(withPeople(withQty('7'), '3'));
+    const settled = s.settle();
+    await tick();
+    srv.calls[0]!.settle(new ApiError('VERSION_CONFLICT', 409));
+    expect(await settled).toBe('conflict');
+    // The replacement read has not landed yet: nothing is lost and nothing is set aside.
+    expect(s.facts.qty['support']).toBe('7');
+    expect(s.dirty).toBe(true);
+    expect(s.retained).toEqual([]);
+    s.reset(version, serverFacts);
+    return { srv, s };
+  }
+
+  it('keeps what was typed, not untouched fields nor a field the server now holds alike', async () => {
+    const server_ = setFact(withPeople(withQty('5'), '3'), 'weather', 'sunny');
+    const { s } = await conflicted(server_);
+    expect(s.retained).toEqual([{ path: 'qty.support', mine: '7' }]);
+    expect(s.facts).toBe(server_);
+    expect(s.dirty).toBe(false);
+    expect(s.state).toBe('idle');
+  });
+
+  it('a field another person cleared is shown against empty and filled in again on the new version', async () => {
+    const { srv, s } = await conflicted(withPeople(empty(), '3'));
+    expect(s.retained).toEqual([{ path: 'qty.support', mine: '7' }]);
+    expect(s.facts.qty['support']).toBeUndefined();
+    expect(s.refill('qty.support')).toBe(true);
+    expect(s.retained).toEqual([]);
+    expect(s.facts.qty['support']).toBe('7');
+    const flushed = s.flush();
+    await tick();
+    expect(srv.calls[1]!.command.expectedVersion).toBe(3);
+    expect(srv.calls[1]!.command.facts.qty['support']).toBe('7');
+    srv.ok(1, 4);
+    expect(await flushed).toBe('ok');
+    expect(s.dirty).toBe(false);
+  });
+
+  it('a conflict on the refilled value sets it aside again; an earlier one not yet handled stays', async () => {
+    const { srv, s } = await conflicted(
+      setFact(withPeople(withQty('5'), '9'), 'weather', 'x'),
+    );
+    const paths = () => s.retained.map((r) => r.path).sort();
+    expect(paths()).toEqual(['people.installer', 'qty.support']);
+    s.refill('qty.support');
+    const flushed = s.flush();
+    await tick();
+    srv.calls[1]!.settle(new ApiError('VERSION_CONFLICT', 409));
+    expect(await flushed).toBe('conflict');
+    s.reset(5, withPeople(withQty('8'), '9'));
+    expect(paths()).toEqual(['people.installer', 'qty.support']);
+    expect(s.retained.find((r) => r.path === 'qty.support')?.mine).toBe('7');
+    expect(s.facts.qty['support']).toBe('8');
+  });
+
+  it('editing the field drops its set-aside input; editing another field keeps it', async () => {
+    const { s } = await conflicted(withPeople(withQty('5'), '9'));
+    s.edit(setFact(s.facts, 'weather', 'rain'));
+    expect(s.retained.map((r) => r.path).sort()).toEqual([
+      'people.installer',
+      'qty.support',
+    ]);
+    s.edit(setFact(s.facts, 'qty.support', '6'));
+    expect(s.retained.map((r) => r.path)).toEqual(['people.installer']);
+  });
+
+  it('ignoring drops the input without touching the facts', async () => {
+    const { s } = await conflicted(withPeople(withQty('5'), '3'));
+    s.dismiss('qty.support');
+    expect(s.retained).toEqual([]);
+    expect(s.facts.qty['support']).toBe('5');
+    expect(s.dirty).toBe(false);
+  });
+
+  it('nothing is filled in again while an action or a hold freezes the session', async () => {
+    const { s } = await conflicted(withPeople(withQty('5'), '3'));
+    s.locked = true;
+    expect(s.refill('qty.support')).toBe(false);
+    expect(s.retained).toEqual([{ path: 'qty.support', mine: '7' }]);
+    expect(s.facts.qty['support']).toBe('5');
+  });
+
+  it('an input set aside earlier is dropped once the server holds that value; a settled reset keeps nothing', async () => {
+    const { s } = await conflicted(withPeople(withQty('5'), '3'));
+    s.reset(4, withPeople(withQty('7'), '3'));
+    expect(s.retained).toEqual([]);
+    s.reset(5, withPeople(withQty('1'), '3'));
+    expect(s.retained).toEqual([]);
+  });
+});
