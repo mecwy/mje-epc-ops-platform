@@ -63,3 +63,17 @@ export function hasCredentialPattern(text) {
     /[?&]sig=[A-Za-z0-9%+/=]{16,}/.test(text)
   );
 }
+
+/**
+ * One NUL-terminated record of `git ls-files --stage -z`: '<mode> <object> <stage>\t<path>'.
+ * The path is everything after the first tab, verbatim: with -z git does not quote paths, so a
+ * path can itself contain tabs or newlines. Null for a record without a tab (never accepted).
+ * @param {string} record
+ * @returns {{ mode: string, stage: string, path: string } | null}
+ */
+export function parseStageRecord(record) {
+  const tab = record.indexOf('\t');
+  if (tab < 0) return null;
+  const [mode = '', , stage = ''] = record.slice(0, tab).split(' ');
+  return { mode, stage, path: record.slice(tab + 1) };
+}
