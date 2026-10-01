@@ -1,64 +1,61 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createClockWatch, MAX_SAMPLE_GAP_MS } from './clock-watch.mjs';
+import { createClockWatch, FRESH_MS } from './clock-watch.mjs';
 
 /** Samples every 10 ms of host time, 2 ms round trip; `db(t)` gives the database time. */
 function feed(watch, from, to, db) {
   for (let t = from; t < to; t += 10) watch.record(t, t + 2, db(t));
 }
 
-test('a monotonic clock explains nothing and never holds anything back', () => {
+test('a monotonic clock never holds anything back and reports nothing', () => {
   const w = createClockWatch();
+  assert.equal(w.hold(0), false, 'no samples');
   feed(w, 0, 5_000, (t) => 1e12 + t);
-  assert.equal(w.behind(), false);
-  assert.equal(w.overlaps(0, 5_000), false);
-  assert.deepEqual(w.summary(), { count: 0, maxMs: 0 });
+  assert.equal(w.hold(4_995), false);
+  assert.deepEqual(w.summary(), { count: 0, maxMs: 0, maxGapMs: 0 });
 });
 
-test('a step back is behind until the clock passes what it showed, and explains only overlapping requests', () => {
+test('a step back holds while fresh samples are behind and releases once the clock reaches what it showed', () => {
   const w = createClockWatch();
   // At host 1000 the database clock steps back 800 ms.
   const db = (t) => 1e12 + t - (t >= 1_000 ? 800 : 0);
   feed(w, 0, 1_000, db);
-  assert.equal(w.behind(), false, 'the step has not been sampled yet');
+  assert.equal(w.hold(995), false, 'the step has not been sampled yet');
   feed(w, 1_000, 1_500, db);
-  assert.equal(w.behind(), true);
-  assert.equal(w.overlaps(1_400, 1_450), true, 'still open');
-  feed(w, 1_500, 3_000, db);
-  assert.equal(w.behind(), false);
-  // Behind from just after the last sample before the step until about 1800 (+ the gap).
-  assert.equal(w.overlaps(995, 1_001), true);
-  assert.equal(w.overlaps(1_790, 1_795), true);
-  assert.equal(
-    w.overlaps(0, 980),
-    false,
-    'a request that ended before the step',
-  );
-  assert.equal(w.overlaps(1_850, 2_000), false, 'a request after it caught up');
-  assert.equal(w.summary().count, 1);
-  assert.ok(Math.abs(w.summary().maxMs - 800) <= 10);
+  assert.equal(w.hold(1_495), true);
+  // Released at the first sample at or above the highest database time seen (host 1790):
+  // the clock then reads what it read before the step, never more.
+  feed(w, 1_500, 1_790, db);
+  assert.equal(w.hold(1_785), true);
+  feed(w, 1_790, 1_800, db);
+  assert.equal(w.hold(1_795), false);
+  assert.equal(db(1_790), db(990));
+  feed(w, 1_800, 3_000, db);
+  const s = w.summary();
+  assert.equal(s.count, 1);
+  assert.ok(Math.abs(s.maxMs - 800) <= 10);
+  assert.equal(s.maxGapMs, 12);
   assert.equal(w.summary(2_000).count, 0, 'not reported for a later step');
 });
 
-test('a step smaller than the sampling interval is not seen, so it explains nothing', () => {
-  const w = createClockWatch();
-  feed(w, 0, 2_000, (t) => 1e12 + t - (t >= 1_000 ? 5 : 0));
-  assert.equal(w.overlaps(0, 2_000), false);
-});
-
-test('a stalled probe cannot place a step back, so it explains nothing', () => {
+test('a stale sample never holds: a stalled probe gives no information', () => {
   const w = createClockWatch();
   w.record(0, 2, 1e12);
-  w.record(MAX_SAMPLE_GAP_MS + 100, MAX_SAMPLE_GAP_MS + 102, 1e12 - 300);
-  assert.equal(w.behind(), true, 'still held back');
-  w.record(5_000, 5_002, 1e12 + 5_000);
-  assert.equal(w.overlaps(0, 5_000), false);
-  assert.equal(w.summary().count, 1, 'but still reported');
+  w.record(10, 12, 1e12 - 300);
+  assert.equal(w.hold(12 + FRESH_MS), true);
+  assert.equal(w.hold(13 + FRESH_MS), false);
 });
 
-test('lastSampleStart tells whether a step after a request could have been seen', () => {
+test('a stall after the step opened or before it closed widens the reported gap', () => {
   const w = createClockWatch();
-  assert.equal(w.lastSampleStart(), -Infinity);
-  w.record(40, 42, 1e12);
-  assert.equal(w.lastSampleStart(), 40);
+  w.record(0, 2, 1e12);
+  w.record(10, 12, 1e12 - 300);
+  w.record(810, 812, 1e12 - 200); // stalled 800 ms while behind
+  w.record(820, 822, 1e12 + 900); // caught up
+  assert.equal(w.summary().maxGapMs, 802);
+  const v = createClockWatch();
+  v.record(0, 2, 1e12);
+  v.record(10, 12, 1e12 - 300);
+  v.record(1_500, 1_502, 1e12 + 1_500); // stalled, then caught up
+  assert.equal(v.summary().maxGapMs, 1_492);
 });

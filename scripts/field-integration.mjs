@@ -83,7 +83,8 @@ const step = (name) => {
   stepStartedAt = performance.now();
 };
 // The database clock as a separate connection sees it (a local VM's clock can step back);
-// sampled for the whole run, see clock-watch.mjs. It only explains, never decides.
+// sampled for the whole run, see clock-watch.mjs. It only holds requests back and labels
+// failures; it never changes how an answer is judged.
 const clock = createClockWatch();
 const STEP_MS = 30_000;
 const WATCHDOG_MS = Number(process.env.FIELD_TEST_WATCHDOG_MS ?? 600_000);
@@ -161,7 +162,7 @@ const MIGRATE_MS = Number(process.env.FIELD_TEST_MIGRATE_MS ?? 180_000);
 const failure = (why) => {
   const stepped = clock.summary(stepStartedAt);
   console.error(
-    `FIELD TEST FAILED at step "${currentStep}": ${why}; source ${revision}; TEST database ${database}${stepped.count ? `; the database clock stepped back ${stepped.count} time(s) during this step (max ${stepped.maxMs} ms): check the environment before the code` : ''}`,
+    `FIELD TEST FAILED at step "${currentStep}": ${why}; source ${revision}; TEST database ${database}${stepped.count ? `; the database clock stepped back ${stepped.count} time(s) during this step (max ${stepped.maxMs} ms, probe gap up to ${stepped.maxGapMs} ms): check the environment before the code` : ''}`,
   );
 };
 /** Release functions of every lock the test holds; emptied as they are released. */
@@ -484,16 +485,8 @@ try {
    * clock policy answers RETRY until it catches up. Bounded, counted and reported at the end;
    * switched off where a test expects the 503.
    */
-  const retry = {
-    on: true,
-    force: false,
-    repeated: 0,
-    attributed: 0,
-    counted: 0,
-    heldBack: 0,
-  };
-  // Ordering and deadline tests assert their first attempt: no automatic repetition there,
-  // except of a RETRY that an observed database clock step-back overlaps (clockSteppedBack).
+  const retry = { on: true, force: false, repeated: 0, heldBack: 0 };
+  // Ordering and deadline tests assert their first attempt: no automatic repetition there.
   const FIRST_ATTEMPT = new Set([
     'roster',
     'foreman handover at a scheduled instant',
@@ -512,51 +505,36 @@ try {
     'foreman: adopt, revision and roster vs submit',
   ]);
   /**
-   * Holds a request back while the probe's latest sample is behind the highest database time
-   * seen (the server would refuse with RETRY, or decide on the stepped-back clock). Only delays;
-   * bounded, then sent anyway.
+   * Holds a request back while a fresh probe sample shows the database clock below the highest
+   * time it already showed (the server would refuse with RETRY, or decide on the stepped-back
+   * clock). Released as soon as the clock reaches that time again, so the request is decided no
+   * later in database time than on a clock that never stepped back: a held request can never
+   * cross a database deadline a step set up. Stale samples never hold (clock-watch.mjs).
+   * Bounded, then sent anyway; changes nothing about how answers are judged.
    */
   async function clockSettled() {
-    if (!clock.behind()) return;
+    if (!clock.hold(performance.now())) return;
     retry.heldBack++;
     const until = performance.now() + 3_000;
-    while (clock.behind() && performance.now() < until) await sleep(10);
-  }
-  /**
-   * Whether an observed step-back of the database clock overlaps a request sent at `from` and
-   * answered at `to`: waits (bounded) for a sample sent after `to`, so a step during the
-   * request has been looked for. No sample, no explanation.
-   */
-  async function clockSteppedBack(from, to) {
-    const until = performance.now() + 1_000;
-    while (clock.lastSampleStart() <= to && performance.now() < until)
+    while (clock.hold(performance.now()) && performance.now() < until)
       await sleep(5);
-    return clock.lastSampleStart() > to && clock.overlaps(from, to);
   }
   /**
    * `counted`: the caller counts throttle hits. A throttle counts the request before its
-   * transaction can answer RETRY, so such a RETRY is never repeated; when a step-back overlaps
-   * it, it is returned marked `clockRetry` (a counted hit the caller does not assert), else as is.
+   * transaction can answer RETRY, so a repeat would spend a second hit and surface later as an
+   * unexplained 429; such a RETRY is returned as it is, where it happened.
    */
   async function http(path, { counted = false, ...options }) {
     const until = Date.now() + 10_000;
     for (;;) {
       await clockSettled();
-      const sent = performance.now();
       const r = await httpOnce(path, options);
-      if (r.status !== 503 || r.body?.code !== 'RETRY') return r;
-      if (counted) {
-        if (!(await clockSteppedBack(sent, performance.now()))) return r;
-        retry.counted++;
-        return { ...r, clockRetry: true };
-      }
+      const repeat =
+        !counted &&
+        (retry.force || (retry.on && !FIRST_ATTEMPT.has(currentStep)));
+      if (!repeat || r.status !== 503 || r.body?.code !== 'RETRY') return r;
       if (Date.now() > until) return r;
-      if (retry.force || (retry.on && !FIRST_ATTEMPT.has(currentStep)))
-        retry.repeated++;
-      else if (retry.on && (await clockSteppedBack(sent, performance.now()))) {
-        retry.repeated++;
-        retry.attributed++;
-      } else return r;
+      retry.repeated++;
       await sleep(200);
     }
   }
@@ -2377,9 +2355,7 @@ try {
       fpost('/entry', null, { code: entryCode[projectA] }, { ip: '10.2.0.3' }),
       200,
     );
-    // Bind: 150 / h per IP; 300 / h per code (refused binds count too). Counted hits: a RETRY
-    // after an observed clock step-back is a hit too (clockRetry), never repeated.
-    const hit404 = (x) => x.status === 404 || x.clockRetry === true;
+    // Bind: 150 / h per IP; 300 / h per code (refused binds count too). Counted: never repeated.
     await freshWindow(3600);
     r = await burst(150, () =>
       bind(person.unrostered, {
@@ -2389,7 +2365,7 @@ try {
       }),
     );
     assert.ok(
-      r.every(hit404),
+      r.every((x) => x.status === 404),
       JSON.stringify([...new Set(r.map((x) => `${x.status}:${x.body.code}`))]),
     );
     await expectStatus(
@@ -2404,7 +2380,7 @@ try {
         counted: true,
       }),
     );
-    assert.ok(r.every(hit404));
+    assert.ok(r.every((x) => x.status === 404));
     await expectStatus(
       bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.3' }),
       429,
@@ -2423,17 +2399,7 @@ try {
       await expectStatus(pmDevice('reject', pend, 1), 200);
     }
     const pd = p.status === 200 ? p : await bind(person.w5, { ip: '10.3.0.9' });
-    for (let i = 0; i < 10; i++) {
-      const x = await fpost(
-        '/device/challenge',
-        pd.token,
-        {},
-        { counted: true },
-      );
-      if (x.clockRetry) continue;
-      assert.equal(x.status, 200, JSON.stringify(x.body));
-      secret.codes.push(x.body.code);
-    }
+    for (let i = 0; i < 10; i++) await challenge(pd.token, { counted: true });
     await expectStatus(
       fpost('/device/challenge', pd.token, {}),
       429,
@@ -5508,7 +5474,7 @@ try {
 
   const stepBacks = clock.summary();
   console.log(
-    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated, ${retry.attributed} of them in first-attempt steps after an observed database clock step-back; ${retry.counted} counted throttle hits answered RETRY after one; ${retry.heldBack} requests held back while the database clock was behind; database clock step-backs observed: ${stepBacks.count}, max ${stepBacks.maxMs} ms); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
+    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated; ${retry.heldBack} requests held back while the database clock was behind; database clock step-backs observed: ${stepBacks.count}, max ${stepBacks.maxMs} ms); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
   );
   step('done');
 } catch (error) {
