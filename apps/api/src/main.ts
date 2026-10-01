@@ -1,5 +1,4 @@
-import { Pool } from 'pg';
-import { ManagedIdentityCredential } from '@azure/identity';
+import type { Pool } from 'pg';
 import {
   AlphaStore,
   CheckInStore,
@@ -10,41 +9,14 @@ import {
   ReportStore,
 } from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
-import { AzurePhotoBlobStore } from './photo-blobs.js';
 import { TokenVerifier } from './auth/token-verifier.js';
+import {
+  assertApplicationLogin,
+  databasePoolFromEnv,
+  photoBlobsFromEnv,
+  required,
+} from './runtime-env.js';
 
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing configuration: ${name}`);
-  return value;
-}
-/**
- * Photo bytes: in Azure the app's managed identity on BLOB_ACCOUNT_URL (container "evidence",
- * created by infrastructure, role Storage Blob Data Contributor on it); locally the Azurite
- * connection string. Without either, the photo routes are not served.
- */
-async function photoBlobs(): Promise<AzurePhotoBlobStore | undefined> {
-  const container = process.env['BLOB_EVIDENCE_CONTAINER'] || undefined;
-  if (process.env['AZURE_CLIENT_ID'] && process.env['BLOB_ACCOUNT_URL'])
-    return AzurePhotoBlobStore.fromAccountUrl(
-      process.env['BLOB_ACCOUNT_URL'],
-      new ManagedIdentityCredential({
-        clientId: process.env['AZURE_CLIENT_ID'],
-      }),
-      container,
-    );
-  if (process.env['BLOB_CONNECTION_STRING']) {
-    if (process.env['NODE_ENV'] === 'production')
-      throw new Error('Managed identity is required for deployed blob access');
-    const local = AzurePhotoBlobStore.fromConnectionString(
-      process.env['BLOB_CONNECTION_STRING'],
-      container,
-    );
-    await local.ensureContainer();
-    return local;
-  }
-  return undefined;
-}
 let runtime: AlphaRuntime | undefined;
 let pool: Pool | undefined;
 if (process.env['ALPHA_ENABLED'] === 'true') {
@@ -55,44 +27,8 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     scope: 'access_as_user',
   };
   const verifier = new TokenVerifier(auth);
-  if (process.env['AZURE_CLIENT_ID']) {
-    const credential = new ManagedIdentityCredential({
-      clientId: process.env['AZURE_CLIENT_ID'],
-    });
-    pool = new Pool({
-      host: required('PGHOST'),
-      database: required('PGDATABASE'),
-      user: required('PGUSER'),
-      port: 5432,
-      password: async () =>
-        (
-          await credential.getToken(
-            'https://ossrdbms-aad.database.windows.net/.default',
-          )
-        ).token,
-      ssl: { rejectUnauthorized: true },
-      max: 5,
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-    });
-  } else {
-    if (process.env['NODE_ENV'] === 'production')
-      throw new Error('Managed identity is required for deployed Alpha');
-    pool = new Pool({
-      connectionString: required('ALPHA_DATABASE_URL'),
-      max: 5,
-      connectionTimeoutMillis: 5000,
-    });
-  }
-  const roles = await pool.query<{
-    unsafe: boolean;
-  }>(`SELECT (r.rolsuper OR r.rolbypassrls OR EXISTS
-    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink','Person','Crew','CrewAssignment','ProjectRoster','FieldEntryCode','FieldDevice','FieldTokenHash','FieldConfirmChallenge','FieldPersonConfirm','FieldDeviceEvent','FieldThrottle','FieldThrottleSalt','ProjectSiteReference','ProjectFieldSetting','FieldDay','WorkerCheckIn','FieldSelfie','CheckInSelfie','ForemanReport','ForemanReportRevision','ForemanAdoption') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
-    FROM pg_roles r WHERE r.rolname=current_user`);
-  if (roles.rows[0]?.unsafe !== false)
-    throw new Error(
-      'Application database login must be non-owner without RLS bypass',
-    );
+  pool = databasePoolFromEnv();
+  await assertApplicationLogin(pool);
   runtime = {
     auth,
     verifier,
@@ -102,7 +38,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     fieldStore: new FieldStore(pool),
     foremanStore: new ForemanStore(pool),
   };
-  const blobs = await photoBlobs();
+  const blobs = await photoBlobsFromEnv();
   if (blobs) runtime.photoStore = new PhotoStore(pool, blobs);
   // Without a blob store check-ins still work; selfie upload answers FEATURE_OFF.
   runtime.checkInStore = new CheckInStore(pool, blobs ?? null);

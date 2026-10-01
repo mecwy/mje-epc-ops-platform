@@ -782,24 +782,37 @@ try {
         [ms],
       )
     ).rows[0].t;
-  const untilDb = async (iso, timeoutMs = STEP_MS) => {
+  // Wait until the database clock is past `iso` by `clearanceMs` (also by that clock: a host
+  // timer says nothing about how far the database clock has moved).
+  const untilDb = async (iso, timeoutMs = STEP_MS, clearanceMs = 0) => {
     const until = Date.now() + timeoutMs;
     for (;;) {
       const r = await withTimeout(
-        owner.query('SELECT clock_timestamp() > $1::timestamptz AS past', [
-          iso,
-        ]),
+        owner.query(
+          `SELECT clock_timestamp() > $1::timestamptz + $2 * interval '1 millisecond' AS past`,
+          [iso, clearanceMs],
+        ),
         5_000,
         'database clock poll',
       );
       if (r.rows[0].past) return;
       if (Date.now() > until)
         throw new Error(
-          `timed out waiting for the database clock to pass ${iso} (step: ${currentStep})`,
+          `timed out waiting for the database clock to pass ${iso} + ${clearanceMs} ms (step: ${currentStep})`,
         );
       await sleep(100);
     }
   };
+  /** How long ago `t` was, by the database clock that wrote it (the host's may differ). */
+  const dbAgeMs = async (t) =>
+    Number(
+      (
+        await owner.query(
+          `SELECT extract(epoch FROM clock_timestamp() - $1::timestamptz) * 1000 AS ms`,
+          [t],
+        )
+      ).rows[0].ms,
+    );
 
   /**
    * Throttles use fixed, clock-aligned windows. Wait (by the database clock) until at least a
@@ -985,24 +998,12 @@ try {
     );
     // Nothing is backdated.
     await expectStatus(
-      change([
-        open(
-          C.C3,
-          person.w1,
-          'MEMBER',
-          new Date(Date.now() - 60_000).toISOString(),
-        ),
-      ]),
+      change([open(C.C3, person.w1, 'MEMBER', await dbFuture(-60_000))]),
       409,
       'ROSTER_TIME_INVALID',
     );
     await expectStatus(
-      change([
-        close(
-          assignment(person.w1),
-          new Date(Date.now() - 60_000).toISOString(),
-        ),
-      ]),
+      change([close(assignment(person.w1), await dbFuture(-60_000))]),
       409,
       'ROSTER_TIME_INVALID',
     );
@@ -1507,8 +1508,7 @@ try {
     const releaseW4 = await holdAdvisory(personKey(person.w4));
     const acrossE = fConfirm(dev.f1.token, person.w4, '123456');
     await advisoryWaiters(personKey(person.w4), 1);
-    await untilDb(E);
-    await sleep(200);
+    await untilDb(E, STEP_MS, 200);
     await releaseW4();
     await expectStatus(acrossE, 403, 'NOT_FOREMAN');
     await expectStatus(
@@ -1784,9 +1784,8 @@ try {
       [dev.f2.id],
     );
     await expectStatus(me(dev.f2.token), 200);
-    assert.ok(
-      Date.now() - (await row(dev.f2.id)).lastSeenAt.getTime() < 60_000,
-    );
+    const seenAge = await dbAgeMs((await row(dev.f2.id)).lastSeenAt);
+    assert.ok(Number.isFinite(seenAge) && seenAge >= 0 && seenAge < 60_000);
     pass(
       'idle deadline: requests that decide just before the deadline serialize FOR UPDATE and the first records activity, so a request after the original deadline is still served; B first → EXPIRED(IDLE) committed, then A sees it (never revived); a FOR SHARE request whose wall clock crossed into the last day while it waited reclassifies and records its activity; the deferred update refuses an older authAt, a terminal row and a row within a day of its deadline',
     );
@@ -1889,10 +1888,16 @@ try {
           [projectA],
         )
       ).rows[0].m;
-    // Field requests advance the mark (at most once a second), never past the clock.
+    // Field requests advance the mark (at most once a second), never past the clock. The roster
+    // write above refreshed it already, so stale it first: the request must advance it itself.
+    await travel(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = now() - interval '1 hour' WHERE "projectId"=$1`,
+      [projectA],
+    );
     await expectStatus(me(dev.c1.token), 200);
     const observed = await mark();
-    assert.ok(observed && Date.now() - observed.getTime() < 60_000);
+    const markAge = observed ? await dbAgeMs(observed) : NaN;
+    assert.ok(Number.isFinite(markAge) && markAge >= 0 && markAge < 60_000);
     await travel(
       `UPDATE "ProjectRoster" SET "clockHighWater" = now() + interval '1 hour' WHERE "projectId"=$1`,
       [projectA],
@@ -2010,8 +2015,7 @@ try {
     let unlock = await holdRow(dev.c2.id);
     const waiting = me(dev.c2.token);
     await rowWaiters(1);
-    await untilDb(D);
-    await sleep(300);
+    await untilDb(D, STEP_MS, 300);
     await markPast(D);
     await unlock();
     await expectStatus(waiting, 401, 'DEVICE_ENDED');
@@ -2024,8 +2028,7 @@ try {
     unlock = await holdAdvisory(personKey(person.c3));
     const continuing = change([open(C.C1, person.c3, 'MEMBER', D2)]);
     await advisoryWaiters(personKey(person.c3), 1);
-    await untilDb(D2);
-    await sleep(300);
+    await untilDb(D2, STEP_MS, 300);
     await markPast(D2);
     await unlock();
     await expectStatus(continuing, 200);
@@ -4160,6 +4163,83 @@ try {
     assert.equal(await audited(), 1);
     pass(
       'selfie upload whose COMMIT acknowledgement is lost: the committed row keeps its image and the request settles to the stored result (a same-key retry returns it); a cleanup without a blob store refuses before claiming, so the row stays retryable, the image stays and nothing is audited, and a later sweep with the store deletes it',
+    );
+  }
+
+  step('selfie cleanup: dry run, two instances, a blob already gone, a rerun');
+  {
+    const audits = (id) =>
+      count(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='FIELD_SELFIE_DELETED' AND "entityId"=$1`,
+        [id],
+      );
+    const ups = [];
+    for (const [dev_, tag] of [
+      [dev.s3, 'sw1'],
+      [dev.s5, 'sw2'],
+      [dev.s3, 'sw3'],
+    ])
+      ups.push(
+        (await expectStatus(selfieUpload(dev_.token, testJpeg({ tag })), 200))
+          .selfieId,
+      );
+    // Staged an hour ago, expired six minutes ago: past the grace, eligible.
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '67 minutes', "expiresAt" = clock_timestamp() - interval '6 minutes' WHERE id = ANY($1::uuid[])`,
+      [ups],
+    );
+    // A dry run counts and changes nothing: no claim, no delete, no audit row.
+    const dry = await checkInStore.cleanupSelfies(orgA, { dryRun: true });
+    assert.deepEqual(
+      [dry.eligible >= 3, dry.claimed, dry.deleted, dry.failed],
+      [true, 0, 0, 0],
+    );
+    for (const id of ups) {
+      const r = await selfieRow(id);
+      assert.deepEqual([r.state, r.claimedAt], ['STAGED', null]);
+      assert.equal(selfieBlobs.map.has(r.blobKey), true);
+      assert.equal(await audits(id), 0);
+    }
+    // Two instances at once, each limited to two rows: SKIP LOCKED hands out disjoint claims, a
+    // DELETING row is finished by whichever instance updates it first, and every row is audited once.
+    const [a, b] = await Promise.all([
+      checkInStore.cleanupSelfies(orgA, { limit: 2 }),
+      checkInStore.cleanupSelfies(orgA, { limit: 2 }),
+    ]);
+    assert.equal(a.claimed + b.claimed >= 3, true);
+    assert.equal(a.failed + b.failed, 0);
+    for (const id of ups) {
+      const r = await selfieRow(id);
+      assert.equal(r.state, 'DELETED');
+      assert.equal(selfieBlobs.map.has(r.blobKey), false);
+      assert.equal(await audits(id), 1);
+    }
+    // A blob that is already gone (deleted by the storage backstop, or by an earlier attempt whose
+    // row update was lost): the sweep still finishes the row and audits it once.
+    const gone = (
+      await expectStatus(
+        selfieUpload(dev.s5.token, testJpeg({ tag: 'sw4' })),
+        200,
+      )
+    ).selfieId;
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '67 minutes', "expiresAt" = clock_timestamp() - interval '6 minutes' WHERE id=$1`,
+      [gone],
+    );
+    selfieBlobs.map.delete((await selfieRow(gone)).blobKey);
+    const third = await checkInStore.cleanupSelfies(orgA);
+    assert.deepEqual([third.claimed, third.deleted, third.failed], [1, 1, 0]);
+    assert.equal((await selfieRow(gone)).state, 'DELETED');
+    assert.equal(await audits(gone), 1);
+    // A rerun with nothing left is a no-op: nothing claimed, no second audit row anywhere.
+    const again = await checkInStore.cleanupSelfies(orgA);
+    assert.deepEqual(
+      [again.eligible, again.claimed, again.deleted, again.failed],
+      [0, 0, 0, 0],
+    );
+    for (const id of [...ups, gone]) assert.equal(await audits(id), 1);
+    pass(
+      'selfie cleanup as the scheduled job runs it: a dry run counts eligible rows and changes nothing; two instances with SKIP LOCKED claim disjoint rows, finish each DELETING row once and audit it once; a blob already gone counts as deleted and is audited once; a rerun claims nothing and adds no audit row',
     );
   }
 

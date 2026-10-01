@@ -1,10 +1,15 @@
 import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
 import { ApiError, type WriteResult } from '../api.js';
-import { savable } from './model.js';
+import { savable, setFact } from './model.js';
 
 export type SaveState =
   'idle' | 'saving' | 'saved' | 'failed' | 'invalid' | 'conflict';
 export type FlushOutcome = 'ok' | 'invalid' | 'conflict' | 'failed';
+/** An input the user typed that a conflict reload set aside; nothing writes it back by itself. */
+export interface Retained {
+  path: string;
+  mine: string;
+}
 
 /** Errors that repeating the same request cannot fix: stop and tell the user. */
 const PERMANENT = new Set([
@@ -16,6 +21,49 @@ const PERMANENT = new Set([
   'REQUEST_TOO_LARGE',
 ]);
 
+// The leaves the user types, by the path grammar of `setFact`. `updated` is a device clock,
+// `milestones` and `noWork` are not typed through `setFact`: none of them is retained.
+const TOP = ['weather', 'temperature'] as const;
+const NARRATIVE = ['construction', 'quality', 'safety'] as const;
+const GROUPS = [
+  'qty',
+  'cumulative',
+  'people',
+  'presence',
+  'machinery',
+  'materials',
+] as const;
+
+/** The string at a `setFact` path, or undefined where the facts have none. */
+export function leaf(facts: DayFactsDto, path: string): string | undefined {
+  const [head, key] = path.split('.');
+  if (head === 'weather' || head === 'temperature') return facts[head];
+  if (head === 'narrative')
+    return (NARRATIVE as readonly string[]).includes(key ?? '')
+      ? facts.narrative[key as (typeof NARRATIVE)[number]]
+      : undefined;
+  if ((GROUPS as readonly string[]).includes(head ?? '') && key !== undefined)
+    return (facts[head as (typeof GROUPS)[number]] as Record<string, string>)[
+      key
+    ];
+  return undefined;
+}
+
+/** The typed leaves whose value differs between two facts. */
+export function changedPaths(a: DayFactsDto, b: DayFactsDto): string[] {
+  const out: string[] = [];
+  for (const k of TOP) if (a[k] !== b[k]) out.push(k);
+  for (const k of NARRATIVE)
+    if (a.narrative[k] !== b.narrative[k]) out.push(`narrative.${k}`);
+  for (const g of GROUPS) {
+    const ga = a[g] as Record<string, string>;
+    const gb = b[g] as Record<string, string>;
+    for (const k of new Set([...Object.keys(ga), ...Object.keys(gb)]))
+      if ((ga[k] ?? '') !== (gb[k] ?? '')) out.push(`${g}.${k}`);
+  }
+  return out;
+}
+
 /**
  * The unsaved state of one project day, independent of React and of any other day.
  *
@@ -25,10 +73,14 @@ const PERMANENT = new Set([
  * - Conflicts and permanent errors stop the queue; nothing retries in a loop.
  * - `settle()` returns only when everything the user typed is acknowledged, so an action
  *   that follows it acts on exactly what the user sees.
+ * - A conflict reload sets the unsaved input aside as `retained`, field by field; the user
+ *   fills it in again or ignores it. It is never written back by itself.
  */
 export class DraftSession {
   facts: DayFactsDto;
   state: SaveState = 'idle';
+  /** Inputs a conflict reload set aside, until filled in again or ignored. */
+  retained: Retained[] = [];
   private acked: DayFactsDto;
   private pending: SaveFactsCommand | null = null;
   private running: Promise<FlushOutcome> | null = null;
@@ -58,9 +110,16 @@ export class DraftSession {
   get editGeneration(): number {
     return this.generation;
   }
-  /** Returns false (and changes nothing) while an action holds the session. */
+  /**
+   * Returns false (and changes nothing) while an action holds the session. Editing a field
+   * that has a retained input drops that input: the user has seen the field and decided.
+   */
   edit(facts: DayFactsDto): boolean {
     if (this.locked || this.holding) return false;
+    if (this.retained.length > 0)
+      this.retained = this.retained.filter(
+        (r) => leaf(facts, r.path) === leaf(this.facts, r.path),
+      );
     this.facts = facts;
     this.generation++;
     this.blocked = false;
@@ -81,14 +140,44 @@ export class DraftSession {
     this.reset(read.version, read.facts);
     return true;
   }
-  /** Adopt server state (after load or a conflict); drops local edits. */
+  /**
+   * Adopt server state (after a conflict or a finished command). Whatever the user typed but
+   * had not saved is set aside as `retained`, field by field, unless the server now holds
+   * that very value. An input retained earlier stays until filled in again or ignored.
+   */
   reset(version: number, facts: DayFactsDto) {
+    const next = new Map(
+      this.retained
+        .filter((r) => (leaf(facts, r.path) ?? '') !== r.mine)
+        .map((r) => [r.path, r] as const),
+    );
+    for (const path of changedPaths(this.facts, this.acked)) {
+      const mine = leaf(this.facts, path) ?? '';
+      if ((leaf(facts, path) ?? '') !== mine) next.set(path, { path, mine });
+    }
+    this.retained = [...next.values()];
     this.version = version;
     this.facts = facts;
     this.acked = facts;
     this.pending = null;
     this.blocked = false;
     this.set('idle');
+  }
+
+  /** Put a retained input back as an edit of the user's; false while the session is frozen. */
+  refill(path: string): boolean {
+    const r = this.retained.find((x) => x.path === path);
+    if (!r || this.frozen) return false;
+    if (leaf(this.facts, path) !== r.mine)
+      this.edit(setFact(this.facts, path, r.mine));
+    this.dismiss(path);
+    return true;
+  }
+  /** Drop a retained input without writing it. */
+  dismiss(path: string) {
+    if (!this.retained.some((r) => r.path === path)) return;
+    this.retained = this.retained.filter((r) => r.path !== path);
+    this.notify();
   }
 
   /** Whether edits are refused now (an action or a hold). */

@@ -20,9 +20,16 @@ export const MAX_ACCURACY_M = 100;
 export const PM_PROXY_DAYS_DEFAULT = 7;
 /** Staged selfie lifetime, and the cleanup grace after it (design §3). */
 export const SELFIE_STAGED_MS = 60 * MINUTE;
-export const SELFIE_GRACE_MS = 5 * MINUTE;
-/** U9: selfie images are kept 30 days after they are attached. */
-export const SELFIE_RETENTION_MS = 30 * 24 * 60 * MINUTE;
+export const SELFIE_GRACE_MINUTES = 5;
+export const SELFIE_GRACE_MS = SELFIE_GRACE_MINUTES * MINUTE;
+/**
+ * U9: selfie images are kept this long after they are attached, then deleted. The one source for
+ * the sweep's SQL, the scheduled job's parameters and the storage lifecycle backstop (which must
+ * be longer: design C25, for a blob an interrupted upload left without a row).
+ */
+export const SELFIE_RETENTION_DAYS = 30;
+export const SELFIE_RETENTION_MS = SELFIE_RETENTION_DAYS * 24 * 60 * MINUTE;
+export const SELFIE_BLOB_BACKSTOP_DAYS = 45;
 
 export type TimeRefusal =
   | 'FIX_TIME_INVALID'
