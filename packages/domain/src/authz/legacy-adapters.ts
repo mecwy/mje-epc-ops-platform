@@ -47,6 +47,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}report-store.ts`,
       `${D}report-reader.ts`,
       `${D}report-read-context.ts`,
+      `${D}report-commands.ts`,
       `${D}report-rules.ts`,
       `${D}reader-view.ts`,
     ],
@@ -157,8 +158,6 @@ export interface LegacyAdapter {
 
 /** Remaining cross-module reads: replaced by module exits (PM: A7-0e). */
 const READS = 'A7-0e';
-/** Cross-module writes (PM decision). */
-const WRITES = 'A7-0d';
 
 export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
   {
@@ -233,24 +232,13 @@ export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
     replacement: 'reportReader work-item lookup (master data)',
     removal: READS,
   },
-  {
-    file: `${D}report-store.ts`,
-    site: 'ReportStore.adoptForeman',
-    table: 'ForemanAdoption',
-    access: 'write',
-    why: 'adopting a foreman total records the adoption beside the facts (A6c)',
-    replacement: 'field module command (foreman adoption record)',
-    removal: WRITES,
-  },
-  ...(['DailyClose', 'Revision', 'RevisionEvent'] as const).map(
-    (table): LegacyAdapter => ({
-      file: `${D}alpha-store.ts`,
-      site: 'AlphaStore (list / get / save)',
-      table,
-      access: 'write',
-      why: 'the Alpha site-day slice stores its days in the report day tables under its own scopeKey',
-      replacement: 'retire the Alpha slice or give it its own tables',
-      removal: WRITES,
-    }),
-  ),
+  ...(['DailyClose', 'Revision'] as const).map((table): LegacyAdapter => ({
+    file: `${D}alpha-store.ts`,
+    site: 'AlphaStore (list / get / record / save)',
+    table,
+    access: 'read',
+    why: 'the Alpha site-day slice reads its days from the report day tables under its own scopeKey; its writes go through the report command exit (A7-0d)',
+    replacement: 'reportReader day lookup, or retire the Alpha slice',
+    removal: READS,
+  })),
 ];

@@ -427,3 +427,41 @@ export class ForemanStore {
     );
   }
 }
+
+export interface ForemanAdoptionRow {
+  id: string;
+  orgId: string;
+  projectId: string;
+  businessDate: string;
+  itemKey: string;
+  value: string;
+  /** The foreman basis serialised as JSON text. */
+  basis: string;
+  daySeq: number;
+  byAccountId: string;
+}
+
+/**
+ * Field module command exit (A7-0d): records the PM's adoption of a foreman total beside the
+ * facts. Runs on the caller's PoolClient, so it joins the report transaction.
+ */
+export async function recordForemanAdoption(
+  client: PoolClient,
+  row: ForemanAdoptionRow,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO "ForemanAdoption"(id,"orgId","projectId","businessDate","itemKey",value,basis,"daySeq","byAccountId")
+            VALUES($1,$2,$3,$4::date,$5,$6::numeric,$7,$8,$9)`,
+    [
+      row.id,
+      row.orgId,
+      row.projectId,
+      row.businessDate,
+      row.itemKey,
+      row.value,
+      row.basis,
+      row.daySeq,
+      row.byAccountId,
+    ],
+  );
+}
