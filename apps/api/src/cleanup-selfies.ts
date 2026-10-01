@@ -5,9 +5,12 @@
  * image by the scheduled Dev job (infra/bicep/dev-selfie-cleanup-job.bicep) under the app
  * identity.
  *
- * Nothing here reads selfie bytes or person names, and the log never carries free text: every
- * line is an event name, an organization id, counts, and fixed codes (a SQLSTATE, an HTTP status,
- * a configuration name). Error messages are never logged; nothing escapes to stderr.
+ * Nothing here reads selfie bytes or person names, and nothing this program writes is free text:
+ * every stdout line is an event name, an organization id, counts, and fixed codes (a SQLSTATE,
+ * an HTTP status, a configuration name); error messages are never logged, and errors that escape
+ * (an idle client's event, an uncaught exception, a rejection) are reduced to a code as well.
+ * What this does not cover: diagnostics the runtime or the Azure SDK print on their own (Node
+ * warnings; the SDK logs only when AZURE_LOG_LEVEL is set, which the job template does not set).
  *
  *   node dist/cleanup-selfies.js [--dry-run] [--org <id>]... [--limit <n>]
  *
@@ -214,8 +217,10 @@ export async function runMain<P extends PoolLike>(
     return 2;
   }
   let pool: P | undefined;
-  // An idle client's error (pg-pool emits it, outside any awaited call) is an operational failure.
+  // An idle client's error (pg-pool emits it outside any awaited call, possibly while the pool
+  // closes) is an operational failure: the exit status is decided only after the pool has closed.
   let poolFailed = false;
+  let code: 0 | 1 | 2;
   try {
     const blobs = await deps.blobs();
     if (!blobs) {
@@ -228,12 +233,7 @@ export async function runMain<P extends PoolLike>(
       deps.log({ event: 'selfie_cleanup_pool_error', ...classifyError(error) });
     });
     await deps.assertLogin(pool);
-    const code = await runCleanup(
-      deps.store(pool, blobs),
-      config.options,
-      deps.log,
-    );
-    return poolFailed ? 1 : code;
+    code = await runCleanup(deps.store(pool, blobs), config.options, deps.log);
   } catch (error) {
     const what = classifyError(error);
     deps.log({
@@ -243,20 +243,26 @@ export async function runMain<P extends PoolLike>(
           : 'selfie_cleanup_startup_error',
       ...what,
     });
-    return what.cause === 'CONFIGURATION' ? 2 : 1;
+    code = what.cause === 'CONFIGURATION' ? 2 : 1;
   } finally {
     if (pool) await pool.end().catch(() => undefined);
   }
+  return code === 2 ? 2 : poolFailed ? 1 : code;
 }
 
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  // The last boundary: whatever escapes everything above is still logged as a code, never printed.
   const log = (line: LogLine) => console.info(JSON.stringify(line));
+  // The last boundary: whatever escapes everything above still ends as a code and exit 1. A
+  // logger that throws here cannot turn that into free text: the process just exits.
   const escaped = (error: unknown) => {
-    log({ event: 'selfie_cleanup_startup_error', ...classifyError(error) });
+    try {
+      log({ event: 'selfie_cleanup_startup_error', ...classifyError(error) });
+    } catch {
+      // nothing printable is safe at this point
+    }
     process.exit(1);
   };
   process.on('uncaughtException', escaped);
@@ -270,7 +276,7 @@ if (
     store: (pool, blobs) => new CheckInStore(pool, blobs),
     log,
   }).catch((error: unknown) => {
-    log({ event: 'selfie_cleanup_startup_error', ...classifyError(error) });
+    escaped(error);
     return 1;
   });
 }

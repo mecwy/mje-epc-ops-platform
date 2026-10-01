@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
+  SELFIE_BLOB_BACKSTOP_DAYS,
   SELFIE_GRACE_MINUTES,
   SELFIE_RETENTION_DAYS,
   type SelfieBlobStore,
@@ -223,7 +224,12 @@ describe('cleanup-selfies process boundary', () => {
     const listeners: ((error: unknown) => void)[] = [];
     const p = {
       ended: 0,
-      end: async () => void p.ended++,
+      failOnEnd: false,
+      end: async () => {
+        p.ended++;
+        // pg-pool can report an idle client's error while closing, after the sweep returned.
+        if (p.failOnEnd) p.emitError(pgError('08006'));
+      },
       on: (_event: 'error', listener: (error: unknown) => void) =>
         void listeners.push(listener),
       /** What pg-pool does for an idle client's error: an event, outside any awaited call. */
@@ -344,6 +350,24 @@ describe('cleanup-selfies process boundary', () => {
     expect(created[0]!.ended).toBe(1);
   });
 
+  it("an idle client's error while the pool closes still makes the run exit 1", async () => {
+    const created: P[] = [];
+    const run = deps({
+      pool: () => {
+        const p = pool();
+        p.failOnEnd = true;
+        created.push(p);
+        return p;
+      },
+    });
+    expect(await runMain(run.base)).toBe(1);
+    expect(run.lines).toEqual([
+      { event: 'selfie_cleanup', orgId: ORG_A, dryRun: false, ...clean },
+      { event: 'selfie_cleanup_pool_error', cause: 'DATABASE', code: '08006' },
+    ]);
+    expect(created[0]!.ended).toBe(1);
+  });
+
   it('a clean run is exit 0 and closes the pool', async () => {
     const created: P[] = [];
     const ok = deps({
@@ -383,18 +407,33 @@ describe('cleanup-selfies as a process (built dist)', () => {
       };
     }
   };
-  const lastLine = (stdout: string) =>
-    JSON.parse(stdout.trim().split('\n').at(-1) ?? 'null') as unknown;
+  const EVENTS = new Set([
+    'selfie_cleanup',
+    'selfie_cleanup_error',
+    'selfie_cleanup_pool_error',
+    'selfie_cleanup_config',
+    'selfie_cleanup_startup_error',
+  ]);
+  /** Every non-empty stdout line must be one JSON event; returns the last one. */
+  const lastLine = (stdout: string) => {
+    const lines = stdout.split('\n').filter((l) => l.trim() !== '');
+    expect(lines.length).toBeGreaterThan(0);
+    const parsed = lines.map((l) => JSON.parse(l) as { event?: unknown });
+    for (const line of parsed)
+      expect(EVENTS.has(String(line.event))).toBe(true);
+    return parsed.at(-1) as unknown;
+  };
 
   it('refuses its configuration on stdout as JSON codes, with nothing on stderr, exit 2', async () => {
     expect(existsSync(entry), `${entry} is built by pnpm build`).toBe(true);
-    const none = await run([], {});
+    const none = await run([], { [`X_${SECRET}`]: SECRET });
     expect(none.code).toBe(2);
     expect(none.stderr).toBe('');
     expect(lastLine(none.stdout)).toEqual({
       event: 'selfie_cleanup_config',
       code: 'NO_ORGANIZATION',
     });
+    expect(none.stdout).not.toContain('Jane');
     // An organization but no blob store configured: refused before any connection, stderr empty.
     const noStore = await run(['--org', ORG_A], { [`X_${SECRET}`]: SECRET });
     expect(noStore.code).toBe(2);
@@ -424,4 +463,11 @@ describe('cleanup-selfies as a process (built dist)', () => {
     });
     expect(r.stdout).not.toContain('Jane');
   }, 20_000);
+});
+
+describe('selfie retention windows', () => {
+  it('the storage backstop is longer than the retention it backs (README: review all windows on a change)', () => {
+    expect(SELFIE_BLOB_BACKSTOP_DAYS).toBeGreaterThan(SELFIE_RETENTION_DAYS);
+    expect(SELFIE_GRACE_MINUTES).toBeGreaterThan(0);
+  });
 });

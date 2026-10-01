@@ -63,8 +63,10 @@ selfie's bytes until roughly **`SELFIE_BLOB_BACKSTOP_DAYS` + 30 days after the u
 with the current numbers), plus the lifecycle run delay — whether the sweep deleted it on day 1
 (staged, never attached) or at the end of its retention. There is no earlier deadline, and the
 sweep does not shorten it. The rule is limited to the `evidence/selfie/` prefix; evidence photos keep
-their versions and soft delete untouched. Changing the retention (M4 HR/legal item) changes these
-windows through the one constant in `checkin-rules.ts`; redeploy both templates afterwards.
+their versions and soft delete untouched. Changing the retention (M4 HR/legal item) is not one
+edit: `SELFIE_RETENTION_DAYS`, `SELFIE_BLOB_BACKSTOP_DAYS` (which must stay longer than the retention
+— a unit test guards that) and the account's soft-delete days in `dev-alpha.bicep` are separate
+settings that together make these windows; review all three, then redeploy both templates.
 
 Values from the code (after `pnpm build`):
 
