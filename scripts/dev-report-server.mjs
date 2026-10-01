@@ -13,12 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
-import { pathToFileURL } from 'node:url';
-import {
-  assertLocalBlob,
-  assertLocalDatabase,
-  assertLocalUrl,
-} from './local-db.mjs';
+import { assertLocalBlob, assertLocalDatabase } from './local-db.mjs';
 import {
   AlphaStore,
   CheckInStore,
@@ -230,16 +225,12 @@ const verifier = new TokenVerifier(auth, createLocalJWKSet({ keys: [key] }));
 let photoStore;
 let blobs = null;
 if (blobConnection) {
-  // The same SDK copy the API uses; its client decides where requests go, so that URL is
-  // checked (loopback only) before any storage call.
-  const { BlobServiceClient } = await import(
-    pathToFileURL(requireApi.resolve('@azure/storage-blob')).href
-  );
-  const container = BlobServiceClient.fromConnectionString(
+  // Built by the API's own factory, so the client comes from the SDK entry the API imports (not
+  // the CommonJS one). The connection string was checked above (loopback emulator only).
+  blobs = AzurePhotoBlobStore.fromConnectionString(
     blobConnection,
-  ).getContainerClient(`evidence-dev${instance ? `-${instance}` : ''}`);
-  assertLocalUrl(container.url);
-  blobs = new AzurePhotoBlobStore(container);
+    `evidence-dev${instance ? `-${instance}` : ''}`,
+  );
   await blobs.ensureContainer();
   photoStore = new PhotoStore(pool, blobs);
 }
