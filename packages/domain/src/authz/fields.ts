@@ -1,0 +1,251 @@
+/**
+ * ADR-0003 D2.3 / D3: every field of the report, issue and photo read DTOs mapped to a layer,
+ * per projector (the same key can come from different layers: a writer's `facts` are the live
+ * draft, a reader's the submitted snapshot). Tables recurse where layers differ inside a value
+ * (photo coordinates). Typed against the DTOs: a missing key does not compile, and an opaque
+ * value (`Record<string, unknown>`) does not compile without an explicit projector.
+ * Pure data; production code does not read it.
+ */
+import type { PhotoDto } from '@mje/contracts';
+import type {
+  ReportDayReaderDto,
+  ReportDayRowDto,
+  ReportDayWriterDto,
+  ReportLagDayDto,
+  ReportPlanDto,
+  ReportProjectsDto,
+  ReportRevisionDto,
+} from '../report-reader.js';
+import type { IssueStore } from '../issue-store.js';
+import type { PhotoStore } from '../photo-store.js';
+import type { ReportItemDto } from '@mje/contracts';
+
+/**
+ * structure: identity and structure (ids, dates, states a reader may see, master data, confirmed
+ * plan versions); draft: OD18 draft facts (a reader never learns they exist); submitted: frozen
+ * in a submitted revision; coordinates: OD20 exact positions; public-text: project public text
+ * (issue titles and notes); field-writer: check-ins, foreman reports and adoptions (A6.0).
+ */
+export type Layer =
+  | 'structure'
+  | 'draft'
+  | 'submitted'
+  | 'coordinates'
+  | 'public-text'
+  | 'field-writer';
+
+/** Projectors of opaque values: the only way such a value reaches a response. */
+export type OpaqueProjector =
+  /** report-reader `readerSnapshot`: no field / foreman data, frozen photo fields only. */
+  | 'readerSnapshot'
+  /** The stored snapshot as is (writers only). */
+  | 'storedSnapshot';
+
+type Opaque<V> = [V] extends [readonly unknown[]]
+  ? false
+  : [V] extends [object]
+    ? string extends keyof V
+      ? unknown extends V[keyof V]
+        ? true
+        : false
+      : false
+    : false;
+type Elem<V> = V extends readonly (infer E)[] ? E : never;
+export type FieldSpec<V> =
+  Opaque<NonNullable<V>> extends true
+    ? { layer: Layer; projector: OpaqueProjector }
+    : [NonNullable<V>] extends [readonly unknown[]]
+      ? Elem<NonNullable<V>> extends object
+        ? { layer: Layer; items?: FieldTable<Elem<NonNullable<V>>> }
+        : { layer: Layer }
+      : [NonNullable<V>] extends [object]
+        ? { layer: Layer; fields?: FieldTable<NonNullable<V>> }
+        : { layer: Layer };
+export type FieldTable<T> = { [K in keyof T]-?: FieldSpec<T[K]> };
+/** A projector's output: an object, or a list of rows. */
+export type Root<T> = T extends readonly (infer E)[]
+  ? { items: FieldTable<E> }
+  : { fields: FieldTable<T> };
+
+type IssueListDto = Awaited<ReturnType<IssueStore['list']>>;
+type IssueGetDto = Awaited<ReturnType<IssueStore['get']>>;
+type IssueLagDto = Awaited<ReturnType<IssueStore['lag']>>;
+type PhotoListDto = Awaited<ReturnType<PhotoStore['list']>>;
+type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
+
+/** The DTO each layered projector produces. */
+export interface ProjectorDtos {
+  'report.projects': ReportProjectsDto;
+  'report.days.writer': ReportDayRowDto[];
+  'report.days.reader': ReportDayRowDto[];
+  'report.day.writer': ReportDayWriterDto;
+  'report.day.reader': ReportDayReaderDto;
+  'report.revision.writer': ReportRevisionDto;
+  'report.revision.reader': ReportRevisionDto;
+  'report.plan.writer': ReportPlanDto;
+  'report.plan.reader': ReportPlanDto;
+  'report.items': ReportItemDto[];
+  'report.lagHistory': ReportLagDayDto[];
+  'issue.list': IssueListDto;
+  'issue.get': IssueGetDto;
+  'issue.lag': IssueLagDto;
+  'photo.list.writer': PhotoListDto;
+  'photo.list.reader': PhotoListDto;
+  'photo.meta.writer': PhotoGetDto;
+  'photo.meta.reader': PhotoGetDto;
+}
+/**
+ * Projectors of modules not layered yet (field, check-in, foreman, Alpha, platform): named in
+ * surface.ts so every read entry has one; their field tables come with their module exits.
+ */
+export type UnlayeredProjector =
+  | 'photo.content'
+  | 'public.health'
+  | 'public.authConfig'
+  | 'AlphaStore.projects'
+  | 'AlphaStore.list'
+  | 'AlphaStore.get'
+  | 'FieldStore.entryCode'
+  | 'FieldStore.roster'
+  | 'FieldStore.devices'
+  | 'FieldStore.me'
+  | 'CheckInStore.checkIns'
+  | 'CheckInStore.selfie'
+  | 'CheckInStore.settings'
+  | 'ForemanStore.report'
+  | 'system.none';
+export type ProjectorName = keyof ProjectorDtos | UnlayeredProjector;
+
+const S = { layer: 'structure' } as const;
+const SUB = { layer: 'submitted' } as const;
+const TEXT = { layer: 'public-text' } as const;
+const COORD = { layer: 'coordinates' } as const;
+
+/** One photo: everything structure except exact coordinates (OD20). */
+const photo = (layer: Layer): FieldTable<PhotoDto> => ({
+  id: S,
+  projectId: S,
+  businessDate: S,
+  source: S,
+  mediaType: S,
+  sizeBytes: S,
+  sha256: S,
+  capture: {
+    layer,
+    fields: { lat: COORD, lon: COORD, accuracyM: { layer }, fixAt: { layer } },
+  },
+  deviceCapturedAt: { layer },
+  file: {
+    layer,
+    fields: { takenLocal: { layer }, takenAt: { layer }, gps: COORD },
+  },
+  location: { layer },
+  coordinates: S,
+  hasThumbnail: S,
+  receivedAt: S,
+  uploadedByPersonId: S,
+  link: { layer },
+  linkVersion: { layer },
+});
+const days = (state: Layer): Root<ReportDayRowDto[]> => ({
+  items: { businessDate: S, state: { layer: state }, revision: S },
+});
+/** The day keys both projectors share; `content` is where the day's facts come from. */
+const dayCommon = (content: Layer) =>
+  ({
+    access: S,
+    projectId: S,
+    businessDate: S,
+    siteTimezone: S,
+    state: { layer: content },
+    version: { layer: content },
+    currentRevisionNumber: S,
+    correctionReason: { layer: content },
+    facts: { layer: content },
+    items: S,
+    planStatus: { layer: content },
+    baseline: S,
+    nextPlan: { layer: content },
+    previousSubmittedDate: SUB,
+    cumulativeBase: SUB,
+    materialsCumulative: { layer: content },
+    issues: content === 'draft' ? TEXT : SUB,
+    photos: { layer: content, items: photo(content) },
+    unlinkedPhotos: { layer: content },
+    coverage: { layer: content },
+    revisions: SUB,
+  }) as const;
+const revision = (projector: OpaqueProjector, layer: Layer) => ({
+  fields: {
+    n: S,
+    at: S,
+    by: S,
+    reason: SUB,
+    snapshot: { layer, projector },
+  },
+});
+const plan = (live: Layer): Root<ReportPlanDto> => ({
+  fields: {
+    targetBusinessDate: S,
+    status: { layer: live },
+    rows: { layer: live },
+    draft: { layer: live },
+    versions: S,
+  },
+});
+const photoList = (layer: Layer): Root<PhotoListDto> => ({
+  fields: {
+    access: S,
+    projectId: S,
+    businessDate: S,
+    photos: { layer, items: photo(layer) },
+    unlinkedPhotos: { layer },
+  },
+});
+const photoMeta = (layer: Layer): Root<PhotoGetDto> => ({
+  fields: { access: S, photo: { layer, fields: photo(layer) } },
+});
+
+export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'report.projects': {
+    fields: { accountId: S, personId: S, projects: S },
+  },
+  'report.days.writer': days('draft'),
+  'report.days.reader': days('submitted'),
+  'report.day.writer': {
+    fields: { ...dayCommon('draft'), foreman: { layer: 'field-writer' } },
+  },
+  'report.day.reader': { fields: dayCommon('submitted') },
+  'report.revision.writer': revision('storedSnapshot', 'submitted'),
+  'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.plan.writer': plan('draft'),
+  'report.plan.reader': plan('structure'),
+  'report.items': {
+    items: {
+      kind: S,
+      key: S,
+      label: S,
+      unit: S,
+      designQty: S,
+      openingCumulative: S,
+      sortOrder: S,
+      active: S,
+    },
+  },
+  'report.lagHistory': {
+    items: { businessDate: S, baseline: S, qty: SUB },
+  },
+  'issue.list': {
+    fields: { access: S, projectId: S, businessDate: S, issues: TEXT },
+  },
+  'issue.get': {
+    fields: { access: S, issue: TEXT },
+  },
+  'issue.lag': {
+    fields: { projectId: S, businessDate: S, suggestions: SUB },
+  },
+  'photo.list.writer': photoList('draft'),
+  'photo.list.reader': photoList('submitted'),
+  'photo.meta.writer': photoMeta('draft'),
+  'photo.meta.reader': photoMeta('submitted'),
+};

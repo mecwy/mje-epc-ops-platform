@@ -6,7 +6,6 @@ import type {
   DismissLagCommand,
   IssueNoteKind,
   NoteIssueCommand,
-  PlanRowDto,
   ReopenIssueCommand,
   ReplyIssueCommand,
   SetEscalateCommand,
@@ -19,10 +18,8 @@ import {
   shiftDate,
   type EscalationCategory,
   type LagDay,
-  type Reported,
 } from './report-rules.js';
 import {
-  REPORT_SCOPE,
   ReportError,
   audit,
   idempotent,
@@ -31,6 +28,8 @@ import {
   projectWriter,
   type Actor,
 } from './store-kit.js';
+import { reportReader } from './report-reader.js';
+import { reportReadContext } from './report-read-context.js';
 
 /**
  * Issues and escalation (U2.1 rule 10, 14; rule 1 through the report snapshot). An issue is a
@@ -391,38 +390,13 @@ export class IssueStore {
     return inTransaction(this.pool, identity, async (client, actor) => {
       await projectAccess(client, actor, projectId);
       const from = shiftDate(businessDate, -2);
-      const days = await client.query<{
-        businessDate: string;
-        qty: Record<string, Reported> | null;
-      }>(
-        `SELECT d."businessDate"::text AS "businessDate", r.snapshot->'facts'->'qty' AS qty FROM "DailyClose" d
-        JOIN "Revision" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
-        WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3 AND d.state='SUBMITTED'
-          AND d."businessDate" BETWEEN $4::date AND $5::date`,
-        [actor.orgId, projectId, REPORT_SCOPE, from, businessDate],
+      // Submitted days and confirmed plans come from the report module exit (ADR-0003 D2).
+      const history: LagDay[] = await reportReader.lagHistory(
+        reportReadContext(client, actor),
+        projectId,
+        from,
+        businessDate,
       );
-      const plans = await client.query<{
-        target: string;
-        number: number;
-        rows: PlanRowDto[];
-        confirmedAt: Date;
-      }>(
-        `SELECT DISTINCT ON ("targetBusinessDate") "targetBusinessDate"::text AS target, number, rows, "confirmedAt"
-        FROM "PlanVersion" WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate" BETWEEN $3::date AND $4::date
-        ORDER BY "targetBusinessDate", number DESC`,
-        [actor.orgId, projectId, from, businessDate],
-      );
-      const baselines = new Map(
-        plans.rows.map((p) => [
-          p.target,
-          { n: p.number, rows: p.rows, at: p.confirmedAt.toISOString() },
-        ]),
-      );
-      const history: LagDay[] = days.rows.map((d) => ({
-        businessDate: d.businessDate,
-        baseline: baselines.get(d.businessDate) ?? null,
-        qty: d.qty ?? {},
-      }));
       // The reminder is about the requested day; without its submission there is nothing to say.
       if (!history.some((d) => d.businessDate === businessDate))
         return { projectId, businessDate, suggestions: [] };

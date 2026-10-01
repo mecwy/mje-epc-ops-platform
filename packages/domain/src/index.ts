@@ -1,11 +1,25 @@
 export * from './alpha-store.js';
 export * from './report-rules.js';
-export * from './report-store.js';
+export {
+  READ_ROLES,
+  REPORT_SCOPE,
+  ReportError,
+  ReportStore,
+  WRITE_ROLES,
+  type DayState,
+  type ReportCoverage,
+  type ReportProjectRow,
+} from './report-store.js';
+// The report module exit (ADR-0003 D2): the only way to report data outside the module.
+export {
+  reportReader,
+  type ReportReadContext,
+  type ReportReadView,
+} from './report-reader.js';
 export * from './issue-store.js';
 export type { Access, Actor } from './store-kit.js';
 export * from './photo-file.js';
 export * from './photo-store.js';
-export * from './reader-view.js';
 export * from './photo-strip.js';
 export * from './field-rules.js';
 export {

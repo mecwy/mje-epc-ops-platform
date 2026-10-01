@@ -6,7 +6,6 @@ import type {
   DayFactsDto,
   ForemanAdoptCommand,
   ForemanAdoptResultDto,
-  ForemanDayDto,
   NoWorkCommand,
   PlanRowDto,
   ReportItemDto,
@@ -59,9 +58,7 @@ import {
   idempotent,
   inTransaction,
   lockReportDay,
-  projectAccess,
   projectWriter,
-  type Access,
   type Actor,
   type ReportProjectRow,
 } from './store-kit.js';
@@ -70,18 +67,15 @@ import { fieldDayAsOf, nextSeq } from './checkin-store.js';
 import { FieldError, rosterLock } from './field-kit.js';
 import { foremanDayAsOf } from './foreman-store.js';
 import {
-  frozenPhotos,
   photoAsOf,
   photographedItems,
   photosOfDay,
   submittedPhotos,
 } from './photo-store.js';
 import {
-  readerContent,
-  readerDayState,
-  readerPlan,
-  readerSnapshot,
-} from './reader-view.js';
+  reportReadContext,
+  type ReportReadContext,
+} from './report-read-context.js';
 
 export {
   READ_ROLES,
@@ -91,7 +85,7 @@ export {
   type ReportProjectRow,
 };
 type ProjectRow = ReportProjectRow;
-interface DayRow {
+export interface DayRow {
   id: string;
   version: number;
   state: string;
@@ -100,7 +94,7 @@ interface DayRow {
   siteTimezone: string;
   updatedAt: Date;
 }
-interface RevisionRow {
+export interface RevisionRow {
   revisionNumber: number;
   reason: string;
   submittedAt: Date;
@@ -113,10 +107,10 @@ interface PlanVersionRow {
   confirmedAt: Date;
   confirmedBy: string;
 }
-interface ItemRow extends ReportItemDto {
+export interface ItemRow extends ReportItemDto {
   id: string;
 }
-const publicItem = (r: ItemRow): ReportItemDto => ({
+export const publicItem = (r: ItemRow): ReportItemDto => ({
   kind: r.kind,
   key: r.key,
   label: r.label,
@@ -137,8 +131,18 @@ export class ReportStore {
   ): Promise<T> {
     return inTransaction(this.pool, identity, work);
   }
-  private access(client: PoolClient, actor: Actor, projectId: string) {
-    return projectAccess(client, actor, projectId);
+  /**
+   * Every report read (ADR-0003 D2): one transaction as the verified account, whose context is
+   * handed to the report module exit (`reportReader.forContext(ctx)`); the exit checks the
+   * project and applies the projection. The store itself serves no read route.
+   */
+  read<T>(
+    identity: Identity,
+    use: (ctx: ReportReadContext) => Promise<T>,
+  ): Promise<T> {
+    return this.transaction(identity, (client, actor) =>
+      use(reportReadContext(client, actor)),
+    );
   }
   private writer(client: PoolClient, actor: Actor, projectId: string) {
     return projectWriter(client, actor, projectId);
@@ -157,21 +161,6 @@ export class ReportStore {
     return audit(...args);
   }
 
-  // ---------- days ----------
-  private async day(
-    client: PoolClient,
-    orgId: string,
-    projectId: string,
-    businessDate: string,
-    lock = false,
-  ): Promise<DayRow | null> {
-    const result = await client.query<DayRow>(
-      `SELECT id, version, state, "currentRevisionNumber", "correctionReason", "siteTimezone", "updatedAt"
-      FROM "DailyClose" WHERE "orgId"=$1 AND "projectId"=$2 AND "businessDate"=$3::date AND "scopeKey"=$4${lock ? ' FOR UPDATE' : ''}`,
-      [orgId, projectId, businessDate, REPORT_SCOPE],
-    );
-    return result.rows[0] ?? null;
-  }
   /** Creates the day row (expectedVersion 0) or bumps its version (expectedVersion = current). */
   private async dayForWrite(
     client: PoolClient,
@@ -198,7 +187,7 @@ export class ReportStore {
         ],
       );
       if (inserted.rowCount !== 1) throw new ReportError('VERSION_CONFLICT');
-      return (await this.day(
+      return (await dayRow(
         client,
         actor.orgId,
         project.id,
@@ -206,7 +195,7 @@ export class ReportStore {
         true,
       ))!;
     }
-    const existing = await this.day(
+    const existing = await dayRow(
       client,
       actor.orgId,
       project.id,
@@ -222,19 +211,6 @@ export class ReportStore {
     if (updated.rowCount !== 1) throw new ReportError('VERSION_CONFLICT');
     return { ...existing, version: expectedVersion + 1 };
   }
-  private static state(d: DayRow | null, facts: DayFacts | null): DayState {
-    if (!d) return 'empty';
-    if (d.state === 'SUBMITTED')
-      return d.correctionReason === null ? 'submitted' : 'correcting';
-    return facts && hasFacts(facts) ? 'draft' : 'empty';
-  }
-  private async facts(client: PoolClient, orgId: string, dailyCloseId: string) {
-    const r = await client.query<{ facts: DayFactsDto }>(
-      'SELECT facts FROM "DailyReportDraft" WHERE "orgId"=$1 AND "dailyCloseId"=$2',
-      [orgId, dailyCloseId],
-    );
-    return r.rows[0]?.facts ?? null;
-  }
   private async saveDraft(
     client: PoolClient,
     actor: Actor,
@@ -246,505 +222,6 @@ export class ReportStore {
       ON CONFLICT ("orgId","dailyCloseId") DO UPDATE SET facts=excluded.facts,"updatedAt"=now(),"updatedBy"=excluded."updatedBy"`,
       [randomUUID(), actor.orgId, dailyCloseId, facts, actor.accountId],
     );
-  }
-  private async revisions(
-    client: PoolClient,
-    orgId: string,
-    dailyCloseId: string,
-  ) {
-    const r = await client.query<RevisionRow>(
-      `SELECT "revisionNumber", reason, "submittedAt", "updatedBy", snapshot FROM "Revision"
-      WHERE "orgId"=$1 AND "dailyCloseId"=$2 ORDER BY "revisionNumber"`,
-      [orgId, dailyCloseId],
-    );
-    return r.rows;
-  }
-  /** Rule 3: carry-over comes from the latest submitted day before this one, however many days back. */
-  private async previousSubmitted(
-    client: PoolClient,
-    orgId: string,
-    projectId: string,
-    businessDate: string,
-  ): Promise<{
-    businessDate: string;
-    snapshot: Record<string, unknown>;
-  } | null> {
-    const r = await client.query<{
-      businessDate: string;
-      snapshot: Record<string, unknown>;
-    }>(
-      `SELECT d."businessDate"::text AS "businessDate", r.snapshot FROM "DailyClose" d
-      JOIN "Revision" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
-      WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3 AND d.state='SUBMITTED' AND d."businessDate"<$4::date
-      ORDER BY d."businessDate" DESC LIMIT 1`,
-      [orgId, projectId, REPORT_SCOPE, businessDate],
-    );
-    return r.rows[0] ?? null;
-  }
-
-  // ---------- items ----------
-  private async items(client: PoolClient, orgId: string, projectId: string) {
-    const r = await client.query<ItemRow>(
-      `SELECT id, kind, key, label, unit, "designQty", "openingCumulative", "sortOrder", active
-      FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 ORDER BY kind, "sortOrder", key`,
-      [orgId, projectId],
-    );
-    return r.rows;
-  }
-  private static keys(items: ItemRow[], kind: ReportItemDto['kind']) {
-    return items.filter((i) => i.kind === kind && i.active).map((i) => i.key);
-  }
-
-  // ---------- plans ----------
-  private async planState(
-    client: PoolClient,
-    orgId: string,
-    projectId: string,
-    target: string,
-  ): Promise<{ state: PlanState; versions: PlanVersionRow[] }> {
-    const versions = await client.query<PlanVersionRow>(
-      `SELECT number, rows, "confirmedAt", "confirmedBy" FROM "PlanVersion"
-      WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate"=$3::date ORDER BY number`,
-      [orgId, projectId, target],
-    );
-    const draft = await client.query<{ rows: PlanRowDto[] }>(
-      `SELECT rows FROM "PlanDraft" WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate"=$3::date`,
-      [orgId, projectId, target],
-    );
-    return {
-      versions: versions.rows,
-      state: {
-        versions: versions.rows.map((v) => ({
-          n: v.number,
-          rows: v.rows,
-          at: v.confirmedAt.toISOString(),
-        })),
-        draft: draft.rows[0]?.rows ?? null,
-      },
-    };
-  }
-  private static baseline(state: PlanState): PlanVersion | null {
-    return state.versions.at(-1) ?? null;
-  }
-
-  // ---------- snapshot (what a submission freezes; rule 1 and 3) ----------
-  private async snapshot(
-    client: PoolClient,
-    actor: Actor,
-    project: ProjectRow,
-    businessDate: string,
-    facts: DayFacts,
-    items: ItemRow[],
-  ) {
-    const today = await this.planState(
-      client,
-      actor.orgId,
-      project.id,
-      businessDate,
-    );
-    const next = shiftDate(businessDate, 1);
-    const nextPlan = await this.planState(
-      client,
-      actor.orgId,
-      project.id,
-      next,
-    );
-    const previous = await this.previousSubmitted(
-      client,
-      actor.orgId,
-      project.id,
-      businessDate,
-    );
-    const previousCumulative =
-      (previous?.snapshot['cumulativeCarry'] as
-        Record<string, CarriedCumulative> | undefined) ?? {};
-    const cumulativeCarry = carryCumulative(
-      businessDate,
-      facts,
-      previousCumulative,
-    );
-    const previousMaterials =
-      (previous?.snapshot['materialsCumulative'] as
-        Record<string, MaterialCumulative> | undefined) ?? {};
-    const materialsCumulative: Record<string, MaterialCumulative> = {};
-    for (const m of items.filter((i) => i.kind === 'material')) {
-      const opening = dec(m.openingCumulative);
-      const base: MaterialCumulative = previous
-        ? (previousMaterials[m.key] ?? { value: null, complete: false })
-        : {
-            value: opening === null ? null : decText(opening),
-            complete: opening !== null,
-          };
-      materialsCumulative[m.key] = carryMaterial(
-        base,
-        facts.materials[m.key],
-        facts.noWork !== null,
-      );
-    }
-    const baseline = ReportStore.baseline(today.state);
-    // Rule 1 and 8: the day's photos with a valid current link are the submitted evidence,
-    // frozen with that link; a later relink never reaches a revision. Unlinked photos are
-    // staging only: left out, still linkable later. Coverage asks for a photo where a work
-    // item has quantity today.
-    const photos = await photosOfDay(
-      client,
-      actor.orgId,
-      project.id,
-      businessDate,
-    );
-    const evidence = submittedPhotos(
-      photos,
-      new Set(ReportStore.keys(items, 'work')),
-    );
-    const cov = coverage({
-      facts,
-      itemIds: ReportStore.keys(items, 'work'),
-      machineryIds: ReportStore.keys(items, 'machinery'),
-      materialIds: ReportStore.keys(items, 'material'),
-      baseline,
-      photographedItems: photographedItems(evidence),
-    });
-    const nextStatus = planStatus(nextPlan.state);
-    // Rule 1: the issues of the day as they stand now; later edits never reach a revision.
-    const issues = await issuesAsOf(
-      client,
-      actor.orgId,
-      project.id,
-      businessDate,
-    );
-    // Design §4: the foreman claims beside the PM's facts (never merged into them). The caller
-    // holds the shared roster lock; a submission also holds the day lock.
-    const foreman = await foremanDayAsOf(
-      client,
-      actor.orgId,
-      project.id,
-      businessDate,
-      project.timezone,
-      ReportStore.keys(items, 'work'),
-    );
-    return {
-      coverage: cov,
-      photos,
-      unlinkedPhotos: photos.length - evidence.length,
-      snapshot: {
-        businessDate,
-        siteTimezone: project.timezone,
-        projectId: project.id,
-        projectCode: project.code,
-        projectName: project.name,
-        facts,
-        items: items.map(publicItem),
-        baseline: baseline ? { n: baseline.n, rows: baseline.rows } : null,
-        nextPlan: {
-          status: nextStatus.status,
-          n: nextStatus.n,
-          rows: planRows(nextPlan.state, today.state),
-        },
-        previousSubmittedDate: previous?.businessDate ?? null,
-        cumulativeBase: previousCumulative,
-        cumulativeCarry,
-        materialsCumulative,
-        issues,
-        photos: evidence.map(photoAsOf),
-        coverage: cov,
-        foreman,
-        actorAccountId: actor.accountId,
-        actorPersonId: actor.personId,
-      },
-    };
-  }
-
-  // ---------- reads ----------
-  async projects(identity: Identity) {
-    return this.transaction(identity, async (client, actor) => {
-      const result = await client.query<ProjectRow & { access: Access }>(
-        `SELECT p.id, p.name, p.code, p.timezone,
-          CASE WHEN bool_or(m.role = ANY($3::text[])) THEN 'write' ELSE 'read' END AS access
-        FROM "Project" p JOIN "Membership" m ON m."orgId"=p."orgId" AND (m."projectId"=p.id OR (m."projectId" IS NULL AND m.role = ANY($4::text[])))
-        WHERE p."orgId"=$1 AND m."accountId"=$2 AND m.role = ANY($5::text[])
-          AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now())
-        GROUP BY p.id, p.name, p.code, p.timezone ORDER BY p.code`,
-        [
-          actor.orgId,
-          actor.accountId,
-          [...WRITE_ROLES],
-          [...READ_ROLES],
-          [...WRITE_ROLES, ...READ_ROLES],
-        ],
-      );
-      return {
-        accountId: actor.accountId,
-        personId: actor.personId,
-        projects: result.rows,
-      };
-    });
-  }
-
-  /** Day rows in a date range (at most 62 days). Reading never creates a row (rule 3). */
-  async days(identity: Identity, projectId: string, from: string, to: string) {
-    return this.transaction(identity, async (client, actor) => {
-      const { access } = await this.access(client, actor, projectId);
-      const result = await client.query<{
-        businessDate: string;
-        state: string;
-        currentRevisionNumber: number;
-        correcting: boolean;
-        hasFacts: boolean;
-      }>(
-        `SELECT d."businessDate"::text AS "businessDate", d.state, d."currentRevisionNumber",
-          d."correctionReason" IS NOT NULL AS correcting, r.facts IS NOT NULL AS "hasFacts"
-        FROM "DailyClose" d LEFT JOIN "DailyReportDraft" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id
-        WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3 AND d."businessDate" BETWEEN $4::date AND $5::date
-          AND $5::date - $4::date BETWEEN 0 AND 61
-        ORDER BY d."businessDate"`,
-        [actor.orgId, projectId, REPORT_SCOPE, from, to],
-      );
-      const rows = result.rows.map((r) => {
-        const state: DayState =
-          r.state === 'SUBMITTED'
-            ? r.correcting
-              ? 'correcting'
-              : 'submitted'
-            : r.hasFacts
-              ? 'draft'
-              : 'empty';
-        return {
-          businessDate: r.businessDate,
-          state,
-          revision: r.currentRevisionNumber,
-        };
-      });
-      if (access === 'write') return rows;
-      // OD18: a reader gets submitted days only; a draft day is not listed at all, so the
-      // response does not change when one is started or edited.
-      return rows.flatMap((r) => {
-        const state = readerDayState(r.state);
-        return state ? [{ ...r, state }] : [];
-      });
-    });
-  }
-
-  async getDay(identity: Identity, projectId: string, businessDate: string) {
-    return this.transaction(identity, async (client, actor) => {
-      const { project, access } = await this.access(client, actor, projectId);
-      const day = await this.day(client, actor.orgId, projectId, businessDate);
-      if (access === 'read')
-        return this.readerDay(client, actor, project, businessDate, day);
-      // Level 0 shared (design §5): the expected crew set and its roster version are read
-      // while no roster write can commit in between.
-      await rosterLock(client, actor.orgId, projectId, true);
-      const facts = day ? await this.facts(client, actor.orgId, day.id) : null;
-      const items = await this.items(client, actor.orgId, projectId);
-      const revisions = day
-        ? await this.revisions(client, actor.orgId, day.id)
-        : [];
-      const {
-        snapshot,
-        coverage: cov,
-        photos,
-        unlinkedPhotos,
-      } = await this.snapshot(
-        client,
-        actor,
-        project,
-        businessDate,
-        facts ?? blankFacts(),
-        items,
-      );
-      const today = await this.planState(
-        client,
-        actor.orgId,
-        projectId,
-        businessDate,
-      );
-      return {
-        access,
-        projectId,
-        businessDate,
-        siteTimezone: project.timezone,
-        state: ReportStore.state(day, facts),
-        version: day?.version ?? 0,
-        currentRevisionNumber: day?.currentRevisionNumber ?? 0,
-        correctionReason: day?.correctionReason ?? null,
-        facts: facts ?? blankFacts(),
-        items: snapshot.items,
-        planStatus: planStatus(today.state),
-        baseline: snapshot.baseline,
-        nextPlan: snapshot.nextPlan,
-        previousSubmittedDate: snapshot.previousSubmittedDate,
-        cumulativeBase: snapshot.cumulativeBase,
-        materialsCumulative: snapshot.materialsCumulative,
-        issues: snapshot.issues,
-        photos,
-        /** Photos a submission would leave out (no valid current link); prompt before submit. */
-        unlinkedPhotos,
-        coverage: cov,
-        revisions: revisions.map((r) => ({
-          n: r.revisionNumber,
-          at: r.submittedAt.toISOString(),
-          by: r.updatedBy,
-          reason: r.reason,
-        })),
-        foreman: ReportStore.foremanView(
-          snapshot.foreman,
-          revisions.find((r) => r.revisionNumber === day?.currentRevisionNumber)
-            ?.snapshot ?? null,
-        ),
-      };
-    });
-  }
-  /**
-   * The live foreman view for a writer. Revisions and adoptions numbered after the latest
-   * submission's boundary are marked `afterSubmission` (they enter only through a correction),
-   * and the live expected crew set is compared with the one that submission froze (a roster
-   * change after submission never alters the revision). Null marks: never submitted.
-   */
-  private static foremanView(
-    live: ForemanDayDto,
-    submitted: Record<string, unknown> | null,
-  ) {
-    const frozen = submitted?.['foreman'] as ForemanDayDto | undefined;
-    const field = submitted?.['field'] as { seqBoundary?: number } | undefined;
-    // A revision from before field sequences existed froze none (0).
-    const boundary = submitted ? (field?.seqBoundary ?? 0) : null;
-    const after = (daySeq: number) => boundary !== null && daySeq > boundary;
-    const ids = (d: ForemanDayDto) =>
-      d.expectedCrews.map((c) => c.crewId).sort();
-    return {
-      ...live,
-      revisions: live.revisions.map((r) => ({
-        ...r,
-        afterSubmission: after(r.daySeq),
-      })),
-      adoptions: live.adoptions.map((a) => ({
-        ...a,
-        afterSubmission: after(a.daySeq),
-      })),
-      submittedExpectedCrews: frozen ? ids(frozen) : null,
-      expectedCrewsChanged: frozen
-        ? ids(frozen).join(',') !== ids(live).join(',')
-        : null,
-    };
-  }
-
-  /**
-   * OD18: a reader's day is the latest submitted revision, built from its snapshot only (also
-   * while a correction is open); before any submission, nothing of the day. Never the draft
-   * facts, a plan draft, live issues or photos that were not frozen. Read-only, so version 0.
-   */
-  private async readerDay(
-    client: PoolClient,
-    actor: Actor,
-    project: ProjectRow,
-    businessDate: string,
-    day: DayRow | null,
-  ) {
-    const revisions = day
-      ? await this.revisions(client, actor.orgId, day.id)
-      : [];
-    const latest =
-      revisions.find((r) => r.revisionNumber === day?.currentRevisionNumber) ??
-      null;
-    const content = readerContent(
-      latest?.snapshot ?? null,
-      latest
-        ? []
-        : (await this.items(client, actor.orgId, project.id)).map(publicItem),
-    );
-    return {
-      access: 'read' as Access,
-      projectId: project.id,
-      businessDate,
-      siteTimezone: project.timezone,
-      state: content.state as DayState,
-      version: 0,
-      currentRevisionNumber: latest ? latest.revisionNumber : 0,
-      correctionReason: null,
-      facts: content.facts,
-      items: content.items,
-      planStatus: content.planStatus,
-      baseline: content.baseline,
-      nextPlan: content.nextPlan,
-      previousSubmittedDate: content.previousSubmittedDate,
-      cumulativeBase: content.cumulativeBase,
-      materialsCumulative: content.materialsCumulative,
-      issues: content.issues,
-      photos: await frozenPhotos(
-        client,
-        actor.orgId,
-        project.id,
-        content.frozenPhotos,
-      ),
-      unlinkedPhotos: 0,
-      coverage: content.coverage,
-      revisions: latest
-        ? revisions.map((r) => ({
-            n: r.revisionNumber,
-            at: r.submittedAt.toISOString(),
-            by: r.updatedBy,
-            reason: r.reason,
-          }))
-        : [],
-    };
-  }
-
-  async getRevision(
-    identity: Identity,
-    projectId: string,
-    businessDate: string,
-    revisionNumber: number,
-  ) {
-    return this.transaction(identity, async (client, actor) => {
-      const { access } = await this.access(client, actor, projectId);
-      const day = await this.day(client, actor.orgId, projectId, businessDate);
-      if (!day) throw new ReportError('NOT_FOUND');
-      const r = (await this.revisions(client, actor.orgId, day.id)).find(
-        (x) => x.revisionNumber === revisionNumber,
-      );
-      if (!r) throw new ReportError('NOT_FOUND');
-      return {
-        n: r.revisionNumber,
-        at: r.submittedAt.toISOString(),
-        by: r.updatedBy,
-        reason: r.reason,
-        // OD20: a reader gets the frozen photo fields only (no coordinates); stored as is.
-        snapshot: access === 'read' ? readerSnapshot(r.snapshot) : r.snapshot,
-      };
-    });
-  }
-
-  async getPlan(identity: Identity, projectId: string, target: string) {
-    return this.transaction(identity, async (client, actor) => {
-      const { access } = await this.access(client, actor, projectId);
-      const plan = await this.planState(client, actor.orgId, projectId, target);
-      const previous = await this.planState(
-        client,
-        actor.orgId,
-        projectId,
-        shiftDate(target, -1),
-      );
-      // OD18: a reader sees confirmed versions only; the draft does not exist for it.
-      const shown = (s: PlanState) => (access === 'read' ? readerPlan(s) : s);
-      return {
-        targetBusinessDate: target,
-        status: planStatus(shown(plan.state)),
-        rows: planRows(shown(plan.state), shown(previous.state)),
-        draft: shown(plan.state).draft,
-        versions: plan.versions.map((v) => ({
-          n: v.number,
-          rows: v.rows,
-          at: v.confirmedAt.toISOString(),
-          by: v.confirmedBy,
-        })),
-      };
-    });
-  }
-
-  async getItems(identity: Identity, projectId: string) {
-    return this.transaction(identity, async (client, actor) => {
-      await this.access(client, actor, projectId);
-      return (await this.items(client, actor.orgId, projectId)).map(publicItem);
-    });
   }
 
   // ---------- writes ----------
@@ -768,7 +245,7 @@ export class ReportStore {
           );
           if (day.state === 'SUBMITTED' && day.correctionReason === null)
             throw new ReportError('LOCKED');
-          const before = await this.facts(client, actor.orgId, day.id);
+          const before = await draftFacts(client, actor.orgId, day.id);
           await this.saveDraft(client, actor, day.id, command.facts);
           await this.audit(
             client,
@@ -783,7 +260,7 @@ export class ReportStore {
           return {
             businessDate: command.businessDate,
             version: day.version,
-            state: ReportStore.state(day, command.facts),
+            state: dayState(day, command.facts),
           };
         },
       );
@@ -812,8 +289,8 @@ export class ReportStore {
       project.id,
       businessDate,
     );
-    const items = await this.items(client, actor.orgId, project.id);
-    const { snapshot, coverage: cov } = await this.snapshot(
+    const items = await itemRows(client, actor.orgId, project.id);
+    const { snapshot, coverage: cov } = await daySnapshot(
       client,
       actor,
       project,
@@ -906,8 +383,8 @@ export class ReportStore {
             command.expectedVersion,
           );
           const facts =
-            (await this.facts(client, actor.orgId, day.id)) ?? blankFacts();
-          if (!(await this.facts(client, actor.orgId, day.id)))
+            (await draftFacts(client, actor.orgId, day.id)) ?? blankFacts();
+          if (!(await draftFacts(client, actor.orgId, day.id)))
             await this.saveDraft(client, actor, day.id, facts);
           return this.submitRevision(
             client,
@@ -947,7 +424,7 @@ export class ReportStore {
           if (day.state === 'SUBMITTED' && day.correctionReason === null)
             throw new ReportError('LOCKED');
           const facts: DayFacts = {
-            ...((await this.facts(client, actor.orgId, day.id)) ??
+            ...((await draftFacts(client, actor.orgId, day.id)) ??
               blankFacts()),
             noWork: { reason: command.reason, note: command.note },
           };
@@ -1001,8 +478,8 @@ export class ReportStore {
             project.id,
             command.businessDate,
           );
-          const items = await this.items(client, actor.orgId, project.id);
-          const work = ReportStore.keys(items, 'work');
+          const items = await itemRows(client, actor.orgId, project.id);
+          const work = activeKeys(items, 'work');
           if (!work.includes(command.item))
             throw new FieldError('ITEM_NOT_FOUND');
           const view = await foremanDayAsOf(
@@ -1021,7 +498,7 @@ export class ReportStore {
           if (day.state === 'SUBMITTED' && day.correctionReason === null)
             throw new ReportError('LOCKED');
           const before =
-            (await this.facts(client, actor.orgId, day.id)) ?? blankFacts();
+            (await draftFacts(client, actor.orgId, day.id)) ?? blankFacts();
           const facts: DayFacts = {
             ...before,
             qty: { ...before.qty, [command.item]: total.value },
@@ -1087,7 +564,7 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
-          const day = await this.day(
+          const day = await dayRow(
             client,
             actor.orgId,
             project.id,
@@ -1134,7 +611,7 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
-          const day = await this.day(
+          const day = await dayRow(
             client,
             actor.orgId,
             project.id,
@@ -1151,7 +628,7 @@ export class ReportStore {
           if (day.version !== command.expectedVersion)
             throw new ReportError('VERSION_CONFLICT');
           const current = (
-            await this.revisions(client, actor.orgId, day.id)
+            await revisionRows(client, actor.orgId, day.id)
           ).find((r) => r.revisionNumber === day.currentRevisionNumber);
           if (!current) throw new ReportError('NOT_FOUND');
           await this.saveDraft(
@@ -1215,7 +692,7 @@ export class ReportStore {
               actor.accountId,
             ],
           );
-          const plan = await this.planState(
+          const plan = await planStateOf(
             client,
             actor.orgId,
             project.id,
@@ -1260,13 +737,13 @@ export class ReportStore {
             'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
             [planLock(actor.orgId, project.id, command.targetBusinessDate)],
           );
-          const plan = await this.planState(
+          const plan = await planStateOf(
             client,
             actor.orgId,
             project.id,
             command.targetBusinessDate,
           );
-          const previous = await this.planState(
+          const previous = await planStateOf(
             client,
             actor.orgId,
             project.id,
@@ -1333,7 +810,7 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
-          const before = await this.items(client, actor.orgId, project.id);
+          const before = await itemRows(client, actor.orgId, project.id);
           for (const item of command.items)
             await client.query(
               `INSERT INTO "ReportItem"(id,"orgId","projectId",kind,key,label,unit,"designQty","openingCumulative","sortOrder",active,"updatedBy")
@@ -1355,7 +832,7 @@ export class ReportStore {
                 actor.accountId,
               ],
             );
-          const after = await this.items(client, actor.orgId, project.id);
+          const after = await itemRows(client, actor.orgId, project.id);
           await this.audit(
             client,
             actor,
@@ -1375,4 +852,246 @@ export class ReportStore {
     });
   }
 }
+// ---------- rows (report module internal: report-store and report-reader only) ----------
+// ---------- days ----------
+export async function dayRow(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  businessDate: string,
+  lock = false,
+): Promise<DayRow | null> {
+  const result = await client.query<DayRow>(
+    `SELECT id, version, state, "currentRevisionNumber", "correctionReason", "siteTimezone", "updatedAt"
+    FROM "DailyClose" WHERE "orgId"=$1 AND "projectId"=$2 AND "businessDate"=$3::date AND "scopeKey"=$4${lock ? ' FOR UPDATE' : ''}`,
+    [orgId, projectId, businessDate, REPORT_SCOPE],
+  );
+  return result.rows[0] ?? null;
+}
+
+export function dayState(d: DayRow | null, facts: DayFacts | null): DayState {
+  if (!d) return 'empty';
+  if (d.state === 'SUBMITTED')
+    return d.correctionReason === null ? 'submitted' : 'correcting';
+  return facts && hasFacts(facts) ? 'draft' : 'empty';
+}
+
+export async function draftFacts(
+  client: PoolClient,
+  orgId: string,
+  dailyCloseId: string,
+) {
+  const r = await client.query<{ facts: DayFactsDto }>(
+    'SELECT facts FROM "DailyReportDraft" WHERE "orgId"=$1 AND "dailyCloseId"=$2',
+    [orgId, dailyCloseId],
+  );
+  return r.rows[0]?.facts ?? null;
+}
+
+export async function revisionRows(
+  client: PoolClient,
+  orgId: string,
+  dailyCloseId: string,
+) {
+  const r = await client.query<RevisionRow>(
+    `SELECT "revisionNumber", reason, "submittedAt", "updatedBy", snapshot FROM "Revision"
+    WHERE "orgId"=$1 AND "dailyCloseId"=$2 ORDER BY "revisionNumber"`,
+    [orgId, dailyCloseId],
+  );
+  return r.rows;
+}
+
+/** Rule 3: carry-over comes from the latest submitted day before this one, however many days back. */
+async function previousSubmitted(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  businessDate: string,
+): Promise<{
+  businessDate: string;
+  snapshot: Record<string, unknown>;
+} | null> {
+  const r = await client.query<{
+    businessDate: string;
+    snapshot: Record<string, unknown>;
+  }>(
+    `SELECT d."businessDate"::text AS "businessDate", r.snapshot FROM "DailyClose" d
+    JOIN "Revision" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
+    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3 AND d.state='SUBMITTED' AND d."businessDate"<$4::date
+    ORDER BY d."businessDate" DESC LIMIT 1`,
+    [orgId, projectId, REPORT_SCOPE, businessDate],
+  );
+  return r.rows[0] ?? null;
+}
+
+// ---------- items ----------
+export async function itemRows(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+) {
+  const r = await client.query<ItemRow>(
+    `SELECT id, kind, key, label, unit, "designQty", "openingCumulative", "sortOrder", active
+    FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 ORDER BY kind, "sortOrder", key`,
+    [orgId, projectId],
+  );
+  return r.rows;
+}
+
+function activeKeys(items: ItemRow[], kind: ReportItemDto['kind']) {
+  return items.filter((i) => i.kind === kind && i.active).map((i) => i.key);
+}
+
+// ---------- plans ----------
+export async function planStateOf(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  target: string,
+): Promise<{ state: PlanState; versions: PlanVersionRow[] }> {
+  const versions = await client.query<PlanVersionRow>(
+    `SELECT number, rows, "confirmedAt", "confirmedBy" FROM "PlanVersion"
+    WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate"=$3::date ORDER BY number`,
+    [orgId, projectId, target],
+  );
+  const draft = await client.query<{ rows: PlanRowDto[] }>(
+    `SELECT rows FROM "PlanDraft" WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate"=$3::date`,
+    [orgId, projectId, target],
+  );
+  return {
+    versions: versions.rows,
+    state: {
+      versions: versions.rows.map((v) => ({
+        n: v.number,
+        rows: v.rows,
+        at: v.confirmedAt.toISOString(),
+      })),
+      draft: draft.rows[0]?.rows ?? null,
+    },
+  };
+}
+
+function baselineOf(state: PlanState): PlanVersion | null {
+  return state.versions.at(-1) ?? null;
+}
+
+// ---------- snapshot (what a submission freezes; rule 1 and 3) ----------
+export async function daySnapshot(
+  client: PoolClient,
+  actor: Actor,
+  project: ProjectRow,
+  businessDate: string,
+  facts: DayFacts,
+  items: ItemRow[],
+) {
+  const today = await planStateOf(
+    client,
+    actor.orgId,
+    project.id,
+    businessDate,
+  );
+  const next = shiftDate(businessDate, 1);
+  const nextPlan = await planStateOf(client, actor.orgId, project.id, next);
+  const previous = await previousSubmitted(
+    client,
+    actor.orgId,
+    project.id,
+    businessDate,
+  );
+  const previousCumulative =
+    (previous?.snapshot['cumulativeCarry'] as
+      Record<string, CarriedCumulative> | undefined) ?? {};
+  const cumulativeCarry = carryCumulative(
+    businessDate,
+    facts,
+    previousCumulative,
+  );
+  const previousMaterials =
+    (previous?.snapshot['materialsCumulative'] as
+      Record<string, MaterialCumulative> | undefined) ?? {};
+  const materialsCumulative: Record<string, MaterialCumulative> = {};
+  for (const m of items.filter((i) => i.kind === 'material')) {
+    const opening = dec(m.openingCumulative);
+    const base: MaterialCumulative = previous
+      ? (previousMaterials[m.key] ?? { value: null, complete: false })
+      : {
+          value: opening === null ? null : decText(opening),
+          complete: opening !== null,
+        };
+    materialsCumulative[m.key] = carryMaterial(
+      base,
+      facts.materials[m.key],
+      facts.noWork !== null,
+    );
+  }
+  const baseline = baselineOf(today.state);
+  // Rule 1 and 8: the day's photos with a valid current link are the submitted evidence,
+  // frozen with that link; a later relink never reaches a revision. Unlinked photos are
+  // staging only: left out, still linkable later. Coverage asks for a photo where a work
+  // item has quantity today.
+  const photos = await photosOfDay(
+    client,
+    actor.orgId,
+    project.id,
+    businessDate,
+  );
+  const evidence = submittedPhotos(photos, new Set(activeKeys(items, 'work')));
+  const cov = coverage({
+    facts,
+    itemIds: activeKeys(items, 'work'),
+    machineryIds: activeKeys(items, 'machinery'),
+    materialIds: activeKeys(items, 'material'),
+    baseline,
+    photographedItems: photographedItems(evidence),
+  });
+  const nextStatus = planStatus(nextPlan.state);
+  // Rule 1: the issues of the day as they stand now; later edits never reach a revision.
+  const issues = await issuesAsOf(
+    client,
+    actor.orgId,
+    project.id,
+    businessDate,
+  );
+  // Design §4: the foreman claims beside the PM's facts (never merged into them). The caller
+  // holds the shared roster lock; a submission also holds the day lock.
+  const foreman = await foremanDayAsOf(
+    client,
+    actor.orgId,
+    project.id,
+    businessDate,
+    project.timezone,
+    activeKeys(items, 'work'),
+  );
+  return {
+    coverage: cov,
+    photos,
+    unlinkedPhotos: photos.length - evidence.length,
+    snapshot: {
+      businessDate,
+      siteTimezone: project.timezone,
+      projectId: project.id,
+      projectCode: project.code,
+      projectName: project.name,
+      facts,
+      items: items.map(publicItem),
+      baseline: baseline ? { n: baseline.n, rows: baseline.rows } : null,
+      nextPlan: {
+        status: nextStatus.status,
+        n: nextStatus.n,
+        rows: planRows(nextPlan.state, today.state),
+      },
+      previousSubmittedDate: previous?.businessDate ?? null,
+      cumulativeBase: previousCumulative,
+      cumulativeCarry,
+      materialsCumulative,
+      issues,
+      photos: evidence.map(photoAsOf),
+      coverage: cov,
+      foreman,
+      actorAccountId: actor.accountId,
+      actorPersonId: actor.personId,
+    },
+  };
+}
+
 export type { Coverage as ReportCoverage };

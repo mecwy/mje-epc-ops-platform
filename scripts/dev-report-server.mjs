@@ -27,6 +27,7 @@ import {
   IssueStore,
   PhotoStore,
   ReportStore,
+  reportReader,
 } from '../packages/domain/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { AzurePhotoBlobStore } from '../apps/api/dist/photo-blobs.js';
@@ -148,7 +149,9 @@ appUrl.password = password;
 const pool = new Pool({ connectionString: appUrl.toString(), max: 5 });
 const reportStore = new ReportStore(pool);
 const pmIdentity = { tenantId, objectId: pmObject };
-const items = await reportStore.getItems(pmIdentity, project);
+const items = await reportStore.read(pmIdentity, (ctx) =>
+  reportReader.forContext(ctx).items(project),
+);
 if (!items.length) {
   // Synthetic TEST master data; labels are message keys so the UI shows them in each language.
   const work = [

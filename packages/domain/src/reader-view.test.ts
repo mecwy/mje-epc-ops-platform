@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { PhotoAsOfDto, PhotoDto, ReportItemDto } from '@mje/contracts';
+import { frozenPhotoViews, withheldCoordinates } from './reader-view.js';
 import {
-  frozenPhotoViews,
   readerContent,
   readerDayState,
   readerPlan,
   readerSnapshot,
-  withheldCoordinates,
-} from './reader-view.js';
+} from './report-reader.js';
 import { blankFacts, planRows, planStatus } from './report-rules.js';
 
 const item: ReportItemDto = {

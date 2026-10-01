@@ -11,7 +11,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { ReportStore } from '@mje/domain';
+import { ReportStore, reportReader } from '@mje/domain';
 import {
   InvalidReportInput,
   parseCancelCorrectionCommand,
@@ -66,9 +66,16 @@ export class ReportController {
     return command;
   }
 
+  /**
+   * Every read goes through the report module exit (ADR-0003 D2): the store opens the read
+   * transaction and the exit checks the project and applies the projection for the caller.
+   * Input is validated before the transaction, as before.
+   */
   @Get('projects')
   async projects(@Req() request: Request) {
-    return this.store.projects(await this.identity(request));
+    return this.store.read(await this.identity(request), (ctx) =>
+      reportReader.forContext(ctx).projects(),
+    );
   }
   @Get('days')
   async days(
@@ -78,11 +85,11 @@ export class ReportController {
     @Query('to') to: unknown,
   ) {
     const identity = await this.identity(request);
-    return this.store.days(
-      identity,
-      id(projectId, 'projectId'),
-      date(from, 'from'),
-      date(to, 'to'),
+    const project = id(projectId, 'projectId');
+    const first = date(from, 'from');
+    const last = date(to, 'to');
+    return this.store.read(identity, (ctx) =>
+      reportReader.forContext(ctx).days(project, first, last),
     );
   }
   @Get('day')
@@ -92,10 +99,10 @@ export class ReportController {
     @Query('businessDate') businessDate: unknown,
   ) {
     const identity = await this.identity(request);
-    return this.store.getDay(
-      identity,
-      id(projectId, 'projectId'),
-      date(businessDate, 'businessDate'),
+    const project = id(projectId, 'projectId');
+    const day = date(businessDate, 'businessDate');
+    return this.store.read(identity, (ctx) =>
+      reportReader.forContext(ctx).day(project, day),
     );
   }
   @Get('revision')
@@ -109,11 +116,10 @@ export class ReportController {
     const number = Number(n);
     if (!Number.isInteger(number) || number < 1 || number > 1_000_000)
       throw new InvalidReportInput('n');
-    return this.store.getRevision(
-      identity,
-      id(projectId, 'projectId'),
-      date(businessDate, 'businessDate'),
-      number,
+    const project = id(projectId, 'projectId');
+    const day = date(businessDate, 'businessDate');
+    return this.store.read(identity, (ctx) =>
+      reportReader.forContext(ctx).revision(project, day, number),
     );
   }
   @Get('plan')
@@ -123,16 +129,19 @@ export class ReportController {
     @Query('targetBusinessDate') target: unknown,
   ) {
     const identity = await this.identity(request);
-    return this.store.getPlan(
-      identity,
-      id(projectId, 'projectId'),
-      date(target, 'targetBusinessDate'),
+    const project = id(projectId, 'projectId');
+    const day = date(target, 'targetBusinessDate');
+    return this.store.read(identity, (ctx) =>
+      reportReader.forContext(ctx).plan(project, day),
     );
   }
   @Get('items')
   async items(@Req() request: Request, @Query('projectId') projectId: unknown) {
     const identity = await this.identity(request);
-    return this.store.getItems(identity, id(projectId, 'projectId'));
+    const project = id(projectId, 'projectId');
+    return this.store.read(identity, (ctx) =>
+      reportReader.forContext(ctx).items(project),
+    );
   }
 
   @Post('facts')

@@ -11,6 +11,10 @@
     "./rules": {
       "types": "./dist/report-rules.d.ts",
       "default": "./dist/report-rules.js"
+    },
+    "./authz": {
+      "types": "./dist/authz/index.d.ts",
+      "default": "./dist/authz/index.js"
     }
   },
   "scripts": {
