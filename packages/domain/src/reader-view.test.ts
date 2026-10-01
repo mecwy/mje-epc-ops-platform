@@ -4,6 +4,7 @@ import { frozenPhotoViews, withheldCoordinates } from './reader-view.js';
 import {
   readerContent,
   readerDayState,
+  readerNextPlan,
   readerPlan,
   readerSnapshot,
 } from './report-reader.js';
@@ -116,6 +117,66 @@ describe('reader view (OD18)', () => {
     expect(c.frozenPhotos).toEqual([]);
     const noBaseline = readerContent({ ...snapshot, baseline: null }, []);
     expect(noBaseline.planStatus).toEqual({ status: 'none', n: null });
+  });
+
+  it('C20: a frozen draft next-day plan keeps its status for a reader but none of its rows', () => {
+    const rows = [{ item: 'support', target: '400' }];
+    const draft = { status: 'draft', n: null, rows };
+    const snapshot = {
+      facts: blankFacts(),
+      items: [item],
+      baseline: null,
+      nextPlan: draft,
+      coverage: { missing: [], invalid: [] },
+    };
+    const copy = structuredClone(snapshot);
+    expect(readerContent(snapshot, []).nextPlan).toEqual({
+      status: 'draft',
+      n: null,
+      rows: [],
+    });
+    const confirmed = { status: 'confirmed', n: 3, rows };
+    expect(
+      readerContent({ ...snapshot, nextPlan: confirmed }, []).nextPlan,
+    ).toBe(confirmed);
+    // Anything but 'confirmed' is withheld (fail closed); nothing to withhold returns as is.
+    for (const status of ['none', 'unknown', undefined])
+      expect(readerNextPlan({ status, n: null, rows })).toEqual({
+        status,
+        n: null,
+        rows: [],
+      });
+    const empty = { status: 'draft', n: null, rows: [] };
+    expect(readerNextPlan(empty)).toBe(empty);
+    expect(readerNextPlan(undefined)).toBe(undefined);
+    expect(snapshot).toEqual(copy);
+  });
+
+  it('C20: a revision snapshot withholds draft next-day rows from a reader, confirmed rows stay', () => {
+    const rows = [{ item: 'support', target: '400' }];
+    const stored = {
+      businessDate: '2026-10-05',
+      nextPlan: { status: 'draft', n: 2, rows },
+    };
+    const copy = structuredClone(stored);
+    expect(readerSnapshot(stored)).toEqual({
+      businessDate: '2026-10-05',
+      nextPlan: { status: 'draft', n: 2, rows: [] },
+    });
+    expect(stored).toEqual(copy);
+    const confirmed = {
+      businessDate: '2026-10-05',
+      nextPlan: { status: 'confirmed', n: 2, rows },
+    };
+    expect(readerSnapshot(confirmed)).toBe(confirmed);
+    // Together with the other projections.
+    expect(
+      readerSnapshot({ ...stored, field: { seqBoundary: 1 }, photos: [] }),
+    ).toEqual({
+      businessDate: '2026-10-05',
+      nextPlan: { status: 'draft', n: 2, rows: [] },
+      photos: [],
+    });
   });
 
   it('shows frozen photos with their frozen link, in revision order, without link version', () => {
