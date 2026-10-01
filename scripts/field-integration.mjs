@@ -1784,7 +1784,8 @@ try {
       [dev.f2.id],
     );
     await expectStatus(me(dev.f2.token), 200);
-    assert.ok((await dbAgeMs((await row(dev.f2.id)).lastSeenAt)) < 60_000);
+    const seenAge = await dbAgeMs((await row(dev.f2.id)).lastSeenAt);
+    assert.ok(Number.isFinite(seenAge) && seenAge >= 0 && seenAge < 60_000);
     pass(
       'idle deadline: requests that decide just before the deadline serialize FOR UPDATE and the first records activity, so a request after the original deadline is still served; B first → EXPIRED(IDLE) committed, then A sees it (never revived); a FOR SHARE request whose wall clock crossed into the last day while it waited reclassifies and records its activity; the deferred update refuses an older authAt, a terminal row and a row within a day of its deadline',
     );
@@ -1887,10 +1888,16 @@ try {
           [projectA],
         )
       ).rows[0].m;
-    // Field requests advance the mark (at most once a second), never past the clock.
+    // Field requests advance the mark (at most once a second), never past the clock. The roster
+    // write above refreshed it already, so stale it first: the request must advance it itself.
+    await travel(
+      `UPDATE "ProjectRoster" SET "clockHighWater" = now() - interval '1 hour' WHERE "projectId"=$1`,
+      [projectA],
+    );
     await expectStatus(me(dev.c1.token), 200);
     const observed = await mark();
-    assert.ok(observed && (await dbAgeMs(observed)) < 60_000);
+    const markAge = observed ? await dbAgeMs(observed) : NaN;
+    assert.ok(Number.isFinite(markAge) && markAge >= 0 && markAge < 60_000);
     await travel(
       `UPDATE "ProjectRoster" SET "clockHighWater" = now() + interval '1 hour' WHERE "projectId"=$1`,
       [projectA],
