@@ -12,6 +12,12 @@ const D = 'packages/domain/src/';
 export const BOUNDARY = {
   /** Modules whose internals other modules reach only through their exits. */
   modules: {
+    'project-status': [
+      'commands.ts',
+      'reader.ts',
+      'context.ts',
+      'rules.ts',
+    ].map((f) => D + 'project-status/' + f),
     report: [
       'report-store.ts',
       'report-reader.ts',
@@ -28,6 +34,16 @@ export const BOUNDARY = {
   },
   /** Exit files and the names they export to other modules (null: every name). */
   exits: {
+    [`${D}project-status/commands.ts`]: { only: ['ProjectStatusCommands'] },
+    [`${D}project-status/reader.ts`]: {
+      only: ['ProjectStatusReader', 'projectStatusReader'],
+    },
+    [`${D}project-status/context.ts`]: {
+      only: ['withProjectStatusReadContext', 'ProjectStatusReadContext'],
+    },
+    [`${D}project-status/rules.ts`]: {
+      only: ['ProjectStatusError', 'requiredStatusFields'],
+    },
     [`${D}report-reader.ts`]: {
       except: [
         'readerContent',
@@ -66,6 +82,9 @@ export const BOUNDARY = {
   },
   /** Files that own SQL today: the only ones that may import `pg` (legacy exception list). */
   pg: [
+    ...['commands.ts', 'reader.ts', 'context.ts'].map(
+      (f) => D + 'project-status/' + f,
+    ),
     ...[
       'store-kit.ts',
       'alpha-store.ts',
@@ -89,6 +108,9 @@ export const BOUNDARY = {
   ],
   /** Files that may import store-kit: the SQL-owning stores and the package barrel. */
   storeKit: [
+    ...['commands.ts', 'reader.ts', 'context.ts'].map(
+      (f) => D + 'project-status/' + f,
+    ),
     ...[
       // A7-0b: the alpha store runs on the shared account transaction (ADR-0003 D5).
       'alpha-store.ts',

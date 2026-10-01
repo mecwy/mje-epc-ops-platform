@@ -6,6 +6,9 @@ import { FIELDS } from './fields.js';
 import { SURFACE, type Capability } from './surface.js';
 
 const D1: Capability[] = [
+  'project.status.view',
+  'project.status.declare',
+  'project.status.reply',
   'report.view',
   'report.view-submitted',
   'report.write',
@@ -58,7 +61,7 @@ describe('surface.ts', () => {
     const layered = SURFACE.filter(
       (e) =>
         e.kind === 'read' &&
-        e.capability.some((c) => /^(report|issue)\./.test(c)),
+        e.capability.some((c) => /^(report|issue|project\.status)\./.test(c)),
     );
     for (const e of layered)
       for (const c of e.capability)

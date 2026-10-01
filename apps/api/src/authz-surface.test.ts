@@ -15,6 +15,8 @@ import {
   IssueStore,
   PhotoStore,
   ReportStore,
+  ProjectStatusCommands,
+  ProjectStatusReader,
   reportReader,
   type ReportReadContext,
 } from '@mje/domain';
@@ -37,6 +39,12 @@ function runtime(): AlphaRuntime {
   return {
     store: Object.create(AlphaStore.prototype) as AlphaStore,
     reportStore,
+    projectStatusCommands: Object.create(
+      ProjectStatusCommands.prototype,
+    ) as ProjectStatusCommands,
+    projectStatusReader: Object.create(
+      ProjectStatusReader.prototype,
+    ) as ProjectStatusReader,
     issueStore: Object.create(IssueStore.prototype) as IssueStore,
     photoStore: Object.create(PhotoStore.prototype) as PhotoStore,
     fieldStore: Object.create(FieldStore.prototype) as FieldStore,

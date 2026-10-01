@@ -148,6 +148,8 @@ model Organization {
   fieldConfirmChallengeRows    FieldConfirmChallenge[]
   fieldPersonConfirmRows       FieldPersonConfirm[]
   fieldDeviceEventRows         FieldDeviceEvent[]
+  projectStatusUpdates         ProjectStatusUpdate[]
+  projectStatusNotes           ProjectStatusNote[]
 }
 
 model Company {
@@ -245,6 +247,8 @@ model Project {
   ProjectFieldSetting_project             ProjectFieldSetting[]  @relation("ProjectFieldSetting_project")
   FieldDay_project                        FieldDay[]             @relation("FieldDay_project")
   WorkerCheckIn_project                   WorkerCheckIn[]        @relation("WorkerCheckIn_project")
+  projectStatusUpdates                    ProjectStatusUpdate[]
+  projectStatusNotes                      ProjectStatusNote[]
 
   @@unique([orgId, id])
   @@unique([orgId, code])
@@ -392,6 +396,8 @@ model Person {
   WorkerCheckIn_actorPerson             WorkerCheckIn[]         @relation("WorkerCheckIn_actorPerson")
   FieldSelfie_person                    FieldSelfie[]           @relation("FieldSelfie_person")
   ForemanReportRevision_byPerson        ForemanReportRevision[] @relation("ForemanReportRevision_byPerson")
+  projectStatusUpdates                  ProjectStatusUpdate[]   @relation("ProjectStatusUpdatePerson")
+  projectStatusNotes                    ProjectStatusNote[]     @relation("ProjectStatusNotePerson")
 
   @@unique([orgId, id])
 }
@@ -434,6 +440,8 @@ model LoginAccount {
   proxyCheckIns        WorkerCheckIn[]        @relation("WorkerCheckIn_actorAccount")
   voidedCheckIns       WorkerCheckIn[]        @relation("WorkerCheckIn_voidedBy")
   foremanAdoptions     ForemanAdoption[]      @relation("ForemanAdoption_byAccount")
+  projectStatusUpdates ProjectStatusUpdate[]  @relation("ProjectStatusUpdateAccount")
+  projectStatusNotes   ProjectStatusNote[]    @relation("ProjectStatusNoteAccount")
 
   @@unique([orgId, id])
   @@unique([orgId, entraTenantId, entraObjectId])
@@ -1689,4 +1697,52 @@ model ForemanAdoption {
   createdAt    DateTime     @default(now()) @db.Timestamptz(6)
 
   @@index([orgId, projectId, businessDate], map: "ForemanAdoption_day_idx")
+}
+
+model ProjectStatusUpdate {
+  id                      String              @id @default(uuid()) @db.Uuid
+  orgId                   String              @db.Uuid
+  org                     Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  projectId               String              @db.Uuid
+  project                 Project             @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  n                       Int
+  status                  String
+  areas                   String[]
+  situation               String
+  recovery                String
+  expectedRecoveryDate    DateTime?           @db.Date
+  expectedRecoveryUnknown Boolean
+  needsSupport            Boolean
+  supportNote             String
+  declaredAt              DateTime            @default(now()) @db.Timestamptz(6)
+  siteTimezone            String
+  businessDate            DateTime            @db.Date
+  declaredBy              String              @db.Uuid
+  account                 LoginAccount        @relation("ProjectStatusUpdateAccount", fields: [orgId, declaredBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  declaredByPersonId      String              @db.Uuid
+  person                  Person              @relation("ProjectStatusUpdatePerson", fields: [orgId, declaredByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  notes                   ProjectStatusNote[]
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, id])
+  @@unique([orgId, projectId, n])
+}
+
+model ProjectStatusNote {
+  id             String              @id @default(uuid()) @db.Uuid
+  orgId          String              @db.Uuid
+  org            Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  projectId      String              @db.Uuid
+  project        Project             @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  statusUpdateId String              @db.Uuid
+  update         ProjectStatusUpdate @relation(fields: [orgId, projectId, statusUpdateId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction)
+  text           String
+  byAccountId    String              @db.Uuid
+  account        LoginAccount        @relation("ProjectStatusNoteAccount", fields: [orgId, byAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  byPersonId     String              @db.Uuid
+  person         Person              @relation("ProjectStatusNotePerson", fields: [orgId, byPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  at             DateTime            @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+  @@index([orgId, projectId, statusUpdateId, at, id], map: "ProjectStatusNote_update_idx")
 }

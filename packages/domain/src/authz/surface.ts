@@ -14,6 +14,9 @@ import type { Layer, ProjectorName } from './fields.js';
 
 /** ADR-0003 D1 transition table (report / issue / photo / field / device), plus outside-D1 names. */
 export type Capability =
+  | 'project.status.view'
+  | 'project.status.declare'
+  | 'project.status.reply'
   | 'report.view'
   | 'report.view-submitted'
   | 'report.write'
@@ -48,6 +51,7 @@ export type ScopeSource =
   | 'query.projectId'
   | 'body.projectId'
   | 'body.issueId'
+  | 'path.projectId'
   | 'path.issueId'
   | 'path.photoId'
   | 'body.photoId'
@@ -272,6 +276,49 @@ const DEVICE = {
 };
 
 const ENTRIES: readonly SurfaceEntry[] = [
+  read(
+    'GET /api/projects/:id/status',
+    'account',
+    ['project.status.view'],
+    'path.projectId',
+    {
+      'project.status.view': {
+        temporal: 'live',
+        layers: ['structure', 'public-text'],
+        projector: 'project-status.history',
+      },
+    },
+  ),
+  write(
+    'POST /api/projects/:id/status',
+    'account',
+    'project.status.declare',
+    'path.projectId',
+    'ProjectStatusCommands.declareStatus',
+    'create',
+    {
+      protects: ['ProjectStatusUpdate.n'],
+      advances: ['ProjectStatusUpdate.n'],
+    },
+    {
+      layers: { 'project.status.declare': ['structure'] },
+      projector: { 'project.status.declare': 'project-status.ack' },
+    },
+  ),
+  write(
+    'POST /api/projects/:id/status/:n/notes',
+    'account',
+    'project.status.reply',
+    'path.projectId',
+    'ProjectStatusCommands.addStatusNote',
+    'append',
+    {},
+    {
+      layers: { 'project.status.reply': ['structure'] },
+      projector: { 'project.status.reply': 'project-status.ack' },
+    },
+  ),
+
   // ---------- platform ----------
   read(
     'GET /health/live',

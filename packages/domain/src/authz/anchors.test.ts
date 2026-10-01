@@ -19,6 +19,9 @@ const account = (
 ): TestContext => ({ principal: 'account', capabilities, scope });
 /** PROJECT_MANAGER on the project (D1 write column). */
 const PM: Capability[] = [
+  'project.status.view',
+  'project.status.declare',
+  'project.status.reply',
   'report.view',
   'report.write',
   'issue.view',
@@ -30,6 +33,8 @@ const PM: Capability[] = [
 ];
 /** EXECUTIVE_READER on the project (D1 read column). */
 const READER: Capability[] = [
+  'project.status.view',
+  'project.status.reply',
   'report.view-submitted',
   'issue.view',
   'issue.reply',
@@ -100,6 +105,73 @@ describe('ADR-0003 anchors (hand-written)', () => {
     capability?: Capability;
     keys?: string[];
   }[] = [
+    {
+      name: 'PM declares a status: structural acknowledgement only',
+      entry: 'POST /api/projects/:id/status',
+      ctx: account(PM),
+      allowed: true,
+      capability: 'project.status.declare',
+      keys: ['projectId', 'n', 'statusUpdateId', 'noteId'],
+    },
+    {
+      name: 'executive cannot declare a status',
+      entry: 'POST /api/projects/:id/status',
+      ctx: account(READER),
+      allowed: false,
+    },
+    {
+      name: 'executive replies to a status',
+      entry: 'POST /api/projects/:id/status/:n/notes',
+      ctx: account(READER),
+      allowed: true,
+      capability: 'project.status.reply',
+      keys: ['projectId', 'n', 'statusUpdateId', 'noteId'],
+    },
+    {
+      name: 'executive reads status history and its project-visible text',
+      entry: 'GET /api/projects/:id/status',
+      ctx: account(READER),
+      allowed: true,
+      capability: 'project.status.view',
+      keys: [
+        'projectId',
+        'currentN',
+        'updates',
+        ...[
+          'id',
+          'n',
+          'status',
+          'areas',
+          'situation',
+          'recovery',
+          'expectedRecoveryDate',
+          'expectedRecoveryUnknown',
+          'needsSupport',
+          'supportNote',
+          'declaredAt',
+          'siteTimezone',
+          'businessDate',
+          'declaredBy',
+          'declaredByPersonId',
+          'notes',
+        ].map((k) => `updates[].${k}`),
+        ...['id', 'text', 'byAccountId', 'byPersonId', 'at'].map(
+          (k) => `updates[].notes[].${k}`,
+        ),
+      ],
+    },
+    {
+      name: 'status history on another project is denied even if empty',
+      entry: 'GET /api/projects/:id/status',
+      ctx: account(READER, 'other-project'),
+      allowed: false,
+    },
+    {
+      name: 'status reply in another tenant is denied',
+      entry: 'POST /api/projects/:id/status/:n/notes',
+      ctx: account(READER, 'other-org'),
+      allowed: false,
+    },
     {
       name: 'PM lists days: all three row keys, from the writer projector',
       entry: 'GET /api/report/days',

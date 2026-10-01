@@ -1,3 +1,5 @@
+import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
+import { ProjectStatusController } from './project-status.controller.js';
 import 'reflect-metadata';
 import {
   ArgumentsHost,
@@ -24,6 +26,9 @@ import {
   PhotoStore,
   ReportError,
   ReportStore,
+  ProjectStatusCommands,
+  ProjectStatusReader,
+  ProjectStatusError,
   RETRY_SQLSTATES,
 } from '@mje/domain';
 import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
@@ -81,8 +86,9 @@ class SafeErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     let status = 500;
     let code = 'REQUEST_FAILED';
-    // Only ALREADY_CHECKED_IN adds anything: the existing check-in's occurredAt and kind.
+    // Fixed envelope additions only: existing check-in facts or status field-name enums.
     let existing: FieldError['existing'];
+    let fields: StatusFieldName[] | undefined;
     if (error instanceof HttpException) {
       status = error.getStatus();
       code =
@@ -97,6 +103,11 @@ class SafeErrorFilter implements ExceptionFilter {
     ) {
       status = 400;
       code = 'INVALID_INPUT';
+    } else if (error instanceof ProjectStatusError) {
+      code = error.code;
+      status = code === 'NOT_FOUND' ? 404 : code === 'READ_ONLY' ? 403 : 409;
+      if (code === 'STATUS_FIELDS_REQUIRED')
+        fields = error.fields.filter((f) => STATUS_FIELD_NAMES.includes(f));
     } else if (error instanceof FieldError) {
       code = error.code;
       status = FIELD_STATUS[code] ?? 409;
@@ -146,7 +157,11 @@ class SafeErrorFilter implements ExceptionFilter {
       .getResponse<express.Response>()
       .status(status)
       .json(
-        existing ? { code, correlationId, existing } : { code, correlationId },
+        fields
+          ? { code, correlationId, fields }
+          : existing
+            ? { code, correlationId, existing }
+            : { code, correlationId },
       );
   }
 }
@@ -154,6 +169,8 @@ export interface AlphaRuntime {
   store: AlphaStore;
   /** Site Daily Close (U2.1); absent until the report slice is enabled. */
   reportStore?: ReportStore;
+  projectStatusCommands?: ProjectStatusCommands;
+  projectStatusReader?: ProjectStatusReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
   issueStore?: IssueStore;
   /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
@@ -187,6 +204,9 @@ export async function createApp(alpha?: AlphaRuntime) {
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
+      ...(alpha?.projectStatusCommands && alpha.projectStatusReader
+        ? [ProjectStatusController]
+        : []),
       ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
       ...(alpha?.reportStore && alpha.photoStore ? [PhotoController] : []),
       ...(alpha?.reportStore && alpha.fieldStore
@@ -202,6 +222,18 @@ export async function createApp(alpha?: AlphaRuntime) {
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
+          ...(alpha.projectStatusCommands && alpha.projectStatusReader
+            ? [
+                {
+                  provide: ProjectStatusCommands,
+                  useValue: alpha.projectStatusCommands,
+                },
+                {
+                  provide: ProjectStatusReader,
+                  useValue: alpha.projectStatusReader,
+                },
+              ]
+            : []),
           { provide: TokenVerifier, useValue: alpha.verifier },
           ...(alpha.reportStore
             ? [{ provide: ReportStore, useValue: alpha.reportStore }]

@@ -37,3 +37,10 @@ export * from './field-store.js';
 export * from './checkin-rules.js';
 export * from './checkin-store.js';
 export * from './foreman-store.js';
+
+export { ProjectStatusCommands } from './project-status/commands.js';
+export {
+  ProjectStatusReader,
+  projectStatusReader,
+} from './project-status/reader.js';
+export { ProjectStatusError } from './project-status/rules.js';

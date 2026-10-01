@@ -13,7 +13,7 @@ const v = (file: string, spec: string, names = ['x'], typeOnly = false) =>
 
 describe('import boundary', () => {
   it('uses the module files of legacy-adapters.ts', () => {
-    for (const m of ['report', 'issue', 'photo'] as const)
+    for (const m of ['report', 'issue', 'photo', 'project-status'] as const)
       expect([...BOUNDARY.modules[m]].sort()).toEqual(
         [...MODULES[m].files].sort(),
       );
