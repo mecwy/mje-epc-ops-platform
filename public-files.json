@@ -294,6 +294,8 @@
   "scripts/cloud-migrate.mjs",
   "scripts/cloud-migrate.test.mjs",
   "scripts/container-smoke.mjs",
+  "scripts/dev-deploy.mts",
+  "scripts/dev-deploy.test.mts",
   "scripts/dev-report-server.mjs",
   "scripts/dev-smoke.mjs",
   "scripts/entra-mapping.mjs",

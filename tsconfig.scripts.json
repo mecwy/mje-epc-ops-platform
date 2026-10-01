@@ -4,7 +4,9 @@
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
   "files": [
     "scripts/check-pr-body.mjs",
@@ -12,6 +14,8 @@
     "scripts/cloud-add-member.mjs",
     "scripts/cloud-bootstrap.mjs",
     "scripts/cloud-migrate.mjs",
+    "scripts/dev-deploy.mts",
+    "scripts/dev-deploy.test.mts",
     "scripts/entra-mapping.mjs",
     "scripts/publication-policy.mjs"
   ]
