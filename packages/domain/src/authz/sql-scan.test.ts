@@ -148,10 +148,15 @@ const E_SIMPLE: Record<string, string> = {
 };
 /**
  * A single-quoted literal starting at `start` ('…' or E'…'), fail-closed (Owner decision B on
- * PR #51): its value may be executed (DO '…', EXECUTE '…'), so every double-quoted model name
- * in it is a use; an unterminated literal, an escape that can spell characters (\x, octal,
- * \u), a run-time part, or an unbalanced double quote inside it is undecidable. An unquoted
- * name in a literal ('PlanVersion' as a label) is not a use: it cannot reach a quoted table.
+ * PR #51, lesson L27): its value may be executed (DO '…', EXECUTE '…'). On the RAW text, a
+ * literal containing a double quote is accepted only if it is simple (no comment markers,
+ * backslash, nested '' literal, ||, $ or U&, and the quotes pair); each paired model name in it
+ * is then a WRITE use. Anything else with a double quote, an unterminated literal, an escape
+ * that can spell characters (\x, octal, \u) or a run-time part is undecidable.
+ * Known residual (recorded, not closed here): a literal WITHOUT a raw double quote is not
+ * analysed further, so SQL that builds a quoted identifier at run time — quote_ident(...),
+ * format('%I', ...), chr(34), or a nested E''/U&'' escape inside an outer literal — is not
+ * detected. An unquoted name ('PlanVersion' as a label) is not a use.
  */
 function literal(sql: string, start: number): { tokens: Token[]; end: number } {
   const escapes = sql[start] !== "'";
