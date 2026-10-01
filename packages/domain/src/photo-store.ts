@@ -22,7 +22,8 @@ import {
   readFileClaims,
 } from './photo-file.js';
 import { withoutLocationMetadata } from './photo-strip.js';
-import { ISSUE_KIND } from './issue-store.js';
+import { siteIssueExists } from './issue-lookups.js';
+import { activeWorkItemExists, activeWorkItemKeys } from './report-lookups.js';
 import {
   REPORT_SCOPE,
   ReportError,
@@ -355,11 +356,7 @@ async function activeWorkItems(
   orgId: string,
   projectId: string,
 ): Promise<Set<string>> {
-  const r = await client.query<{ key: string }>(
-    `SELECT key FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 AND kind='work' AND active`,
-    [orgId, projectId],
-  );
-  return new Set(r.rows.map((x) => x.key));
+  return activeWorkItemKeys(client, orgId, projectId);
 }
 /** Work items with at least one currently linked photo (coverage, rule 5). */
 export function photographedItems(photos: PhotoDto[]): Set<string> {
@@ -474,17 +471,11 @@ export class PhotoStore {
     link: PhotoLinkDto,
   ) {
     if (link.type === 'item') {
-      const r = await client.query(
-        `SELECT 1 FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 AND kind='work' AND key=$3 AND active`,
-        [orgId, projectId, link.id],
-      );
-      if (!r.rowCount) throw new ReportError('ITEM_NOT_FOUND');
+      if (!(await activeWorkItemExists(client, orgId, projectId, link.id)))
+        throw new ReportError('ITEM_NOT_FOUND');
     } else {
-      const r = await client.query(
-        `SELECT 1 FROM "Issue" WHERE "orgId"=$1 AND "projectId"=$2 AND id=$3 AND kind=$4`,
-        [orgId, projectId, link.id, ISSUE_KIND],
-      );
-      if (!r.rowCount) throw new ReportError('ISSUE_NOT_FOUND');
+      if (!(await siteIssueExists(client, orgId, projectId, link.id)))
+        throw new ReportError('ISSUE_NOT_FOUND');
     }
   }
   private async insertLink(

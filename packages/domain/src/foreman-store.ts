@@ -36,6 +36,7 @@ import {
   type ForemanReport,
 } from './report-rules.js';
 import { lockReportDay } from './store-kit.js';
+import { activeWorkItemCatalog } from './report-lookups.js';
 
 export interface ForemanStoreOptions {
   /** TEST seam, read per request: false switches deferred housekeeping off. */
@@ -250,12 +251,7 @@ export class ForemanStore {
     return tz;
   }
   private async workItems(client: PoolClient, d: DeviceRow) {
-    const r = await client.query<{ key: string; label: string; unit: string }>(
-      `SELECT key, label, unit FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 AND kind='work' AND active
-      ORDER BY "sortOrder", key`,
-      [d.orgId, d.projectId],
-    );
-    return r.rows;
+    return activeWorkItemCatalog(client, d.orgId, d.projectId);
   }
 
   /** The foreman's own current crew's latest report for the site's today or yesterday. */
