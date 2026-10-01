@@ -1,3 +1,4 @@
+// @ts-check
 // Dev only, run once per person as a Container Apps job execution of the migration job, with
 // the migration identity (the Entra PostgreSQL admin), after cloud-bootstrap.mjs. It links one
 // more Entra account of the Dev tenant (a B2B guest or a member created in that directory,
@@ -18,20 +19,24 @@ import { createHash } from 'node:crypto';
 // Registered before anything else runs: configuration checks, module loading and the
 // credential are all inside the sanitising boundary.
 class BootstrapStop extends Error {}
-const fail = (message) => {
+const fail = (/** @type {string} */ message) => {
   throw new BootstrapStop(`Cloud add-member stopped: ${message}`);
 };
 // Database, SDK and module-loading errors can carry identifiers or paths in their details;
 // the job log gets only our own stop messages or a bare error code.
-process.on('uncaughtException', (error) => {
-  if (error instanceof BootstrapStop) console.error(error.message);
-  else
-    console.error(
-      `Cloud add-member failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
-    );
-  process.exit(1);
-});
+process.on(
+  'uncaughtException',
+  (/** @type {Error & { code?: unknown }} */ error) => {
+    if (error instanceof BootstrapStop) console.error(error.message);
+    else
+      console.error(
+        `Cloud add-member failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
+      );
+    process.exit(1);
+  },
+);
 
+/** @param {string} name */
 function required(name) {
   const value = process.env[name];
   if (!value)
@@ -68,7 +73,7 @@ for (const [name, value] of [
   ['OWNER_TENANT_ID', tenantId],
   ['MEMBER_OBJECT_ID', memberObjectId],
 ])
-  if (!UUID.test(value))
+  if (!UUID.test(value ?? ''))
     throw new BootstrapStop(
       `Cloud add-member configuration is not a GUID: ${name}`,
     );
@@ -130,7 +135,7 @@ try {
     fail('the configured tenant is not the tenant of this database server');
 
   // The same deterministic ids as cloud-bootstrap.mjs, so the owner's rows are recognisable.
-  const id = (name) => {
+  const id = (/** @type {string} */ name) => {
     const h = createHash('sha256')
       .update(`mje-dev-bootstrap:${name}`)
       .digest('hex');
@@ -143,7 +148,10 @@ try {
     person = id(`member-person:${tenantId}:${memberObjectId}`);
 
   await db.query('BEGIN');
-  const one = async (sql, params) => (await db.query(sql, params)).rows[0];
+  const one = async (
+    /** @type {string} */ sql,
+    /** @type {unknown[]} */ params,
+  ) => (await db.query(sql, params)).rows[0];
   // Serialise runs for this account on this project before anything is read, whatever role
   // they ask for: two overlapping runs must not both see "no membership" and each add a role.
   const lockKey = BigInt.asIntN(
@@ -229,6 +237,7 @@ try {
 
   // 4. One membership with the requested role on the TEST project. A different role on the
   //    same project is not changed or added to automatically; an inactive one is not reopened.
+  /** @type {{ role: string, current: boolean }[]} */
   const memberships = (
     await db.query(
       `SELECT role, "activeFrom" <= now() AND ("activeUntil" IS NULL OR "activeUntil" > now()) AS current

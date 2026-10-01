@@ -1,10 +1,12 @@
+// @ts-check
 import { execFileSync } from 'node:child_process';
 import {
   isAllowedPublicPath,
   hasCredentialPattern,
+  parseStageRecord,
 } from './publication-policy.mjs';
 
-const git = (...args) =>
+const git = (/** @type {string[]} */ ...args) =>
   execFileSync('git', args, { maxBuffer: 8 * 1024 * 1024 });
 const allowlist = new Set(
   JSON.parse(git('show', ':public-files.json').toString()),
@@ -15,8 +17,14 @@ const entries = git('ls-files', '--stage', '-z')
   .filter(Boolean);
 const failures = [];
 for (const entry of entries) {
-  const [metadata, path] = entry.split('\t');
-  const [mode, , stage] = metadata.split(' ');
+  const record = parseStageRecord(entry);
+  if (!record) {
+    failures.push(
+      'an index record that is not mode, object, stage and path; inspect locally',
+    );
+    continue;
+  }
+  const { mode, object, stage, path } = record;
   if (mode !== '100644' && mode !== '100755') {
     failures.push(`${path}: symlink/submodule or unsupported mode`);
     continue;
@@ -25,7 +33,9 @@ for (const entry of entries) {
     failures.push(`${path}: not approved for publication`);
     continue;
   }
-  const content = git('show', `:${path}`);
+  // The staged blob itself, by object id: a path is never re-read as a revision or pathspec
+  // (`git show :0:README.md` would read stage 0 of README.md, not the file '0:README.md').
+  const content = git('cat-file', 'blob', object);
   if (content.includes(0) || hasCredentialPattern(content.toString())) {
     failures.push(`${path}: binary or possible credential; inspect locally`);
   }
