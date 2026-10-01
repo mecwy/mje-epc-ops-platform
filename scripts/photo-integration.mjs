@@ -8,6 +8,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { Pool } from 'pg';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import {
   AlphaStore,
   IssueStore,
@@ -93,19 +94,21 @@ try {
   );
   await blobs.ensureContainer();
   const puts = [];
+  // The store the API writes through; one step swaps in a client from the SDK's CommonJS copy.
+  let active = blobs;
   // Armed by a test: the next thumbnail write succeeds and then the request fails, as a database
   // error after the blob writes would (the transaction rolls back, both blobs stay).
   let failAfterThumbnailWrite = false;
   const countingBlobs = {
     put: async (key, bytes, contentType) => {
       puts.push(key);
-      await blobs.put(key, bytes, contentType);
+      await active.put(key, bytes, contentType);
       if (failAfterThumbnailWrite && key.endsWith('.thumb')) {
         failAfterThumbnailWrite = false;
         throw new Error('TEST failure after the blob writes');
       }
     },
-    get: (key) => blobs.get(key),
+    get: (key) => active.get(key),
   };
 
   // ---------- synthetic TEST tenancy ----------
@@ -645,6 +648,76 @@ try {
   );
   pass(
     'after a failure behind the blob writes, a retry with another thumbnail (other bytes and type) stores and serves the new one (thumbnails are addressed by their own sha256; the orphan photo blob is verified and reused); an existing object that does not hold the bytes its key names is refused and left untouched',
+  );
+
+  // ---------- a client from the other SDK copy: storage errors are classified by name ----------
+  // The local dev server once built its container client from the SDK's CommonJS entry; its
+  // RestError is not the class the ES module entry (used by photo-blobs.js) knows.
+  const { BlobServiceClient: CjsBlobServiceClient } = await import(
+    pathToFileURL(requireApi.resolve('@azure/storage-blob')).href
+  );
+  const cjsStore = new AzurePhotoBlobStore(
+    CjsBlobServiceClient.fromConnectionString(
+      blobConnection,
+    ).getContainerClient(containerName),
+  );
+  active = cjsStore;
+  try {
+    // An orphan under the photo's and the thumbnail's keys, holding the same bytes: reused.
+    const orphan = jpeg('cjs-orphan');
+    const orphanThumb = {
+      bytes: testPng({ tag: 'cjs-thumb' }),
+      type: 'image/png',
+    };
+    await blobs.put(`${orgA}/${sha(orphan.bytes)}`, orphan.bytes, orphan.type);
+    await blobs.put(
+      `${orgA}/${sha(orphanThumb.bytes)}.thumb`,
+      orphanThumb.bytes,
+      orphanThumb.type,
+    );
+    const reused = await expectStatus(
+      upload(pm, album({ businessDate: D3 }), orphan, orphanThumb),
+      200,
+    );
+    assert.equal(reused.deduplicated, false);
+    assert.equal(
+      await count(
+        'SELECT count(*)::int AS n FROM "PhotoEvidence" WHERE sha256=$1 AND "thumbSha256"=$2',
+        [sha(orphan.bytes), sha(orphanThumb.bytes)],
+      ),
+      1,
+    );
+    assert.ok(
+      (await raw(`/${reused.id}/thumbnail`, pm)).bytes.equals(
+        orphanThumb.bytes,
+      ),
+    );
+    // Other bytes under the photo's key: refused, never overwritten.
+    const cjsTampered = jpeg('cjs-tampered');
+    const cjsTamperedKey = `${orgA}/${sha(cjsTampered.bytes)}`;
+    const cjsOther = testJpeg({ tag: 'cjs-other' });
+    await blobs.put(cjsTamperedKey, cjsOther, 'image/jpeg');
+    const cjsRefused = await upload(
+      pm,
+      album({ businessDate: D3 }),
+      cjsTampered,
+    );
+    assert.equal(cjsRefused.status, 500);
+    assert.equal(
+      await count(
+        'SELECT count(*)::int AS n FROM "PhotoEvidence" WHERE sha256=$1',
+        [sha(cjsTampered.bytes)],
+      ),
+      0,
+    );
+    assert.ok((await blobs.get(cjsTamperedKey)).bytes.equals(cjsOther));
+    // A key that does not exist reads as null, not as an unknown failure.
+    assert.equal(await cjsStore.get(`${orgA}/${sha(randomBytes(8))}`), null);
+  } finally {
+    active = blobs;
+  }
+  pass(
+    'with a container client from the SDK CommonJS copy (as the dev server built it): an orphan photo and thumbnail blob with the same bytes is reused (200, exactly one PhotoEvidence row with its thumbnail); other bytes under the key are refused and left untouched; a missing key reads as null',
   );
 
   // ---------- album: only what the file says; never the uploader position ----------

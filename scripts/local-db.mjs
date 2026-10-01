@@ -41,10 +41,27 @@ export function assertLocalUrl(raw) {
 // Storage connection-string fields that choose where requests go. The SDK takes the first of a
 // repeated field, so a repeated field is refused rather than guessed.
 const BLOB_ROUTING = ['usedevelopmentstorage', 'developmentstorageproxyuri'];
+/**
+ * The connection-string fields the local tooling accepts, spelled exactly as the Azure SDK
+ * reads them: the SDK matches names case-sensitively, so `blobendpoint` would be ignored and the
+ * SDK would build a public endpoint while a case-insensitive check saw a loopback one.
+ */
+const BLOB_FIELDS = new Map(
+  [
+    'DefaultEndpointsProtocol',
+    'AccountName',
+    'AccountKey',
+    'BlobEndpoint',
+    'EndpointSuffix',
+    'UseDevelopmentStorage',
+    'DevelopmentStorageProxyUri',
+  ].map((name) => [name.toLowerCase(), name]),
+);
 
 /**
- * Throws unless a storage connection string can only reach the local blob emulator: every
- * field once, an explicit loopback BlobEndpoint, no development-storage shortcuts or proxy.
+ * Throws unless a storage connection string can only reach the local blob emulator: only known
+ * fields, each spelled as the SDK reads it and given once, an explicit loopback BlobEndpoint, no
+ * development-storage shortcuts or proxy.
  * The caller still checks the URL of the client the SDK builds before any storage call.
  */
 export function assertLocalBlob(raw) {
@@ -53,7 +70,12 @@ export function assertLocalBlob(raw) {
     if (!part.trim()) continue;
     const at = part.indexOf('=');
     assert.ok(at > 0, 'malformed connection string');
-    const name = part.slice(0, at).trim().toLowerCase();
+    const spelled = part.slice(0, at).trim();
+    const name = spelled.toLowerCase();
+    assert.ok(
+      BLOB_FIELDS.get(name) === spelled,
+      `connection field "${spelled}" is not one the SDK reads as spelled`,
+    );
     assert.ok(!fields.has(name), `repeated connection field "${name}"`);
     fields.set(name, part.slice(at + 1).trim());
   }

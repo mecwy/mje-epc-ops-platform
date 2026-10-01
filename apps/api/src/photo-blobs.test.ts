@@ -118,3 +118,20 @@ describe('AzurePhotoBlobStore.get', () => {
     });
   }
 });
+
+describe('AzurePhotoBlobStore.url', () => {
+  // Construction only (no storage call). Shows why local tooling checks the built URL and the
+  // exact field spelling: the SDK ignores a lower-case `blobendpoint` and builds a public URL.
+  it('is the destination the SDK built from the connection string', () => {
+    const loopback = AzurePhotoBlobStore.fromConnectionString(
+      'DefaultEndpointsProtocol=http;AccountName=TEST;AccountKey=VEVTVA==;BlobEndpoint=http://127.0.0.1:11001/TEST',
+      'evidence-dev',
+    );
+    expect(new URL(loopback.url).hostname).toBe('127.0.0.1');
+    const misspelled = AzurePhotoBlobStore.fromConnectionString(
+      'DefaultEndpointsProtocol=https;AccountName=TEST;AccountKey=VEVTVA==;EndpointSuffix=core.windows.net;blobendpoint=http://127.0.0.1:11001/TEST',
+      'evidence-dev',
+    );
+    expect(new URL(misspelled.url).hostname).toBe('test.blob.core.windows.net');
+  });
+});
