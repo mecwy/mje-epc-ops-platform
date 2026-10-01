@@ -72,6 +72,31 @@ describe('import boundary', () => {
       v(`${D}authz/fields.ts`, '../issue-store.js', ['IssueStore'], false),
     ).toMatch(/issue module/);
   });
+  it('keeps the internal fact exits narrow and removes the photo issue-store exception', () => {
+    expect(
+      v(`${D}issue-store.ts`, './report-lookups.js', ['activeWorkItemExists']),
+    ).toBeNull();
+    expect(
+      v(`${D}foreman-store.ts`, './report-lookups.js', [
+        'activeWorkItemCatalog',
+      ]),
+    ).toBeNull();
+    expect(
+      v(`${D}photo-store.ts`, './issue-lookups.js', ['siteIssueExists']),
+    ).toBeNull();
+    expect(v(`${D}photo-store.ts`, './issue-store.js', ['ISSUE_KIND'])).toMatch(
+      /issue module/,
+    );
+    expect(v(`${D}photo-store.ts`, './report-lookups.js', ['*'])).toMatch(
+      /internal/,
+    );
+    expect(v(`${D}photo-store.ts`, './issue-lookups.js', ['*'])).toMatch(
+      /internal/,
+    );
+    expect(
+      v(`${D}photo-store.ts`, './issue-lookups.js', ['ISSUE_KIND']),
+    ).toMatch(/internal/);
+  });
   it('keeps apps on the package barrel', () => {
     expect(
       v('apps/api/src/x.ts', '../../../packages/domain/src/report-store.js'),

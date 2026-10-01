@@ -29,6 +29,7 @@ import {
   type Actor,
 } from './store-kit.js';
 import { reportReader } from './report-reader.js';
+import { activeWorkItemExists } from './report-lookups.js';
 import { withReportReadContext } from './report-read-context.js';
 
 /**
@@ -274,11 +275,8 @@ export class IssueStore {
     projectId: string,
     key: string,
   ) {
-    const r = await client.query(
-      `SELECT 1 FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 AND kind='work' AND key=$3 AND active`,
-      [orgId, projectId, key],
-    );
-    if (!r.rowCount) throw new ReportError('ITEM_NOT_FOUND');
+    if (!(await activeWorkItemExists(client, orgId, projectId, key)))
+      throw new ReportError('ITEM_NOT_FOUND');
   }
   private async addNote(
     client: PoolClient,

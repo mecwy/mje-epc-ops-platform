@@ -17,10 +17,11 @@ export const BOUNDARY = {
       'report-reader.ts',
       'report-read-context.ts',
       'report-commands.ts',
+      'report-lookups.ts',
       'report-rules.ts',
       'reader-view.ts',
     ].map((f) => D + f),
-    issue: [`${D}issue-store.ts`],
+    issue: ['issue-store.ts', 'issue-lookups.ts'].map((f) => D + f),
     photo: ['photo-store.ts', 'photo-file.ts', 'photo-strip.ts'].map(
       (f) => D + f,
     ),
@@ -43,6 +44,15 @@ export const BOUNDARY = {
     },
     // A7-0d: the report day writes other modules run in their own transaction.
     [`${D}report-commands.ts`]: {},
+    // Internal facts on an account or device caller's existing transaction.
+    [`${D}report-lookups.ts`]: {
+      only: [
+        'activeWorkItemExists',
+        'activeWorkItemKeys',
+        'activeWorkItemCatalog',
+      ],
+    },
+    [`${D}issue-lookups.ts`]: { only: ['siteIssueExists'] },
     [`${D}report-rules.ts`]: {},
   },
   /** Files that own SQL today: the only ones that may import `pg` (legacy exception list). */
@@ -53,7 +63,9 @@ export const BOUNDARY = {
       'report-store.ts',
       'report-read-context.ts',
       'report-commands.ts',
+      'report-lookups.ts',
       'issue-store.ts',
+      'issue-lookups.ts',
       'photo-store.ts',
       'field-store.ts',
       'field-kit.ts',
@@ -89,7 +101,6 @@ export const BOUNDARY = {
     ['checkin-store.ts', 'photo-file.ts'],
     ['checkin-store.ts', 'photo-store.ts'],
     ['checkin-store.ts', 'photo-strip.ts'],
-    ['photo-store.ts', 'issue-store.ts'],
     ['photo-store.ts', 'reader-view.ts'],
     ['report-reader.ts', 'issue-store.ts'],
     ['report-reader.ts', 'photo-store.ts'],

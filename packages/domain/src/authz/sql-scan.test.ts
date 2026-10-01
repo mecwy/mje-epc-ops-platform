@@ -722,7 +722,27 @@ describe('SQL scan counter-examples', () => {
         'q(`SELECT 1 FROM "Issue" i JOIN "IssueNote" n ON true FOR UPDATE`);',
       ),
     ).toBe(false);
-    expect(caught('q(`SELECT 1 FROM "ReportItem" WHERE active`);')).toBe(false);
+    expect(
+      caught(
+        'q(`SELECT 1 FROM "ReportItem" WHERE active`);',
+        'packages/domain/src/report-lookups.ts',
+      ),
+    ).toBe(false);
+  });
+  it('the migrated catalog consumers have no direct-table exceptions (A7-0e batch 1)', () => {
+    for (const [file, table] of [
+      ['issue-store.ts', 'ReportItem'],
+      ['photo-store.ts', 'Issue'],
+      ['photo-store.ts', 'ReportItem'],
+      ['foreman-store.ts', 'ReportItem'],
+    ]) {
+      expect(
+        caught(
+          `q(\`SELECT 1 FROM "${table}"\`);`,
+          `packages/domain/src/${file}`,
+        ),
+      ).toBe(true);
+    }
   });
 });
 

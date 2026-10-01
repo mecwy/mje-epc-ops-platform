@@ -48,6 +48,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}report-reader.ts`,
       `${D}report-read-context.ts`,
       `${D}report-commands.ts`,
+      `${D}report-lookups.ts`,
       `${D}report-rules.ts`,
       `${D}reader-view.ts`,
     ],
@@ -62,7 +63,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
     ],
   },
   issue: {
-    files: [`${D}issue-store.ts`],
+    files: [`${D}issue-store.ts`, `${D}issue-lookups.ts`],
     tables: ['Issue', 'IssueNote', 'IssueTransition', 'LagDismissal'],
   },
   photo: {
@@ -161,15 +162,6 @@ const READS = 'A7-0e';
 
 export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
   {
-    file: `${D}issue-store.ts`,
-    site: 'IssueStore.assertWorkItem',
-    table: 'ReportItem',
-    access: 'read',
-    why: 'an issue may name an active work item of its project',
-    replacement: 'reportReader work-item lookup (master data)',
-    removal: READS,
-  },
-  {
     file: `${D}photo-store.ts`,
     site: 'latestFrozen / isFrozen / latestFrozenAs / upload',
     table: 'DailyClose',
@@ -188,24 +180,6 @@ export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
     removal: READS,
   },
   {
-    file: `${D}photo-store.ts`,
-    site: 'PhotoStore.assertTarget',
-    table: 'Issue',
-    access: 'read',
-    why: 'a photo may be linked to an issue of its project',
-    replacement: 'issueReader target lookup',
-    removal: READS,
-  },
-  {
-    file: `${D}photo-store.ts`,
-    site: 'activeWorkItems / PhotoStore.assertTarget',
-    table: 'ReportItem',
-    access: 'read',
-    why: 'a photo may be linked to an active work item',
-    replacement: 'reportReader work-item lookup (master data)',
-    removal: READS,
-  },
-  {
     file: `${D}checkin-store.ts`,
     site: 'submittedBoundary',
     table: 'DailyClose',
@@ -221,15 +195,6 @@ export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
     access: 'read',
     why: 'the field sequence boundary frozen by the latest submission',
     replacement: 'reportReader submitted-boundary lookup',
-    removal: READS,
-  },
-  {
-    file: `${D}foreman-store.ts`,
-    site: 'ForemanStore.workItems',
-    table: 'ReportItem',
-    access: 'read',
-    why: 'the active work items a foreman may report',
-    replacement: 'reportReader work-item lookup (master data)',
     removal: READS,
   },
   ...(['DailyClose', 'Revision'] as const).map((table): LegacyAdapter => ({
