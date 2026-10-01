@@ -43,6 +43,8 @@ import {
 import {
   FIX_STALE_MS,
   PM_PROXY_DAYS_DEFAULT,
+  SELFIE_GRACE_MINUTES,
+  SELFIE_RETENTION_DAYS,
   SELFIE_STAGED_MS,
   admitDeviceTimes,
   distanceBucket,
@@ -1374,38 +1376,67 @@ export class CheckInStore {
   }
   /**
    * Claim, then delete (design §3). A short transaction claims eligible rows (`STAGED` expired
-   * more than 5 minutes before `cutoff`, or `ATTACHED` more than 30 days before it) with
-   * `FOR UPDATE SKIP LOCKED` and commits DELETING; only then are blobs deleted (missing = done),
-   * and each row is set DELETED (audited) in its own transaction. A failed delete leaves the row
-   * DELETING for the next sweep. `cutoff` defaults to the database clock; a test passes one.
+   * more than SELFIE_GRACE_MINUTES before `cutoff`, or `ATTACHED` more than
+   * SELFIE_RETENTION_DAYS before it) with `FOR UPDATE SKIP LOCKED` and commits DELETING; only
+   * then are blobs deleted (missing = done), and each row is set DELETED (audited) in its own
+   * transaction. A failed delete leaves the row DELETING for the next sweep. `cutoff` defaults
+   * to the database clock; a test passes one. `dryRun` counts what a sweep would claim (plus
+   * what an earlier one left DELETING) and changes nothing. An instance finishes the rows it
+   * claimed itself, then up to `limit` rows an earlier instance left DELETING; a second instance
+   * running at the same time claims other rows (SKIP LOCKED) or nothing, and a DELETING row is
+   * finished by whichever instance updates it first (the other finds no DELETING row). A rerun
+   * after a complete sweep is a no-op: DELETED rows are never eligible, and only the
+   * DELETING → DELETED transition is audited, so no row is ever audited twice.
    */
   async cleanupSelfies(
     orgId: string,
-    options: { cutoff?: string; limit?: number } = {},
-  ): Promise<{ claimed: number; deleted: number; failed: number }> {
+    options: { cutoff?: string; limit?: number; dryRun?: boolean } = {},
+  ): Promise<{
+    eligible: number;
+    claimed: number;
+    deleted: number;
+    failed: number;
+  }> {
     // Without a blob store nothing can be deleted: claim nothing, record nothing.
     if (!this.blobs) throw new Error('Selfie cleanup needs a blob store');
     const blobs = this.blobs;
     const limit = options.limit ?? 100;
     const cutoff = options.cutoff ?? null;
-    const claimed = await this.orgTx(orgId, async (c) => {
-      const r = await c.query(
+    // $1 org, $2 cutoff; the grace and retention windows at the given positions.
+    const eligibleWhere = (grace: number, days: number) =>
+      `"orgId"=$1 AND (
+            (state='STAGED' AND "expiresAt" < COALESCE($2::timestamptz, clock_timestamp()) - interval '1 minute' * $${grace})
+            OR (state='ATTACHED' AND "attachedAt" < COALESCE($2::timestamptz, clock_timestamp()) - interval '1 day' * $${days}))`;
+    const windows = [SELFIE_GRACE_MINUTES, SELFIE_RETENTION_DAYS];
+    const eligible = await this.orgTx(orgId, async (c) => {
+      const r = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM "FieldSelfie" WHERE (${eligibleWhere(3, 4)}) OR ("orgId"=$1 AND state='DELETING')`,
+        [orgId, cutoff, ...windows],
+      );
+      return r.rows[0]?.n ?? 0;
+    });
+    if (options.dryRun) return { eligible, claimed: 0, deleted: 0, failed: 0 };
+    const claimedIds = await this.orgTx(orgId, async (c) => {
+      const r = await c.query<{ id: string }>(
         `WITH eligible AS (
-          SELECT id FROM "FieldSelfie" WHERE "orgId"=$1 AND (
-            (state='STAGED' AND "expiresAt" < COALESCE($2::timestamptz, clock_timestamp()) - interval '5 minutes')
-            OR (state='ATTACHED' AND "attachedAt" < COALESCE($2::timestamptz, clock_timestamp()) - interval '30 days'))
+          SELECT id FROM "FieldSelfie" WHERE ${eligibleWhere(4, 5)}
           ORDER BY "expiresAt" LIMIT $3 FOR UPDATE SKIP LOCKED)
         UPDATE "FieldSelfie" s SET state='DELETING', "claimedAt"=clock_timestamp() FROM eligible
         WHERE s."orgId"=$1 AND s.id=eligible.id AND s.state IN ('STAGED','ATTACHED')
         RETURNING s.id`,
-        [orgId, cutoff, limit],
+        [orgId, cutoff, limit, ...windows],
       );
-      return r.rowCount ?? 0;
+      return r.rows.map((row) => row.id);
     });
+    // Its own claims first, whatever their number, then leftovers of earlier instances.
     const pending = await this.orgTx(orgId, (c) =>
       c.query<{ id: string; blobKey: string; attachedAt: Date | null }>(
-        `SELECT id, "blobKey", "attachedAt" FROM "FieldSelfie" WHERE "orgId"=$1 AND state='DELETING' ORDER BY "claimedAt" LIMIT $2`,
-        [orgId, limit],
+        `SELECT id, "blobKey", "attachedAt" FROM "FieldSelfie"
+        WHERE "orgId"=$1 AND state='DELETING' AND (id = ANY($2::uuid[]) OR id IN (
+          SELECT id FROM "FieldSelfie" WHERE "orgId"=$1 AND state='DELETING' AND NOT (id = ANY($2::uuid[]))
+          ORDER BY "claimedAt" LIMIT $3))
+        ORDER BY "claimedAt"`,
+        [orgId, claimedIds, limit],
       ),
     );
     let deleted = 0;
@@ -1438,6 +1469,6 @@ export class CheckInStore {
       });
       if (done) deleted++;
     }
-    return { claimed, deleted, failed };
+    return { eligible, claimed: claimedIds.length, deleted, failed };
   }
 }
