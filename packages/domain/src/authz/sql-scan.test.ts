@@ -5,6 +5,8 @@
  * be a registered legacy adapter (legacy-adapters.ts, per operation) or kernel use; a table
  * position that cannot be resolved to a known name fails. Sources are discovered recursively and
  * every one must belong to a module. Registered entries that no longer occur fail too.
+ * OD23 R1 also rejects runtime identifier constructors, including inside SQL literals. This
+ * finite source guard is not a complete SQL parser or runtime authorization enforcement.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -121,6 +123,13 @@ export function stringsIn(fileName: string, text: string): string[] {
 /** SQL keywords, any case (PostgreSQL keywords are case-insensitive); DO bodies included. */
 const SQL =
   /\b(select|insert|update|delete|merge|truncate|from|join|with|execute|perform|call)\b|\bdo\s*(\$|')/i;
+// OD23 R1 / L27: reject these functions regardless of arguments. Evaluating format strings
+// (%I includes position/width and can itself be constructed) or chr arguments is out of scope.
+const IDENTIFIER_BUILDERS = new Set(['quote_ident', 'format', 'chr']);
+const IDENTIFIER_SPELLING = new RegExp(
+  `(?<![\\w$])(${[...IDENTIFIER_BUILDERS].join('|')})(?![\\w$])`,
+  'i',
+);
 export interface TableUse {
   table: string;
   op: SqlOperation;
@@ -153,10 +162,11 @@ const E_SIMPLE: Record<string, string> = {
  * backslash, nested '' literal, ||, $ or U&, and the quotes pair); each paired model name in it
  * is then a WRITE use. Anything else with a double quote, an unterminated literal, an escape
  * that can spell characters (\x, octal, \u) or a run-time part is undecidable.
- * Known residual (recorded, not closed here): a literal WITHOUT a raw double quote is not
- * analysed further, so SQL that builds a quoted identifier at run time — quote_ident(...),
- * format('%I', ...), chr(34), or a nested E''/U&'' escape inside an outer literal — is not
- * detected. An unquoted name ('PlanVersion' as a label) is not a use.
+ * OD23 R1: even WITHOUT a raw double quote, constructor spellings and nested E'/U&' escape
+ * introducers fail. We cannot prove that literal text is data rather than executable SQL, so
+ * spelling alone suffices here (including in a comment within the literal). This deliberately
+ * rejects harmless labels naming those constructors and harmless nested escapes. Ordinary
+ * unquoted model names ('PlanVersion' as a label) are still not uses.
  */
 function literal(sql: string, start: number): { tokens: Token[]; end: number } {
   const escapes = sql[start] !== "'";
@@ -194,6 +204,17 @@ function literal(sql: string, start: number): { tokens: Token[]; end: number } {
     tokens.push({
       kind: 'undecidable',
       why: 'run-time value inside a literal',
+    });
+  // Check the decoded outer layer before the raw-double-quote gate. Do not interpret nested
+  // SQL comments or try to evaluate further layers: neither may hide a prohibited spelling.
+  const builder = IDENTIFIER_SPELLING.exec(value)?.[1];
+  const nestedEscape = /(?<![\w$])(?:e'|u&['"])/i.exec(value)?.[0];
+  if (builder || nestedEscape)
+    tokens.push({
+      kind: 'undecidable',
+      why: builder
+        ? `runtime identifier spelling in a literal: ${builder.toLowerCase()}`
+        : `nested escape in a literal: ${nestedEscape}`,
     });
   // A literal whose raw text holds a double quote is accepted only when simple: no comment,
   // escape, nested literal, concatenation, dollar or U& marker, and its quotes pair into names
@@ -296,6 +317,21 @@ export function sqlTokens(sql: string): Token[] {
       i++;
     }
   }
+  // Lexing first makes qualification, quoted names, whitespace and nested comments irrelevant
+  // to call recognition. No argument-based exceptions, including calls on own/legacy tables.
+  out.forEach((token, index) => {
+    const next = out[index + 1];
+    if (
+      (token.kind === 'word' || token.kind === 'ident') &&
+      IDENTIFIER_BUILDERS.has(token.text.toLowerCase()) &&
+      next?.kind === 'punct' &&
+      next.text === '('
+    )
+      out.push({
+        kind: 'undecidable',
+        why: `runtime identifier function: ${token.text.toLowerCase()}`,
+      });
+  });
   return out;
 }
 /** Table uses of one SQL string; `unresolved` lists table positions with no known name. */
@@ -416,7 +452,8 @@ export function scan(files: Record<string, string>) {
   for (const [file, text] of Object.entries(files)) {
     const module = moduleOf(file);
     for (const value of stringsIn(file, text)) {
-      if (!SQL.test(value)) continue;
+      // Constructor-only fragments must not evade the SQL-keyword prefilter.
+      if (!SQL.test(value) && !IDENTIFIER_SPELLING.test(value)) continue;
       const r = sqlTables(value);
       for (const at of r.unresolved) unresolved.push({ file, at });
       for (const u of r.uses)
@@ -686,5 +723,118 @@ describe('SQL scan counter-examples', () => {
       ),
     ).toBe(false);
     expect(caught('q(`SELECT 1 FROM "ReportItem" WHERE active`);')).toBe(false);
+  });
+});
+
+/** Synthetic TEST queries: each built identifier names report's PlanVersion from issue. */
+export const R1_COUNTEREXAMPLES = [
+  ['quote_ident', "'SELECT 1 FROM ' || quote_ident('PlanVersion')"],
+  [
+    'qualified quoted call with nested comments',
+    "'SELECT 1 FROM ' || pg_catalog.\"quote_ident\" /* TEST /* nested */ comment */ ('PlanVersion')",
+  ],
+  [
+    'mixed case call with a line comment',
+    "'SELECT 1 FROM ' || QuOtE_IdEnT -- TEST\n ('PlanVersion')",
+  ],
+  ['format identifier', "format('SELECT 1 FROM %I', 'PlanVersion')"],
+  [
+    'format position and width',
+    "format('SELECT 1 FROM %1$-12I', 'PlanVersion')",
+  ],
+  ['format split specifier', "format('SELECT 1 FROM %' || 'I', 'PlanVersion')"],
+  ['format unknown argument', "format(pattern, 'PlanVersion')"],
+  [
+    'qualified quoted format',
+    "pg_catalog.\"format\" /* TEST */ ('SELECT 1 FROM %I', 'PlanVersion')",
+  ],
+  [
+    'chr double quote',
+    "'SELECT 1 FROM ' || chr(34) || 'PlanVersion' || chr(34)",
+  ],
+  [
+    'chr expression argument',
+    "'SELECT 1 FROM ' || pg_catalog.\"chr\" /* TEST */ (17 * 2) || 'PlanVersion' || chr(code)",
+  ],
+] as const;
+
+export const R1_NESTED_ESCAPES = [
+  ['hex', String.raw`E'SELECT 1 FROM \x22PlanVersion\x22'`],
+  ['octal', String.raw`E'SELECT 1 FROM \042PlanVersion\042'`],
+  ['unicode short', String.raw`e'SELECT 1 FROM \u0022PlanVersion\u0022'`],
+  [
+    'unicode long',
+    String.raw`E'SELECT 1 FROM \U00000022PlanVersion\U00000022'`,
+  ],
+  ['U& default', String.raw`U&'SELECT 1 FROM \0022PlanVersion\0022'`],
+  ['U& custom', "u&'SELECT 1 FROM !0022PlanVersion!0022' UESCAPE '!'"],
+] as const;
+
+/** Quote exactly one SQL string layer; JSON.stringify below quotes the TypeScript layer. */
+export const sqlLiteral = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+describe('OD23 R1 runtime identifier construction', () => {
+  const issue = 'packages/domain/src/issue-store.ts';
+  const unresolved = (sql: string) =>
+    scan({ [issue]: `q(${JSON.stringify(sql)});` }).unresolved;
+
+  for (const [name, expression] of R1_COUNTEREXAMPLES) {
+    const body = `BEGIN EXECUTE ${expression}; END;`;
+    for (const [context, sql] of [
+      ['expression', `SELECT ${expression}`],
+      ['dollar body', `DO $TEST$ ${body} $TEST$`],
+      ['single-quoted body', `DO ${sqlLiteral(body)}`],
+      [
+        'nested body',
+        `DO ${sqlLiteral(`BEGIN EXECUTE ${sqlLiteral(`DO ${sqlLiteral(body)}`)}; END;`)}`,
+      ],
+    ])
+      it(`${name} in ${context} fails without any adapter exception`, () => {
+        expect(unresolved(sql!)).not.toEqual([]);
+      });
+  }
+
+  for (const [name, expression] of R1_NESTED_ESCAPES)
+    it(`${name} in an outer literal fails without a raw double quote`, () => {
+      const sql = `DO ${sqlLiteral(`BEGIN EXECUTE ${expression}; END;`)}`;
+      expect(sql).not.toContain('"');
+      expect(unresolved(sql)).not.toEqual([]);
+    });
+
+  it('checks constructor fragments even without a SQL keyword', () => {
+    for (const sql of [
+      "quote_ident('PlanVersion')",
+      "format('%I', name)",
+      'chr(code)',
+    ])
+      expect(unresolved(sql)).not.toEqual([]);
+  });
+
+  it('fails closed for harmless arguments and spelling inside data literals', () => {
+    // Argument evaluation and deciding whether a literal will execute are outside this guard.
+    for (const sql of [
+      "SELECT format('%s', 'TEST')",
+      'SELECT chr(65)',
+      "SELECT 'quote_ident' AS label",
+      "SELECT 'format' AS label",
+      "SELECT 'chr' AS label",
+      `SELECT ${sqlLiteral("E'TEST'")} AS label`,
+      `SELECT ${sqlLiteral("U&'TEST'")} AS label`,
+    ])
+      expect(unresolved(sql)).not.toEqual([]);
+  });
+
+  it('preserves comments, ordinary labels, simple escapes and similarly named functions', () => {
+    for (const sql of [
+      `SELECT 1 FROM "Issue" /* quote_ident format('%I') chr(34) E'' U&'' */`,
+      `SELECT 1 FROM "Issue" -- quote_ident('PlanVersion')\n`,
+      "SELECT 'PlanVersion' AS label",
+      "SELECT 'TEST format_hint quote_identifier chr_value' AS label",
+      'SELECT format_hint($1), quote_identifier($2), chr_value($3)',
+      'SELECT format, chr FROM issue',
+      String.raw`SELECT E'TEST\nvalue'`,
+      "SELECT 'it''s TEST' AS label",
+    ])
+      expect(unresolved(sql)).toEqual([]);
   });
 });
