@@ -88,10 +88,11 @@ function RetainedCard({
       case 'machinery':
       case 'materials':
         return itemName;
-      case 'people':
-        return key in ROLE_LABEL
-          ? t(ROLE_LABEL[key as keyof typeof ROLE_LABEL])
-          : key;
+      case 'people': {
+        if (!(key in ROLE_LABEL)) return key;
+        const roleLabel = ROLE_LABEL[key as keyof typeof ROLE_LABEL];
+        return t(roleLabel);
+      }
       case 'narrative':
         return key === 'construction' || key === 'quality' || key === 'safety'
           ? t(key)
