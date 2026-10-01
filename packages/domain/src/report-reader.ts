@@ -117,6 +117,20 @@ export function readerPlan(state: PlanState): PlanState {
   return { versions: state.versions, draft: null };
 }
 
+/**
+ * C20 (OD22): a next-day plan a revision froze shows its rows to a reader only when it was
+ * confirmed; a draft's rows (frozen by revisions submitted while the plan was a draft) are
+ * projected to []. Anything but 'confirmed' counts as a draft. The same object is returned when
+ * there is nothing to withhold; a stored snapshot is never changed.
+ */
+export function readerNextPlan<T>(nextPlan: T): T {
+  if (typeof nextPlan !== 'object' || nextPlan === null) return nextPlan;
+  const p = nextPlan as { status?: unknown; rows?: unknown };
+  if (p.status === 'confirmed') return nextPlan;
+  if (Array.isArray(p.rows) && p.rows.length === 0) return nextPlan;
+  return { ...nextPlan, rows: [] };
+}
+
 /** The fields of a submitted revision snapshot a day view is built from. */
 interface SubmittedSnapshot {
   facts: DayFacts;
@@ -187,7 +201,7 @@ export function readerContent(
       ? { status: 'confirmed', n: baseline.n }
       : { status: 'none', n: null },
     baseline,
-    nextPlan: s.nextPlan,
+    nextPlan: readerNextPlan(s.nextPlan),
     previousSubmittedDate: s.previousSubmittedDate ?? null,
     cumulativeBase: s.cumulativeBase ?? {},
     materialsCumulative: s.materialsCumulative ?? {},
@@ -200,19 +214,22 @@ export function readerContent(
 /**
  * A submitted revision's snapshot as a reader is served it (OD20): its photos carry only the
  * frozen fields (position kind and accuracy, times, link), so no coordinates can reach a reader
- * whatever a snapshot holds. A projection on read; the stored revision is never changed.
+ * whatever a snapshot holds; a draft next-day plan's rows are withheld (C20). A projection on
+ * read; the stored revision is never changed.
  */
 export function readerSnapshot(
   snapshot: Record<string, unknown>,
 ): Record<string, unknown> {
+  let rest = snapshot;
+  const own = () => (rest === snapshot ? (rest = { ...snapshot }) : rest);
   // Check-ins, foreman reports and adoptions are writer data (A6.0): a reader never gets them,
   // frozen or live.
-  let rest = snapshot;
   if ('field' in snapshot || 'foreman' in snapshot) {
-    rest = { ...snapshot };
-    delete rest['field'];
-    delete rest['foreman'];
+    delete own()['field'];
+    delete own()['foreman'];
   }
+  const nextPlan = readerNextPlan(snapshot['nextPlan']);
+  if (nextPlan !== snapshot['nextPlan']) own()['nextPlan'] = nextPlan;
   const photos = rest['photos'];
   if (!Array.isArray(photos)) return rest;
   return {

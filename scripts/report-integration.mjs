@@ -1260,7 +1260,9 @@ try {
   assert.deepEqual(readerD1.facts, rev2.snapshot.facts);
   assert.deepEqual(readerD1.items, rev2.snapshot.items);
   assert.deepEqual(readerD1.baseline, rev2.snapshot.baseline);
-  assert.deepEqual(readerD1.nextPlan, rev2.snapshot.nextPlan);
+  // C20: revision 2 froze the next-day plan as a draft; a reader gets its status, no rows.
+  assert.equal(rev2.snapshot.nextPlan.status, 'draft');
+  assert.deepEqual(readerD1.nextPlan, { ...rev2.snapshot.nextPlan, rows: [] });
   assert.deepEqual(readerD1.cumulativeBase, rev2.snapshot.cumulativeBase);
   assert.deepEqual(
     readerD1.materialsCumulative,
@@ -1359,6 +1361,106 @@ try {
   assert.notEqual((await dayOf(D1, pm)).version, 0);
   pass(
     'OD18: a reader gets nothing of an empty or draft day, only revision 2 of a correcting day (not the correction, its reason or a newer plan), the frozen no-work revision, version 0; days list submitted days only (correcting→submitted, drafts left out) and are byte-identical before and after a draft and a correction are started; plan drafts are hidden while confirmed versions stay; the writer view is unchanged',
+  );
+
+  // ---------- A7-0c (C20): a frozen draft next-day plan's rows are withheld from readers ----------
+  // A submission freezes the next-day plan as it stands, a draft included (stored as is). A
+  // reader gets its status but no rows on every path (the revision and the day); a confirmed
+  // frozen plan stays visible; the writer and the stored snapshot are unchanged.
+  {
+    const C1 = '2026-11-02',
+      C2 = '2026-11-03',
+      C3 = '2026-11-04';
+    const draftFor = (target, value) =>
+      expectStatus(
+        call('/plan/draft', pm, {
+          projectId: projectA,
+          targetBusinessDate: target,
+          clientMutationId: randomUUID(),
+          rows: [{ item: 'support', target: value }],
+        }),
+        200,
+      );
+    const submitDay = async (date) => {
+      const saved = await expectStatus(
+        call('/facts', pm, cmd({ businessDate: date, facts: facts() })),
+        200,
+      );
+      await expectStatus(
+        call(
+          '/submit',
+          pm,
+          cmd({ businessDate: date, expectedVersion: saved.version }),
+        ),
+        200,
+      );
+    };
+    const revisionOf = (date, bearer) =>
+      expectStatus(
+        call(
+          `/revision?projectId=${projectA}&businessDate=${date}&n=1`,
+          bearer,
+        ),
+        200,
+      );
+    await draftFor(C2, '8641');
+    await submitDay(C1);
+    const writerRev = await revisionOf(C1, pm);
+    assert.deepEqual(writerRev.snapshot.nextPlan, {
+      status: 'draft',
+      n: null,
+      rows: [{ item: 'support', target: '8641' }],
+    });
+    const readerRev = await revisionOf(C1, exec);
+    assert.deepEqual(readerRev.snapshot.nextPlan, {
+      status: 'draft',
+      n: null,
+      rows: [],
+    });
+    const readerDay = await dayOf(C1, exec);
+    assert.equal(readerDay.state, 'submitted');
+    assert.deepEqual(readerDay.nextPlan, readerRev.snapshot.nextPlan);
+    for (const shown of [readerRev, readerDay])
+      assert.ok(!withoutRandom(shown).includes('8641'));
+    // The draft confirmed later: the frozen revision still says draft; still no rows for a reader.
+    await expectStatus(
+      call('/plan/confirm', pm, {
+        projectId: projectA,
+        targetBusinessDate: C2,
+        clientMutationId: randomUUID(),
+      }),
+      200,
+    );
+    assert.deepEqual(
+      (await revisionOf(C1, exec)).snapshot.nextPlan,
+      readerRev.snapshot.nextPlan,
+    );
+    assert.deepEqual(
+      (await revisionOf(C1, pm)).snapshot.nextPlan,
+      writerRev.snapshot.nextPlan,
+    );
+    // A next-day plan confirmed before the submission: its frozen rows stay visible.
+    await draftFor(C3, '8642');
+    await expectStatus(
+      call('/plan/confirm', pm, {
+        projectId: projectA,
+        targetBusinessDate: C3,
+        clientMutationId: randomUUID(),
+      }),
+      200,
+    );
+    await submitDay(C2);
+    const confirmed = {
+      status: 'confirmed',
+      n: 1,
+      rows: [{ item: 'support', target: '8642' }],
+    };
+    assert.deepEqual((await revisionOf(C2, pm)).snapshot.nextPlan, confirmed);
+    assert.deepEqual((await revisionOf(C2, exec)).snapshot.nextPlan, confirmed);
+    assert.deepEqual((await dayOf(C2, exec)).nextPlan, confirmed);
+  }
+  pass(
+    'C20: a revision that froze a draft next-day plan gives a reader its status and no rows, on the revision and the day (also after the plan is confirmed later); a plan confirmed before submission stays visible; the writer and the stored snapshot are unchanged',
   );
 
   // ---------- A7-0a (ADR-0003): OD18 on write rejections and conflicts ----------
@@ -1542,15 +1644,15 @@ try {
       REPORT_CORRECTION_CANCEL: 3,
       REPORT_CORRECTION_START: 4,
       REPORT_NO_WORK: 1,
-      // D1 v1, v2, v3 (OD18); D6 five race rounds + one of two concurrent confirms; D9 if it confirmed
-      REPORT_PLAN_CONFIRM: 9 + (d9Confirmed ? 1 : 0),
-      // D1, D2, D1 again; D6 2 × 5 rounds + '999'; D9 save + overwrite; OD18: D10, D1
-      REPORT_PLAN_DRAFT: 18,
-      // D1, race winner, three correction edits, D7, D8 (+ D8 late save if it won); OD18: D10, D1 edit
-      REPORT_SAVE_FACTS: saveVsSubmit[0].status === 200 ? 10 : 9,
+      // D1 v1, v2, v3 (OD18); D6 five race rounds + one of two concurrent confirms; D9 if it confirmed; C20: C2, C3
+      REPORT_PLAN_CONFIRM: 11 + (d9Confirmed ? 1 : 0),
+      // D1, D2, D1 again; D6 2 × 5 rounds + '999'; D9 save + overwrite; OD18: D10, D1; C20: C2, C3
+      REPORT_PLAN_DRAFT: 20,
+      // D1, race winner, three correction edits, D7, D8 (+ D8 late save if it won); OD18: D10, D1 edit; C20: C1, C2
+      REPORT_SAVE_FACTS: saveVsSubmit[0].status === 200 ? 12 : 11,
       REPORT_SAVE_ITEMS: 2,
-      // D1, D1 resubmit, D7 once (same key twice), D8 if submit won
-      REPORT_SUBMIT: saveVsSubmit[1].status === 200 ? 4 : 3,
+      // D1, D1 resubmit, D7 once (same key twice), D8 if submit won; C20: C1, C2
+      REPORT_SUBMIT: saveVsSubmit[1].status === 200 ? 6 : 5,
     },
   );
   pass(
