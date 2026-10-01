@@ -190,25 +190,25 @@ function literal(sql: string, start: number): { tokens: Token[]; end: number } {
       kind: 'undecidable',
       why: 'run-time value inside a literal',
     });
-  for (let k = 0; k < value.length; k++) {
-    if (value[k] !== '"') continue;
-    let name = '';
-    let done = false;
-    for (k++; k < value.length; k++) {
-      if (value[k] === '"' && value[k + 1] === '"') {
-        name += '"';
-        k++;
-      } else if (value[k] === '"') {
-        done = true;
-        break;
-      } else name += value[k];
-    }
-    if (!done)
+  // A literal whose raw text holds a double quote is accepted only when simple: no comment,
+  // escape, nested literal, concatenation, dollar or U& marker, and its quotes pair into names
+  // (each a model name is a WRITE use; other names are not ours). Anything else is undecidable.
+  // No attempt is made to recognise cleverer forms (L27): they fail by construction.
+  const raw = sql.slice(start + (escapes ? 2 : 1), closed ? i - 1 : i);
+  if (raw.includes('"')) {
+    const marker = ['/*', '*/', '--', '\\', "''", '||', '$'].find((m) =>
+      raw.includes(m),
+    );
+    const parts = raw.split('"');
+    if (marker || /u&/i.test(raw) || parts.length % 2 === 0)
       tokens.push({
         kind: 'undecidable',
-        why: 'unbalanced double quote inside a literal',
+        why: `double quote in a literal that is not simple (${marker ?? (parts.length % 2 === 0 ? 'unpaired quote' : 'U&')})`,
       });
-    else if (models.has(name)) tokens.push({ kind: 'literalUse', table: name });
+    else
+      for (let k = 1; k < parts.length; k += 2)
+        if (models.has(parts[k]!))
+          tokens.push({ kind: 'literalUse', table: parts[k]! });
   }
   return { tokens, end: i };
 }
@@ -624,6 +624,28 @@ describe('SQL scan counter-examples', () => {
     ['an unterminated quoted identifier', `q(\`SELECT 1 FROM "Issue\`);`],
     ['an unterminated dollar body', `q(\`DO $$ BEGIN PERFORM 1; END;\`);`],
     ['an unterminated block comment', `q(\`SELECT 1 FROM "Issue" /* open\`);`],
+    // Literal round 2 (L27: fail closed by construction): a literal with a double quote is
+    // accepted only when simple; Codex round-1 examples and nested forms fail.
+    [
+      'quotes inside comments in a literal',
+      `q(\`DO 'BEGIN /* " */ PERFORM 1 FROM "PlanVersion"; /* " */ END;'\`);`,
+    ],
+    [
+      "nested E'' literal",
+      `q(\`DO 'BEGIN EXECUTE E''SELECT 1 FROM \\\\"PlanVersion\\\\"''; END;'\`);`,
+    ],
+    [
+      'nested literal built by concatenation',
+      `q(\`DO 'BEGIN EXECUTE ''SELECT 1 FROM "'' || ''Plan'' || ''Version'' || ''"''; END;'\`);`,
+    ],
+    [
+      "nested U&'' with a double quote",
+      `q(\`DO 'BEGIN EXECUTE U&''"PlanVersion"''; END;'\`);`,
+    ],
+    [
+      'newline-adjacent literal fragments',
+      `q(\`SELECT '"Plan'\n'Version"' FROM "Issue"\`);`,
+    ],
     [
       'nested store file',
       'q(`SELECT 1 FROM "Issue"`);',
@@ -640,8 +662,9 @@ describe('SQL scan counter-examples', () => {
     expect(caught(`q(\`DO 'BEGIN PERFORM 1 FROM "Issue"; END;'\`);`)).toBe(
       false,
     );
+    // A nested literal ('') beside a double quote is not simple: fails closed even for an own table.
     expect(caught(`q(\`SELECT 'it''s "Issue"' AS t FROM "Issue"\`);`)).toBe(
-      false,
+      true,
     );
     expect(caught('q(`SELECT 1 FROM "Issue" -- see "PlanVersion"\n`);')).toBe(
       false,
