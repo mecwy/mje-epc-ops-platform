@@ -23,6 +23,7 @@ import {
 } from '../packages/domain/dist/index.js';
 import { exifTiff, testJpeg } from '../packages/testing/dist/index.js';
 import { createApp } from '../apps/api/dist/app.js';
+import { createClockWatch } from './clock-watch.mjs';
 import { AzurePhotoBlobStore } from '../apps/api/dist/photo-blobs.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 
@@ -76,9 +77,15 @@ const DEFAULT_IP = '10.9.9.9';
 // released in `finally` (a checked-out client would make pool.end() wait forever); a watchdog
 // aborts the whole run. A failure prints the step, the source revision and the TEST database.
 let currentStep = 'setup';
+let stepStartedAt = 0;
 const step = (name) => {
   currentStep = name;
+  stepStartedAt = performance.now();
 };
+// The database clock as a separate connection sees it (a local VM's clock can step back);
+// sampled for the whole run, see clock-watch.mjs. It only labels failures; it never changes
+// how an answer is judged.
+const clock = createClockWatch();
 const STEP_MS = 30_000;
 const WATCHDOG_MS = Number(process.env.FIELD_TEST_WATCHDOG_MS ?? 600_000);
 function withTimeout(promise, ms, label) {
@@ -152,10 +159,12 @@ function runBounded(command, args, env, ms, label) {
   });
 }
 const MIGRATE_MS = Number(process.env.FIELD_TEST_MIGRATE_MS ?? 180_000);
-const failure = (why) =>
+const failure = (why) => {
+  const stepped = clock.summary(stepStartedAt);
   console.error(
-    `FIELD TEST FAILED at step "${currentStep}": ${why}; source ${revision}; TEST database ${database}`,
+    `FIELD TEST FAILED at step "${currentStep}": ${why}; source ${revision}; TEST database ${database}${stepped.count ? `; the database clock stepped back ${stepped.count} time(s) during this step (max ${stepped.maxMs} ms, probe gap up to ${stepped.maxGapMs} ms): check the environment before the code` : ''}`,
   );
+};
 /** Release functions of every lock the test holds; emptied as they are released. */
 const held = new Set();
 async function releaseHeld() {
@@ -200,6 +209,25 @@ const watchdog = setTimeout(() => {
     .catch((error) => console.error(`watchdog cleanup: ${error.message}`))
     .finally(() => process.exit(1));
 }, WATCHDOG_MS);
+
+let probeStop = false;
+const clockPool = tolerateShutdown(
+  new Pool({ connectionString: source.toString(), max: 1 }),
+);
+const clockProbe = (async () => {
+  while (!probeStop) {
+    const start = performance.now();
+    try {
+      const r = await clockPool.query(
+        `SELECT extract(epoch FROM clock_timestamp())::float8 * 1000 AS t`,
+      );
+      clock.record(start, performance.now(), r.rows[0].t);
+    } catch {
+      // A lost sample only widens the next gap.
+    }
+    await sleep(5);
+  }
+})();
 
 try {
   await admin.query(`CREATE DATABASE "${database}"`);
@@ -476,12 +504,18 @@ try {
     'foreman: adopt vs roster change',
     'foreman: adopt, revision and roster vs submit',
   ]);
-  async function http(path, options) {
+  /**
+   * `counted`: the caller counts throttle hits. A throttle counts the request before its
+   * transaction can answer RETRY, so a repeat would spend a second hit and surface later as an
+   * unexplained 429; such a RETRY is returned as it is, where it happened.
+   */
+  async function http(path, { counted = false, ...options }) {
     const until = Date.now() + 10_000;
     for (;;) {
       const r = await httpOnce(path, options);
       const repeat =
-        retry.force || (retry.on && !FIRST_ATTEMPT.has(currentStep));
+        !counted &&
+        (retry.force || (retry.on && !FIRST_ATTEMPT.has(currentStep)));
       if (!repeat || r.status !== 503 || r.body?.code !== 'RETRY') return r;
       if (Date.now() > until) return r;
       retry.repeated++;
@@ -593,7 +627,7 @@ try {
       '/bind',
       null,
       { code: opts.code ?? entryCode[projectA], personId, token },
-      { ip: opts.ip },
+      { ip: opts.ip, counted: opts.counted },
     ).then((r) => ({ ...r, token }));
   };
   const challenge = async (token, opts) => {
@@ -2305,10 +2339,14 @@ try {
       fpost('/entry', null, { code: entryCode[projectA] }, { ip: '10.2.0.3' }),
       200,
     );
-    // Bind: 150 / h per IP; 300 / h per code (refused binds count too).
+    // Bind: 150 / h per IP; 300 / h per code (refused binds count too). Counted: never repeated.
     await freshWindow(3600);
     r = await burst(150, () =>
-      bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.1' }),
+      bind(person.unrostered, {
+        code: entryCode[projectA2],
+        ip: '10.3.0.1',
+        counted: true,
+      }),
     );
     assert.ok(
       r.every((x) => x.status === 404),
@@ -2320,7 +2358,11 @@ try {
       'RATE_LIMITED',
     );
     r = await burst(149, () =>
-      bind(person.unrostered, { code: entryCode[projectA2], ip: '10.3.0.2' }),
+      bind(person.unrostered, {
+        code: entryCode[projectA2],
+        ip: '10.3.0.2',
+        counted: true,
+      }),
     );
     assert.ok(r.every((x) => x.status === 404));
     await expectStatus(
@@ -2341,7 +2383,7 @@ try {
       await expectStatus(pmDevice('reject', pend, 1), 200);
     }
     const pd = p.status === 200 ? p : await bind(person.w5, { ip: '10.3.0.9' });
-    for (let i = 0; i < 10; i++) await challenge(pd.token);
+    for (let i = 0; i < 10; i++) await challenge(pd.token, { counted: true });
     await expectStatus(
       fpost('/device/challenge', pd.token, {}),
       429,
@@ -5414,8 +5456,9 @@ try {
     );
   }
 
+  const stepBacks = clock.summary();
   console.log(
-    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
+    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated; database clock step-backs observed: ${stepBacks.count}, max ${stepBacks.maxMs} ms); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
   );
   step('done');
 } catch (error) {
@@ -5434,6 +5477,9 @@ try {
       incomplete.push(label);
       console.error(`cleanup: ${error.message}`);
     });
+  probeStop = true;
+  await bounded(() => clockProbe, 'clock probe');
+  await bounded(() => clockPool.end(), 'clockPool.end');
   if (app) await bounded(() => app.close(), 'app.close');
   if (appPool) await bounded(() => appPool.end(), 'appPool.end');
   if (owner) await bounded(() => owner.end(), 'owner.end');
