@@ -1,6 +1,6 @@
 # ADR-0003：跨模块最小权限——授权上下文、模块出口与投影
 
-日期 2026-10-01。状态：**候选 r3**（Codex 第 1、2 轮 REQUEST CHANGES 后修订；通过后随 A7 首个切片生效）。编号接续私有档案的 ADR-0001（原架构 v0.1，只读原件）与 ADR-0002（Phase 0 实施细化）；本文件是公开仓库中的第一份 ADR。
+日期 2026-10-01。状态：**候选 r3.1**（Codex 第 1、2 轮 REQUEST CHANGES 后修订，第 3 轮为 PM 批准的聚焦轮，只审 D4 目录、D5 锁定函数与事务时长三处；通过后随 A7 首个切片生效）。编号接续私有档案的 ADR-0001（原架构 v0.1，只读原件）与 ADR-0002（Phase 0 实施细化）；本文件是公开仓库中的第一份 ADR。
 
 依据（业务规则已由 Owner 确认，本 ADR 只定执行方式）：DG-05 / DG-06 共用设计段 `authorized-projection.md`（随 DG-06 v0.5 确认，K20）、授权管理最低政策 `authorized-projection-policy.md`（Owner 2026-10-01 默认政策 P1–P3 与四个触发条件）、独立技术评议（2026-10-01，Codex）、OD17 / OD18 / OD20 / OD23、经验 L22。三份设计文件在私有档案 `docs/design/dg06-opportunity/`；本 ADR 不复制其中的业务字段表，只引用条款号。
 
@@ -67,7 +67,14 @@
   - `cas`：带基准（聚合 `expectedVersion` 或子记录修订号），任一不符整体冲突、什么都不写，缺基准即拒绝；
   - `append`：只追加，不带基准，但须校验目标存在、状态允许（如问题未关闭）与范围；
   - `create`：创建，用唯一键或序号（如 `expectedN`）防重。
-- 现有命令的模式（现状，不改契约）：facts 保存 / submit / no-work / correction start+cancel = `cas`（日 `expectedVersion`）；link / unlink = `cas`（照片 `expectedVersion`）；issue note / escalate / close / reopen = `cas`（问题 `expectedVersion`，`locked()` 拒绝过期版本；它们同时追加历史，但基准是必需的）；issue reply = `append`（无基准；只校验问题存在与范围）；dismissLag = `create`（`(org, project, businessDate, workItemKey)` 唯一键）；issue create = `create`；plan confirm = `create`（项目 / 日锁下从草稿生成版本，`PLAN_NO_CHANGE` 防重）。**遗留例外（登记，不改）**：plan draft = 项目 / 日锁下最新覆盖、无基准（两个经理交错保存草稿时后者覆盖前者，确认时以当时草稿为准）；items 保存 = 按 `(kind, key)` upsert 提供的行、未提供的行不动、无项目级锁、无基准（并发保存可能交错，各行以最后写入为准）。两者在 `surface.ts` 以 `concurrency: legacy-overwrite` 登记，改为 `cas` 需要契约变更，另开 PR 决定。A7 新命令：`declareStatus` = `create`（`expectedN`）；`StatusNote` = `append`；`setPrimaryWorkItem` = `cas`（`Project.version`）；`registerExpectation` = `create`（项目内序号）。
+- 现有命令的模式（现状，不改契约；每条引用 `packages/contracts/src` 的命令类型与 `packages/domain/src` 的实现，行号按 `ad67b6c` 之基 `155b004`）：
+  - `cas`（日 `expectedVersion`）：facts 保存 `SaveFactsCommand`（`report.ts:58–63`）、submit `SubmitReportCommand`（`report.ts:80–85`）、no-work `NoWorkCommand`（`report.ts:93–98`）、correction start / cancel（`report.ts:86–91, 101–106`）；实现经 `dayForWrite(expectedVersion)`（`report-store.ts:176–200`，不符 → `VERSION_CONFLICT`）。
+  - `cas`（照片 `expectedVersion` = 关联变更次数）：link / unlink `LinkPhotoCommand` / `UnlinkPhotoCommand`（`photo.ts:51–62`）。
+  - `cas`（问题 `expectedVersion`）：note `NoteIssueCommand`（`issue.ts:40–46`）、escalate `SetEscalateCommand`（`issue.ts:47–53`）、close / reopen `CloseIssueCommand`（`issue.ts:55–61`）；实现经 `locked()`（`issue-store.ts:261`，调用处 544 / 590 / 628 / 678）拒绝过期版本。这些命令同时追加历史，但基准是必需的。
+  - `append`：reply `ReplyIssueCommand`（`issue.ts:62–67`，无 `expectedVersion`；`issue-store.ts:774–796` 只校验问题存在、范围与 `access === 'read'`）。
+  - `create`：issue create `CreateIssueCommand`（`issue.ts:23`）；dismissLag `DismissLagCommand`（`issue.ts:68–73`，唯一键 `LagDismissal(orgId, projectId, businessDate, workItemKey)`，`schema.prisma:1003`）；plan confirm `ConfirmPlanCommand`（`report.ts:75–79`，`planLock` 下从草稿生成版本，`PLAN_NO_CHANGE` 防重，`report-store.ts:1248–1290`）。
+  - **遗留例外（登记，不改）** `legacy-overwrite`：plan draft `SavePlanDraftCommand`（`report.ts:69–74`，无基准；`report-store.ts:1187–1210` 在 `planLock` 下最新覆盖——两个经理交错保存草稿时后者覆盖前者，确认时以当时草稿为准）；items 保存 `SaveItemsCommand`（`report.ts:120–124`，无基准；`report-store.ts:1326–1357` 按 `(orgId, projectId, kind, key)` `ON CONFLICT … DO UPDATE` upsert 提供的行，未提供的行不动，无项目级锁——并发保存可能交错，各行以最后写入为准）。改为 `cas` 需要契约变更，另开 PR 决定。
+  - A7 新命令：`declareStatus` = `create`（`expectedN`）；`StatusNote` = `append`；`setPrimaryWorkItem` = `cas`（`Project.version`）；`registerExpectation` = `create`（项目内序号）。
 - 基准只在“每个会改变该依赖的写入者都推进它”时才有效（D7）；`surface.ts` 每条写入声明 `advances: [版本名]`，测试据此检查每个版本至少有一个推进者且没有未声明的写入者改它。
 - 只读主体的写入：`issue.reply`（现状）与 `project.status.reply`（A7，`project-status` 模块自己的能力与范围，不复用 issue 的授权）。
 
@@ -76,11 +83,11 @@
 - **授权版本来源**：迁移追加 `LoginAccount.authzVersion int NOT NULL DEFAULT 1`；触发器在 `Membership` 的 INSERT / UPDATE / DELETE 以及 `LoginAccount.active` / `personId` 变化时，在**同一事务**内 `UPDATE "LoginAccount" SET "authzVersion"="authzVersion"+1`（因此所有授予 / 撤销写入者自动参与，不靠约定）。将来显式授权表的写入同样挂此触发器。
 - **事务协议**（写在 `inTransaction`，首次执行与幂等重放都在其中）：
   1. `BEGIN`（READ COMMITTED）→ 设置 `app.*` 会话变量；
-  2. 取账号与 `authzVersion` 并加**第一把锁**：应用角色对 `LoginAccount` 只有 SELECT（`202609280001` 迁移），而 `FOR SHARE` 要求表上至少一列的 UPDATE 权限，所以不直接 `SELECT … FOR SHARE`；改为调用 `SECURITY DEFINER` 函数 `app_account_for_identity(tenant, oid)`（固定 `search_path`，与 #31 同模式；由迁移所有者角色拥有，应用角色只有 EXECUTE），函数内 `SELECT … FROM "LoginAccount" WHERE active AND "entraTenantId"=$1 AND "entraObjectId"=$2 AND "personId" IS NOT NULL FOR SHARE` 并返回 `orgId, id, personId, authzVersion`——行锁属于调用事务，整事务持有；撤权写入者（会员变更触发器 `UPDATE "LoginAccount"`）要 `FOR UPDATE` 同一行，会等到本事务结束；反之本事务开始时撤权已提交则读到新版本。应用角色对 `LoginAccount` 的权限不变（仍不能改 `active`、`personId` 或身份字段，负向测试以应用角色执行）。随后在同一语句集合里读会员，建立上下文。
+  2. 取账号与 `authzVersion` 并加**第一把锁**：应用角色对 `LoginAccount` 只有 SELECT（`202609280001` 迁移），而 `FOR SHARE` 要求表上至少一列的 UPDATE 权限，所以不直接 `SELECT … FOR SHARE`；改为调用 `SECURITY DEFINER` 函数 `app_account_for_identity(tenant text, oid text) RETURNS TABLE("orgId" uuid, id uuid, "personId" uuid, "authzVersion" int)`：`LANGUAGE sql STRICT`、无动态 SQL、`SET search_path = pg_catalog, public, pg_temp`（与迁移 `202610030001` 同模式）；由迁移所有者角色拥有，应用角色只有 EXECUTE（`REVOKE ALL … FROM PUBLIC`）；只接受这两个参数、只返回这四列，不返回身份字段以外的任何列；函数内 `SELECT … FROM "LoginAccount" WHERE active AND "entraTenantId"=$1 AND "entraObjectId"=$2 AND "personId" IS NOT NULL FOR SHARE` 并返回 `orgId, id, personId, authzVersion`——行锁属于调用事务，整事务持有；撤权写入者（会员变更触发器 `UPDATE "LoginAccount"`）要 `FOR UPDATE` 同一行，会等到本事务结束；反之本事务开始时撤权已提交则读到新版本。应用角色对 `LoginAccount` 的权限不变（仍不能改 `active`、`personId` 或身份字段，负向测试以应用角色执行）。随后在同一语句集合里读会员，建立上下文。
   3. 幂等锁 → 项目 / 日锁（现有顺序不变；账号行锁总在最前，不会与撤权写入者形成环）；
   4. 回调（含 `idempotent()`：**资源授权在重放查找之前**，现状如此；重放时存储响应**经本次上下文的投影函数再投影**后返回，不原样回放）；
   5. `COMMIT`。锁等待用 `lock_timeout`（5 s）→ 与死锁同样映射为 `RETRY`（503）。
-- **事务时长上界**（账号锁整事务持有，所以必须有真实的运行时上界，而不只是语句超时）：`SET LOCAL idle_in_transaction_session_timeout = '20s'`（事务内等待外部调用时数据库处于 idle-in-transaction，超时由服务端终止会话并回滚，之后 `COMMIT` 不可能发生）；事务内的外部等待（照片 Blob 写入是现有唯一一处）必须带操作期限（`AbortSignal`，15 s，小于会话超时），超时后抛错、事务回滚、响应 `RETRY`；现有 `statement_timeout = 10s` 继续约束单条语句。残余行为（明确接受）：撤权最长等待 ≈ 20 s + 当前语句；决策时刻评估的有效期在该上界内可能已过期而仍提交。A7-0b 须含受控的停滞 Blob 测试：Blob 挂起 → 会话被终止、账号锁释放、撤权写入者继续、没有迟到的提交。
+- **事务时长上界**（账号锁整事务持有，所以必须有真实的运行时上界，而不只是语句超时）：`SET LOCAL idle_in_transaction_session_timeout = '20s'`（事务内等待外部调用时数据库处于 idle-in-transaction，超时由服务端终止会话并回滚，之后 `COMMIT` 不可能发生）；事务内的外部等待（照片 Blob 写入是现有唯一一处）必须带操作期限（`AbortSignal`，15 s，小于会话超时），超时后抛错、事务回滚、响应 `RETRY`；现有 `statement_timeout = 10s` 继续约束单条语句。残余行为（明确接受）：撤权最长等待 ≈ 20 s + 当前语句；决策时刻评估的有效期在该上界内可能已过期而仍提交。**失败后的处置**：会话被终止时 PostgreSQL 返回 `25P03`（idle-in-transaction timeout），连接池丢弃该客户端，与死锁 / 序列化失败同样映射为 `RETRY`（503，`app.ts` 现有 `40P01` / `40001` 分支扩展）；事务已回滚，没有数据库行；此前已写入的 Blob 对象成为**内容寻址孤儿**（键 = `orgId/sha256`，只写一次、同字节重传被接受，`photo-blobs.ts` 现有规则），客户端用同一幂等键重试即复用该对象，不产生第二份；不在 A7 增加孤儿清理作业，登记为已知残余（照片与自拍不同：自拍有 #47 的清理与生命周期，照片无）。A7-0b 须含受控的停滞 Blob 测试：Blob 挂起 → 会话被终止、账号锁释放、撤权写入者继续、没有迟到的提交、重试复用对象。
 - 时间有效期（`activeFrom` / `activeUntil`）在步骤 2 以 `decidedAt` 评估一次；事务内到期不再重判（事务很短，可接受，写明）。
 - 设备主体：身份 `FieldDevice.id`，重放按 `d.id` 分键（现状）；授权版本 = `generation` + A6 的决策时刻与高水位时钟判断（`memberUntil`、`state`），不改 A6 的锁顺序与行为。
 - 排队与后台任务（A8 重传、DG-08 导出、清理 job）在执行时与领取结果时各重新授权一次；队列项只存引用，不存投影结果。
