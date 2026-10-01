@@ -74,8 +74,10 @@ function RetainedCard({
     if (path.startsWith('narrative.')) return narrativeText(v, lang);
     if (v === 'unknown') return t('unknown');
     if (v === 'na') return t('na');
-    if (path.startsWith('presence.') && (v === 'present' || v === 'absent'))
-      return t(v);
+    if (path.startsWith('presence.')) {
+      if (v === 'present') return t('present');
+      if (v === 'absent') return t('absent');
+    }
     return v;
   };
   const name = (path: string) => {
