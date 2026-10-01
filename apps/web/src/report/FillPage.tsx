@@ -65,17 +65,19 @@ function RetainedCard({
   day: DayView;
   locked: boolean;
 }) {
-  const { t, label } = useI18n();
+  const { t, label, lang } = useI18n();
   const f = h.facts;
   if (h.retained.length === 0 || !f) return null;
-  const show = (v: string | undefined) =>
-    v === undefined || v === ''
-      ? t('emptyValue')
-      : v === 'unknown'
-        ? t('unknown')
-        : v === 'na'
-          ? t('na')
-          : v;
+  // A narrative preset is stored as its code; show its text, as the editor does.
+  const show = (path: string, v: string | undefined) => {
+    if (v === undefined || v === '') return t('emptyValue');
+    if (path.startsWith('narrative.')) return narrativeText(v, lang);
+    if (v === 'unknown') return t('unknown');
+    if (v === 'na') return t('na');
+    if (path.startsWith('presence.') && (v === 'present' || v === 'absent'))
+      return t(v);
+    return v;
+  };
   const name = (path: string) => {
     const [head, key = ''] = path.split('.');
     const item = day.items.find((i) => i.key === key);
@@ -97,6 +99,8 @@ function RetainedCard({
         return key === 'construction' || key === 'quality' || key === 'safety'
           ? t(key)
           : key;
+      case 'presence':
+        return `${t('presence')} · ${key}`;
       case 'weather':
       case 'temperature':
         return t(head);
@@ -112,8 +116,8 @@ function RetainedCard({
           <span className="grow small">
             <b>{name(r.path)}</b>{' '}
             {t('retainedLine', {
-              mine: show(r.mine),
-              now: show(leaf(f, r.path)),
+              mine: show(r.path, r.mine),
+              now: show(r.path, leaf(f, r.path)),
             })}
           </span>
           <button

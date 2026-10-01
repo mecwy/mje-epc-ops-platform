@@ -2008,6 +2008,7 @@ export const MESSAGES = {
     'Koristi moju trenutnu lokaciju',
     'Usar mi ubicación actual',
   ],
+  presence: ['出勤', 'Presence', 'Prisustvo', 'Asistencia'],
   present: ['在场', 'Present', 'Prisutan', 'Presente'],
   prevDay: ['前一天', 'Previous day', 'Prethodni dan', 'Día anterior'],
   progress: ['进度', 'Progress', 'Napredak', 'Avance'],
