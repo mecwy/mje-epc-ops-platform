@@ -12,6 +12,7 @@ const REPORT_MODULE = [
   'packages/domain/src/report-rules.ts',
   'packages/domain/src/reader-view.ts',
   'packages/domain/src/reader-view.test.ts',
+  'packages/domain/src/report-exit.test.ts',
   'packages/domain/src/index.ts',
 ];
 const exitOnly =

@@ -81,14 +81,25 @@ export const REPORT_PROJECTORS = [
 ] as const;
 export type ReportProjector = (typeof REPORT_PROJECTORS)[number];
 let observer: ((projector: ReportProjector) => void) | null = null;
-/** Test hook only: observes which projector served each read; null removes it. */
+/**
+ * Test hook only: observes which projector served each read; null removes it. Installing one
+ * outside a test process (NODE_ENV=test, as vitest and the TEST integration runners set) throws,
+ * and an observer can never fail or alter a read: its errors are ignored.
+ */
 export function observeReportProjections(
   next: ((projector: ReportProjector) => void) | null,
 ) {
+  if (next && process.env['NODE_ENV'] !== 'test')
+    throw new Error('observeReportProjections is test-only (NODE_ENV=test)');
   observer = next;
 }
 function projected<T>(projector: ReportProjector, value: T): T {
-  observer?.(projector);
+  if (observer)
+    try {
+      observer(projector);
+    } catch {
+      // A test observer never affects the read.
+    }
   return value;
 }
 
@@ -584,22 +595,27 @@ async function lagHistory(
  * `lagHistory` is the issue module's (ADR-0003 D8 table, replacing IssueStore.lag's direct read).
  */
 export const reportReader = {
+  /** Every call re-checks that `ctx` is still live (its transaction has not completed). */
   forContext(ctx: ReportReadContext) {
-    const opened = openReportReadContext(ctx);
+    const open = () => openReportReadContext(ctx);
     return {
-      projects: () => projects(opened),
-      days: (projectId: string, from: string, to: string) =>
-        days(opened, projectId, from, to),
-      day: (projectId: string, businessDate: string) =>
-        day(opened, projectId, businessDate),
-      revision: (projectId: string, businessDate: string, n: number) =>
-        revision(opened, projectId, businessDate, n),
-      plan: (projectId: string, targetBusinessDate: string) =>
-        plan(opened, projectId, targetBusinessDate),
-      items: (projectId: string) => items(opened, projectId),
+      projects: async () => projects(open()),
+      days: async (projectId: string, from: string, to: string) =>
+        days(open(), projectId, from, to),
+      day: async (projectId: string, businessDate: string) =>
+        day(open(), projectId, businessDate),
+      revision: async (projectId: string, businessDate: string, n: number) =>
+        revision(open(), projectId, businessDate, n),
+      plan: async (projectId: string, targetBusinessDate: string) =>
+        plan(open(), projectId, targetBusinessDate),
+      items: async (projectId: string) => items(open(), projectId),
     };
   },
-  lagHistory(
+  /**
+   * The issue module's lag history. It is the lag request's one project check (moved here from
+   * IssueStore.lag, which no longer checks itself), then the history reads.
+   */
+  async lagHistory(
     ctx: ReportReadContext,
     projectId: string,
     from: string,

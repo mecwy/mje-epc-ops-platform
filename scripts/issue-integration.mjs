@@ -11,7 +11,9 @@ import {
   IssueStore,
   ReportStore,
 } from '../packages/domain/dist/index.js';
-// Test hook of the report exit (ADR-0003 D2.2): which projector served a read.
+// Test hook of the report exit (ADR-0003 D2.2): which projector served a read. It installs only
+// in a test process; this runner is one.
+process.env.NODE_ENV = 'test';
 import { observeReportProjections } from '../packages/domain/dist/report-reader.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';

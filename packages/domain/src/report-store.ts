@@ -73,7 +73,7 @@ import {
   submittedPhotos,
 } from './photo-store.js';
 import {
-  reportReadContext,
+  withReportReadContext,
   type ReportReadContext,
 } from './report-read-context.js';
 
@@ -141,7 +141,7 @@ export class ReportStore {
     use: (ctx: ReportReadContext) => Promise<T>,
   ): Promise<T> {
     return this.transaction(identity, (client, actor) =>
-      use(reportReadContext(client, actor)),
+      withReportReadContext(client, actor, use),
     );
   }
   private writer(client: PoolClient, actor: Actor, projectId: string) {

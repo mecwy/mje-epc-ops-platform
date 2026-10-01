@@ -6,40 +6,49 @@
  */
 
 export type ModuleName =
-  'platform' | 'alpha' | 'report' | 'issue' | 'photo' | 'field';
+  | 'platform'
+  | 'authz'
+  | 'alpha'
+  | 'report'
+  | 'issue'
+  | 'photo'
+  | 'field'
+  | 'apps';
 
 export interface ModuleSpec {
-  /** Files under packages/domain/src (non-test) that belong to the module. */
+  /** Repository-relative source files (non-test) that belong to the module. */
   files: string[];
+  /** Repository-relative directories whose every (non-test) source belongs to the module. */
+  dirs?: string[];
   /** Tables the module owns (Prisma model names). */
   tables: string[];
 }
 
-/**
- * Identity and tenancy kernel: read by every module through store-kit and the stores
- * (organisation, account, person, membership, project, idempotency and audit). Not business
- * data of any module, so not subject to the cross-module rule.
- */
-export const SHARED_TABLES = [
-  'Organization',
-  'LoginAccount',
-  'Person',
-  'Membership',
-  'Project',
-  'IdempotencyRecord',
-  'AuditLog',
-] as const;
-
+const D = 'packages/domain/src/';
 export const MODULES: Record<ModuleName, ModuleSpec> = {
-  platform: { files: ['store-kit.ts', 'image-bytes.ts'], tables: [] },
-  alpha: { files: ['alpha-store.ts'], tables: ['AlphaDraft'] },
+  /** Identity, tenancy, idempotency and audit plumbing (store-kit) and the package barrel. */
+  platform: {
+    files: [`${D}store-kit.ts`, `${D}image-bytes.ts`, `${D}index.ts`],
+    tables: [
+      'Organization',
+      'LoginAccount',
+      'Person',
+      'Membership',
+      'Project',
+      'IdempotencyRecord',
+      'AuditLog',
+    ],
+  },
+  /** The rule model (no SQL). */
+  authz: { files: [], dirs: [`${D}authz/`], tables: [] },
+  alpha: { files: [`${D}alpha-store.ts`], tables: ['AlphaDraft'] },
   report: {
     files: [
-      'report-store.ts',
-      'report-reader.ts',
-      'report-read-context.ts',
-      'report-rules.ts',
-      'reader-view.ts',
+      `${D}report-store.ts`,
+      `${D}report-reader.ts`,
+      `${D}report-read-context.ts`,
+      `${D}report-rules.ts`,
+      `${D}reader-view.ts`,
     ],
     tables: [
       'DailyClose',
@@ -52,23 +61,23 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
     ],
   },
   issue: {
-    files: ['issue-store.ts'],
+    files: [`${D}issue-store.ts`],
     tables: ['Issue', 'IssueNote', 'IssueTransition', 'LagDismissal'],
   },
   photo: {
-    files: ['photo-store.ts', 'photo-file.ts', 'photo-strip.ts'],
+    files: [`${D}photo-store.ts`, `${D}photo-file.ts`, `${D}photo-strip.ts`],
     tables: ['PhotoEvidence', 'EvidenceLink'],
   },
   /** A6 field module: roster, devices, check-ins and foreman reports. */
   field: {
     files: [
-      'field-store.ts',
-      'field-kit.ts',
-      'field-roster.ts',
-      'field-rules.ts',
-      'checkin-store.ts',
-      'checkin-rules.ts',
-      'foreman-store.ts',
+      `${D}field-store.ts`,
+      `${D}field-kit.ts`,
+      `${D}field-roster.ts`,
+      `${D}field-rules.ts`,
+      `${D}checkin-store.ts`,
+      `${D}checkin-rules.ts`,
+      `${D}foreman-store.ts`,
     ],
     tables: [
       'Crew',
@@ -93,7 +102,62 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'ForemanAdoption',
     ],
   },
+  /** HTTP and process entries: no SQL of their own. */
+  apps: { files: [], dirs: ['apps/api/src/', 'apps/worker/src/'], tables: [] },
 };
+
+export type SqlOperation = 'read' | 'write';
+/**
+ * Platform tables used outside store-kit, per file, table and operation, as they exist today.
+ * Not a blanket exemption: any other use fails the scan, and an entry no longer used fails too.
+ * Identity, tenancy, idempotency and audit belong behind store-kit / field-kit; the direct uses
+ * below are the current exceptions.
+ */
+export const KERNEL_USES: readonly {
+  file: string;
+  table: string;
+  op: SqlOperation;
+}[] = [
+  // Alpha slice: its own copy of the identity, idempotency and audit plumbing.
+  { file: `${D}alpha-store.ts`, table: 'LoginAccount', op: 'read' },
+  { file: `${D}alpha-store.ts`, table: 'Membership', op: 'read' },
+  { file: `${D}alpha-store.ts`, table: 'Project', op: 'read' },
+  { file: `${D}alpha-store.ts`, table: 'IdempotencyRecord', op: 'read' },
+  { file: `${D}alpha-store.ts`, table: 'IdempotencyRecord', op: 'write' },
+  { file: `${D}alpha-store.ts`, table: 'AuditLog', op: 'write' },
+  // Field kit: device idempotency (keyed by device, not account).
+  { file: `${D}field-kit.ts`, table: 'IdempotencyRecord', op: 'read' },
+  { file: `${D}field-kit.ts`, table: 'IdempotencyRecord', op: 'write' },
+  // Check-in audit rows carry the device actor, which store-kit audit() cannot express.
+  { file: `${D}checkin-store.ts`, table: 'AuditLog', op: 'write' },
+  // Project and person reads, per module.
+  { file: `${D}report-reader.ts`, table: 'Project', op: 'read' },
+  { file: `${D}report-reader.ts`, table: 'Membership', op: 'read' },
+  { file: `${D}checkin-store.ts`, table: 'Project', op: 'read' },
+  { file: `${D}checkin-store.ts`, table: 'Person', op: 'read' },
+  { file: `${D}field-store.ts`, table: 'Project', op: 'read' },
+  { file: `${D}field-store.ts`, table: 'Person', op: 'read' },
+  { file: `${D}field-roster.ts`, table: 'Person', op: 'read' },
+  { file: `${D}foreman-store.ts`, table: 'Project', op: 'read' },
+];
+
+/**
+ * SQL whose table is a typed parameter rather than a literal; the scan accepts exactly this many
+ * unresolved table positions in the file, and only tables of the file's own module are listed.
+ */
+export const DYNAMIC_TABLES: readonly {
+  file: string;
+  site: string;
+  tables: string[];
+  occurrences: number;
+}[] = [
+  {
+    file: `${D}checkin-store.ts`,
+    site: 'CheckInStore.numbered (table: ProjectSiteReference | ProjectFieldSetting)',
+    tables: ['ProjectSiteReference', 'ProjectFieldSetting'],
+    occurrences: 1,
+  },
+];
 
 export interface LegacyAdapter {
   /** File under packages/domain/src. */
@@ -109,103 +173,102 @@ export interface LegacyAdapter {
   removal: string;
 }
 
-const MOVE =
-  'A7-0 module move of report/, issue/, photo/ (ADR-0003 D2.1; slice id to be assigned)';
-const FIELD_EXIT =
-  'field module exit (A6 stores keep their exports, ADR-0003 §4; slice id to be assigned)';
+/** Remaining cross-module reads: replaced by module exits (PM: A7-0e). */
+const READS = 'A7-0e';
+/** Cross-module writes (PM decision). */
+const WRITES = 'A7-0d';
 
 export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
   {
-    file: 'issue-store.ts',
+    file: `${D}issue-store.ts`,
     site: 'IssueStore.assertWorkItem',
     table: 'ReportItem',
     access: 'read',
     why: 'an issue may name an active work item of its project',
     replacement: 'reportReader work-item lookup (master data)',
-    removal: MOVE,
+    removal: READS,
   },
   {
-    file: 'photo-store.ts',
+    file: `${D}photo-store.ts`,
     site: 'latestFrozen / isFrozen / latestFrozenAs / upload',
     table: 'DailyClose',
     access: 'read',
     why: 'which photos a submission froze; whether a day is open for upload',
     replacement: 'reportReader frozen-photo and day-state lookups',
-    removal: MOVE,
+    removal: READS,
   },
   {
-    file: 'photo-store.ts',
+    file: `${D}photo-store.ts`,
     site: 'latestFrozen / isFrozen / latestFrozenAs',
     table: 'Revision',
     access: 'read',
     why: 'the photos frozen in the latest submitted revision',
     replacement: 'reportReader frozen-photo lookup',
-    removal: MOVE,
+    removal: READS,
   },
   {
-    file: 'photo-store.ts',
+    file: `${D}photo-store.ts`,
     site: 'PhotoStore.assertTarget',
     table: 'Issue',
     access: 'read',
     why: 'a photo may be linked to an issue of its project',
     replacement: 'issueReader target lookup',
-    removal: MOVE,
+    removal: READS,
   },
   {
-    file: 'photo-store.ts',
+    file: `${D}photo-store.ts`,
     site: 'activeWorkItems / PhotoStore.assertTarget',
     table: 'ReportItem',
     access: 'read',
     why: 'a photo may be linked to an active work item',
     replacement: 'reportReader work-item lookup (master data)',
-    removal: MOVE,
+    removal: READS,
   },
   {
-    file: 'checkin-store.ts',
+    file: `${D}checkin-store.ts`,
     site: 'submittedBoundary',
     table: 'DailyClose',
     access: 'read',
     why: 'the field sequence boundary frozen by the latest submission',
     replacement: 'reportReader submitted-boundary lookup',
-    removal: FIELD_EXIT,
+    removal: READS,
   },
   {
-    file: 'checkin-store.ts',
+    file: `${D}checkin-store.ts`,
     site: 'submittedBoundary',
     table: 'Revision',
     access: 'read',
     why: 'the field sequence boundary frozen by the latest submission',
     replacement: 'reportReader submitted-boundary lookup',
-    removal: FIELD_EXIT,
+    removal: READS,
   },
   {
-    file: 'foreman-store.ts',
+    file: `${D}foreman-store.ts`,
     site: 'ForemanStore.workItems',
     table: 'ReportItem',
     access: 'read',
     why: 'the active work items a foreman may report',
     replacement: 'reportReader work-item lookup (master data)',
-    removal: FIELD_EXIT,
+    removal: READS,
   },
   {
-    file: 'report-store.ts',
+    file: `${D}report-store.ts`,
     site: 'ReportStore.adoptForeman',
     table: 'ForemanAdoption',
     access: 'write',
     why: 'adopting a foreman total records the adoption beside the facts (A6c)',
     replacement: 'field module command (foreman adoption record)',
-    removal: FIELD_EXIT,
+    removal: WRITES,
   },
   ...(['DailyClose', 'Revision', 'RevisionEvent'] as const).map(
     (table): LegacyAdapter => ({
-      file: 'alpha-store.ts',
+      file: `${D}alpha-store.ts`,
       site: 'AlphaStore (list / get / save)',
       table,
       access: 'write',
       why: 'the Alpha site-day slice stores its days in the report day tables under its own scopeKey',
-      replacement:
-        'none planned: retire the Alpha slice or give it its own tables',
-      removal: 'Alpha slice retirement (not scheduled; open question)',
+      replacement: 'retire the Alpha slice or give it its own tables',
+      removal: WRITES,
     }),
   ),
 ];

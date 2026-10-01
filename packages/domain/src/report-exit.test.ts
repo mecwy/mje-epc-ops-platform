@@ -1,0 +1,225 @@
+/**
+ * The report module exit under a recording fake pg pool (no database): the lag request's query
+ * sequence equals the one before the exit existed (one authorization, then history), a
+ * revocation committed between reads cannot meet a second authorization, and a read context
+ * lives only inside its transaction (ADR-0003 D2, D5; PR #51 review 1 and 3).
+ */
+import { describe, expect, it } from 'vitest';
+import type { Pool } from 'pg';
+import { IssueStore } from './issue-store.js';
+import { ReportStore } from './report-store.js';
+import {
+  observeReportProjections,
+  reportReader,
+  type ReportReadContext,
+} from './report-reader.js';
+
+const ORG = '11111111-1111-4111-8111-111111111111';
+const PROJECT = '22222222-2222-4222-8222-222222222222';
+const identity = { tenantId: 'TEST-tenant', objectId: 'TEST-object' };
+
+/** What each statement is about: its first quoted table, or its leading keyword. */
+function label(text: string): string {
+  const table = /"([A-Z]\w+)"/.exec(text)?.[1];
+  if (/^\s*SELECT set_config/.test(text)) return 'set_config';
+  return table ?? text.trim().split(/\s+/).slice(0, 2).join(' ');
+}
+interface Fake {
+  pool: Pool;
+  log: string[];
+  released: () => boolean;
+  /** Revokes the membership: later Membership reads return no row. */
+  revoke: () => void;
+}
+function fakePool(): Fake {
+  const log: string[] = [];
+  let revoked = false;
+  let released = false;
+  const answer = (text: string) => {
+    if (released) throw new Error('TEST: query on a released client');
+    const l = label(text);
+    log.push(l);
+    switch (l) {
+      case 'LoginAccount':
+        return [
+          { orgId: ORG, accountId: 'TEST-account', personId: 'TEST-person' },
+        ];
+      case 'Membership':
+        return revoked
+          ? []
+          : [{ role: 'EXECUTIVE_READER', projectId: PROJECT }];
+      case 'Project':
+        return [
+          {
+            id: PROJECT,
+            name: 'TEST',
+            code: 'TEST',
+            timezone: 'Europe/Berlin',
+          },
+        ];
+      case 'DailyClose':
+        return ['2026-10-03', '2026-10-04', '2026-10-05'].map(
+          (businessDate) => ({
+            businessDate,
+            qty: { support: '10' },
+          }),
+        );
+      case 'PlanVersion':
+        return ['2026-10-03', '2026-10-04', '2026-10-05'].map((target) => ({
+          target,
+          number: 1,
+          rows: [{ item: 'support', target: '100' }],
+          confirmedAt: new Date('2026-10-01T00:00:00Z'),
+        }));
+      case 'ReportItem':
+        return [];
+      default:
+        return [];
+    }
+  };
+  const client = {
+    query: async (text: string) => {
+      const rows = answer(text);
+      return { rows, rowCount: rows.length };
+    },
+    release: () => {
+      released = true;
+    },
+  };
+  const pool = {
+    connect: async () => {
+      released = false;
+      return client;
+    },
+  } as unknown as Pool;
+  return {
+    pool,
+    log,
+    released: () => released,
+    revoke: () => (revoked = true),
+  };
+}
+
+/** The lag request as it ran before the report exit (a638003, IssueStore.lag). */
+const LAG_BEFORE_EXIT = [
+  'BEGIN',
+  'SET LOCAL',
+  'set_config',
+  'LoginAccount',
+  'set_config',
+  'Membership',
+  'Project',
+  'DailyClose',
+  'PlanVersion',
+  'Issue',
+  'LagDismissal',
+  'COMMIT',
+];
+
+describe('lag through reportReader.lagHistory', () => {
+  it('runs the pre-exit query sequence: one authorization, then history', async () => {
+    const fake = fakePool();
+    const result = await new IssueStore(fake.pool).lag(
+      identity,
+      PROJECT,
+      '2026-10-05',
+    );
+    expect(fake.log).toEqual(LAG_BEFORE_EXIT);
+    expect(result.suggestions).toEqual([{ workItemKey: 'support' }]);
+  });
+  it('a revocation committed after the authorization meets no second check (same outcome as before the exit)', async () => {
+    const fake = fakePool();
+    const pool = fake.pool;
+    const connect = pool.connect.bind(pool);
+    // Revoke as soon as the one authorization has read the membership.
+    (pool as unknown as { connect: () => Promise<unknown> }).connect =
+      async () => {
+        const client = (await connect()) as {
+          query: (t: string) => Promise<unknown>;
+        };
+        const query = client.query;
+        client.query = async (text: string) => {
+          const r = await query(text);
+          if (label(text) === 'Membership') fake.revoke();
+          return r;
+        };
+        return client;
+      };
+    const result = await new IssueStore(pool).lag(
+      identity,
+      PROJECT,
+      '2026-10-05',
+    );
+    expect(result.suggestions).toEqual([{ workItemKey: 'support' }]);
+    expect(fake.log.filter((l) => l === 'Membership')).toHaveLength(1);
+  });
+});
+
+describe('report read context lives only inside its transaction', () => {
+  it('a context or view captured inside read() is refused after it returns, without touching the released client', async () => {
+    const fake = fakePool();
+    const store = new ReportStore(fake.pool);
+    let captured: ReportReadContext | undefined;
+    let view: ReturnType<typeof reportReader.forContext> | undefined;
+    await store.read(identity, async (ctx) => {
+      captured = ctx;
+      view = reportReader.forContext(ctx);
+      return view.items(PROJECT);
+    });
+    expect(fake.released()).toBe(true);
+    const queries = fake.log.length;
+    await expect(view!.items(PROJECT)).rejects.toThrow(
+      'REPORT_READ_CONTEXT_CLOSED',
+    );
+    await expect(reportReader.forContext(captured!).projects()).rejects.toThrow(
+      'REPORT_READ_CONTEXT_CLOSED',
+    );
+    await expect(
+      reportReader.lagHistory(captured!, PROJECT, '2026-10-03', '2026-10-05'),
+    ).rejects.toThrow('REPORT_READ_CONTEXT_CLOSED');
+    expect(fake.log.length).toBe(queries);
+  });
+  it('a forged or copied context is refused; no client or actor is recoverable from it', async () => {
+    const fake = fakePool();
+    const store = new ReportStore(fake.pool);
+    await store.read(identity, async (ctx) => {
+      expect(Object.getOwnPropertySymbols(ctx)).toEqual([]);
+      expect(Object.getOwnPropertyNames(ctx)).toEqual([]);
+      const copy = { ...ctx } as ReportReadContext;
+      await expect(reportReader.forContext(copy).projects()).rejects.toThrow(
+        'REPORT_READ_CONTEXT_CLOSED',
+      );
+      return null;
+    });
+    const forged = {} as ReportReadContext;
+    await expect(
+      reportReader.forContext(forged).items(PROJECT),
+    ).rejects.toThrow('REPORT_READ_CONTEXT_CLOSED');
+  });
+});
+
+describe('projection observer (test hook)', () => {
+  it('cannot be installed outside a test process', () => {
+    const env = process.env['NODE_ENV'];
+    process.env['NODE_ENV'] = 'production';
+    try {
+      expect(() => observeReportProjections(() => {})).toThrow('test-only');
+    } finally {
+      process.env['NODE_ENV'] = env;
+    }
+  });
+  it('a throwing observer never fails the read', async () => {
+    const fake = fakePool();
+    observeReportProjections(() => {
+      throw new Error('TEST observer');
+    });
+    try {
+      const items = await new ReportStore(fake.pool).read(identity, (ctx) =>
+        reportReader.forContext(ctx).items(PROJECT),
+      );
+      expect(items).toEqual([]);
+    } finally {
+      observeReportProjections(null);
+    }
+  });
+});

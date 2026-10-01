@@ -29,7 +29,7 @@ import {
   type Actor,
 } from './store-kit.js';
 import { reportReader } from './report-reader.js';
-import { reportReadContext } from './report-read-context.js';
+import { withReportReadContext } from './report-read-context.js';
 
 /**
  * Issues and escalation (U2.1 rule 10, 14; rule 1 through the report snapshot). An issue is a
@@ -388,14 +388,13 @@ export class IssueStore {
    */
   async lag(identity: Identity, projectId: string, businessDate: string) {
     return inTransaction(this.pool, identity, async (client, actor) => {
-      await projectAccess(client, actor, projectId);
       const from = shiftDate(businessDate, -2);
-      // Submitted days and confirmed plans come from the report module exit (ADR-0003 D2).
-      const history: LagDay[] = await reportReader.lagHistory(
-        reportReadContext(client, actor),
-        projectId,
-        from,
-        businessDate,
+      // The project check and the submitted days and confirmed plans come from the report
+      // module exit (ADR-0003 D2): one authorization, then history, as before the exit.
+      const history: LagDay[] = await withReportReadContext(
+        client,
+        actor,
+        (ctx) => reportReader.lagHistory(ctx, projectId, from, businessDate),
       );
       // The reminder is about the requested day; without its submission there is nothing to say.
       if (!history.some((d) => d.businessDate === businessDate))
