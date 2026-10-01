@@ -1,0 +1,13 @@
+# A7-0e: Alpha read exits within one statement snapshot
+
+Alpha list/record originally join report-owned DailyClose with Alpha-owned AlphaDraft. A second query at READ COMMITTED could combine a header from before a concurrent save with content from after it. Moving the join wholesale into report would introduce another cross-module table read.
+
+The additive migration defines two Alpha-owned scalar SQL exits: `alpha_draft_exists(orgId, recordId)` and `alpha_draft_content(orgId, recordId)`. They read only AlphaDraft; its unique organization/day key makes presence equivalent to the original join. The report-owned list/record queries call them within their original outer statement. `STABLE` uses that statement snapshot, including prior writes by the caller; it is not IMMUTABLE or VOLATILE. See [PostgreSQL17 function volatility](https://www.postgresql.org/docs/17/xfunc-volatility.html).
+
+Both functions are SECURITY INVOKER with a fixed search_path and schema-qualified source. Existing table privileges and tenant RLS apply. PUBLIC execute is revoked; only the existing application group is granted execute. There is no new role, authorization grant, data rewrite, dynamic SQL or SECURITY DEFINER privilege. These are internal facts, not public reader projections; no package barrel export is added.
+
+Report retains header/status, history and saved timestamp SQL and the supplied caller client. Alpha retains admission, project checks, error mapping and draft writes. Existing alpha:<recordId> creation, list presence, sorting/200 limit, version status, missing-record error, JSON-null content, immutable history and post-save timestamp semantics remain unchanged. No new scope predicate changes the legacy query result.
+
+A local synthetic integration gate inserts an advisory wait into the actual record query only in the test client proxy. The statement starts before a competing header/content commit. Correct original join and STABLE exits must return consistent pre-commit facts; a private VOLATILE function mutation must fail. Existing Alpha HTTP/DB tests cover version conflicts, correction ancestry, RLS and restore. Function metadata/privileges and caller-write visibility are checked separately.
+
+This is an additive database migration despite A7-0e's expected code-only work, required to retain atomicity without a cross-module table exception. Apply migrations before running the new code. Roll back by using the preceding compatible code/image while retaining the functions, migrations, records, versions, audit and Blob data. No function/table drop or database reset is part of application rollback. Azure deployment/login is outside this slice.

@@ -290,7 +290,8 @@ async function latestFrozen(
   businessDate: string,
 ): Promise<PhotoAsOfDto[]> {
   return reportFrozenPhotos(client, orgId, projectId, businessDate);
-} /** Whether a photo is frozen in any submitted revision of a report day of the project (OD18). */
+}
+/** Whether a photo is frozen in any submitted revision of a report day of the project (OD18). */
 async function isFrozen(
   client: PoolClient,
   orgId: string,
@@ -298,7 +299,8 @@ async function isFrozen(
   photoId: string,
 ): Promise<boolean> {
   return reportPhotoWasFrozen(client, orgId, projectId, photoId);
-} /** The photo as the latest submitted revision that froze it has it; null if none did. */
+}
+/** The photo as the latest submitted revision that froze it has it; null if none did. */
 async function latestFrozenAs(
   client: PoolClient,
   orgId: string,
@@ -306,7 +308,8 @@ async function latestFrozenAs(
   photoId: string,
 ): Promise<PhotoAsOfDto | null> {
   return latestReportFrozenPhoto(client, orgId, projectId, photoId);
-} /** What a submission freezes of a photo: source, position kind, times and the current link. */
+}
+/** What a submission freezes of a photo: source, position kind, times and the current link. */
 export function photoAsOf(p: PhotoDto): PhotoAsOfDto {
   return {
     id: p.id,

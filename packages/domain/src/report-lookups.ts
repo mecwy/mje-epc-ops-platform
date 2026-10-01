@@ -49,6 +49,7 @@ export async function activeWorkItemCatalog(
   return r.rows;
 }
 
+/** Photos in the current submitted report revision, or an empty list. */
 export async function reportFrozenPhotos(
   client: PoolClient,
   orgId: string,
@@ -64,6 +65,7 @@ export async function reportFrozenPhotos(
   return r.rows[0]?.photos ?? [];
 }
 
+/** Whether any submitted report revision froze this photo (historical immutability). */
 export async function reportPhotoWasFrozen(
   client: PoolClient,
   orgId: string,
@@ -79,6 +81,7 @@ export async function reportPhotoWasFrozen(
   return r.rows[0]!.frozen;
 }
 
+/** The latest submitted snapshot of this photo, or null if no revision froze it. */
 export async function latestReportFrozenPhoto(
   client: PoolClient,
   orgId: string,
@@ -130,4 +133,75 @@ export async function reportSubmittedBoundary(
   );
   const b = r.rows[0]?.boundary;
   return b === undefined || b === null ? null : Number(b);
+}
+
+/** Alpha's original header shape; internal facts, not a public reader projection. */
+interface AlphaRecordFact {
+  id: string;
+  projectId: string;
+  businessDate: string;
+  siteTimezone: string;
+  version: number;
+  currentRevisionNumber: number;
+  updatedAt: Date;
+  content: unknown;
+}
+
+/** The Alpha-owned scalar exit keeps presence in this statement's MVCC snapshot. */
+export async function alphaRecordList(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+) {
+  const result = await client.query(
+    `SELECT d.id, d."businessDate"::text, d.version, d."currentRevisionNumber", d."updatedAt",
+    CASE WHEN EXISTS (SELECT 1 FROM "Revision" r WHERE r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND (r.snapshot->>'aggregateVersion')::integer=d.version) THEN 'SAVED_PENDING_REVIEW' ELSE 'DRAFT' END AS status
+    FROM "DailyClose" d
+    WHERE d."orgId"=$1 AND d."projectId"=$2 AND public.alpha_draft_exists(d."orgId", d.id)
+    ORDER BY d."businessDate" DESC, d."updatedAt" DESC LIMIT 200`,
+    [orgId, projectId],
+  );
+  return result.rows;
+}
+
+/** Header and Alpha-owned content use one statement snapshot, including caller writes. */
+export async function alphaRecordFact(
+  client: PoolClient,
+  orgId: string,
+  recordId: string,
+): Promise<AlphaRecordFact | undefined> {
+  const result = await client.query<AlphaRecordFact>(
+    `SELECT d.id, d."projectId", d."businessDate"::text, d."siteTimezone", d.version,
+    d."currentRevisionNumber", d."updatedAt", public.alpha_draft_content(d."orgId", d.id) AS content FROM "DailyClose" d
+    WHERE d."orgId"=$1 AND d.id=$2 AND public.alpha_draft_exists(d."orgId", d.id)`,
+    [orgId, recordId],
+  );
+  return result.rows[0];
+}
+
+/** Original Alpha immutable history order; the caller checks its project before this call. */
+export async function alphaRecordRevisions(
+  client: PoolClient,
+  orgId: string,
+  recordId: string,
+) {
+  const revisions = await client.query(
+    `SELECT id, "revisionNumber", "baseRevisionNumber", reason, "createdAt", snapshot
+        FROM "Revision" WHERE "orgId"=$1 AND "dailyCloseId"=$2 ORDER BY "revisionNumber"`,
+    [orgId, recordId],
+  );
+  return revisions.rows;
+}
+
+/** Original post-save timestamp read on the saving transaction. */
+export async function alphaRecordSavedAt(
+  client: PoolClient,
+  orgId: string,
+  recordId: string,
+): Promise<Date> {
+  const timestamps = await client.query<{ savedAt: Date }>(
+    'SELECT "updatedAt" AS "savedAt" FROM "DailyClose" WHERE "orgId"=$1 AND id=$2',
+    [orgId, recordId],
+  );
+  return timestamps.rows[0]!.savedAt;
 }

@@ -30,6 +30,7 @@ jobs:
       - run: pnpm db:migrate
       - run: pnpm test:integration
       - run: pnpm test:alpha
+      - run: pnpm test:alpha-lookups
       - run: pnpm test:report
       - run: pnpm test:issues
       - run: pnpm test:photos

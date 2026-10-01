@@ -1,3 +1,9 @@
+import {
+  alphaRecordList,
+  alphaRecordFact,
+  alphaRecordRevisions,
+  alphaRecordSavedAt,
+} from './report-lookups.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { SaveAlphaCommand } from '@mje/contracts';
@@ -105,14 +111,7 @@ export class AlphaStore {
   async list(identity: Identity, projectId: string) {
     return this.transaction(identity, async (client, actor) => {
       await this.project(client, actor, projectId);
-      const result = await client.query(
-        `SELECT d.id, d."businessDate"::text, d.version, d."currentRevisionNumber", d."updatedAt",
-        CASE WHEN EXISTS (SELECT 1 FROM "Revision" r WHERE r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND (r.snapshot->>'aggregateVersion')::integer=d.version) THEN 'SAVED_PENDING_REVIEW' ELSE 'DRAFT' END AS status
-        FROM "DailyClose" d JOIN "AlphaDraft" a ON a."orgId"=d."orgId" AND a."dailyCloseId"=d.id
-        WHERE d."orgId"=$1 AND d."projectId"=$2 ORDER BY d."businessDate" DESC, d."updatedAt" DESC LIMIT 200`,
-        [actor.orgId, projectId],
-      );
-      return result.rows;
+      return alphaRecordList(client, actor.orgId, projectId);
     });
   }
 
@@ -121,26 +120,21 @@ export class AlphaStore {
     actor: Actor,
     recordId: string,
   ): Promise<RecordRow> {
-    const result = await client.query<RecordRow>(
-      `SELECT d.id, d."projectId", d."businessDate"::text, d."siteTimezone", d.version,
-      d."currentRevisionNumber", d."updatedAt", a.content FROM "DailyClose" d
-      JOIN "AlphaDraft" a ON a."orgId"=d."orgId" AND a."dailyCloseId"=d.id WHERE d."orgId"=$1 AND d.id=$2`,
-      [actor.orgId, recordId],
-    );
-    if (!result.rows[0]) throw new AlphaError('NOT_FOUND');
-    return result.rows[0];
+    const record = await alphaRecordFact(client, actor.orgId, recordId);
+    if (!record) throw new AlphaError('NOT_FOUND');
+    return record;
   }
 
   async get(identity: Identity, recordId: string) {
     return this.transaction(identity, async (client, actor) => {
       const record = await this.record(client, actor, recordId);
       await this.project(client, actor, record.projectId);
-      const revisions = await client.query(
-        `SELECT id, "revisionNumber", "baseRevisionNumber", reason, "createdAt", snapshot
-        FROM "Revision" WHERE "orgId"=$1 AND "dailyCloseId"=$2 ORDER BY "revisionNumber"`,
-        [actor.orgId, recordId],
+      const revisions = await alphaRecordRevisions(
+        client,
+        actor.orgId,
+        recordId,
       );
-      return { ...record, revisions: revisions.rows };
+      return { ...record, revisions };
     });
   }
 
@@ -272,9 +266,10 @@ export class AlphaStore {
           revisionNumber,
         );
       }
-      const timestamps = await client.query<{ savedAt: Date }>(
-        'SELECT "updatedAt" AS "savedAt" FROM "DailyClose" WHERE "orgId"=$1 AND id=$2',
-        [actor.orgId, command.recordId],
+      const savedAt = await alphaRecordSavedAt(
+        client,
+        actor.orgId,
+        command.recordId,
       );
       const response = {
         recordId: command.recordId,
@@ -282,7 +277,7 @@ export class AlphaStore {
         revisionNumber,
         status:
           command.action === 'SAVE_VERSION' ? 'SAVED_PENDING_REVIEW' : 'DRAFT',
-        savedAt: timestamps.rows[0]!.savedAt.toISOString(),
+        savedAt: savedAt.toISOString(),
       };
       await client.query(
         `INSERT INTO "AuditLog"(id,"orgId","updatedAt","updatedBy","actorAccountId","actorPersonId","actorKind","entityType","entityId","entityVersion",action,reason,before,after,"correlationId")
