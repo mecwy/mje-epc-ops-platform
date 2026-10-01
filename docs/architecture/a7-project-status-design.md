@@ -1,6 +1,6 @@
 # A7 设计：项目状态管理与多项目首页
 
-状态：**设计 r3，候选**（Codex 第 1、2 轮 REQUEST CHANGES 后修订；预算 3 轮；通过后按 §10 切片实现）。本文件没有应用代码、迁移或契约；示例全部是合成 TEST 数据。代码行号按 `main@155b004`。
+状态：**设计 r3.1，候选**（Codex 第 1–3 轮 REQUEST CHANGES 后修订；r3.1 只改切片依赖与测试归属；预算 3 轮；通过后按 §10 切片实现）。本文件没有应用代码、迁移或契约；示例全部是合成 TEST 数据。代码行号按 `main@155b004`。
 
 依据：OD17（界面已由 Owner 确认，规则 1–7）、OD18（只读账号看不到未提交日报）、OD22 C14 / C19 / C20（DG-08 对 A7 的数据契约要求）、执行计划 r2 的 A7 行、U2.1 §2 / §4 / §5、ADR-0003（候选 r3.1）D8.1 首个切片。画布 v12 四板（电脑多项目首页、项目概况、手机多项目首页、项目经理每周状态更新）为界面依据，本文件只写服务端规则、数据与切片。
 
@@ -38,6 +38,7 @@
 | D9  | 节点预计延后：本轮**只算主工作项的预计完成日**（一个数），不把该视界套到每个节点；节点与数量的关系未建模，按节点预测待 Owner 确认后另做                                                                                                                                              | Owner | A7-2b 前确认（只影响范围）                   |
 | D10 | 代岗：本轮只有本项目 PROJECT_MANAGER 可声明（政策 P3：代岗须显式授权，触发条件出现再设计）                                                                                                                                                                                           | Owner | —                                            |
 | D11 | 事件时刻：应报期间版本的 `registeredAt` = 取得 `Project` 行锁之后的 `clock_timestamp()`（插入时刻，锁等待跨午夜按实际插入算）；日报“提交时刻”沿用现 `Revision.submittedAt = now()`（提交事务开始时刻，`report-store.ts:830–831`，即服务端受理提交的时刻），缺报判定按它与 `T_d` 比较 | PM    | A7-1b 前确认                                 |
+| D12 | 状态转换不设限制：四种状态之间任意转换、同状态再次声明都接受（OD17 规则 1 只规定由经理声明与更新频率，未规定转换规则）                                                                                                                                                               | Owner | A7-1a 前确认                                 |
 
 ## 1. 对象与数据（一次追加迁移；每表 `orgId`；复合租户外键；RLS `alpha_org`；只追加表加触发器）
 
@@ -120,26 +121,27 @@
 
 ## 8. 负向测试（集成，TEST 库；权限测试以 `mje_alpha_app` 执行，触发器测试以受控 TEST 角色执行；走 HTTP）
 
-1. 只读账号：`POST status / primary-work-item / reporting-expectation` → `READ_ONLY`；`POST notes` 成功。
-2. 有风险 / 已偏离缺任一必填、暂停缺情况、正常勾支持、日期与“未知”同时给或都不给 → `STATUS_FIELDS_REQUIRED` + 字段名，无行写入、无审计。
+1. 只读账号：(1a) `POST status` → `READ_ONLY`，`POST notes` 成功；(1b) `POST primary-work-item / reporting-expectation` → `READ_ONLY`。
+2. 有风险 / 已偏离缺任一必填、暂停缺情况、正常勾支持；有风险 / 已偏离 / 暂停的日期与“未知”同时给或都不给；正常带日期或“未知” → `STATUS_FIELDS_REQUIRED` + 字段名，无行写入、无审计。正向夹具：正常、无日期、`expectedRecoveryUnknown=false`、`situation` 空 → 接受。
 3. 并发：两个声明同 `expectedN` → 一成功一冲突；冲突响应只含 `code` + `correlationId`。
-4. 权限：`mje_alpha_app` 对三张只追加表 `UPDATE / DELETE` 被权限拒绝；对 `Project` 非授权列（如 `code`、`timezone`）UPDATE 被拒。触发器：受控 TEST 角色（有 UPDATE / DELETE 权限）对三张表 UPDATE / DELETE 被触发器拒绝。
-5. 过期：声明业务日 8 天前 → `stale=true, staleDays=8`；7 天 → `false`；声明在工地午夜前后一分钟各一例；夏令时切换日一例。同状态再次声明（`NORMAL → NORMAL`）与任意两状态之间的转换都被接受（不设转换限制，是决定不是遗漏）。
+4. 权限：(4a) `mje_alpha_app` 对状态两表 `UPDATE / DELETE` 被权限拒绝；`Project` 行锁（`FOR UPDATE`）以 `mje_alpha_app` 成功，`UPDATE "Project" SET code=…` 被拒；触发器：受控 TEST 角色对状态两表 UPDATE / DELETE 被触发器拒绝。(4b) 同样覆盖应报期间版本表，以及 `Project` 新授权列可更新、其余列（`code`、`timezone`）被拒。
+5. (5a) 同状态再次声明（`NORMAL → NORMAL`）与任意两状态之间的转换都被接受（D12）。(5b) 过期（D5）：声明业务日 8 天前 → `stale=true, staleDays=8`；7 天 → `false`；声明在工地午夜前后一分钟各一例；夏令时切换日一例。
 6. 提示与声明并列：声明“正常”+ 连续 3 天低于基准 → 卡片同时有 `status=NORMAL` 与 `hints=[belowBaseline]`，排序仍在正常组。
 7. 他组织：首页不列、`/projects/:id/*` → `NOT_FOUND`。
 8. OD18 全路径：只读账号对一个有草稿的项目——首页卡片近 7 天格、缺报提示、`/days`、`/attention` 均不含草稿存在的任何迹象（与无记录除 `correlationId` 外相同）；提交后出现。C20：含草稿行的旧快照夹具，只读主体的 `revision` 返回 `rows=[]`、写入主体不变。
 9. 幂等重放：同键同体返回同响应；同键异体 `IDEMPOTENCY_KEY_REUSED`；重放前撤销会员 → 当前拒绝，不回放；响应丢失后重试同体 → 一条声明。
 10. 完成 %：空、`unknown`、`na`、明确零、正数各一例（分子与分母分别）→ 零分子 = `0.0`，零分母 / 未知 / 不适用 / 空 = 不可计算；累计 > 设计量 → 标记。
 11. 快照 C19 / C20：提交后改主工作项与节点计划日，旧快照不变；新提交在次日计划未确认时冻结 `nextPlan.rows=[]`、已确认时冻结确认行；并发“改主工作项 / 改工作项 vs 提交”与“… vs 今日无施工”两组受控测试（§6）。
-12. 缺报 D4：无版本不判；版本在 `T_d` 之后登记（含回溯的 `fromDate`）不影响 `d`；`T_d` 前登记的版本生效；非工作日不判。当天未到 `T_d` 不判；登记事务在 23:59:59 开始、锁等待到次日后插入 → `registeredAt` 取插入时刻，不影响前一日。
+12. (12a) 登记：登记事务在 23:59:59 开始、锁等待到次日后插入 → `registeredAt` 取插入时刻（D11）；版本只追加。(12b) 判定：无版本不判；版本在 `T_d` 之后登记（含回溯的 `fromDate`）不影响 `d`；`T_d` 前登记的版本生效；非工作日不判；当天未到 `T_d` 不判。
 13. 经理分组：只读账号看到各项目经理显示名；0 个 → “未分配”；同一自然人两个账号只出现一次；`mje_alpha_app` 直接 `SELECT "Membership"` 仍只见自己。含 `activeUntil IS NULL` 的普通会员夹具（应计为经理）。
 14. 规模：100 个 TEST 项目 × 30 个已提交日，`GET /api/projects/home?size=50` 热请求：**模块数据查询**（不含 BEGIN / 会话设置 / 授权上下文 / COMMIT，这些另行报告）≤ 6 条，CI 用查询计数断言；本机 20 次热请求 p50 < 1 s，记录到 PR，不在 CI 断言墙钟。
 15. 界面协议：切换项目 / 角色后待处理命令不串项目；陈旧读取不改绑 `expectedN`；三种结果分别验收——(a) 写入已应答成功、随后刷新失败 → 显示“已保存”、编辑锁定直到一次读取落地（同 `day-store.ts` 的锁后读取规则）；(b) 写入无应答 → 保留原命令与原键，“重试 / 放弃”，重试的请求体逐字节相同；(c) 无应答后重试被拒（如撤权）→ 显示拒绝，同时保留“之前的发送可能已记录”（`outcomeKey`，同 `field/errors.ts`）。
 16. ADR D6 矩阵：report / project-status 的范围 × 授权 × 路径，由生成器展开；方向为 `n/a`；延后维度在 `deferred.ts`（合同份额 → DG-05）。
+17. 主工作项预计完成日：样本内某日冻结的 `unit` 与最新快照不同 → 该日不进样本、样本自其后重启；累计 = 设计量与累计 > 设计量 → “已达设计量”、无预计日；样本全为 `unknown` → 不提示。
 
 ## 9. 迁移与回退
 
-- 按切片追加迁移（每个只追加，已应用的不改）：A7-1a 状态两表 + 触发器 + RLS + GRANT（`SELECT, INSERT`）；A7-1b `Project` 三列 + 列级 `UPDATE (primaryWorkItemKey, region, projectType, version, updatedAt, updatedBy)`（也供 §6 的行锁）+ `ReportItem.kind` CHECK 扩展 + `plannedDate` + 应报期间版本表；A7-2b `project_managers_for_org()`。
+- 按切片追加迁移（每个只追加，已应用的不改）：A7-1a 状态两表 + 触发器 + RLS + GRANT（`SELECT, INSERT`）+ `Project` 列级 `UPDATE (version)`（§6 行锁所需的最小权限：`FOR UPDATE` / `FOR SHARE` 要求至少一列的 UPDATE 权限，现仅 SELECT，`202609280001:22`）；A7-1b `Project` 三列 + 列级 `UPDATE (primaryWorkItemKey, region, projectType, updatedAt, updatedBy)`+ `ReportItem.kind` CHECK 扩展 + `plannedDate` + 应报期间版本表；A7-2b `project_managers_for_org()`。
 - **回退（保留数据，按 `infra/bicep/README.md` 的程序）**：旧镜像 = 引入该迁移的切片之前的 `main` 镜像（A7-1b 起有 milestone 不兼容风险）（命名具体 digest）。兼容性**有条件**：新表与新列旧代码不读；但一旦某项目创建了 `kind='milestone'` 的行，旧镜像的 `items()` 会把它读出并冻结进快照（`report-store.ts:286–292, 436`），旧 `SaveItemsCommand` 解析器拒绝该 kind（`contracts/report.ts:340`），该项目的工作项保存在旧镜像下失败——即**不兼容**。因此：先在应用层停入口并确认写入已停（缩到 0 不算停）；若尚无 milestone 行，用旧镜像并做读 / 渲染 / 写 / 提交四项核对后再开放；若已有，保持停写、前向修复，不回退镜像。保留迁移历史、新增表、授权 / RLS / 触发器、Revision、审计与 Blob；不 DROP。
 
 ## 10. 切片与顺序（每个 PR 一件事，Codex 审核，CI 绿）
@@ -149,9 +151,9 @@
 | A7-0a | ADR-0003 机械层（无行为变化）：`authz/surface.ts`、`fields.ts`、`legacy-adapters.ts`、`deferred.ts`、`anchors.test.ts`；路由与 Worker 入口枚举测试、消费路径调用记录测试；barrel 限制、ESLint 目录规则、SQL 表名扫描；`reportReader` 出口 + `reader-view` 并入；`IssueStore.lag` 改经 `reportReader.lagHistory`；OD18 现有路径负向测试 | ADR 合并                                         |
 | A7-0b | ADR-0003 事务协议：迁移 `LoginAccount.authzVersion` + 触发器 + `app_account_for_identity`；账号第一锁、`lock_timeout`、`idle_in_transaction_session_timeout`、Blob 操作期限；幂等重放再投影；撤权交错 / 停滞 Blob / 应用角色负向测试；`test:field` 不回退                                                                              | A7-0a                                            |
 | A7-0c | C20 读者路径投影（有行为变化）：对只读主体，所有路径（含历史 `revision`）中 `nextPlan.status ≠ 'confirmed'` 的 `nextPlan.rows` 投影为 `[]`，已确认的行照常；旧快照夹具                                                                                                                                                                 | A7-0a                                            |
-| A7-1a | 迁移（状态两表、触发器、RLS、GRANT）+ `project-status` 声明与回复命令及投影 + `GET status` + 负向 1–5、9                                                                                                                                                                                                                               | A7-0b；D1、D6 确认                               |
-| A7-1b | 迁移（`Project` 三列与列级 GRANT、`ReportItem` milestone 与 `plannedDate`、应报期间版本表）+ 主工作项与应报期间命令 + 契约扩展（`milestone` kind、`plannedDate`）+ `saveItems` 行锁 + 负向 12                                                                                                                                          | A7-0b；D4、D11 确认                              |
+| A7-1a | 迁移（状态两表、触发器、RLS、GRANT；`Project` 列级 `UPDATE (version)`——行锁所需的最小权限）+ `project-status` 声明与回复命令及投影 + `GET status` + 负向 1a、2、3、4a、5a、9                                                                                                                                                           | A7-0b；D1、D6、D12 确认                          |
+| A7-1b | 迁移（`Project` 三列与其列级 GRANT、`ReportItem` milestone 与 `plannedDate`、应报期间版本表）+ 主工作项与应报期间命令 + 契约扩展（`milestone` kind、`plannedDate`）+ `saveItems` 行锁 + 负向 1b、4b、12a                                                                                                                               | A7-1a；D4、D11 确认                              |
 | A7-2a | 快照 C19（主工作项键、节点主数据冻结）+ C20 新快照只冻结确认行 + `submit` / `noWork` 外层 `Project` 行锁捕获点 + 负向 11                                                                                                                                                                                                               | A7-1b                                            |
-| A7-2b | 派生数字（§2）+ 首页 / 概况 / 关注端点 + 经理身份投影（迁移：`project_managers_for_org()`）+ 负向 6–8、10、13、14、16                                                                                                                                                                                                                  | A7-0c、A7-1a、A7-2a；D2、D3、D5、D7、D8、D9 确认 |
+| A7-2b | 派生数字（§2）+ 首页 / 概况 / 关注端点 + 经理身份投影（迁移：`project_managers_for_org()`）+ 负向 5b、6–8、10、12b、13、14、16、17                                                                                                                                                                                                     | A7-0c、A7-1a、A7-2a；D2、D3、D5、D7、D8、D9 确认 |
 | A7-3  | 界面：经理状态更新页 + 电脑 / 手机多项目首页 + 负向 15                                                                                                                                                                                                                                                                                 | A7-2b                                            |
 | A7-4  | 界面：项目概况 + 关注收件箱；四语；元素级版式扫描（L20）                                                                                                                                                                                                                                                                               | A7-3                                             |
