@@ -17,6 +17,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.0
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
       concurrently:
         specifier: 9.2.1
         version: 9.2.1

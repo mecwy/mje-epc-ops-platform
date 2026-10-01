@@ -313,6 +313,7 @@
   "scripts/publication-policy.mjs",
   "scripts/publication-policy.test.mjs",
   "scripts/report-integration.mjs",
+  "scripts/report-lookups-integration.mts",
   "scripts/smoke.mjs",
   "scripts/tx-protocol-integration.mjs",
   "tsconfig.scripts.json",

@@ -1,3 +1,4 @@
+import { reportSubmittedBoundary } from './report-lookups.js';
 /**
  * Worker check-in and staged selfie (A6b; design docs/architecture/a6-field-devices-design.md
  * §3, §5, §6). A check-in is the claim "P was on site at T": it never becomes hours and never
@@ -211,16 +212,8 @@ export async function submittedBoundary(
   projectId: string,
   businessDate: string,
 ): Promise<number | null> {
-  const r = await client.query<{ boundary: string | null }>(
-    `SELECT COALESCE(r.snapshot->'field'->>'seqBoundary', '0') AS boundary FROM "DailyClose" d
-    JOIN "Revision" r ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
-    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."businessDate"=$3::date AND d."scopeKey"='report' AND d."currentRevisionNumber" > 0`,
-    [orgId, projectId, businessDate],
-  );
-  const b = r.rows[0]?.boundary;
-  return b === undefined || b === null ? null : Number(b);
-}
-/** The crew the person is a MEMBER of at an instant (exact timestamps). */
+  return reportSubmittedBoundary(client, orgId, projectId, businessDate);
+} /** The crew the person is a MEMBER of at an instant (exact timestamps). */
 async function crewAt(
   client: PoolClient,
   orgId: string,

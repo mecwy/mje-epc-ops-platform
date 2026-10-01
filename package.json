@@ -35,12 +35,14 @@
     "test:field": "node --env-file=.env scripts/field-integration.mjs",
     "test:add-member": "node --env-file=.env scripts/add-member-integration.mjs",
     "test:authz-version": "node --env-file=.env scripts/authz-version-integration.mjs",
-    "test:tx-protocol": "node --env-file=.env scripts/tx-protocol-integration.mjs"
+    "test:tx-protocol": "node --env-file=.env scripts/tx-protocol-integration.mjs",
+    "test:report-lookups": "node --env-file=.env scripts/report-lookups-integration.mts"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
+    "@types/pg": "8.23.1",
     "concurrently": "9.2.1",
     "dotenv": "^17.0.0",
     "eslint": "^10.11.0",

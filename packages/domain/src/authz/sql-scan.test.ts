@@ -744,6 +744,16 @@ describe('SQL scan counter-examples', () => {
       ).toBe(true);
     }
   });
+  it('the migrated photo and check-in reads have no direct-table exceptions (A7-0e batch 2)', () => {
+    for (const file of ['photo-store.ts', 'checkin-store.ts'])
+      for (const table of ['DailyClose', 'Revision'])
+        expect(
+          caught(
+            `q(\`SELECT 1 FROM "${table}"\`);`,
+            `packages/domain/src/${file}`,
+          ),
+        ).toBe(true);
+  });
 });
 
 /** Synthetic TEST queries: each built identifier names report's PlanVersion from issue. */

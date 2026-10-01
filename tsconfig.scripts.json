@@ -17,6 +17,7 @@
     "scripts/dev-deploy.mts",
     "scripts/dev-deploy.test.mts",
     "scripts/entra-mapping.mjs",
-    "scripts/publication-policy.mjs"
+    "scripts/publication-policy.mjs",
+    "scripts/report-lookups-integration.mts"
   ]
 }
