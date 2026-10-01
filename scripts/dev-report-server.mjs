@@ -13,7 +13,11 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Pool } from 'pg';
-import { assertLocalBlob, assertLocalDatabase } from './local-db.mjs';
+import {
+  assertLocalBlob,
+  assertLocalDatabase,
+  assertLocalUrl,
+} from './local-db.mjs';
 import {
   AlphaStore,
   CheckInStore,
@@ -226,11 +230,13 @@ let photoStore;
 let blobs = null;
 if (blobConnection) {
   // Built by the API's own factory, so the client comes from the SDK entry the API imports (not
-  // the CommonJS one). The connection string was checked above (loopback emulator only).
+  // the CommonJS one). The connection string was checked above; the URL the SDK actually built is
+  // checked again before any storage call, because the SDK parses field names case-sensitively.
   blobs = AzurePhotoBlobStore.fromConnectionString(
     blobConnection,
     `evidence-dev${instance ? `-${instance}` : ''}`,
   );
+  assertLocalUrl(blobs.url);
   await blobs.ensureContainer();
   photoStore = new PhotoStore(pool, blobs);
 }

@@ -50,6 +50,14 @@ export class AzurePhotoBlobStore implements SelfieBlobStore {
     );
   }
 
+  /**
+   * The container URL the SDK actually built. Local tooling checks it before any storage call:
+   * the SDK reads connection-string field names case-sensitively, so a precheck on the string
+   * alone can disagree with the real destination.
+   */
+  get url(): string {
+    return this.container.url;
+  }
   /** Local emulator only: creates the container as private (no anonymous access). */
   async ensureContainer() {
     await this.container.createIfNotExists();

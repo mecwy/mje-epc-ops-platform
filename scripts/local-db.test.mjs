@@ -44,6 +44,13 @@ test('accepts only a blob connection string that can reach nothing but the local
     'DefaultEndpointsProtocol=https;AccountName=TEST',
     'UseDevelopmentStorage=true;DevelopmentStorageProxyUri=http://proxy.example',
     'AccountName=TEST;BlobEndpoint',
+    // The SDK reads field names case-sensitively: it ignores `blobendpoint` and builds
+    // https://TEST.blob.core.windows.net, while a case-insensitive check would see loopback.
+    'DefaultEndpointsProtocol=https;AccountName=TEST;AccountKey=VEVTVA==;EndpointSuffix=core.windows.net;blobendpoint=http://127.0.0.1:11001/TEST',
+    'DefaultEndpointsProtocol=http;AccountName=TEST;BLOBENDPOINT=http://127.0.0.1:11001/TEST',
+    'DefaultEndpointsProtocol=http;accountname=TEST;BlobEndpoint=http://127.0.0.1:11001/TEST',
+    // Unknown fields are refused rather than guessed at.
+    'DefaultEndpointsProtocol=http;AccountName=TEST;BlobEndpoint=http://127.0.0.1:11001/TEST;QueueEndpoint=https://remote.example/TEST',
   ])
     assert.throws(() => assertLocalBlob(raw), undefined, raw);
   assert.throws(() => assertLocalUrl('https://TEST.blob.core.windows.net/x'));
