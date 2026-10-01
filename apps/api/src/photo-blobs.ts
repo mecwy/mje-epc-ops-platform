@@ -1,12 +1,21 @@
-import {
-  BlobServiceClient,
-  RestError,
-  type ContainerClient,
-} from '@azure/storage-blob';
+import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
 import type { TokenCredential } from '@azure/identity';
 import type { PhotoBlob, SelfieBlobStore } from '@mje/domain';
 
 export const EVIDENCE_CONTAINER = 'evidence';
+
+/**
+ * HTTP status of a storage error, else null. Checked by name as the SDK's own `isRestError`
+ * does, not `instanceof`: a client built from the SDK's CommonJS copy throws a RestError class
+ * the ES module copy does not recognize (the local dev server builds its client that way).
+ */
+const storageStatus = (error: unknown): number | null =>
+  error instanceof Error &&
+  error.name === 'RestError' &&
+  'statusCode' in error &&
+  typeof error.statusCode === 'number'
+    ? error.statusCode
+    : null;
 
 /**
  * Photo bytes in a private Azure Blob container. Keys are content-addressed (`${orgId}/${sha256}`,
@@ -59,11 +68,8 @@ export class AzurePhotoBlobStore implements SelfieBlobStore {
       });
       return;
     } catch (error) {
-      if (
-        !(error instanceof RestError) ||
-        (error.statusCode !== 409 && error.statusCode !== 412)
-      )
-        throw error;
+      const status = storageStatus(error);
+      if (status !== 409 && status !== 412) throw error;
     }
     // The key exists, e.g. left by an upload whose database write rolled back. Content addressing
     // means it must hold exactly these bytes; anything else is refused, never overwritten.
@@ -96,7 +102,7 @@ export class AzurePhotoBlobStore implements SelfieBlobStore {
         contentType: properties.contentType ?? 'application/octet-stream',
       };
     } catch (error) {
-      if (error instanceof RestError && error.statusCode === 404) return null;
+      if (storageStatus(error) === 404) return null;
       throw error;
     }
   }
