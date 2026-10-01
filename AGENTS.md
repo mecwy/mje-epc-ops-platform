@@ -33,6 +33,8 @@
 
 TypeScript strict；React/Vite PWA；NestJS REST；Node Worker；PostgreSQL/Prisma；Azure Blob。模块化单体，禁止未经 ADR 引入 Redis/Kafka/AKS/MongoDB/微服务。packages/domain 不依赖 HTTP、React 或 Azure SDK；contracts 放边界 DTO，ui 只放共享组件，config 放公共配置，testing 放测试工具。跨模块通过明确服务接口，禁止随意跨模块写表。
 
+**脚本类型检查**：碰云端、数据库、身份权限或公开发布守卫的新脚本一律写成 `.mts` 并纳入类型检查；新的集成测试脚本用 `.mts`。已有的此类 `.mjs`（cloud-migrate、cloud-bootstrap、cloud-add-member、entra-mapping、check-public、publication-policy、check-pr-body）文件头带 `// @ts-check`，由 `tsconfig.scripts.json`（strict、noEmit，只列这些文件）经 `pnpm typecheck` 检查；新增同类 `.mjs` 须加入该清单。`field-integration.mjs` 下次修改时按场景拆分并转为 `.mts`。其余开发辅助脚本不作规定。
+
 Node 24 LTS 与 pnpm 10 按版本文件/锁文件安装。金额 Decimal(20,4)、数量 Decimal(20,6)，API用十进制字符串，时长整数分钟。禁止 JS 浮点金额运算。服务端处理权限、幂等、expectedVersion、事务和审计；前端校验不能代替。
 
 所有租户外键带 orgId；API 从验证后的会员关系建立授权上下文，不信任客户端 orgId/role。Azure部署使用托管身份，Actions用OIDC，禁止长期Azure密钥。生产无假登录旁路，不把原始人像/身份资料写入日志或公网。

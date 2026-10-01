@@ -1,3 +1,4 @@
+// @ts-check
 // Dev only, run once as a Container Apps job with the migration identity (the Entra
 // PostgreSQL admin). It (1) creates the application's Entra login for its managed identity
 // and verifies the mapping (object id, service principal, non-admin, tenant), (2) grants the
@@ -10,20 +11,24 @@ import { createHash } from 'node:crypto';
 // Registered before anything else runs: configuration checks, module loading and the
 // credential are all inside the sanitising boundary.
 class BootstrapStop extends Error {}
-const fail = (message) => {
+const fail = (/** @type {string} */ message) => {
   throw new BootstrapStop(`Cloud bootstrap stopped: ${message}`);
 };
 // Database, SDK and module-loading errors can carry identifiers or paths in their details;
 // the job log gets only our own stop messages or a bare error code.
-process.on('uncaughtException', (error) => {
-  if (error instanceof BootstrapStop) console.error(error.message);
-  else
-    console.error(
-      `Cloud bootstrap failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
-    );
-  process.exit(1);
-});
+process.on(
+  'uncaughtException',
+  (/** @type {Error & { code?: unknown }} */ error) => {
+    if (error instanceof BootstrapStop) console.error(error.message);
+    else
+      console.error(
+        `Cloud bootstrap failed: ${error?.code ? `code ${String(error.code).slice(0, 16)}` : (error?.name ?? 'error')}`,
+      );
+    process.exit(1);
+  },
+);
 
+/** @param {string} name */
 function required(name) {
   const value = process.env[name];
   if (!value)
@@ -60,7 +65,7 @@ for (const [name, value] of [
   ['OWNER_TENANT_ID', tenantId],
   ['OWNER_OBJECT_ID', ownerObjectId],
 ])
-  if (!UUID.test(value))
+  if (!UUID.test(value ?? ''))
     throw new BootstrapStop(
       `Cloud bootstrap configuration is not a GUID: ${name}`,
     );
@@ -77,7 +82,7 @@ const requireDomain = createRequire(
 const { Client } = (await import(requireDomain.resolve('pg'))).default;
 const { checkMapping, tokenTenant } = await import('./entra-mapping.mjs');
 const credential = new ManagedIdentityCredential({ clientId });
-const connect = async (database) => {
+const connect = async (/** @type {string} */ database) => {
   const token = await credential.getToken(
     'https://ossrdbms-aad.database.windows.net/.default',
   );
@@ -98,8 +103,8 @@ const connect = async (database) => {
   client.serverTenant = tokenTenant(token.token);
   return client;
 };
-const ident = (name) => `"${name.replaceAll('"', '""')}"`;
-const lower = (row) =>
+const ident = (/** @type {string} */ name) => `"${name.replaceAll('"', '""')}"`;
+const lower = (/** @type {Record<string, unknown>} */ row) =>
   Object.fromEntries(Object.entries(row).map(([k, v]) => [k.toLowerCase(), v]));
 // 1. Application login, verified against the managed identity it must map to.
 const system = await connect('postgres');
@@ -133,7 +138,9 @@ try {
     )
   ).rows
     .map(lower)
-    .filter((r) => r.rolename === appPrincipal);
+    .filter(
+      (/** @type {Record<string, unknown>} */ r) => r.rolename === appPrincipal,
+    );
   const problem = checkMapping({
     labels,
     listed,
@@ -192,7 +199,7 @@ try {
 
   // 3. One TEST project for the owner's own account. Existing rows are reused only if they
   //    match; anything inconsistent or inactive stops the run instead of being overwritten.
-  const id = (name) => {
+  const id = (/** @type {string} */ name) => {
     const h = createHash('sha256')
       .update(`mje-dev-bootstrap:${name}`)
       .digest('hex');
@@ -203,7 +210,10 @@ try {
     person = id('person'),
     actor = id('seed');
   await db.query('BEGIN');
-  const one = async (sql, params) => (await db.query(sql, params)).rows[0];
+  const one = async (
+    /** @type {string} */ sql,
+    /** @type {unknown[]} */ params,
+  ) => (await db.query(sql, params)).rows[0];
   await db.query(
     'INSERT INTO public."Organization"(id,name,"updatedAt","updatedBy") VALUES($1,$2,now(),$3) ON CONFLICT DO NOTHING',
     [org, 'TEST Organization', actor],
@@ -257,6 +267,7 @@ try {
     );
   if (!account.personId) fail('the owner account is not linked to a person');
 
+  /** @type {{ current: boolean }[]} */
   const memberships = (
     await db.query(
       `SELECT id, "activeFrom" <= now() AND ("activeUntil" IS NULL OR "activeUntil" > now()) AS current

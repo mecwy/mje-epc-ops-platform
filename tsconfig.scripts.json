@@ -1,0 +1,18 @@
+{
+  "extends": "./packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "files": [
+    "scripts/check-pr-body.mjs",
+    "scripts/check-public.mjs",
+    "scripts/cloud-add-member.mjs",
+    "scripts/cloud-bootstrap.mjs",
+    "scripts/cloud-migrate.mjs",
+    "scripts/entra-mapping.mjs",
+    "scripts/publication-policy.mjs"
+  ]
+}

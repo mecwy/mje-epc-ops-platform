@@ -1,3 +1,4 @@
+// @ts-check
 // Pure checks for the Dev bootstrap's Entra login mapping (no I/O, so they can be tested).
 // Each returns an error message, or null when the evidence is acceptable.
 
@@ -5,12 +6,13 @@
 // access token only from the tenant configured on the server, so the tenant claim of the
 // token the server has just accepted identifies that tenant. The token came from the managed
 // identity endpoint; it is decoded here, not re-verified.
+/** @param {unknown} accessToken */
 export function tokenTenant(accessToken) {
   const parts = String(accessToken ?? '').split('.');
   if (parts.length !== 3) return null;
   try {
     const claims = JSON.parse(
-      Buffer.from(parts[1], 'base64url').toString('utf8'),
+      Buffer.from(parts[1] ?? '', 'base64url').toString('utf8'),
     );
     const tid = typeof claims?.tid === 'string' ? claims.tid.toLowerCase() : '';
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
@@ -25,11 +27,13 @@ export function tokenTenant(accessToken) {
 
 // 'aadauth,oid=<objectId>,type=<user|group|service>[,admin][,mfa]' — strict: the prefix
 // first, exactly one oid and one type, only the known flags, nothing else.
+/** @param {unknown} label */
 export function parseEntraLabel(label) {
   const parts = String(label ?? '')
     .split(',')
     .map((p) => p.trim());
   if (parts[0] !== 'aadauth') return null;
+  /** @type {{ oid: string | null, type: string | null, admin: boolean, mfa: boolean }} */
   const out = { oid: null, type: null, admin: false, mfa: false };
   for (const part of parts.slice(1)) {
     const eq = part.indexOf('=');
@@ -46,10 +50,20 @@ export function parseEntraLabel(label) {
   return out.oid && out.type ? out : null;
 }
 
-const off = (v) => v === 0 || v === '0' || v === false || v === 'f';
+const off = (/** @type {unknown} */ v) =>
+  v === 0 || v === '0' || v === false || v === 'f';
 
 // labels: rows of pg_shseclabel for the login; listed: rows of pgaadauth_list_principals for
 // the login (lower-cased keys); serverTenant: tokenTenant() of the accepted admin token.
+/**
+ * @param {{
+ *   labels: { label: unknown }[],
+ *   listed: Record<string, unknown>[],
+ *   serverTenant: string | null,
+ *   appObjectId: string,
+ *   tenantId: string,
+ * }} evidence
+ */
 export function checkMapping({
   labels,
   listed,
@@ -62,7 +76,7 @@ export function checkMapping({
     return 'the configured tenant is not the tenant of this database server';
   if (labels.length !== 1)
     return `the application login has ${labels.length} Entra labels, expected 1`;
-  const label = parseEntraLabel(labels[0].label);
+  const label = parseEntraLabel(labels[0]?.label);
   if (!label)
     return 'the application login label is not a recognised Entra mapping';
   if (label.oid !== appObjectId)

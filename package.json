@@ -11,7 +11,8 @@
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" dev",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "lint": "eslint apps packages scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
