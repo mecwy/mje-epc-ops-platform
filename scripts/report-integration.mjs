@@ -7,6 +7,10 @@ import { execFileSync } from 'node:child_process';
 import { Pool } from 'pg';
 import { createRequire } from 'node:module';
 import { AlphaStore, ReportStore } from '../packages/domain/dist/index.js';
+// Test hook of the report exit (ADR-0003 D2.2): which projector served a read. It installs only
+// in a test process; this runner is one.
+process.env.NODE_ENV = 'test';
+import { observeReportProjections } from '../packages/domain/dist/report-reader.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 
@@ -1355,6 +1359,115 @@ try {
   assert.notEqual((await dayOf(D1, pm)).version, 0);
   pass(
     'OD18: a reader gets nothing of an empty or draft day, only revision 2 of a correcting day (not the correction, its reason or a newer plan), the frozen no-work revision, version 0; days list submitted days only (correcting→submitted, drafts left out) and are byte-identical before and after a draft and a correction are started; plan drafts are hidden while confirmed versions stay; the writer view is unchanged',
+  );
+
+  // ---------- A7-0a (ADR-0003): OD18 on write rejections and conflicts ----------
+  // D10 holds a draft (above); DE has no record at all. A reader's day list counts neither, and
+  // a reader's write to either is refused READ_ONLY with the same body (excluding the per-call
+  // correlationId): never a VERSION_CONFLICT that would tell a day row exists.
+  const DE = '2026-10-25';
+  const readerDaysOf = (from, to) =>
+    expectStatus(
+      call(`/days?projectId=${projectA}&from=${from}&to=${to}`, execA),
+      200,
+    );
+  assert.deepEqual(await readerDaysOf(D10, D10), []);
+  assert.deepEqual(await readerDaysOf(DE, DE), []);
+  assert.equal((await readerDaysOf(D10, DE)).length, 0);
+  const withoutCorrelation = ({ correlationId, ...rest }) => {
+    assert.match(correlationId, /^[0-9a-f-]{36}$/);
+    return rest;
+  };
+  for (const [path, over] of [
+    ['/facts', { facts: facts() }],
+    ['/submit', {}],
+    ['/no-work', { reason: 'rest', note: '' }],
+  ])
+    for (const expectedVersion of [0, 1, 2]) {
+      const onDraft = await call(
+        path,
+        execA,
+        cmd({ businessDate: D10, expectedVersion, ...over }),
+      );
+      const onEmpty = await call(
+        path,
+        execA,
+        cmd({ businessDate: DE, expectedVersion, ...over }),
+      );
+      assert.equal(onDraft.status, 403, JSON.stringify(onDraft.body));
+      assert.equal(onEmpty.status, onDraft.status);
+      assert.deepEqual(withoutCorrelation(onDraft.body), { code: 'READ_ONLY' });
+      assert.deepEqual(
+        withoutCorrelation(onEmpty.body),
+        withoutCorrelation(onDraft.body),
+      );
+    }
+  // The writer's own conflict on the draft day carries only code and correlationId (#45: the
+  // client re-reads to show "you entered X, it is now Y"), no draft value.
+  const conflict = await expectStatus(
+    call(
+      '/facts',
+      pm,
+      cmd({ businessDate: D10, expectedVersion: 0, facts: facts() }),
+    ),
+    409,
+    'VERSION_CONFLICT',
+  );
+  assert.deepEqual(withoutCorrelation(conflict), { code: 'VERSION_CONFLICT' });
+  assert.equal((await dayOf(D10, pm)).facts.weather, 'TEST unsubmitted draft');
+  pass(
+    "OD18 (A7-0a): a reader's day list counts no draft or empty day; a reader's facts / submit / no-work on a draft day and on a day without a record get the same READ_ONLY body (excluding correlationId), never VERSION_CONFLICT; a writer's VERSION_CONFLICT carries only code and correlationId",
+  );
+
+  // ---------- A7-0a (ADR-0003 D2.2): every report read route runs its exit projector ----------
+  const projectors = [];
+  observeReportProjections((p) => projectors.push(p));
+  try {
+    for (const [path, writer, reader] of [
+      ['/projects', 'report.projects', 'report.projects'],
+      [
+        `/days?projectId=${projectA}&from=${D1}&to=${D10}`,
+        'report.days.writer',
+        'report.days.reader',
+      ],
+      [
+        `/day?projectId=${projectA}&businessDate=${D1}`,
+        'report.day.writer',
+        'report.day.reader',
+      ],
+      [
+        `/revision?projectId=${projectA}&businessDate=${D1}&n=1`,
+        'report.revision.writer',
+        'report.revision.reader',
+      ],
+      [
+        `/plan?projectId=${projectA}&targetBusinessDate=${D10}`,
+        'report.plan.writer',
+        'report.plan.reader',
+      ],
+      [`/items?projectId=${projectA}`, 'report.items', 'report.items'],
+    ])
+      for (const [bearer, projector] of [
+        [pm, writer],
+        [execA, reader],
+      ]) {
+        projectors.length = 0;
+        await expectStatus(call(path, bearer), 200);
+        assert.deepEqual(projectors, [projector], path);
+      }
+    // A refused read reaches no projector.
+    projectors.length = 0;
+    await expectStatus(
+      call(`/day?projectId=${projectB}&businessDate=${D1}`, pm),
+      403,
+      'FORBIDDEN',
+    );
+    assert.deepEqual(projectors, []);
+  } finally {
+    observeReportProjections(null);
+  }
+  pass(
+    'ADR-0003 D2.2: each report read route (projects, days, day, revision, plan, items) runs the report exit projector for the writer and for the reader; a refused read runs none',
   );
 
   // ---------- database-level protections: RLS and no updates on revisions ----------

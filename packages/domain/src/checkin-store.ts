@@ -1271,8 +1271,11 @@ export class CheckInStore {
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
         [`${actor.orgId}:field-settings:${table}:${projectId}`],
       );
+      // One literal statement per table (no table name built at run time; ADR-0003 D2.1).
       const current = await client.query<{ n: number }>(
-        `SELECT COALESCE(max(n), 0)::int AS n FROM "${table}" WHERE "orgId"=$1 AND "projectId"=$2`,
+        table === 'ProjectSiteReference'
+          ? `SELECT COALESCE(max(n), 0)::int AS n FROM "ProjectSiteReference" WHERE "orgId"=$1 AND "projectId"=$2`
+          : `SELECT COALESCE(max(n), 0)::int AS n FROM "ProjectFieldSetting" WHERE "orgId"=$1 AND "projectId"=$2`,
         [actor.orgId, projectId],
       );
       if (current.rows[0]!.n !== cmd.expectedN)

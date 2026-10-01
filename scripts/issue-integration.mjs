@@ -11,6 +11,10 @@ import {
   IssueStore,
   ReportStore,
 } from '../packages/domain/dist/index.js';
+// Test hook of the report exit (ADR-0003 D2.2): which projector served a read. It installs only
+// in a test process; this runner is one.
+process.env.NODE_ENV = 'test';
+import { observeReportProjections } from '../packages/domain/dist/report-reader.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 
@@ -1002,6 +1006,23 @@ try {
   await submitDay(D3, { support: '100', rail: '90' });
   await submitDay(D5, { support: '120', rail: '50' });
   assert.deepEqual(await lag(D5), []); // D4 not submitted: the streak is broken
+  // OD18 (A7-0a): a reader's lag response carries no trace of a draft: the same bytes before
+  // and after the D4 draft below, for that day and the next, for both kinds of reader.
+  const lagText = async (date, bearer) => {
+    const response = await fetch(
+      `${base}/api/report/issues/lag?projectId=${projectA}&businessDate=${date}`,
+      { headers: { Authorization: `Bearer ${bearer}` } },
+    );
+    assert.equal(response.status, 200);
+    return response.text();
+  };
+  const readerLag = async () => [
+    await lagText(D4, exec),
+    await lagText(D5, exec),
+    await lagText(D4, execA),
+    await lagText(D5, execA),
+  ];
+  const readerLagBefore = await readerLag();
   await expectStatus(
     call('/facts', pm, {
       projectId: projectA,
@@ -1013,6 +1034,17 @@ try {
     200,
   );
   assert.deepEqual(await lag(D5), []); // a draft is not a submitted day
+  assert.deepEqual(await readerLag(), readerLagBefore);
+  // ADR-0003 D2.2: the history comes from the report exit, for a writer and a reader alike.
+  const lagProjectors = [];
+  observeReportProjections((p) => lagProjectors.push(p));
+  try {
+    await lag(D5);
+    await lag(D5, exec);
+  } finally {
+    observeReportProjections(null);
+  }
+  assert.deepEqual(lagProjectors, ['report.lagHistory', 'report.lagHistory']);
   await expectStatus(
     call('/submit', pm, {
       projectId: projectA,
@@ -1086,7 +1118,7 @@ try {
     1,
   );
   pass(
-    'lag reminder after 3 consecutive submitted days under 80 % of the baseline; a missing or unsubmitted day breaks the streak; an open progress-lag issue (escalated or not) and a dismissal suppress it; closing the issue brings it back; the reminder never creates an issue',
+    "lag reminder after 3 consecutive submitted days under 80 % of the baseline; a missing or unsubmitted day breaks the streak (a reader's lag response is byte-identical before and after a draft, OD18; the history is served by the report exit reportReader.lagHistory); an open progress-lag issue (escalated or not) and a dismissal suppress it; closing the issue brings it back; the reminder never creates an issue",
   );
 
   // ---------- database-level protections ----------
