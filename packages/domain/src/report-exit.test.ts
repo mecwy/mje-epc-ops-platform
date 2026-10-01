@@ -22,6 +22,9 @@ const identity = { tenantId: 'TEST-tenant', objectId: 'TEST-object' };
 function label(text: string): string {
   const table = /"([A-Z]\w+)"/.exec(text)?.[1];
   if (/^\s*SELECT set_config/.test(text)) return 'set_config';
+  // A7-0b: the account row and first lock come through the definer function.
+  if (/app_account_for_identity/.test(text)) return 'LoginAccount';
+  if (/clock_timestamp/.test(text)) return 'decidedAt';
   return table ?? text.trim().split(/\s+/).slice(0, 2).join(' ');
 }
 interface Fake {
@@ -47,8 +50,15 @@ function fakePool(): Fake {
     switch (l) {
       case 'LoginAccount':
         return [
-          { orgId: ORG, accountId: 'TEST-account', personId: 'TEST-person' },
+          {
+            orgId: ORG,
+            id: 'TEST-account',
+            personId: 'TEST-person',
+            authzVersion: 1,
+          },
         ];
+      case 'decidedAt':
+        return [{ decidedAt: '2026-10-05 08:00:00.123456+00' }];
       case 'Membership':
         return revoked
           ? []
@@ -94,6 +104,8 @@ function fakePool(): Fake {
     release: () => {
       released = true;
     },
+    on: () => client,
+    removeListener: () => client,
   };
   const pool = {
     connect: async () => {
@@ -114,10 +126,16 @@ function fakePool(): Fake {
 /** The lag request as it ran before the report exit (a638003, IssueStore.lag). */
 const LAG_BEFORE_EXIT = [
   'BEGIN',
+  // A7-0b (ADR-0003 D5): transaction_timeout first, then the other bounds; the account row
+  // through the first-lock function and the decision clock read after it; the admission membership read that the old account query
+  // did inside its EXISTS. The read path after it is unchanged.
+  'SET LOCAL',
   'SET LOCAL',
   'set_config',
   'LoginAccount',
+  'decidedAt',
   'set_config',
+  'Membership',
   'Membership',
   'Project',
   'DailyClose',
@@ -142,16 +160,18 @@ describe('lag through reportReader.lagHistory', () => {
     const fake = fakePool();
     const pool = fake.pool;
     const connect = pool.connect.bind(pool);
-    // Revoke as soon as the one authorization has read the membership.
+    // Revoke as soon as the project authorization (the second membership read, after the
+    // admission read of A7-0b) has read the membership.
     (pool as unknown as { connect: () => Promise<unknown> }).connect =
       async () => {
         const client = (await connect()) as {
           query: (t: string) => Promise<unknown>;
         };
         const query = client.query;
+        let reads = 0;
         client.query = async (text: string) => {
           const r = await query(text);
-          if (label(text) === 'Membership') fake.revoke();
+          if (label(text) === 'Membership' && ++reads === 2) fake.revoke();
           return r;
         };
         return client;
@@ -162,7 +182,7 @@ describe('lag through reportReader.lagHistory', () => {
       '2026-10-05',
     );
     expect(result.suggestions).toEqual([{ workItemKey: 'support' }]);
-    expect(fake.log.filter((l) => l === 'Membership')).toHaveLength(1);
+    expect(fake.log.filter((l) => l === 'Membership')).toHaveLength(2);
   });
 });
 
@@ -194,9 +214,10 @@ describe('report read context lives only inside its transaction', () => {
     // Design: every query through a context's client checks that the context is still live
     // (report-read-context.ts); the transaction does not wait for calls the callback left behind.
     const fake = fakePool();
-    fake.deferNext('Membership');
     let pending: Promise<unknown> | undefined;
     await new ReportStore(fake.pool).read(identity, async (ctx) => {
+      // Armed inside the read: the account transaction's own admission read (A7-0b) is done.
+      fake.deferNext('Membership');
       pending = reportReader.forContext(ctx).items(PROJECT);
       pending.catch(() => {});
       return null;

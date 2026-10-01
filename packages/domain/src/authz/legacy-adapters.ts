@@ -118,8 +118,8 @@ export const KERNEL_USES: readonly {
   table: string;
   op: SqlOperation;
 }[] = [
-  // Alpha slice: its own copy of the identity, idempotency and audit plumbing.
-  { file: `${D}alpha-store.ts`, table: 'LoginAccount', op: 'read' },
+  // Alpha slice: its own copy of the idempotency and audit plumbing; since A7-0b its account
+  // transaction is store-kit's (ADR-0003 D5), so it no longer reads LoginAccount itself.
   { file: `${D}alpha-store.ts`, table: 'Membership', op: 'read' },
   { file: `${D}alpha-store.ts`, table: 'Project', op: 'read' },
   { file: `${D}alpha-store.ts`, table: 'IdempotencyRecord', op: 'read' },

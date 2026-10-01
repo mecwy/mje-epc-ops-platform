@@ -35,5 +35,7 @@ jobs:
       - run: pnpm test:photos
       - run: pnpm test:field
       - run: pnpm test:add-member
+      - run: pnpm test:authz-version
+      - run: pnpm test:tx-protocol
       - if: always()
         run: docker compose down

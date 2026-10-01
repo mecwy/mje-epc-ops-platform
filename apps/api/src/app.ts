@@ -15,6 +15,7 @@ import { resolve } from 'node:path';
 import {
   AlphaError,
   AlphaStore,
+  BlobDeadlineError,
   CheckInStore,
   FieldError,
   FieldStore,
@@ -23,6 +24,7 @@ import {
   PhotoStore,
   ReportError,
   ReportStore,
+  RETRY_SQLSTATES,
 } from '@mje/domain';
 import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
 import { AlphaController } from './alpha.controller.js';
@@ -112,12 +114,16 @@ class SafeErrorFilter implements ExceptionFilter {
                 ? 415
                 : 409;
     }
-    // A deadlock or serialization failure is safe to repeat with the same key.
+    // Safe to repeat with the same key: a deadlock, serialization failure or lock_timeout, a
+    // session the server ended at transaction_timeout / idle-in-transaction timeout (the
+    // transaction rolled back; ADR-0003 D5), or a Blob call past its deadline.
     if (
-      error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      (error.code === '40P01' || error.code === '40001')
+      error instanceof BlobDeadlineError ||
+      (error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        typeof error.code === 'string' &&
+        RETRY_SQLSTATES.includes(error.code))
     ) {
       status = 503;
       code = 'RETRY';

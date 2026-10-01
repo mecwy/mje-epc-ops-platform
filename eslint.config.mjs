@@ -64,6 +64,8 @@ export const BOUNDARY = {
   /** Files that may import store-kit: the SQL-owning stores and the package barrel. */
   storeKit: [
     ...[
+      // A7-0b: the alpha store runs on the shared account transaction (ADR-0003 D5).
+      'alpha-store.ts',
       'report-store.ts',
       'report-reader.ts',
       'report-read-context.ts',
