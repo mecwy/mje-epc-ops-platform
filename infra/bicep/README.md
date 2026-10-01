@@ -47,10 +47,18 @@ Selfies are kept `SELFIE_RETENTION_DAYS` after they were attached, then deleted 
 (A6 design §3, U9). The sweep is `node dist/cleanup-selfies.js` in the app image, run by the
 scheduled job `mjeepc-dev-selfie-cleanup` under the app identity (PM decision 2026-10-01, option A:
 no new role). A storage lifecycle rule deletes any blob under `evidence/selfie/` older than
-`SELFIE_BLOB_BACKSTOP_DAYS` (design C25: the few an interrupted upload left without a row). The
-numbers live once, in `@mje/domain` (`packages/domain/src/checkin-store.ts`); the templates take them
-as parameters and the job refuses to run with a different value. Deleted selfies cannot be restored:
-that is the retention, not a rollback item.
+`SELFIE_BLOB_BACKSTOP_DAYS` (design C25: the few an interrupted upload left without a row) and the
+retained versions of selfie blobs older than that. The numbers live once, in `@mje/domain`
+(`packages/domain/src/checkin-rules.ts`); the templates take them as parameters and the job refuses to
+run with a different value.
+
+**What "deleted" means on this account.** The Dev storage account keeps blob versions and a 30-day
+soft-delete window (`dev-alpha.bicep`, `blobServices`). When the sweep deletes a selfie, the row is
+DELETED and audited at once, but the bytes stay restorable by a storage operator: the deleted blob
+for the 30-day soft-delete window, and its versions until the lifecycle rule removes them
+(`selfieBackstopDays` after each version was created). So the bytes are gone, at the latest,
+`max(30, SELFIE_BLOB_BACKSTOP_DAYS)` days after the deletion — not at the deletion itself. The rule
+is limited to the `evidence/selfie/` prefix; evidence photos keep their versions and soft delete.
 
 Values from the code (after `pnpm build`):
 
@@ -72,8 +80,10 @@ BACKSTOP=$(node -e "import('./packages/domain/dist/index.js').then(m=>console.lo
    az containerapp job execution list -n mjeepc-dev-selfie-cleanup -g mjeepc-dev -o table
    ```
    The log lines are `{"event":"selfie_cleanup","orgId":…,"dryRun":true,"eligible":N,…}` (Log Analytics,
-   `ContainerAppConsoleLogs_CL` filtered on the job name). Exit 2 = configuration refused (nothing swept);
-   exit 1 = a delete failed (the next run finishes the DELETING rows).
+   `ContainerAppConsoleLogs_CL` filtered on the job name); failures are logged as fixed codes only
+   (`cause` DATABASE/SQLSTATE, STORAGE/status, CONFIGURATION/code), never as messages. Exit 2 =
+   configuration refused (nothing swept); exit 1 = a delete failed, a sweep threw, or startup failed
+   for an operational reason (the next run finishes the DELETING rows).
 2. **Job, live**: redeploy with `dryRun=false`; the schedule (every 6 hours, UTC) then runs it.
 3. **Lifecycle backstop**:
    ```bash
@@ -82,7 +92,9 @@ BACKSTOP=$(node -e "import('./packages/domain/dist/index.js').then(m=>console.lo
    ```
 4. **Rollback**: `az containerapp job delete -n mjeepc-dev-selfie-cleanup -g mjeepc-dev` stops the sweep;
    `az storage account management-policy delete --account-name <account> -g mjeepc-dev` removes the backstop.
-   Rows already DELETED keep their audit entries; blobs already deleted are gone by design.
+   Rows already DELETED keep their audit entries and are not reopened; their bytes can be undeleted by
+   a storage operator only inside the windows above, and the row would stay DELETED (the retention is
+   the design, U9 — restoring bytes is not a supported path).
 
 A separate worker identity with its own blob role and database login (the full environment's
 `main.bicep`) is not part of the Dev setup.

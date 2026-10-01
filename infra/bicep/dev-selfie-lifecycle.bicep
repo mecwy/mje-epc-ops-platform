@@ -22,7 +22,11 @@ resource policy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01
         type: 'Lifecycle'
         definition: {
           filters: { blobTypes: ['blockBlob'], prefixMatch: ['evidence/selfie/'] }
-          actions: { baseBlob: { delete: { daysAfterModificationGreaterThan: selfieBackstopDays } } }
+          actions: {
+            baseBlob: { delete: { daysAfterModificationGreaterThan: selfieBackstopDays } }
+            // The account keeps blob versions: a deleted selfie's versions stay until this removes them.
+            version: { delete: { daysAfterCreationGreaterThan: selfieBackstopDays } }
+          }
         }
       }]
     }

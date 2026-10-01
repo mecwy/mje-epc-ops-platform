@@ -2,9 +2,22 @@ import { Pool } from 'pg';
 import { ManagedIdentityCredential } from '@azure/identity';
 import { AzurePhotoBlobStore } from './photo-blobs.js';
 
+/** A refusal to start on this configuration, named by a fixed code (never by a value). */
+export class ConfigError extends Error {
+  constructor(
+    public readonly code:
+      'MISSING_CONFIGURATION' | 'IDENTITY_REQUIRED' | 'UNSAFE_DATABASE_LOGIN',
+    /** The configuration name concerned (a fixed identifier), if any. */
+    public readonly field?: string,
+  ) {
+    super(field ? `${code}: ${field}` : code);
+    this.name = 'ConfigError';
+  }
+}
+
 export function required(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`Missing configuration: ${name}`);
+  if (!value) throw new ConfigError('MISSING_CONFIGURATION', name);
   return value;
 }
 
@@ -27,7 +40,7 @@ export async function photoBlobsFromEnv(): Promise<
     );
   if (process.env['BLOB_CONNECTION_STRING']) {
     if (process.env['NODE_ENV'] === 'production')
-      throw new Error('Managed identity is required for deployed blob access');
+      throw new ConfigError('IDENTITY_REQUIRED', 'BLOB_ACCOUNT_URL');
     const local = AzurePhotoBlobStore.fromConnectionString(
       process.env['BLOB_CONNECTION_STRING'],
       container,
@@ -62,7 +75,7 @@ export function databasePoolFromEnv(): Pool {
     });
   }
   if (process.env['NODE_ENV'] === 'production')
-    throw new Error('Managed identity is required for deployed Alpha');
+    throw new ConfigError('IDENTITY_REQUIRED', 'PGHOST');
   return new Pool({
     connectionString: required('ALPHA_DATABASE_URL'),
     max: 5,
@@ -78,7 +91,5 @@ export async function assertApplicationLogin(pool: Pool): Promise<void> {
     (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink','Person','Crew','CrewAssignment','ProjectRoster','FieldEntryCode','FieldDevice','FieldTokenHash','FieldConfirmChallenge','FieldPersonConfirm','FieldDeviceEvent','FieldThrottle','FieldThrottleSalt','ProjectSiteReference','ProjectFieldSetting','FieldDay','WorkerCheckIn','FieldSelfie','CheckInSelfie','ForemanReport','ForemanReportRevision','ForemanAdoption') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
     FROM pg_roles r WHERE r.rolname=current_user`);
   if (roles.rows[0]?.unsafe !== false)
-    throw new Error(
-      'Application database login must be non-owner without RLS bypass',
-    );
+    throw new ConfigError('UNSAFE_DATABASE_LOGIN');
 }

@@ -3,8 +3,11 @@
  * attached selfies past SELFIE_RETENTION_DAYS, deletes their blobs and records each deletion in
  * the audit log (append-only; see CheckInStore.cleanupSelfies). Run as its own process of the app
  * image by the scheduled Dev job (infra/bicep/dev-selfie-cleanup-job.bicep) under the app
- * identity. Nothing here reads selfie bytes or person names; the log carries organization ids
- * and counts only.
+ * identity.
+ *
+ * Nothing here reads selfie bytes or person names, and the log never carries free text: every
+ * line is an event name, an organization id, counts, and fixed codes (a SQLSTATE, an HTTP status,
+ * a configuration name). Error messages are never logged; nothing escapes to stderr.
  *
  *   node dist/cleanup-selfies.js [--dry-run] [--org <id>]... [--limit <n>]
  *
@@ -15,16 +18,20 @@
  *                                when set (the job sets them from its parameters) they must equal
  *                                @mje/domain's constants, so a deployment cannot drift from the code
  *
- * Exit code: 0 clean; 1 when a blob delete failed or an organization's sweep threw (the next run
- * finishes DELETING rows); 2 for a configuration error (nothing was swept).
+ * Exit code: 0 clean; 1 when a blob delete failed, an organization's sweep threw, or startup
+ * failed for an operational reason (the next run finishes DELETING rows); 2 when the
+ * configuration was refused (nothing was swept).
  */
 import { pathToFileURL } from 'node:url';
 import {
   CheckInStore,
-  SELFIE_RETENTION_DAYS,
   SELFIE_GRACE_MINUTES,
+  SELFIE_RETENTION_DAYS,
+  type SelfieBlobStore,
 } from '@mje/domain';
+import type { Pool } from 'pg';
 import {
+  ConfigError,
   assertApplicationLogin,
   databasePoolFromEnv,
   photoBlobsFromEnv,
@@ -35,12 +42,24 @@ export interface CleanupOptions {
   limit: number;
   dryRun: boolean;
 }
+/** Why the configuration was refused: a fixed code, a position or a name, numbers — no values. */
+export type ConfigRefusal =
+  | {
+      code: 'CONSTANT_MISMATCH';
+      name: 'SELFIE_RETENTION_DAYS' | 'SELFIE_GRACE_MINUTES';
+      expected: number;
+      actual: number;
+    }
+  | { code: 'UNKNOWN_ARGUMENT'; position: number }
+  | { code: 'BAD_ORGANIZATION_ID'; position: number }
+  | { code: 'NO_ORGANIZATION' }
+  | { code: 'BAD_LIMIT' };
 export type CleanupConfig =
-  { ok: true; options: CleanupOptions } | { ok: false; error: string };
+  { ok: true; options: CleanupOptions } | { ok: false; refusal: ConfigRefusal };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Arguments and environment, checked; never throws. */
+/** Arguments and environment, checked; never throws; refusals carry no input values. */
 export function parseCleanupArgs(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
@@ -54,7 +73,12 @@ export function parseCleanupArgs(
     if (value !== undefined && Number(value) !== expected)
       return {
         ok: false,
-        error: `${name}=${value} differs from the code constant ${expected}; deploy the job with the value from @mje/domain`,
+        refusal: {
+          code: 'CONSTANT_MISMATCH',
+          name,
+          expected,
+          actual: Number(value),
+        },
       };
   }
   let dryRun = false;
@@ -66,21 +90,48 @@ export function parseCleanupArgs(
     if (arg === '--dry-run') dryRun = true;
     else if (arg === '--org' && next !== undefined) orgIds.push(argv[++i]!);
     else if (arg === '--limit' && next !== undefined) limit = Number(argv[++i]);
-    else return { ok: false, error: `unknown argument: ${arg}` };
+    else
+      return { ok: false, refusal: { code: 'UNKNOWN_ARGUMENT', position: i } };
   }
   for (const id of (env['CLEANUP_ORG_IDS'] ?? '').split(','))
     if (id.trim()) orgIds.push(id.trim());
-  const bad = orgIds.find((id) => !UUID.test(id));
-  if (bad !== undefined)
-    return { ok: false, error: `not an organization id: ${bad}` };
-  if (orgIds.length === 0)
+  const bad = orgIds.findIndex((id) => !UUID.test(id));
+  if (bad >= 0)
     return {
       ok: false,
-      error: 'no organization to sweep: pass --org <id> or CLEANUP_ORG_IDS',
+      refusal: { code: 'BAD_ORGANIZATION_ID', position: bad },
     };
+  if (orgIds.length === 0)
+    return { ok: false, refusal: { code: 'NO_ORGANIZATION' } };
   if (!Number.isInteger(limit) || limit < 1 || limit > 10_000)
-    return { ok: false, error: `invalid limit: ${limit}` };
+    return { ok: false, refusal: { code: 'BAD_LIMIT' } };
   return { ok: true, options: { orgIds: [...new Set(orgIds)], limit, dryRun } };
+}
+
+/** What a failure was, in fixed vocabulary only: never its message. */
+export type ErrorClass =
+  | { cause: 'CONFIGURATION'; code: ConfigError['code']; field?: string }
+  | { cause: 'DATABASE'; code: string }
+  | { cause: 'STORAGE'; status: number }
+  | { cause: 'UNKNOWN' };
+
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+export function classifyError(error: unknown): ErrorClass {
+  if (error instanceof ConfigError)
+    return error.field
+      ? { cause: 'CONFIGURATION', code: error.code, field: error.field }
+      : { cause: 'CONFIGURATION', code: error.code };
+  if (error instanceof Error) {
+    const { code, name, statusCode } = error as Error & {
+      code?: unknown;
+      statusCode?: unknown;
+    };
+    if (name === 'RestError' && typeof statusCode === 'number')
+      return { cause: 'STORAGE', status: statusCode };
+    if (typeof code === 'string' && SQLSTATE.test(code))
+      return { cause: 'DATABASE', code };
+  }
+  return { cause: 'UNKNOWN' };
 }
 
 /** What the sweep needs of the store (CheckInStore in production, a fake in tests). */
@@ -95,6 +146,7 @@ export interface SweepStore {
     failed: number;
   }>;
 }
+export type LogLine = Record<string, string | number | boolean | undefined>;
 
 /**
  * Sweeps each organization in turn; one failing organization does not stop the others.
@@ -103,7 +155,7 @@ export interface SweepStore {
 export async function runCleanup(
   store: SweepStore,
   options: CleanupOptions,
-  log: (line: Record<string, unknown>) => void,
+  log: (line: LogLine) => void,
 ): Promise<0 | 1> {
   let failed = 0;
   for (const orgId of options.orgIds) {
@@ -125,38 +177,69 @@ export async function runCleanup(
         event: 'selfie_cleanup_error',
         orgId,
         dryRun: options.dryRun,
-        error: error instanceof Error ? error.message : String(error),
+        ...classifyError(error),
       });
     }
   }
   return failed > 0 ? 1 : 0;
 }
 
-async function main(): Promise<number> {
-  const log = (line: Record<string, unknown>) =>
-    console.info(JSON.stringify(line));
-  const config = parseCleanupArgs(process.argv.slice(2), process.env);
+/** The process's collaborators, so that the whole run can be exercised without Azure or a database. */
+export interface MainDeps<P extends { end(): Promise<void> }> {
+  argv: readonly string[];
+  env: Readonly<Record<string, string | undefined>>;
+  blobs: () => Promise<SelfieBlobStore | undefined>;
+  pool: () => P;
+  assertLogin: (pool: P) => Promise<void>;
+  store: (pool: P, blobs: SelfieBlobStore) => SweepStore;
+  log: (line: LogLine) => void;
+}
+
+/**
+ * The whole run with its error boundary: a configuration refusal (arguments, a missing or
+ * forbidden setting, an unsafe login) is exit 2 and sweeps nothing; a startup failure for any
+ * other reason is exit 1; nothing thrown reaches the caller, and the pool is always closed.
+ */
+export async function runMain<P extends { end(): Promise<void> }>(
+  deps: MainDeps<P>,
+): Promise<0 | 1 | 2> {
+  const config = parseCleanupArgs(deps.argv, deps.env);
   if (!config.ok) {
-    log({ event: 'selfie_cleanup_config', error: config.error });
+    deps.log({ event: 'selfie_cleanup_config', ...config.refusal });
     return 2;
   }
-  const blobs = await photoBlobsFromEnv();
-  if (!blobs) {
-    log({
-      event: 'selfie_cleanup_config',
-      error:
-        'no blob store: set BLOB_ACCOUNT_URL with AZURE_CLIENT_ID (or BLOB_CONNECTION_STRING locally)',
-    });
-    return 2;
-  }
-  const pool = databasePoolFromEnv();
+  let pool: P | undefined;
   try {
-    await assertApplicationLogin(pool);
-    return await runCleanup(new CheckInStore(pool, blobs), config.options, log);
+    const blobs = await deps.blobs();
+    if (!blobs) {
+      deps.log({ event: 'selfie_cleanup_config', code: 'NO_BLOB_STORE' });
+      return 2;
+    }
+    pool = deps.pool();
+    await deps.assertLogin(pool);
+    return await runCleanup(deps.store(pool, blobs), config.options, deps.log);
+  } catch (error) {
+    const what = classifyError(error);
+    deps.log({
+      event:
+        what.cause === 'CONFIGURATION'
+          ? 'selfie_cleanup_config'
+          : 'selfie_cleanup_startup_error',
+      ...what,
+    });
+    return what.cause === 'CONFIGURATION' ? 2 : 1;
   } finally {
-    await pool.end();
+    if (pool) await pool.end().catch(() => undefined);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  process.exitCode = await main();
+  process.exitCode = await runMain<Pool>({
+    argv: process.argv.slice(2),
+    env: process.env,
+    blobs: photoBlobsFromEnv,
+    pool: databasePoolFromEnv,
+    assertLogin: assertApplicationLogin,
+    store: (pool, blobs) => new CheckInStore(pool, blobs),
+    log: (line) => console.info(JSON.stringify(line)),
+  });
