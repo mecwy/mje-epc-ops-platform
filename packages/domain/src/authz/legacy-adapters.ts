@@ -141,24 +141,6 @@ export const KERNEL_USES: readonly {
   { file: `${D}foreman-store.ts`, table: 'Project', op: 'read' },
 ];
 
-/**
- * SQL whose table is a typed parameter rather than a literal; the scan accepts exactly this many
- * unresolved table positions in the file, and only tables of the file's own module are listed.
- */
-export const DYNAMIC_TABLES: readonly {
-  file: string;
-  site: string;
-  tables: string[];
-  occurrences: number;
-}[] = [
-  {
-    file: `${D}checkin-store.ts`,
-    site: 'CheckInStore.numbered (table: ProjectSiteReference | ProjectFieldSetting)',
-    tables: ['ProjectSiteReference', 'ProjectFieldSetting'],
-    occurrences: 1,
-  },
-];
-
 export interface LegacyAdapter {
   /** File under packages/domain/src. */
   file: string;

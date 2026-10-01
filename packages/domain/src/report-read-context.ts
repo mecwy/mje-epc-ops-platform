@@ -4,8 +4,11 @@
  * never from anything the client sent. Opaque at run time: the client and actor live in a
  * module-private WeakMap, so a context carries no recoverable fields and a forged or copied
  * object is refused. It is valid only while its transaction runs: `withReportReadContext` ends
- * it before the transaction commits or rolls back, and every read checks it again, so a context
- * or view kept past its transaction cannot reach a released (possibly reused) client.
+ * it before the transaction commits or rolls back, and the client a read gets is guarded: every
+ * query checks that the context is still live. So a context, a view kept past its transaction,
+ * or a call still in flight when the callback returned cannot run a query after COMMIT or on a
+ * released (possibly reused) client; it fails with REPORT_READ_CONTEXT_CLOSED. The transaction
+ * does not wait for such calls.
  * A7-0b adds the authorization version and the account lock; callers do not change.
  */
 import type { PoolClient } from 'pg';
@@ -31,7 +34,18 @@ export async function withReportReadContext<T>(
   use: (ctx: ReportReadContext) => Promise<T>,
 ): Promise<T> {
   const ctx = Object.freeze(Object.create(null)) as ReportReadContext;
-  live.set(ctx, { client, actor });
+  const closed = () => new Error('REPORT_READ_CONTEXT_CLOSED');
+  // Every statement passes this check, including those of a call started before the context
+  // ended; a statement already sent before COMMIT was queued still completes before COMMIT.
+  const guarded = Object.create(client, {
+    query: {
+      value: (...args: Parameters<PoolClient['query']>) => {
+        if (!live.has(ctx)) throw closed();
+        return Reflect.apply(client.query, client, args);
+      },
+    },
+  }) as PoolClient;
+  live.set(ctx, { client: guarded, actor });
   try {
     return await use(ctx);
   } finally {

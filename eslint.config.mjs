@@ -124,6 +124,10 @@ export function boundaryViolation(file, spec, names, typeOnly) {
   if (file.startsWith(`${D}authz/`) && typeOnly) return null;
   const exit = BOUNDARY.exits[target];
   if (exit) {
+    // A namespace import, import() or `export * from` reaches every export ('*'): refused for
+    // an exit that keeps some exports internal.
+    if (names.includes('*') && (exit.only || exit.except))
+      return `namespace, dynamic or star access to the ${to} module exit exposes its internal exports (ADR-0003 D2)`;
     const bad = names.filter(
       (n) => (exit.only && !exit.only.includes(n)) || exit.except?.includes(n),
     );
@@ -173,7 +177,16 @@ const boundary = {
           n.exportKind === 'type',
         ),
       ExportAllDeclaration: (n) => check(n, n.source.value, ['*'], false),
-      ImportExpression: (n) => check(n, n.source.value, ['*'], false),
+      ImportExpression: (n) =>
+        n.source.type === 'Literal'
+          ? check(n, n.source.value, ['*'], false)
+          : context.report({
+              node: n,
+              messageId: 'boundary',
+              data: {
+                why: 'import() needs a literal path so the module boundary can be checked (ADR-0003 D2)',
+              },
+            }),
     };
   },
 };

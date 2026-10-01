@@ -30,11 +30,16 @@ interface Fake {
   released: () => boolean;
   /** Revokes the membership: later Membership reads return no row. */
   revoke: () => void;
+  /** Holds the next statement with this label until `resume()`. */
+  deferNext: (label: string) => void;
+  resume: () => void;
 }
 function fakePool(): Fake {
   const log: string[] = [];
   let revoked = false;
   let released = false;
+  let deferred: string | null = null;
+  let resume = () => {};
   const answer = (text: string) => {
     if (released) throw new Error('TEST: query on a released client');
     const l = label(text);
@@ -80,6 +85,10 @@ function fakePool(): Fake {
   const client = {
     query: async (text: string) => {
       const rows = answer(text);
+      if (deferred && label(text) === deferred) {
+        deferred = null;
+        await new Promise<void>((r) => (resume = r));
+      }
       return { rows, rowCount: rows.length };
     },
     release: () => {
@@ -97,6 +106,8 @@ function fakePool(): Fake {
     log,
     released: () => released,
     revoke: () => (revoked = true),
+    deferNext: (l) => (deferred = l),
+    resume: () => resume(),
   };
 }
 
@@ -178,6 +189,23 @@ describe('report read context lives only inside its transaction', () => {
       reportReader.lagHistory(captured!, PROJECT, '2026-10-03', '2026-10-05'),
     ).rejects.toThrow('REPORT_READ_CONTEXT_CLOSED');
     expect(fake.log.length).toBe(queries);
+  });
+  it('an in-flight view call never reaches the client after COMMIT: its next query is refused', async () => {
+    // Design: every query through a context's client checks that the context is still live
+    // (report-read-context.ts); the transaction does not wait for calls the callback left behind.
+    const fake = fakePool();
+    fake.deferNext('Membership');
+    let pending: Promise<unknown> | undefined;
+    await new ReportStore(fake.pool).read(identity, async (ctx) => {
+      pending = reportReader.forContext(ctx).items(PROJECT);
+      pending.catch(() => {});
+      return null;
+    });
+    expect(fake.log.at(-1)).toBe('COMMIT');
+    expect(fake.released()).toBe(true);
+    fake.resume();
+    await expect(pending).rejects.toThrow('REPORT_READ_CONTEXT_CLOSED');
+    expect(fake.log.slice(fake.log.indexOf('COMMIT') + 1)).toEqual([]);
   });
   it('a forged or copied context is refused; no client or actor is recoverable from it', async () => {
     const fake = fakePool();

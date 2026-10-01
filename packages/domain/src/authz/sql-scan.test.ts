@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
-  DYNAMIC_TABLES,
   KERNEL_USES,
   LEGACY_ADAPTERS,
   MODULES,
@@ -41,26 +40,38 @@ function discover(dir: string): string[] {
 const HOLE = '\uE000';
 /** Every maximal string expression of a source, folded to its text (unknown parts as HOLE). */
 export function stringsIn(fileName: string, text: string): string[] {
-  const source = ts.createSourceFile(
-    fileName,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-  );
-  const constants = new Map<string, ts.Expression>();
-  const collect = (node: ts.Node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer &&
-      ts.isVariableDeclarationList(node.parent) &&
-      node.parent.flags & ts.NodeFlags.Const
-    )
-      constants.set(node.name.text, node.initializer);
-    ts.forEachChild(node, collect);
+  // A one-file program: the checker binds each identifier lexically (shadowing, parameters,
+  // imports); only a `const` with an initializer folds, anything else is unknown (HOLE).
+  const path = `/${fileName}`;
+  const parsed = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+  const host: ts.CompilerHost = {
+    getSourceFile: (n) => (n === path ? parsed : undefined),
+    getDefaultLibFileName: () => '/lib.d.ts',
+    writeFile: () => {},
+    getCurrentDirectory: () => '/',
+    getCanonicalFileName: (f) => f,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => '\n',
+    fileExists: (n) => n === path,
+    readFile: () => undefined,
   };
-  collect(source);
-  const fold = (node: ts.Expression, seen: Set<string>): string => {
+  const program = ts.createProgram(
+    [path],
+    { noLib: true, noResolve: true, target: ts.ScriptTarget.Latest },
+    host,
+  );
+  const source = program.getSourceFile(path)!;
+  const checker = program.getTypeChecker();
+  const constant = (id: ts.Identifier): ts.Expression | undefined => {
+    const decl = checker.getSymbolAtLocation(id)?.valueDeclaration;
+    return decl &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer &&
+      ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const
+      ? decl.initializer
+      : undefined;
+  };
+  const fold = (node: ts.Expression, seen: Set<ts.Node>): string => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
       return node.text;
     if (ts.isNumericLiteral(node)) return node.text;
@@ -78,12 +89,10 @@ export function stringsIn(fileName: string, text: string): string[] {
       return fold(node.left, seen) + fold(node.right, seen);
     if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node))
       return fold(node.expression, seen);
-    if (
-      ts.isIdentifier(node) &&
-      constants.has(node.text) &&
-      !seen.has(node.text)
-    )
-      return fold(constants.get(node.text)!, new Set([...seen, node.text]));
+    if (ts.isIdentifier(node)) {
+      const init = constant(node);
+      if (init && !seen.has(init)) return fold(init, new Set([...seen, init]));
+    }
     return HOLE;
   };
   const isString = (node: ts.Node) =>
@@ -102,69 +111,55 @@ export function stringsIn(fileName: string, text: string): string[] {
   const out: string[] = [];
   const walk = (node: ts.Node) => {
     if (isString(node) && !inner(node))
-      out.push(fold(node as ts.Expression, new Set()));
+      out.push(fold(node as ts.Expression, new Set<ts.Node>()));
     ts.forEachChild(node, walk);
   };
   walk(source);
   return out;
 }
 
-const SQL = /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|FROM|JOIN|WITH)\b/;
-/** Keywords that can follow FROM / UPDATE / JOIN without naming a table. */
-const NOT_A_TABLE = new Set(['SET', 'LATERAL', 'ONLY']);
+/** SQL keywords, any case (PostgreSQL keywords are case-insensitive). */
+const SQL = /\b(select|insert|update|delete|merge|truncate|from|join|with)\b/i;
 export interface TableUse {
   table: string;
   op: SqlOperation;
 }
 /** Table uses of one SQL string; `unresolved` lists table positions with no known name. */
-export function sqlTables(sql: string): {
+export function sqlTables(text: string): {
   uses: TableUse[];
   unresolved: string[];
 } {
+  // SQL comments never hide a keyword from its table.
+  const sql = text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
   const uses: TableUse[] = [];
   const unresolved: string[] = [];
-  const ctes = new Set(
-    [
-      ...sql.matchAll(
-        /(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)("?\w+"?)\s+AS\s*\(/g,
-      ),
-    ].map((m) => m[1]!.replace(/"/g, '')),
-  );
+  // A table position: a keyword, optional ONLY, an optional schema, then the name. Unquoted
+  // names fold to lower case in PostgreSQL and so never reach a (quoted, PascalCase) model
+  // table: they are not ours. A position whose name is not known statically is unresolved.
   const position =
-    /\b(INSERT\s+INTO|DELETE\s+FROM|UPDATE|FROM|JOIN|INTO|TABLE)\s+((?:"[^"]*"|\w+|\uE000)\s*\.\s*)?("[^"]*"|\w+|\uE000|\()/g;
+    /\b(insert\s+into|delete\s+from|merge\s+into|truncate(?:\s+table)?|update|from|join|into|table)\s+(?:only\s+)?((?:"[^"]*"|\w+|\uE000)\s*\.\s*)?("[^"]*"|\w+|\uE000|\()/gi;
   for (const m of sql.matchAll(position)) {
-    const keyword = m[1]!.replace(/\s+/g, ' ');
+    const keyword = m[1]!.toLowerCase().replace(/\s+/g, ' ');
     const before = sql.slice(0, m.index).trimEnd();
     if (
-      keyword === 'FROM' &&
-      /\b(DISTINCT|EPOCH|YEAR|MONTH|DAY|HOUR)$/i.test(before)
+      keyword === 'from' &&
+      /\b(distinct|epoch|year|month|day|hour)$/i.test(before)
     )
       continue;
-    if (keyword === 'UPDATE' && /\b(FOR|DO)$/.test(before)) continue;
+    if (keyword === 'update' && /\b(for|do|key)$/i.test(before)) continue;
     const token = m[3]!;
-    const write = ['INSERT INTO', 'DELETE FROM', 'UPDATE'].includes(keyword);
-    if (m[2]?.includes(HOLE) || token === HOLE) {
+    if (m[2]?.includes(HOLE) || token.includes(HOLE)) {
       unresolved.push(m[0]);
       continue;
     }
-    if (token === '(') continue;
     const name = token.replace(/"/g, '');
-    if (models.has(name)) {
-      uses.push({ table: name, op: write ? 'write' : 'read' });
-      continue;
-    }
-    if (NOT_A_TABLE.has(token) || ctes.has(name) || /^pg_\w+$/.test(token))
-      continue;
-    // A function in FROM (unnest(...), jsonb_array_elements(...)) or the system catalog.
-    const after = sql.slice((m.index ?? 0) + m[0].length);
-    if (
-      /^\s*\(/.test(after) ||
-      /^(pg_catalog|information_schema)$/.test(
-        m[2]?.replace(/[\s.]/g, '') ?? '',
-      )
-    )
-      continue;
-    unresolved.push(m[0]);
+    if (token.startsWith('"') && models.has(name))
+      uses.push({
+        table: name,
+        op: /^(insert|delete|merge|truncate|update)/.test(keyword)
+          ? 'write'
+          : 'read',
+      });
   }
   // Any other quoted model name in the statement (comma joins, subqueries) is a read.
   for (const m of sql.matchAll(/"(\w+)"/g))
@@ -238,14 +233,8 @@ describe('SQL table scan (ADR-0003 D2.1)', () => {
     expect(named.filter((t) => !models.has(t))).toEqual([]);
     expect(new Set(named).size).toBe(named.length);
   });
-  it('every SQL table position resolves to a known name (or a registered typed parameter)', () => {
-    const counts = new Map<string, number>();
-    for (const u of scan(files).unresolved)
-      counts.set(u.file, (counts.get(u.file) ?? 0) + 1);
-    const allowed = new Map(DYNAMIC_TABLES.map((d) => [d.file, d.occurrences]));
-    expect(Object.fromEntries(counts)).toEqual(Object.fromEntries(allowed));
-    for (const d of DYNAMIC_TABLES)
-      for (const t of d.tables) expect(owner.get(t)).toBe(moduleOf(d.file));
+  it('every SQL table position resolves to a known name (no exceptions)', () => {
+    expect(scan(files).unresolved).toEqual([]);
   });
   it("another module's table appears only as a registered legacy adapter or kernel use", () => {
     expect(scan(files).foreign.filter((f) => !registered(f))).toEqual([]);
@@ -316,6 +305,32 @@ describe('SQL scan counter-examples', () => {
     [
       'write on a read-only adapter',
       'q(`UPDATE "ReportItem" SET active=false`);',
+    ],
+    // PR #51 round 2
+    ['lowercase keywords', 'q(`select * from "PlanVersion"`);'],
+    [
+      'UPDATE ONLY is a write',
+      'q(`UPDATE ONLY "ReportItem" SET active=false`);',
+    ],
+    [
+      'DELETE FROM ONLY is a write',
+      'q(`delete from only "ReportItem" where true`);',
+    ],
+    [
+      'comment before the table is still a write',
+      'q(`UPDATE /* TEST */ "ReportItem" SET active=false`);',
+    ],
+    [
+      'line comment before the table',
+      'q(`INSERT INTO -- TEST\n "ReportItem"(key) VALUES($1)`);',
+    ],
+    [
+      'shadowed constant in an inner scope',
+      "const t = 'PlanVersion';\nfunction g() { const t = 'Issue'; return t; }\nq(`SELECT 1 FROM \"${t}\"`);",
+    ],
+    [
+      'parameter in a table position',
+      'function h(t: string) { return q(`select 1 from "${t}"`); }',
     ],
     [
       'nested store file',

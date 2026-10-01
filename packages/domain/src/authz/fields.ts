@@ -50,62 +50,87 @@ type Opaque<V> = [V] extends [readonly unknown[]]
         : false
       : false
     : false;
-type Elem<V> = V extends readonly (infer E)[] ? E : never;
-type Arr<V> = [NonNullable<V>] extends [readonly unknown[]] ? true : false;
-type Obj<V> = [NonNullable<V>] extends [object] ? true : false;
+/** Opaque when any member of a union is (`Record<string, unknown> | string` included). */
+type AnyOpaque<V> = true extends (V extends unknown ? Opaque<V> : never)
+  ? true
+  : false;
+type ArrMembers<V> = Extract<NonNullable<V>, readonly unknown[]>;
+type ObjMembers<V> = Exclude<
+  Extract<NonNullable<V>, object>,
+  readonly unknown[]
+>;
+/** The element types of every array member. */
+type ElemOf<V> =
+  ArrMembers<V> extends infer A
+    ? A extends readonly (infer E)[]
+      ? E
+      : never
+    : never;
 /**
- * Whether a value has an opaque part anywhere inside it. Past 6 levels it answers true, so a
- * deeper value cannot be a `subtree` and must list its fields (conservative, and keeps the
- * compiler's instantiation depth bounded).
+ * Whether any member of a value (each union branch on its own keys) has an opaque part anywhere
+ * inside it; `true extends HasOpaque<V>` reads "some member does". Past 6 levels it answers
+ * true, so a deeper value cannot be a `subtree` and must list its fields (conservative, and
+ * keeps the compiler's instantiation depth bounded).
  */
 export type HasOpaque<
   V,
   Depth extends unknown[] = [],
 > = Depth['length'] extends 6
   ? true
-  : Opaque<NonNullable<V>> extends true
-    ? true
-    : Arr<V> extends true
-      ? HasOpaque<Elem<NonNullable<V>>, [...Depth, 0]>
-      : Obj<V> extends true
-        ? true extends {
-            [K in keyof NonNullable<V>]-?: HasOpaque<
-              NonNullable<V>[K],
-              [...Depth, 0]
-            >;
-          }[keyof NonNullable<V>]
-          ? true
+  : V extends unknown
+    ? Opaque<V> extends true
+      ? true
+      : V extends readonly (infer E)[]
+        ? HasOpaque<E, [...Depth, 0]>
+        : V extends object
+          ? true extends {
+              [K in keyof V]-?: HasOpaque<V[K], [...Depth, 0]>;
+            }[keyof V]
+            ? true
+            : false
           : false
-        : false;
+    : never;
 /**
- * A whole value in one layer, without listing its fields: allowed only when nothing inside it
- * is opaque (an opaque descendant must be reached through `fields` / `items` and a projector).
+ * A whole value in one layer, without listing its fields: allowed only when no member has an
+ * opaque part (an opaque descendant must be reached through `fields` / `items` and a projector).
  */
 export interface Subtree {
   subtree: Layer;
 }
+type SubtreeIfClear<V> = true extends HasOpaque<V> ? never : Subtree;
 /**
- * Classification is recursive and mandatory: an opaque value names its projector; an object
- * lists its fields and an array of objects classifies its items, unless the whole value is one
- * `subtree` layer (no opaque descendant); only a primitive or a primitive array is a bare layer.
+ * Classification is recursive and mandatory, over every union member: a value with any opaque
+ * member names its projector; a value with object members lists their fields (the keys of every
+ * member) and a value with arrays of objects classifies their items (every element member),
+ * unless the whole value is one `subtree` layer (no opaque part in any member); only primitives
+ * and arrays of primitives are a bare layer.
  */
 export type FieldSpec<V> = [NonNullable<V>] extends [never]
   ? { layer: Layer }
-  : Opaque<NonNullable<V>> extends true
+  : AnyOpaque<NonNullable<V>> extends true
     ? { layer: Layer; projector: OpaqueProjector }
-    : Arr<V> extends true
-      ? [NonNullable<Elem<NonNullable<V>>>] extends [object]
-        ? | {
-              layer: Layer;
-              items: FieldTable<NonNullable<Elem<NonNullable<V>>>>;
-            }
-          | (HasOpaque<V> extends true ? never : Subtree)
-        : { layer: Layer }
-      : Obj<V> extends true
-        ? | { layer: Layer; fields: FieldTable<NonNullable<V>> }
-          | (HasOpaque<V> extends true ? never : Subtree)
-        : { layer: Layer };
-export type FieldTable<T> = { [K in keyof T]-?: FieldSpec<T[K]> };
+    : [ArrMembers<V>] extends [never]
+      ? [ObjMembers<V>] extends [never]
+        ? { layer: Layer }
+        : | { layer: Layer; fields: FieldTable<ObjMembers<V>> }
+          | SubtreeIfClear<V>
+      : [ObjMembers<V>] extends [never]
+        ? [Extract<NonNullable<ElemOf<V>>, object>] extends [never]
+          ? { layer: Layer }
+          : | {
+                layer: Layer;
+                items: FieldTable<Extract<NonNullable<ElemOf<V>>, object>>;
+              }
+            | SubtreeIfClear<V>
+        : SubtreeIfClear<V>;
+type KeysOf<T> = T extends unknown ? keyof T : never;
+type ValueAt<T, K extends PropertyKey> = T extends unknown
+  ? K extends keyof T
+    ? T[K]
+    : never
+  : never;
+/** Every key of every member of T, each classified over the values the members give it. */
+export type FieldTable<T> = { [K in KeysOf<T>]-?: FieldSpec<ValueAt<T, K>> };
 /** A projector's output: an object, or a list of rows. */
 export type Root<T> = T extends readonly (infer E)[]
   ? { items: FieldTable<E> }

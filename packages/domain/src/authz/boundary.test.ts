@@ -82,4 +82,14 @@ describe('import boundary', () => {
     expect(v('apps/api/src/x.ts', '@mje/domain/authz')).toBeNull();
     expect(v('apps/api/src/x.ts', '@mje/domain')).toBeNull();
   });
+  it('refuses namespace, dynamic and star access to an exit with internal exports (round 2)', () => {
+    // ImportNamespaceSpecifier, import() and `export * from` all reach the module as '*'.
+    expect(v(`${D}issue-store.ts`, './report-reader.js', ['*'])).toMatch(
+      /internal/,
+    );
+    expect(v(`${D}issue-store.ts`, './report-read-context.js', ['*'])).toMatch(
+      /internal/,
+    );
+    expect(v(`${D}issue-store.ts`, './report-rules.js', ['*'])).toBeNull();
+  });
 });
