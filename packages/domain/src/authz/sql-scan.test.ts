@@ -118,8 +118,9 @@ export function stringsIn(fileName: string, text: string): string[] {
   return out;
 }
 
-/** SQL keywords, any case (PostgreSQL keywords are case-insensitive). */
-const SQL = /\b(select|insert|update|delete|merge|truncate|from|join|with)\b/i;
+/** SQL keywords, any case (PostgreSQL keywords are case-insensitive); DO bodies included. */
+const SQL =
+  /\b(select|insert|update|delete|merge|truncate|from|join|with|execute|perform|call)\b|\bdo\s*(\$|')/i;
 export interface TableUse {
   table: string;
   op: SqlOperation;
@@ -129,14 +130,94 @@ type Token =
   | { kind: 'word'; text: string }
   | { kind: 'ident'; text: string }
   | { kind: 'hole' }
-  | { kind: 'punct'; text: string };
+  | { kind: 'punct'; text: string }
+  /** A double-quoted model name found inside a single-quoted literal. */
+  | { kind: 'literalUse'; table: string }
+  /** Something the scan cannot decide statically: it fails (fail-closed). */
+  | { kind: 'undecidable'; why: string };
+/** Simple E'' escapes; any other backslash form (\x, octal, \u, \U) can spell a name. */
+const E_SIMPLE: Record<string, string> = {
+  "'": "'",
+  '\\': '\\',
+  n: '\n',
+  t: '\t',
+  b: '\b',
+  f: '\f',
+  r: '\r',
+  '"': '"',
+};
+/**
+ * A single-quoted literal starting at `start` ('…' or E'…'), fail-closed (Owner decision B on
+ * PR #51): its value may be executed (DO '…', EXECUTE '…'), so every double-quoted model name
+ * in it is a use; an unterminated literal, an escape that can spell characters (\x, octal,
+ * \u), a run-time part, or an unbalanced double quote inside it is undecidable. An unquoted
+ * name in a literal ('PlanVersion' as a label) is not a use: it cannot reach a quoted table.
+ */
+function literal(sql: string, start: number): { tokens: Token[]; end: number } {
+  const escapes = sql[start] !== "'";
+  let i = start + (escapes ? 2 : 1);
+  let value = '';
+  const tokens: Token[] = [];
+  let closed = false;
+  while (i < sql.length) {
+    const c = sql[i]!;
+    if (escapes && c === '\\') {
+      const e = sql[i + 1] ?? '';
+      if (e in E_SIMPLE) value += E_SIMPLE[e];
+      else if (/[0-7xuU]/.test(e))
+        tokens.push({
+          kind: 'undecidable',
+          why: `escape \\${e} in an E'' literal`,
+        });
+      else value += e;
+      i += 2;
+    } else if (c === "'" && sql[i + 1] === "'") {
+      value += "'";
+      i += 2;
+    } else if (c === "'") {
+      closed = true;
+      i++;
+      break;
+    } else {
+      value += c;
+      i++;
+    }
+  }
+  if (!closed)
+    tokens.push({ kind: 'undecidable', why: 'unterminated literal' });
+  if (value.includes(HOLE))
+    tokens.push({
+      kind: 'undecidable',
+      why: 'run-time value inside a literal',
+    });
+  for (let k = 0; k < value.length; k++) {
+    if (value[k] !== '"') continue;
+    let name = '';
+    let done = false;
+    for (k++; k < value.length; k++) {
+      if (value[k] === '"' && value[k + 1] === '"') {
+        name += '"';
+        k++;
+      } else if (value[k] === '"') {
+        done = true;
+        break;
+      } else name += value[k];
+    }
+    if (!done)
+      tokens.push({
+        kind: 'undecidable',
+        why: 'unbalanced double quote inside a literal',
+      });
+    else if (models.has(name)) tokens.push({ kind: 'literalUse', table: name });
+  }
+  return { tokens, end: i };
+}
 /**
  * PostgreSQL lexical scan of a folded string (HOLE marks unknown parts): single-quoted
- * literals ('' escapes; E'' also backslash escapes), double-quoted identifiers ("" escapes),
- * line comments and nested block comments are recognised as such, so comment markers inside a
- * literal hide nothing and a table named only inside a literal or comment is not a use.
- * Dollar-quoted bodies ($$…$$, $tag$…$tag$) are scanned as SQL (conservatively: they are
- * usually function or DO bodies), not skipped.
+ * literals ('' escapes; E'' also backslash escapes; analysed by `literal`), double-quoted
+ * identifiers ("" escapes), line comments and nested block comments. Dollar-quoted bodies
+ * ($$…$$, $tag$…$tag$) are scanned as SQL (conservatively: they are usually function or DO
+ * bodies). Unterminated forms and U&'' / U&"" escapes are undecidable and fail.
  */
 export function sqlTokens(sql: string): Token[] {
   const out: Token[] = [];
@@ -160,19 +241,18 @@ export function sqlTokens(sql: string): Token[] {
           if (depth === 0) break;
         } else i++;
       }
+      if (depth > 0)
+        out.push({ kind: 'undecidable', why: 'unterminated block comment' });
+    } else if ((c === 'U' || c === 'u') && next === '&') {
+      out.push({ kind: 'undecidable', why: 'U& escape form' });
+      i += 2;
     } else if (c === "'" || ((c === 'E' || c === 'e') && next === "'")) {
-      const escapes = c !== "'";
-      i += escapes ? 2 : 1;
-      while (i < n) {
-        if (escapes && sql[i] === '\\') i += 2;
-        else if (sql[i] === "'" && sql[i + 1] === "'") i += 2;
-        else if (sql[i] === "'") {
-          i++;
-          break;
-        } else i++;
-      }
+      const r = literal(sql, i);
+      out.push(...r.tokens);
+      i = r.end;
     } else if (c === '"') {
       let text = '';
+      let closed = false;
       i++;
       while (i < n) {
         if (sql[i] === '"' && sql[i + 1] === '"') {
@@ -180,15 +260,21 @@ export function sqlTokens(sql: string): Token[] {
           i += 2;
         } else if (sql[i] === '"') {
           i++;
+          closed = true;
           break;
         } else text += sql[i++];
       }
-      out.push({ kind: 'ident', text });
+      out.push(
+        closed
+          ? { kind: 'ident', text }
+          : { kind: 'undecidable', why: 'unterminated quoted identifier' },
+      );
     } else if (c === '$' && /^\$(?:[A-Za-z_][\w]*)?\$/.test(sql.slice(i))) {
       const tag = /^\$(?:[A-Za-z_][\w]*)?\$/.exec(sql.slice(i))![0];
       const end = sql.indexOf(tag, i + tag.length);
-      const body = sql.slice(i + tag.length, end < 0 ? n : end);
-      out.push(...sqlTokens(body));
+      if (end < 0)
+        out.push({ kind: 'undecidable', why: 'unterminated dollar quote' });
+      out.push(...sqlTokens(sql.slice(i + tag.length, end < 0 ? n : end)));
       i = end < 0 ? n : end + tag.length;
     } else if (c === HOLE) {
       out.push({ kind: 'hole' });
@@ -277,6 +363,16 @@ export function sqlTables(text: string): {
     }
     if (name.kind === 'ident' && models.has(name.text))
       uses.push({ table: name.text, op: write ? 'write' : 'read' });
+  }
+  // Fail-closed literal rule: a model name inside a literal is counted as a WRITE (the
+  // strictest operation, so a read-only adapter does not cover it); undecidable forms fail.
+  for (const t of tokens) {
+    if (t.kind === 'undecidable') unresolved.push(`undecidable: ${t.why}`);
+    if (
+      t.kind === 'literalUse' &&
+      !uses.some((u) => u.table === t.table && u.op === 'write')
+    )
+      uses.push({ table: t.table, op: 'write' });
   }
   // Any other quoted model name in the statement (comma joins, subqueries) is a read.
   for (const t of tokens)
@@ -492,6 +588,42 @@ describe('SQL scan counter-examples', () => {
       'doubled quote in a literal',
       "q(`SELECT 'it''s -- fine' AS t FROM \"PlanVersion\"`);",
     ],
+    // Literal follow-up (Owner decision B, fail-closed): a double-quoted model name inside any
+    // single-quoted literal is a use, counted as a WRITE; undecidable literals fail.
+    [
+      'round-4: executable SQL in a single-quoted DO body',
+      `q(\`DO 'BEGIN PERFORM 1 FROM "PlanVersion"; END;'\`);`,
+    ],
+    [
+      'round-4: EXECUTE of a literal inside a dollar body',
+      `q(\`DO $$ BEGIN EXECUTE 'SELECT 1 FROM "PlanVersion"'; END; $$\`);`,
+    ],
+    [
+      'a quoted model name in a data literal counts (fail-closed)',
+      `q(\`SELECT '"PlanVersion"' AS label FROM "Issue"\`);`,
+    ],
+    [
+      'a literal use of a read-only adapter table counts as a write',
+      `q(\`DO 'BEGIN PERFORM 1 FROM "ReportItem"; END;'\`);`,
+    ],
+    [
+      "a quoted model name in an E'' literal",
+      `q(\`SELECT E'it\\\\'s "PlanVersion"' FROM "Issue"\`);`,
+    ],
+    ['an unterminated literal', `q(\`SELECT 'abc FROM "Issue"\`);`],
+    [
+      "a numeric escape in an E'' literal",
+      `q(\`SELECT E'\\\\x22PlanVersion\\\\x22' FROM "Issue"\`);`,
+    ],
+    ["a U&'' escape literal", `q(\`SELECT U&'d\\\\0061t' FROM "Issue"\`);`],
+    ['a lone double quote in a literal', `q(\`SELECT '5"' FROM "Issue"\`);`],
+    [
+      'a run-time value inside a literal',
+      `function v(x: string) { return q(\`SELECT 1 FROM "Issue" WHERE k = '\${x}'\`); }`,
+    ],
+    ['an unterminated quoted identifier', `q(\`SELECT 1 FROM "Issue\`);`],
+    ['an unterminated dollar body', `q(\`DO $$ BEGIN PERFORM 1; END;\`);`],
+    ['an unterminated block comment', `q(\`SELECT 1 FROM "Issue" /* open\`);`],
     [
       'nested store file',
       'q(`SELECT 1 FROM "Issue"`);',
@@ -503,8 +635,12 @@ describe('SQL scan counter-examples', () => {
       if (file) expect(moduleOf(file)).toBeUndefined();
       else expect(caught(code)).toBe(true);
     });
-  it('a table only inside a literal or a comment is not a use', () => {
-    expect(caught(`q(\`SELECT '"PlanVersion"' AS label FROM "Issue"\`);`)).toBe(
+  it('an unquoted name in a literal, a comment, or an own table in a literal is not a cross-module use', () => {
+    // Own-module table inside a literal: a (write) use of the module's own table.
+    expect(caught(`q(\`DO 'BEGIN PERFORM 1 FROM "Issue"; END;'\`);`)).toBe(
+      false,
+    );
+    expect(caught(`q(\`SELECT 'it''s "Issue"' AS t FROM "Issue"\`);`)).toBe(
       false,
     );
     expect(caught('q(`SELECT 1 FROM "Issue" -- see "PlanVersion"\n`);')).toBe(
@@ -512,9 +648,6 @@ describe('SQL scan counter-examples', () => {
     );
     // PM self-check (b): a table name only inside a string literal is not a use.
     expect(caught(`q(\`SELECT 'PlanVersion' AS label FROM "Issue"\`);`)).toBe(
-      false,
-    );
-    expect(caught(`q(\`SELECT '"PlanVersion"' AS label FROM "Issue"\`);`)).toBe(
       false,
     );
   });
