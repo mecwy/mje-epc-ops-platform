@@ -157,17 +157,5 @@ export interface LegacyAdapter {
   removal: string;
 }
 
-/** Remaining cross-module reads: replaced by module exits (PM: A7-0e). */
-const READS = 'A7-0e';
-
-export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [
-  ...(['DailyClose', 'Revision'] as const).map((table): LegacyAdapter => ({
-    file: `${D}alpha-store.ts`,
-    site: 'AlphaStore (list / get / record / save)',
-    table,
-    access: 'read',
-    why: 'the Alpha site-day slice reads its days from the report day tables under its own scopeKey; its writes go through the report command exit (A7-0d)',
-    replacement: 'reportReader day lookup, or retire the Alpha slice',
-    removal: READS,
-  })),
-];
+/** All A7-0e cross-module reads now go through owning-module exits. */
+export const LEGACY_ADAPTERS: readonly LegacyAdapter[] = [];

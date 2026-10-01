@@ -1,4 +1,3 @@
-import { reportSubmittedBoundary } from './report-lookups.js';
 /**
  * Worker check-in and staged selfie (A6b; design docs/architecture/a6-field-devices-design.md
  * §3, §5, §6). A check-in is the claim "P was on site at T": it never becomes hours and never
@@ -10,6 +9,7 @@ import { reportSubmittedBoundary } from './report-lookups.js';
  * once every lock it depends on is held; every deadline is judged at it and every time written
  * is it. Coordinates never reach an error, an event, an audit row or an idempotency record.
  */
+import { reportSubmittedBoundary } from './report-lookups.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type {
@@ -213,7 +213,8 @@ export async function submittedBoundary(
   businessDate: string,
 ): Promise<number | null> {
   return reportSubmittedBoundary(client, orgId, projectId, businessDate);
-} /** The crew the person is a MEMBER of at an instant (exact timestamps). */
+}
+/** The crew the person is a MEMBER of at an instant (exact timestamps). */
 async function crewAt(
   client: PoolClient,
   orgId: string,

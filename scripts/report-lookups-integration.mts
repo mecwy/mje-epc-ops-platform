@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Pool, type QueryResult } from 'pg';
+import { Pool, type PoolClient, type QueryResult } from 'pg';
 import { testJpeg } from '../packages/testing/dist/index.js';
 import { assertLocalDatabase } from './local-db.mjs';
 
@@ -323,8 +323,9 @@ try {
     assert.ok(lookups);
     if (mode === 'visibility') await submit(today);
     const c = await owner.connect();
-    const foreign = await owner.connect();
+    let foreign: PoolClient | undefined;
     try {
+      foreign = await owner.connect();
       // A private wrong-client mutation replaces this helper's client with this other session.
       Object.assign(globalThis, { __TEST_FOREIGN_LOOKUP_CLIENT: foreign });
       await c.query('BEGIN');
@@ -370,10 +371,13 @@ try {
         'caller-client visibility preserved; another transaction sees committed state; no submission null differs from submitted zero',
       );
     } finally {
-      await c.query('ROLLBACK');
-      c.release();
-      foreign.release();
-      Reflect.deleteProperty(globalThis, '__TEST_FOREIGN_LOOKUP_CLIENT');
+      try {
+        await c.query('ROLLBACK');
+      } finally {
+        c.release();
+        foreign?.release();
+        Reflect.deleteProperty(globalThis, '__TEST_FOREIGN_LOOKUP_CLIENT');
+      }
     }
   }
   console.log(

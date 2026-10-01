@@ -312,7 +312,7 @@ try {
   const requestBackend = () =>
     owner
       .query(
-        `SELECT pid, state, wait_event_type AS "waitType", pg_blocking_pids(pid) AS blockers
+        `SELECT pid, state, wait_event_type AS "waitType", wait_event AS "waitEvent", query, pg_blocking_pids(pid) AS blockers
         FROM pg_stat_activity WHERE usename=$1 AND datname=$2 AND xact_start IS NOT NULL AND pid<>pg_backend_pid()`,
         [username, database],
       )
@@ -716,7 +716,19 @@ try {
       const request = settled(call('/items', pm.bearer, command));
       let grant;
       try {
-        const r = await waitFor(requestBackend, 3000, 'request backend');
+        // BEGIN is visible before the first account lock. Wait for the TEST trigger:
+        // its PgSleep is inside an item write, after the account admission lock.
+        const r = await waitFor(
+          async () => {
+            const b = await requestBackend();
+            return b?.waitEvent === 'PgSleep' &&
+              b.query.includes('INSERT INTO "ReportItem"')
+              ? b
+              : null;
+          },
+          3000,
+          'request inside the slow item trigger, after account lock',
+        );
         grant = await writer(GRANT, [org, seed, pm.account, projectA2]);
         await waitFor(
           async () => {
