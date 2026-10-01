@@ -10,17 +10,22 @@
 // config file that is never committed (default private/dev-deploy.json; values are kept in the
 // private runbook). The signed-in az account must be that tenant and subscription. Only a commit
 // already on origin/main is built, from a `git archive` export (no working-tree files, no .env).
-// az runs with the operator's own login. Output: own progress lines and stop messages only; the
-// stderr of git / az / the smoke is captured, never printed, and kept in a local error log (its
-// path is printed). Every wait has an elapsed-time deadline and every subprocess a timeout.
+// az runs with the operator's own login. Output: own progress and stop messages, the migration
+// execution status, the az commands of a dry-run, and the smoke's one-line JSON summary (statuses,
+// counts, asset names; by design no credentials or response bodies). The stderr of git / az / the
+// smoke is captured, never printed, and kept in a per-run private error log (directory 0700, file
+// 0600, created exclusively; its path is printed). Every wait has an elapsed-time deadline and
+// every subprocess a timeout.
 import { execFileSync } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -243,7 +248,26 @@ export function isEntryPoint(
 }
 
 // ---------- side effects (dry-run prints az commands instead of running them) ----------
-export const ERROR_LOG = join(tmpdir(), 'mje-dev-deploy-errors.log');
+/**
+ * Raw stderr of failed steps, which may carry anything a tool printed: a per-run directory created
+ * with mkdtemp (0700) and a log created exclusively in it (0600), so it is never a predictable,
+ * shared or pre-existing path. Kept after the run (outside the source cleanup).
+ */
+let errorLog: string | null = null;
+export function logError(label: string, stderr: unknown): string {
+  if (!errorLog) {
+    const dir = mkdtempSync(join(tmpdir(), 'mje-dev-deploy-errors-'));
+    chmodSync(dir, 0o700);
+    const file = join(dir, 'errors.log');
+    writeFileSync(file, '', { flag: 'wx', mode: 0o600 });
+    errorLog = file;
+  }
+  appendFileSync(
+    errorLog,
+    `${new Date().toISOString()} ${label}\n${String(stderr ?? '')}\n`,
+  );
+  return errorLog;
+}
 const MINUTE = 60_000;
 const sleep = (ms: number) =>
   new Promise((r) => setTimeout(r, Math.max(0, ms)));
@@ -273,14 +297,11 @@ function run(
       signal?: string | null;
       stderr?: Buffer;
     };
-    appendFileSync(
-      ERROR_LOG,
-      `${new Date().toISOString()} ${label}\n${String(e.stderr ?? '')}\n`,
-    );
+    const log = logError(label, e.stderr);
     const why = e.signal
       ? 'timed out or was stopped'
       : `failed (exit ${String(e.status)})`;
-    throw new DeployStop(`${label} ${why}; details in ${ERROR_LOG}`);
+    throw new DeployStop(`${label} ${why}; details in ${log}`);
   }
 }
 const text = (b: Buffer) => b.toString('utf8').trim();
@@ -479,10 +500,7 @@ async function main(options: Options) {
           // The smoke exits 1 on a failed check; its stdout is still its one JSON summary.
           const e = error as { stdout?: Buffer; stderr?: Buffer };
           out = text(e.stdout ?? Buffer.alloc(0));
-          appendFileSync(
-            ERROR_LOG,
-            `${new Date().toISOString()} smoke\n${String(e.stderr ?? '')}\n`,
-          );
+          console.log(`smoke stderr kept in ${logError('smoke', e.stderr)}`);
         }
         const parsed = (() => {
           try {

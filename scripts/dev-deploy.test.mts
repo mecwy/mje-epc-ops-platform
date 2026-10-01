@@ -6,11 +6,12 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -226,6 +227,9 @@ test('a bad option or a failing subprocess prints a stop message only; stderr st
     writeFileSync(configFile, JSON.stringify(config));
     const tmp = join(dir, 'tmp');
     mkdirSync(tmp);
+    const planted = join(dir, 'planted.log');
+    writeFileSync(planted, '');
+    symlinkSync(planted, join(tmp, 'mje-dev-deploy-errors.log'));
     const r = spawnSync(
       process.execPath,
       [SCRIPT, 'app', '--config', configFile, '--dry-run'],
@@ -240,13 +244,23 @@ test('a bad option or a failing subprocess prints a stop message only; stderr st
     );
     assert.equal(r.status, 1);
     assert.ok(!(r.stdout + r.stderr).includes(secret), r.stdout + r.stderr);
-    assert.match(
-      r.stderr,
-      /^dev-deploy stopped: git fetch failed \(exit 7\); details in /,
-    );
+    const m =
+      /^dev-deploy stopped: git fetch failed \(exit 7\); details in (\S+)$/.exec(
+        r.stderr.trim(),
+      );
+    assert.ok(m, r.stderr);
     assert.ok(!r.stderr.includes('    at '), 'no stack trace');
-    const log = readFileSync(join(tmp, 'mje-dev-deploy-errors.log'), 'utf8');
-    assert.ok(log.includes(secret), 'the details are kept locally');
+    const log = m[1] as string;
+    // A per-run private directory and an exclusively created private file, inside TMPDIR.
+    assert.ok(log.startsWith(join(tmp, 'mje-dev-deploy-errors-')), log);
+    assert.equal(statSync(dirname(log)).mode & 0o777, 0o700);
+    assert.equal(statSync(log).mode & 0o777, 0o600);
+    assert.ok(
+      readFileSync(log, 'utf8').includes(secret),
+      'details kept locally',
+    );
+    // The old predictable path is never written, even when something is planted there.
+    assert.equal(readFileSync(planted, 'utf8'), '');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
