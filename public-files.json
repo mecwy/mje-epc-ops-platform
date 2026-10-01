@@ -256,6 +256,7 @@
   "packages/domain/src/report-rules.test.ts",
   "packages/domain/src/report-rules.ts",
   "packages/domain/src/report-store.ts",
+  "packages/domain/src/store-kit.test.ts",
   "packages/domain/src/store-kit.ts",
   "packages/domain/tsconfig.json",
   "packages/testing/package.json",
@@ -306,5 +307,6 @@
   "scripts/publication-policy.test.mjs",
   "scripts/report-integration.mjs",
   "scripts/smoke.mjs",
+  "scripts/tx-protocol-integration.mjs",
   "vitest.config.ts"
 ]

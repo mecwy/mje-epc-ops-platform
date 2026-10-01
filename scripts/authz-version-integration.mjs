@@ -223,6 +223,51 @@ try {
     'LoginAccount.personId change (to another person, to NULL, back) bumps once each',
   );
 
+  {
+    // Decision (b) on agent A's question: the identity and the org of an account are part of its
+    // authorization, so changing any of them bumps once. A spare account without person or
+    // memberships, moved to a second org and back.
+    const spare = randomUUID(),
+      org2 = randomUUID();
+    await owner.query(
+      'INSERT INTO "Organization"(id,name,"updatedAt","updatedBy") VALUES($1,\'TEST Organization 2\',now(),$2)',
+      [org2, actor],
+    );
+    await owner.query(
+      'INSERT INTO "LoginAccount"(id,"orgId","updatedAt","updatedBy","entraTenantId","entraObjectId") VALUES($1,$2,now(),$3,$4,$5)',
+      [spare, org, actor, tenant, randomUUID()],
+    );
+    assert.equal(await version(spare), 1);
+    await owner.query(
+      'UPDATE "LoginAccount" SET "entraTenantId"=$2 WHERE id=$1',
+      [spare, randomUUID()],
+    );
+    assert.equal(await version(spare), 2);
+    await owner.query(
+      'UPDATE "LoginAccount" SET "entraObjectId"=$2 WHERE id=$1',
+      [spare, randomUUID()],
+    );
+    assert.equal(await version(spare), 3);
+    await owner.query('UPDATE "LoginAccount" SET "orgId"=$2 WHERE id=$1', [
+      spare,
+      org2,
+    ]);
+    assert.equal(await version(spare), 4);
+    await owner.query('UPDATE "LoginAccount" SET "orgId"=$2 WHERE id=$1', [
+      spare,
+      org,
+    ]);
+    assert.equal(await version(spare), 5);
+    await owner.query(
+      'UPDATE "LoginAccount" SET "entraTenantId"="entraTenantId","entraObjectId"="entraObjectId","orgId"="orgId" WHERE id=$1',
+      [spare],
+    );
+    assert.equal(await version(spare), 5);
+    pass(
+      'LoginAccount entraTenantId, entraObjectId and orgId changes bump once each; same-value writes do not',
+    );
+  }
+
   await owner.query(
     'UPDATE "LoginAccount" SET "updatedAt"=now(),"updatedBy"=$2,version=version+1,active=active,"personId"="personId" WHERE id=$1',
     [accountA, randomUUID()],

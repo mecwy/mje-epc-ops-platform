@@ -1,15 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { SaveAlphaCommand } from '@mje/contracts';
+import {
+  accountTransaction,
+  type AccountAdmission,
+  type Actor,
+} from './store-kit.js';
 
 export interface Identity {
   tenantId: string;
   objectId: string;
-}
-interface Actor {
-  orgId: string;
-  accountId: string;
-  personId: string;
 }
 export class AlphaError extends Error {
   constructor(
@@ -23,6 +23,11 @@ export class AlphaError extends Error {
     super(code);
   }
 }
+const ALPHA_ADMISSION: AccountAdmission = {
+  admit: (memberships) =>
+    memberships.some((m) => m.role === 'ALPHA_OWNER' && m.projectId !== null),
+  forbidden: () => new AlphaError('FORBIDDEN'),
+};
 export interface ProjectRow {
   id: string;
   name: string;
@@ -44,40 +49,12 @@ export interface RecordRow {
 export class AlphaStore {
   constructor(private readonly pool: Pool) {}
 
-  private async transaction<T>(
+  /** The shared account transaction (ADR-0003 D5); admitted with an active project ALPHA_OWNER role. */
+  private transaction<T>(
     identity: Identity,
     work: (client: PoolClient, actor: Actor) => Promise<T>,
   ): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query("SET LOCAL statement_timeout = '10s'");
-      await client.query(
-        "SELECT set_config('app.tenant_id', $1, true), set_config('app.object_id', $2, true)",
-        [identity.tenantId, identity.objectId],
-      );
-      const accounts = await client.query<Actor>(
-        `SELECT a."orgId", a.id AS "accountId", a."personId"
-        FROM "LoginAccount" a WHERE a.active AND a."entraTenantId"=$1 AND a."entraObjectId"=$2 AND a."personId" IS NOT NULL
-        AND EXISTS (SELECT 1 FROM "Membership" m WHERE m."orgId"=a."orgId" AND m."accountId"=a.id
-          AND m.role='ALPHA_OWNER' AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now()) AND m."projectId" IS NOT NULL)
-       `,
-        [identity.tenantId, identity.objectId],
-      );
-      if (accounts.rows.length !== 1) throw new AlphaError('FORBIDDEN');
-      const actor = accounts.rows[0]!;
-      await client.query("SELECT set_config('app.org_id', $1, true)", [
-        actor.orgId,
-      ]);
-      const result = await work(client, actor);
-      await client.query('COMMIT');
-      return result;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    return accountTransaction(this.pool, identity, ALPHA_ADMISSION, work);
   }
 
   private async project(

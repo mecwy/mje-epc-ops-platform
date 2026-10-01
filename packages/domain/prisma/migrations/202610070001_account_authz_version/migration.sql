@@ -1,8 +1,8 @@
 -- A7-0b account authorization version and first account lock (ADR-0003 D5; additive).
 -- authzVersion moves forward in the same transaction as every grant or revocation write, so no
 -- writer has to remember it: a Membership insert, update or delete bumps the affected account
--- (old and new account when the row moves), and a change of LoginAccount.active or personId
--- bumps the row itself. Function bodies pin search_path (pg_catalog first, pg_temp last) and
+-- (old and new account when the row moves), and a change of LoginAccount.active, personId,
+-- entraTenantId, entraObjectId or orgId (who the account is, and where) bumps the row itself. Function bodies pin search_path (pg_catalog first, pg_temp last) and
 -- qualify table names, so a caller's temporary table cannot shadow them (202610030001 pattern).
 ALTER TABLE "LoginAccount" ADD COLUMN "authzVersion" INTEGER NOT NULL DEFAULT 1;
 
@@ -14,7 +14,10 @@ BEGIN
   IF NEW."authzVersion" < OLD."authzVersion" THEN
     RAISE EXCEPTION 'the account authorization version never moves back';
   END IF;
-  IF NEW.active IS DISTINCT FROM OLD.active OR NEW."personId" IS DISTINCT FROM OLD."personId" THEN
+  IF NEW.active IS DISTINCT FROM OLD.active OR NEW."personId" IS DISTINCT FROM OLD."personId"
+    OR NEW."entraTenantId" IS DISTINCT FROM OLD."entraTenantId"
+    OR NEW."entraObjectId" IS DISTINCT FROM OLD."entraObjectId"
+    OR NEW."orgId" IS DISTINCT FROM OLD."orgId" THEN
     NEW."authzVersion" := NEW."authzVersion" + 1;
   END IF;
   RETURN NEW;
