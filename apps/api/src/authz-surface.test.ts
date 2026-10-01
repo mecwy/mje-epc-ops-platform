@@ -3,7 +3,7 @@
  * authz/surface.ts and every surface route is registered (all stores present), every Worker /
  * CLI entry file is registered, and the report read routes reach the report module exit.
  */
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
@@ -91,30 +91,77 @@ describe('route enumeration (ADR-0003 D2.2)', () => {
   });
 });
 
-describe('Worker / CLI entry enumeration (ADR-0003 D2.2)', () => {
-  /** Process entry files: the worker's sources and every file with a main-module guard. */
-  function entryFiles(): string[] {
-    const files: string[] = [];
-    for (const app of ['api', 'worker']) {
-      const dir = `apps/${app}/src`;
-      for (const name of readdirSync(repo + dir)) {
-        if (!name.endsWith('.ts') || name.endsWith('.test.ts')) continue;
-        const text = readFileSync(`${repo}${dir}/${name}`, 'utf8');
-        const guarded =
-          /import\.meta\.url\s*===\s*pathToFileURL\(process\.argv\[1\]/.test(
-            text,
-          );
-        if (app === 'worker' || guarded || name.startsWith('cleanup-'))
-          files.push(`${dir}/${name}`);
-      }
-    }
-    return files.sort();
+/**
+ * Process entry convention (ADR-0003 D2.2; PR #51 review 6):
+ * - every non-test source under apps/worker/src, at any depth, is a worker entry;
+ * - an apps/api/src source (any depth) is a CLI entry exactly when it carries the one accepted
+ *   main guard `import.meta.url === pathToFileURL(process.argv[1]).href`;
+ * - apps/api/src/main.ts is the HTTP host, enumerated by its routes;
+ * - any other main-module test (`import.meta.main`, `require.main`, `process.argv[1]` in another
+ *   form) is refused, so an entry cannot hide behind a different guard;
+ * - every `dist/<file>.js` a Dockerfile, app package script or Bicep job launches is the HTTP
+ *   host or a registered entry.
+ * Discovered and registered entries must be the same set.
+ */
+export const CANONICAL_GUARD =
+  /import\.meta\.url\s*===\s*pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href/;
+const OTHER_GUARD =
+  /import\.meta\.main|require\.main|process\.argv\[1\]|import\.meta\.filename\s*===|import\.meta\.path\s*===/;
+const HTTP_HOST = 'apps/api/src/main.ts';
+function sourcesUnder(dir: string): string[] {
+  return readdirSync(repo + dir, { withFileTypes: true }).flatMap((d) =>
+    d.isDirectory()
+      ? sourcesUnder(`${dir}${d.name}/`)
+      : d.name.endsWith('.ts') && !d.name.endsWith('.test.ts')
+        ? [`${dir}${d.name}`]
+        : [],
+  );
+}
+export function discoverEntries(
+  read = (f: string) => readFileSync(repo + f, 'utf8'),
+) {
+  const entries: string[] = [];
+  const refused: string[] = [];
+  for (const file of sourcesUnder('apps/worker/src/')) entries.push(file);
+  for (const file of sourcesUnder('apps/api/src/')) {
+    const text = read(file);
+    const canonical = CANONICAL_GUARD.test(text);
+    if (canonical) entries.push(file);
+    if (OTHER_GUARD.test(text.replace(CANONICAL_GUARD, '')) && !canonical)
+      refused.push(file);
   }
-  it('every entry file is registered and every registered entry exists', () => {
-    const files = entryFiles();
-    expect(files.length).toBeGreaterThan(0);
-    expect(files.filter((f) => !PROCESS_ENTRIES.includes(f))).toEqual([]);
-    expect(PROCESS_ENTRIES.filter((f) => !existsSync(repo + f))).toEqual([]);
+  return { entries: entries.sort(), refused };
+}
+function launched(): string[] {
+  const configs = [
+    ...readdirSync(repo).filter((f) => f.startsWith('Dockerfile')),
+    'apps/api/package.json',
+    'apps/worker/package.json',
+    ...readdirSync(repo + 'infra/bicep')
+      .filter((f) => f.endsWith('.bicep'))
+      .map((f) => `infra/bicep/${f}`),
+  ];
+  return configs.flatMap((config) => {
+    const app = config.startsWith('apps/worker') ? 'worker' : 'api';
+    return [
+      ...readFileSync(repo + config, 'utf8').matchAll(/dist\/([\w/-]+)\.js/g),
+    ].map((m) => `apps/${app}/src/${m[1]}.ts`);
+  });
+}
+
+describe('Worker / CLI entry enumeration (ADR-0003 D2.2)', () => {
+  it('discovered entries and registered entries are the same set', () => {
+    const { entries, refused } = discoverEntries();
+    expect(refused).toEqual([]);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries).toEqual([...PROCESS_ENTRIES].sort());
+  });
+  it('every launched dist file is the HTTP host or a registered entry', () => {
+    const found = launched();
+    expect(found).toContain('apps/api/src/cleanup-selfies.ts');
+    expect(
+      found.filter((f) => f !== HTTP_HOST && !PROCESS_ENTRIES.includes(f)),
+    ).toEqual([]);
   });
 });
 

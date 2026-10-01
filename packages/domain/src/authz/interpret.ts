@@ -22,6 +22,7 @@ export interface Decision {
 
 interface Spec {
   layer?: Layer;
+  subtree?: Layer;
   fields?: Record<string, Spec>;
   items?: Record<string, Spec>;
 }
@@ -31,7 +32,8 @@ function paths(
   prefix: string,
 ): string[] {
   return Object.entries(table).flatMap(([key, spec]) => {
-    if (spec.layer && !layers.includes(spec.layer)) return [];
+    const layer = spec.layer ?? spec.subtree;
+    if (layer && !layers.includes(layer)) return [];
     const here = `${prefix}${key}`;
     if (spec.fields) return [here, ...paths(spec.fields, layers, `${here}.`)];
     if (spec.items) return [here, ...paths(spec.items, layers, `${here}[].`)];

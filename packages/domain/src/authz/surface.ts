@@ -271,7 +271,7 @@ const DEVICE = {
   advances: ['FieldDevice.version'],
 };
 
-export const SURFACE: readonly SurfaceEntry[] = [
+const ENTRIES: readonly SurfaceEntry[] = [
   // ---------- platform ----------
   read(
     'GET /health/live',
@@ -464,7 +464,10 @@ export const SURFACE: readonly SurfaceEntry[] = [
     'body.projectId',
     'ReportStore.adoptForeman',
     'cas',
-    { protects: [DAY, 'ForemanReportRevision.n'], advances: [DAY] },
+    {
+      protects: [DAY, 'ForemanReportRevision.n'],
+      advances: [DAY, 'FieldDay.seq'],
+    },
   ),
 
   // ---------- issues ----------
@@ -593,13 +596,25 @@ export const SURFACE: readonly SurfaceEntry[] = [
   fieldAdminRead('devices', 'FieldStore.devices'),
   fieldAdminWrite('crews', 'FieldStore.createCrew', 'cas', ROSTER),
   fieldAdminWrite('crews/end', 'FieldStore.endCrew', 'cas', ROSTER),
-  fieldAdminWrite('roster/changes', 'FieldStore.changeRoster', 'cas', ROSTER),
+  fieldAdminWrite('roster/changes', 'FieldStore.changeRoster', 'cas', {
+    protects: ROSTER.protects,
+    // recomputeDevices ends devices whose person left the roster
+    advances: [
+      ...ROSTER.advances,
+      'FieldDevice.version',
+      'FieldDevice.current(person)',
+    ],
+  }),
   fieldAdminWrite('devices/confirm', 'FieldStore.pmConfirm', 'cas', {
     protects: ['FieldDevice.current(person)'],
     advances: ['FieldDevice.version', 'FieldDevice.current(person)'],
   }),
   fieldAdminWrite('devices/reject', 'FieldStore.pmDevice', 'cas', DEVICE),
-  fieldAdminWrite('devices/revoke', 'FieldStore.pmDevice', 'cas', DEVICE),
+  fieldAdminWrite('devices/revoke', 'FieldStore.pmDevice', 'cas', {
+    protects: DEVICE.protects,
+    // revoking the confirmed device changes the person's current device
+    advances: [...DEVICE.advances, 'FieldDevice.current(person)'],
+  }),
   fieldAdminWrite(
     'entry-code/rotate',
     'FieldStore.rotateEntryCode',
@@ -649,7 +664,7 @@ export const SURFACE: readonly SurfaceEntry[] = [
     'body.code',
     'FieldStore.bind',
     'create',
-    { advances: ['FieldDevice.generation'] },
+    {},
     { outsideD1: true },
   ),
   read('GET /api/field/me', 'fieldDevice', ['field.device.session'], 'device', {
@@ -674,7 +689,7 @@ export const SURFACE: readonly SurfaceEntry[] = [
     'device',
     'FieldStore.release',
     'append',
-    { advances: ['FieldDevice.version'] },
+    { advances: ['FieldDevice.version', 'FieldDevice.current(person)'] },
   ),
   write(
     'POST /api/field/device/rotate',
@@ -707,6 +722,7 @@ export const SURFACE: readonly SurfaceEntry[] = [
     'device',
     'FieldStore.reject',
     'append',
+    { advances: ['FieldDevice.version'] },
   ),
   write(
     'POST /api/field/checkin',
@@ -792,6 +808,18 @@ export const SURFACE: readonly SurfaceEntry[] = [
     outsideD1: true,
   },
 ];
+
+/**
+ * Every device-authenticated request runs in fieldTransaction (field-kit), which ends a device
+ * whose membership or roster lapsed when it observes that (endDevice: FieldDevice.version, and
+ * the person's current device). So every device entry, read or write, may advance both.
+ */
+const DEVICE_EXPIRY = ['FieldDevice.version', 'FieldDevice.current(person)'];
+export const SURFACE: readonly SurfaceEntry[] = ENTRIES.map((e) =>
+  e.principal === 'fieldDevice'
+    ? { ...e, advances: [...new Set([...e.advances, ...DEVICE_EXPIRY])] }
+    : e,
+);
 
 /** The Worker / CLI entry files the entry scan expects (repository-relative). */
 export const PROCESS_ENTRIES = SURFACE.filter(

@@ -95,4 +95,36 @@ describe('surface.ts', () => {
       ['POST /api/field/entry', 'entry roster'],
     ]);
   });
+  it('declares what each field writer advances (audit against the code, PR #51 review 7)', () => {
+    const advances = (entry: string) =>
+      [...(SURFACE.find((e) => e.entry === entry)?.advances ?? [])].sort();
+    const V = 'FieldDevice.version';
+    const CUR = 'FieldDevice.current(person)';
+    // endDevice (field-kit) bumps FieldDevice.version.
+    expect(advances('POST /api/field/devices/reject')).toEqual([CUR, V].sort());
+    expect(advances('POST /api/report/field/devices/reject')).toEqual([V]);
+    // Release and revoke end the person's current device.
+    expect(advances('POST /api/field/device/release')).toEqual([CUR, V].sort());
+    expect(advances('POST /api/report/field/devices/revoke')).toEqual(
+      [CUR, V].sort(),
+    );
+    // recomputeDevices on a roster change.
+    expect(advances('POST /api/report/field/roster/changes')).toEqual(
+      ['ProjectRoster.version', V, CUR].sort(),
+    );
+    expect(advances('POST /api/report/field/crews')).toEqual([
+      'ProjectRoster.version',
+    ]);
+    // Adoption takes a field day sequence number (nextSeq).
+    expect(advances('POST /api/report/foreman/adopt')).toEqual(
+      ['DailyClose.version', 'FieldDay.seq'].sort(),
+    );
+    // A new pending device advances nothing another command depends on.
+    expect(advances('POST /api/field/bind')).toEqual([]);
+    // Any device request may end its expired device (fieldTransaction).
+    expect(advances('GET /api/field/me')).toEqual([CUR, V].sort());
+    expect(advances('POST /api/field/checkin')).toEqual(
+      [CUR, V, 'FieldDay.seq'].sort(),
+    );
+  });
 });

@@ -51,15 +51,59 @@ type Opaque<V> = [V] extends [readonly unknown[]]
       : false
     : false;
 type Elem<V> = V extends readonly (infer E)[] ? E : never;
-export type FieldSpec<V> =
-  Opaque<NonNullable<V>> extends true
+type Arr<V> = [NonNullable<V>] extends [readonly unknown[]] ? true : false;
+type Obj<V> = [NonNullable<V>] extends [object] ? true : false;
+/**
+ * Whether a value has an opaque part anywhere inside it. Past 6 levels it answers true, so a
+ * deeper value cannot be a `subtree` and must list its fields (conservative, and keeps the
+ * compiler's instantiation depth bounded).
+ */
+export type HasOpaque<
+  V,
+  Depth extends unknown[] = [],
+> = Depth['length'] extends 6
+  ? true
+  : Opaque<NonNullable<V>> extends true
+    ? true
+    : Arr<V> extends true
+      ? HasOpaque<Elem<NonNullable<V>>, [...Depth, 0]>
+      : Obj<V> extends true
+        ? true extends {
+            [K in keyof NonNullable<V>]-?: HasOpaque<
+              NonNullable<V>[K],
+              [...Depth, 0]
+            >;
+          }[keyof NonNullable<V>]
+          ? true
+          : false
+        : false;
+/**
+ * A whole value in one layer, without listing its fields: allowed only when nothing inside it
+ * is opaque (an opaque descendant must be reached through `fields` / `items` and a projector).
+ */
+export interface Subtree {
+  subtree: Layer;
+}
+/**
+ * Classification is recursive and mandatory: an opaque value names its projector; an object
+ * lists its fields and an array of objects classifies its items, unless the whole value is one
+ * `subtree` layer (no opaque descendant); only a primitive or a primitive array is a bare layer.
+ */
+export type FieldSpec<V> = [NonNullable<V>] extends [never]
+  ? { layer: Layer }
+  : Opaque<NonNullable<V>> extends true
     ? { layer: Layer; projector: OpaqueProjector }
-    : [NonNullable<V>] extends [readonly unknown[]]
-      ? Elem<NonNullable<V>> extends object
-        ? { layer: Layer; items?: FieldTable<Elem<NonNullable<V>>> }
+    : Arr<V> extends true
+      ? [NonNullable<Elem<NonNullable<V>>>] extends [object]
+        ? | {
+              layer: Layer;
+              items: FieldTable<NonNullable<Elem<NonNullable<V>>>>;
+            }
+          | (HasOpaque<V> extends true ? never : Subtree)
         : { layer: Layer }
-      : [NonNullable<V>] extends [object]
-        ? { layer: Layer; fields?: FieldTable<NonNullable<V>> }
+      : Obj<V> extends true
+        ? | { layer: Layer; fields: FieldTable<NonNullable<V>> }
+          | (HasOpaque<V> extends true ? never : Subtree)
         : { layer: Layer };
 export type FieldTable<T> = { [K in keyof T]-?: FieldSpec<T[K]> };
 /** A projector's output: an object, or a list of rows. */
@@ -118,8 +162,10 @@ export type ProjectorName = keyof ProjectorDtos | UnlayeredProjector;
 
 const S = { layer: 'structure' } as const;
 const SUB = { layer: 'submitted' } as const;
-const TEXT = { layer: 'public-text' } as const;
 const COORD = { layer: 'coordinates' } as const;
+const FW = { layer: 'field-writer' } as const;
+/** A whole object or list in one layer (no opaque part inside; checked by FieldSpec). */
+const sub = (layer: Layer) => ({ subtree: layer }) as const;
 
 /** One photo: everything structure except exact coordinates (OD20). */
 const photo = (layer: Layer): FieldTable<PhotoDto> => ({
@@ -137,14 +183,18 @@ const photo = (layer: Layer): FieldTable<PhotoDto> => ({
   deviceCapturedAt: { layer },
   file: {
     layer,
-    fields: { takenLocal: { layer }, takenAt: { layer }, gps: COORD },
+    fields: {
+      takenLocal: { layer },
+      takenAt: { layer },
+      gps: sub('coordinates'),
+    },
   },
   location: { layer },
   coordinates: S,
   hasThumbnail: S,
   receivedAt: S,
   uploadedByPersonId: S,
-  link: { layer },
+  link: sub(layer),
   linkVersion: { layer },
 });
 const days = (state: Layer): Root<ReportDayRowDto[]> => ({
@@ -161,19 +211,19 @@ const dayCommon = (content: Layer) =>
     version: { layer: content },
     currentRevisionNumber: S,
     correctionReason: { layer: content },
-    facts: { layer: content },
-    items: S,
-    planStatus: { layer: content },
-    baseline: S,
-    nextPlan: { layer: content },
+    facts: sub(content),
+    items: sub('structure'),
+    planStatus: sub(content),
+    baseline: sub('structure'),
+    nextPlan: sub(content),
     previousSubmittedDate: SUB,
-    cumulativeBase: SUB,
-    materialsCumulative: { layer: content },
-    issues: content === 'draft' ? TEXT : SUB,
+    cumulativeBase: sub('submitted'),
+    materialsCumulative: sub(content),
+    issues: sub(content === 'draft' ? 'public-text' : 'submitted'),
     photos: { layer: content, items: photo(content) },
     unlinkedPhotos: { layer: content },
-    coverage: { layer: content },
-    revisions: SUB,
+    coverage: sub(content),
+    revisions: sub('submitted'),
   }) as const;
 const revision = (projector: OpaqueProjector, layer: Layer) => ({
   fields: {
@@ -187,10 +237,10 @@ const revision = (projector: OpaqueProjector, layer: Layer) => ({
 const plan = (live: Layer): Root<ReportPlanDto> => ({
   fields: {
     targetBusinessDate: S,
-    status: { layer: live },
-    rows: { layer: live },
-    draft: { layer: live },
-    versions: S,
+    status: sub(live),
+    rows: sub(live),
+    draft: sub(live),
+    versions: sub('structure'),
   },
 });
 const photoList = (layer: Layer): Root<PhotoListDto> => ({
@@ -208,12 +258,27 @@ const photoMeta = (layer: Layer): Root<PhotoGetDto> => ({
 
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.projects': {
-    fields: { accountId: S, personId: S, projects: S },
+    fields: { accountId: S, personId: S, projects: sub('structure') },
   },
   'report.days.writer': days('draft'),
   'report.days.reader': days('submitted'),
   'report.day.writer': {
-    fields: { ...dayCommon('draft'), foreman: { layer: 'field-writer' } },
+    fields: {
+      ...dayCommon('draft'),
+      foreman: {
+        layer: 'field-writer',
+        fields: {
+          rosterVersion: FW,
+          expectedCrews: sub('field-writer'),
+          revisions: sub('field-writer'),
+          items: sub('field-writer'),
+          adoptions: sub('field-writer'),
+          basis: sub('field-writer'),
+          submittedExpectedCrews: FW,
+          expectedCrewsChanged: FW,
+        },
+      },
+    },
   },
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
@@ -233,16 +298,25 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
     },
   },
   'report.lagHistory': {
-    items: { businessDate: S, baseline: S, qty: SUB },
+    items: {
+      businessDate: S,
+      baseline: sub('structure'),
+      qty: sub('submitted'),
+    },
   },
   'issue.list': {
-    fields: { access: S, projectId: S, businessDate: S, issues: TEXT },
+    fields: {
+      access: S,
+      projectId: S,
+      businessDate: S,
+      issues: sub('public-text'),
+    },
   },
   'issue.get': {
-    fields: { access: S, issue: TEXT },
+    fields: { access: S, issue: sub('public-text') },
   },
   'issue.lag': {
-    fields: { projectId: S, businessDate: S, suggestions: SUB },
+    fields: { projectId: S, businessDate: S, suggestions: sub('submitted') },
   },
   'photo.list.writer': photoList('draft'),
   'photo.list.reader': photoList('submitted'),
