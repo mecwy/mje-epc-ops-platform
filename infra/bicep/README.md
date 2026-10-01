@@ -40,3 +40,49 @@ Once an environment holds records that must be kept, an application rollback nev
 4. **Verify before reopening.** If ingress was disabled, re-enable it with only the owner's address allowed; keep general access blocked until the checks pass. Through the owner's allowed address, check sign-in, representative reads and writes, and that an unauthorised account is still refused. Then remove the restriction explicitly.
 
 Database-destructive operations (`DROP TABLE` / `DROP COLUMN`, `prisma db push` / `migrate reset`) are allowed only on a database explicitly labelled as a disposable TEST database. A disposable TEST database does not make its resource group disposable: the Dev group also holds PostgreSQL and evidence storage, and Blob versioning does not survive deleting the storage account. Deleting a resource group is never part of an application rollback; a separate teardown first establishes that the whole group and every resource in it are disposable. This supersedes the "drop the four tables and the `correctionReason` column" note in the A2 pull request, which was written before Dev held any data.
+
+## Selfie retention sweep and blob backstop (Dev)
+
+Selfies are kept `SELFIE_RETENTION_DAYS` after they were attached, then deleted with an audit row
+(A6 design §3, U9). The sweep is `node dist/cleanup-selfies.js` in the app image, run by the
+scheduled job `mjeepc-dev-selfie-cleanup` under the app identity (PM decision 2026-10-01, option A:
+no new role). A storage lifecycle rule deletes any blob under `evidence/selfie/` older than
+`SELFIE_BLOB_BACKSTOP_DAYS` (design C25: the few an interrupted upload left without a row). The
+numbers live once, in `@mje/domain` (`packages/domain/src/checkin-store.ts`); the templates take them
+as parameters and the job refuses to run with a different value. Deleted selfies cannot be restored:
+that is the retention, not a rollback item.
+
+Values from the code (after `pnpm build`):
+
+```bash
+RET=$(node -e "import('./packages/domain/dist/index.js').then(m=>console.log(m.SELFIE_RETENTION_DAYS))")
+GRACE=$(node -e "import('./packages/domain/dist/index.js').then(m=>console.log(m.SELFIE_GRACE_MINUTES))")
+BACKSTOP=$(node -e "import('./packages/domain/dist/index.js').then(m=>console.log(m.SELFIE_BLOB_BACKSTOP_DAYS))")
+```
+
+1. **Job, dry run first** (counts only, deletes nothing). `cleanupOrgIds` is the comma-separated list of
+   organization ids to sweep (the app login cannot list organizations). Use the app image digest that is
+   deployed.
+   ```bash
+   az deployment group create -g mjeepc-dev -f infra/bicep/dev-selfie-cleanup-job.bicep \
+     -p registryName=<acr> postgresFqdn=<fqdn> storageAccountName=<account> \
+        imageReference=<acr>.azurecr.io/mje-app@<digest> cleanupOrgIds=<org-id> \
+        selfieRetentionDays=$RET selfieGraceMinutes=$GRACE dryRun=true
+   az containerapp job start -n mjeepc-dev-selfie-cleanup -g mjeepc-dev
+   az containerapp job execution list -n mjeepc-dev-selfie-cleanup -g mjeepc-dev -o table
+   ```
+   The log lines are `{"event":"selfie_cleanup","orgId":…,"dryRun":true,"eligible":N,…}` (Log Analytics,
+   `ContainerAppConsoleLogs_CL` filtered on the job name). Exit 2 = configuration refused (nothing swept);
+   exit 1 = a delete failed (the next run finishes the DELETING rows).
+2. **Job, live**: redeploy with `dryRun=false`; the schedule (every 6 hours, UTC) then runs it.
+3. **Lifecycle backstop**:
+   ```bash
+   az deployment group create -g mjeepc-dev -f infra/bicep/dev-selfie-lifecycle.bicep \
+     -p storageAccountName=<account> selfieBackstopDays=$BACKSTOP
+   ```
+4. **Rollback**: `az containerapp job delete -n mjeepc-dev-selfie-cleanup -g mjeepc-dev` stops the sweep;
+   `az storage account management-policy delete --account-name <account> -g mjeepc-dev` removes the backstop.
+   Rows already DELETED keep their audit entries; blobs already deleted are gone by design.
+
+A separate worker identity with its own blob role and database login (the full environment's
+`main.bicep`) is not part of the Dev setup.
