@@ -153,6 +153,7 @@
   "apps/worker/tsconfig.json",
   "compose.yaml",
   "docs/architecture/a6-field-devices-design.md",
+  "docs/architecture/adr-0003-minimal-authorization.md",
   "eslint.config.mjs",
   "infra/bicep/README.md",
   "infra/bicep/dev-alpha.bicep",
