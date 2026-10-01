@@ -11,6 +11,15 @@ export interface Actor {
   orgId: string;
   accountId: string;
   personId: string;
+  /** LoginAccount.authzVersion read under the account lock (ADR-0003 D5). */
+  authzVersion: number;
+  /**
+   * Database decision time (ADR-0003 D5): clock_timestamp() read after the account lock is held,
+   * kept as PostgreSQL's timestamptz text (microseconds intact) and passed back as
+   * `$n::timestamptz` to every membership predicate of the transaction. Not now(): that is the
+   * transaction start, before the lock, and would admit a revocation committed in between.
+   */
+  decidedAt: string;
 }
 export type Access = 'write' | 'read';
 /** DailyClose.scopeKey of a Site Daily Close report day. */
@@ -81,43 +90,173 @@ export async function lockReportDay(
 export const sha = (v: unknown) =>
   createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
-/** One transaction as the verified account, with the org fixed for RLS. */
-export async function inTransaction<T>(
+/**
+ * ADR-0003 D5 transaction bounds. transaction_timeout is the first statement after BEGIN, so the
+ * whole transaction (account lock included) ends within 30 s however it spends the time: many
+ * short statements, a lock wait or an idle wait for an external call. The server then
+ * terminates the session (25P04; 25P03 for the idle bound) and nothing commits. Verified on
+ * PostgreSQL 17.6: SET LOCAL inside the open transaction arms the timer (A7-0b).
+ */
+export const TRANSACTION_TIMEOUT = '30s';
+export const STATEMENT_TIMEOUT = '10s';
+export const LOCK_TIMEOUT = '5s';
+export const IDLE_IN_TRANSACTION_TIMEOUT = '20s';
+/** SQLSTATEs after which repeating the request with the same key is safe (HTTP 503 RETRY). */
+export const RETRY_SQLSTATES: readonly string[] = [
+  '40P01', // deadlock
+  '40001', // serialization failure
+  '55P03', // lock_timeout
+  '25P04', // transaction_timeout: session terminated, transaction rolled back
+  '25P03', // idle_in_transaction_session_timeout: likewise
+];
+const sqlState = (error: unknown): string | null =>
+  error &&
+  typeof error === 'object' &&
+  'code' in error &&
+  typeof error.code === 'string'
+    ? error.code
+    : null;
+
+/** Rows of app_account_for_identity() plus the database decision time. */
+interface AccountRow {
+  orgId: string;
+  id: string;
+  personId: string;
+  authzVersion: number;
+}
+export interface AccountAdmission {
+  /** True when the memberships active at decidedAt let the account into this store at all. */
+  admit: (memberships: { role: string; projectId: string | null }[]) => boolean;
+  forbidden: () => Error;
+}
+const signals = new WeakMap<PoolClient, AbortSignal>();
+/**
+ * Aborted when the transaction's connection is lost (e.g. the server ended the session at
+ * transaction_timeout) or the transaction ends; external waits inside it (Blob) listen to it.
+ */
+export function transactionSignal(client: PoolClient): AbortSignal | undefined {
+  return signals.get(client);
+}
+
+/**
+ * One transaction as the verified account (ADR-0003 D5): BEGIN, the time bounds, the session
+ * identity, then the account row through app_account_for_identity() — the first lock, held FOR
+ * SHARE until the transaction ends, so a grant or revocation (which updates that row) waits for
+ * this transaction, and one committed before it is seen here. Exactly one account row, else
+ * forbidden. The memberships are read once, at the database decision time.
+ * A client whose connection failed is never returned to the pool, and a request whose session
+ * the server ended fails with that SQLSTATE even if its callback is still waiting.
+ */
+export async function accountTransaction<T>(
   pool: Pool,
   identity: Identity,
+  admission: AccountAdmission,
   work: (client: PoolClient, actor: Actor) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
+  const controller = new AbortController();
+  let lost: Error | null = null;
+  let onLost: (error: Error) => void = () => {};
+  const lostPromise = new Promise<never>((_, reject) => {
+    onLost = reject;
+  });
+  lostPromise.catch(() => undefined);
+  // node-postgres emits 'error' on a checked-out client when the server ends the session;
+  // without a listener that would crash the process. The first error is the classified one
+  // (25P04 / 25P03); later ones ("Connection terminated unexpectedly") are not.
+  const onError = (error: Error) => {
+    if (lost) return;
+    lost = error;
+    controller.abort(error);
+    onLost(error);
+  };
+  client.on('error', onError);
+  signals.set(client, controller.signal);
   try {
     await client.query('BEGIN');
-    await client.query("SET LOCAL statement_timeout = '10s'");
+    await client.query(
+      `SET LOCAL transaction_timeout = '${TRANSACTION_TIMEOUT}'`,
+    );
+    await client.query(
+      `SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'; SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'; SET LOCAL idle_in_transaction_session_timeout = '${IDLE_IN_TRANSACTION_TIMEOUT}'`,
+    );
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.object_id', $2, true)",
       [identity.tenantId, identity.objectId],
     );
-    // The account must hold at least one active report role; per-project access is checked later.
-    const accounts = await client.query<Actor>(
-      `SELECT a."orgId", a.id AS "accountId", a."personId"
-      FROM "LoginAccount" a WHERE a.active AND a."entraTenantId"=$1 AND a."entraObjectId"=$2 AND a."personId" IS NOT NULL
-      AND EXISTS (SELECT 1 FROM "Membership" m WHERE m."orgId"=a."orgId" AND m."accountId"=a.id
-        AND m.role = ANY($3::text[]) AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now()))`,
-      [identity.tenantId, identity.objectId, [...WRITE_ROLES, ...READ_ROLES]],
+    const accounts = await client.query<AccountRow>(
+      'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity($1, $2) a',
+      [identity.tenantId, identity.objectId],
     );
-    if (accounts.rows.length !== 1) throw new ReportError('FORBIDDEN');
-    const actor = accounts.rows[0]!;
+    if (accounts.rows.length !== 1) throw admission.forbidden();
+    const account = accounts.rows[0]!;
+    // A separate statement, so the clock is read only after the row lock above is granted: a
+    // revocation that committed while this transaction waited for it is in the past.
+    const decidedAt = (
+      await client.query<{ decidedAt: string }>(
+        'SELECT clock_timestamp()::text AS "decidedAt"',
+      )
+    ).rows[0]!.decidedAt;
     await client.query("SELECT set_config('app.org_id', $1, true)", [
-      actor.orgId,
+      account.orgId,
     ]);
-    const result = await work(client, actor);
+    const memberships = await client.query<{
+      role: string;
+      projectId: string | null;
+    }>(
+      `SELECT role, "projectId" FROM "Membership" WHERE "orgId"=$1 AND "accountId"=$2
+      AND "activeFrom"<=$3::timestamptz AND ("activeUntil" IS NULL OR "activeUntil">$3::timestamptz)`,
+      [account.orgId, account.id, decidedAt],
+    );
+    if (!admission.admit(memberships.rows)) throw admission.forbidden();
+    const actor: Actor = {
+      orgId: account.orgId,
+      accountId: account.id,
+      personId: account.personId,
+      authzVersion: account.authzVersion,
+      decidedAt,
+    };
+    const running = work(client, actor);
+    running.catch(() => undefined);
+    const result = await Promise.race([running, lostPromise]);
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (!lost)
+      await client.query('ROLLBACK').catch((rollback: Error) => {
+        lost ??= rollback;
+      });
+    // A query on a terminated session fails with a generic "not queryable" error; the server's
+    // own termination (25P04 / 25P03) is what the caller must see.
+    const terminated: Error | null = lost;
+    if (terminated && sqlState(terminated) && !sqlState(error))
+      throw terminated;
     throw error;
   } finally {
-    client.release();
+    controller.abort(new Error('TRANSACTION_ENDED'));
+    signals.delete(client);
+    client.removeListener('error', onError);
+    // A client whose connection failed is destroyed, never reused by another request.
+    client.release(lost ?? undefined);
   }
 }
+
+/** One report-family transaction: the account must hold at least one active report role. */
+export function inTransaction<T>(
+  pool: Pool,
+  identity: Identity,
+  work: (client: PoolClient, actor: Actor) => Promise<T>,
+): Promise<T> {
+  return accountTransaction(pool, identity, REPORT_ADMISSION, work);
+}
+const REPORT_ADMISSION: AccountAdmission = {
+  // Per-project access is checked later (projectAccess).
+  admit: (memberships) =>
+    memberships.some((m) =>
+      ([...WRITE_ROLES, ...READ_ROLES] as readonly string[]).includes(m.role),
+    ),
+  forbidden: () => new ReportError('FORBIDDEN'),
+};
 
 /** Access to one project: PROJECT_MANAGER writes; EXECUTIVE_READER (per project or org-wide) reads. */
 export async function projectAccess(
@@ -131,8 +270,8 @@ export async function projectAccess(
   }>(
     `SELECT role, "projectId" FROM "Membership" WHERE "orgId"=$1 AND "accountId"=$2
     AND ("projectId"=$3 OR ("projectId" IS NULL AND role = ANY($4::text[])))
-    AND "activeFrom"<=now() AND ("activeUntil" IS NULL OR "activeUntil">now())`,
-    [actor.orgId, actor.accountId, projectId, [...READ_ROLES]],
+    AND "activeFrom"<=$5::timestamptz AND ("activeUntil" IS NULL OR "activeUntil">$5::timestamptz)`,
+    [actor.orgId, actor.accountId, projectId, [...READ_ROLES], actor.decidedAt],
   );
   const access: Access | null = roles.rows.some((r) =>
     (WRITE_ROLES as readonly string[]).includes(r.role),
@@ -161,7 +300,20 @@ export async function projectWriter(
   return a.project;
 }
 
-/** Exactly-once per (actor, route, key): replays return the stored response; a different body is rejected. */
+/**
+ * A response's projection for the caller's current context (ADR-0003 D5 step 4). Applied to the
+ * live response and to a replayed one alike, so a replay never returns a stored body as it was
+ * projected for an earlier context. Routes whose response has no reader/writer projection (the
+ * report command acknowledgements, issue views) pass `asStored`.
+ */
+export type Projection<T> = (body: T) => T;
+export const asStored = <T>(body: T): T => body;
+
+/**
+ * Exactly-once per (actor, route, key): replays return the stored response through `project`;
+ * a different body is rejected. Callers authorize the resource before calling this, so a
+ * revoked caller is refused before any replay lookup.
+ */
 export async function idempotent<T>(
   client: PoolClient,
   actor: Actor,
@@ -169,6 +321,7 @@ export async function idempotent<T>(
   key: string,
   command: unknown,
   work: () => Promise<T>,
+  project: Projection<T> = asStored,
 ): Promise<T> {
   const requestHash = sha(command);
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
@@ -182,7 +335,7 @@ export async function idempotent<T>(
   if (prior.rows[0]) {
     if (prior.rows[0].requestHash !== requestHash)
       throw new ReportError('IDEMPOTENCY_KEY_REUSED');
-    return prior.rows[0].responseBody;
+    return project(prior.rows[0].responseBody);
   }
   const response = await work();
   await client.query(
@@ -198,7 +351,7 @@ export async function idempotent<T>(
       response,
     ],
   );
-  return response;
+  return project(response);
 }
 
 export async function audit(

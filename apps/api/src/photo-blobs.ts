@@ -59,12 +59,23 @@ export class AzurePhotoBlobStore implements SelfieBlobStore {
     await this.container.deleteIfExists();
   }
 
-  async put(key: string, bytes: Uint8Array, contentType: string) {
+  /**
+   * `signal` is the caller's operation deadline (ADR-0003 D5: the photo store passes 15 s inside
+   * its transaction); every storage request of the call listens to it.
+   */
+  async put(
+    key: string,
+    bytes: Uint8Array,
+    contentType: string,
+    signal?: AbortSignal,
+  ) {
     const blob = this.container.getBlockBlobClient(key);
+    const abort = signal ? { abortSignal: signal } : {};
     try {
       await blob.uploadData(bytes, {
         blobHTTPHeaders: { blobContentType: contentType },
         conditions: { ifNoneMatch: '*' },
+        ...abort,
       });
       return;
     } catch (error) {
@@ -73,12 +84,12 @@ export class AzurePhotoBlobStore implements SelfieBlobStore {
     }
     // The key exists, e.g. left by an upload whose database write rolled back. Content addressing
     // means it must hold exactly these bytes; anything else is refused, never overwritten.
-    const existing = await blob.downloadToBuffer();
+    const existing = await blob.downloadToBuffer(0, undefined, abort);
     if (!existing.equals(Buffer.from(bytes)))
       throw new Error('Existing blob does not hold the bytes its key names');
-    const properties = await blob.getProperties();
+    const properties = await blob.getProperties(abort);
     if (properties.contentType !== contentType)
-      await blob.setHTTPHeaders({ blobContentType: contentType });
+      await blob.setHTTPHeaders({ blobContentType: contentType }, abort);
   }
 
   /**
@@ -92,11 +103,12 @@ export class AzurePhotoBlobStore implements SelfieBlobStore {
     await this.container.getBlockBlobClient(key).deleteIfExists();
   }
 
-  async get(key: string): Promise<PhotoBlob | null> {
+  async get(key: string, signal?: AbortSignal): Promise<PhotoBlob | null> {
+    const abort = signal ? { abortSignal: signal } : {};
     try {
       const blob = this.container.getBlockBlobClient(key);
-      const properties = await blob.getProperties();
-      const bytes = await blob.downloadToBuffer();
+      const properties = await blob.getProperties(abort);
+      const bytes = await blob.downloadToBuffer(0, undefined, abort);
       return {
         bytes,
         contentType: properties.contentType ?? 'application/octet-stream',

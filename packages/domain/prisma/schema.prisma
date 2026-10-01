@@ -408,6 +408,8 @@ model LoginAccount {
   entraObjectId        String
   active               Boolean                @default(true)
   personId             String?                @db.Uuid
+  /// Bumped by database triggers on Membership writes and on active/personId changes (ADR-0003 D5).
+  authzVersion         Int                    @default(1)
   person               Person?                @relation("LoginAccount_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   alphaDraftUpdates    AlphaDraft[]
   reportDraftUpdates   DailyReportDraft[]     @relation("DailyReportDraft_actor")

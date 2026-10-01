@@ -18,6 +18,7 @@ export {
 } from './report-reader.js';
 export * from './issue-store.js';
 export type { Access, Actor } from './store-kit.js';
+export { RETRY_SQLSTATES } from './store-kit.js';
 export * from './photo-file.js';
 export * from './photo-store.js';
 export * from './photo-strip.js';

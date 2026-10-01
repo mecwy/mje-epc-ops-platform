@@ -12,7 +12,7 @@ import type {
 } from '@mje/contracts';
 import type { Identity } from './alpha-store.js';
 import { photoAcceptable, type PhotoLocation } from './report-rules.js';
-import { frozenPhotoViews } from './reader-view.js';
+import { frozenPhotoViews, withheldCoordinates } from './reader-view.js';
 import {
   PHOTO_MAX_BYTES,
   PHOTO_MEDIA_TYPES,
@@ -32,6 +32,7 @@ import {
   lockReportDay,
   projectAccess,
   projectWriter,
+  transactionSignal,
   type Access,
   type Actor,
 } from './store-kit.js';
@@ -76,9 +77,63 @@ export interface PhotoBlobStore {
    * Stores bytes under a content-addressed key. If the key already exists it must hold exactly
    * these bytes (else the call fails; nothing is overwritten); its content type is set to this one.
    */
-  put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
-  get(key: string): Promise<PhotoBlob | null>;
+  put(
+    key: string,
+    bytes: Uint8Array,
+    contentType: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  get(key: string, signal?: AbortSignal): Promise<PhotoBlob | null>;
 }
+
+/** ADR-0003 D5: an external wait inside an account transaction has an operation deadline. */
+export const BLOB_DEADLINE_MS = 15_000;
+/** A Blob call passed its deadline (or its transaction ended); repeating it is safe (RETRY). */
+export class BlobDeadlineError extends Error {
+  readonly code = 'BLOB_DEADLINE';
+  constructor() {
+    super('BLOB_DEADLINE');
+  }
+}
+/**
+ * Runs one Blob call with an AbortSignal that fires at the deadline or when `outer` aborts (the
+ * transaction's connection was lost). The call is also raced, so a store that ignores the
+ * signal cannot keep the transaction waiting.
+ */
+export async function withBlobDeadline<T>(
+  ms: number,
+  outer: AbortSignal | undefined,
+  call: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new BlobDeadlineError()), ms);
+  const onOuter = () => controller.abort(new BlobDeadlineError());
+  outer?.addEventListener('abort', onOuter, { once: true });
+  if (outer?.aborted) onOuter();
+  const aborted = new Promise<never>((_, reject) => {
+    const fail = () => reject(new BlobDeadlineError());
+    if (controller.signal.aborted) fail();
+    else controller.signal.addEventListener('abort', fail, { once: true });
+  });
+  aborted.catch(() => undefined);
+  try {
+    const running = call(controller.signal);
+    running.catch(() => undefined);
+    return await Promise.race([running, aborted]);
+  } catch (error) {
+    // An SDK abort error after the deadline is the deadline.
+    if (controller.signal.aborted) throw new BlobDeadlineError();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener('abort', onOuter);
+  }
+}
+/** The photo view as the caller's access sees it (OD20); writers are not affected. */
+const photoFor =
+  (access: Access) =>
+  <P extends PhotoDto>(p: P): P =>
+    access === 'read' ? { ...p, ...withheldCoordinates(p) } : p;
 export interface PhotoFile {
   bytes: Uint8Array;
   /** The media type the client declared; checked against the magic bytes. */
@@ -342,7 +397,18 @@ export class PhotoStore {
   constructor(
     private readonly pool: Pool,
     private readonly blobs: PhotoBlobStore,
+    private readonly options: { blobDeadlineMs?: number } = {},
   ) {}
+  private blobCall<T>(
+    client: PoolClient | null,
+    call: (signal: AbortSignal) => Promise<T>,
+  ) {
+    return withBlobDeadline(
+      this.options.blobDeadlineMs ?? BLOB_DEADLINE_MS,
+      client ? transactionSignal(client) : undefined,
+      call,
+    );
+  }
 
   // ---------- helpers ----------
   private async row(client: PoolClient, orgId: string, photoId: string) {
@@ -545,7 +611,9 @@ export class PhotoStore {
         };
       },
     );
-    const blob = await this.blobs.get(target.key);
+    const blob = await this.blobCall(null, (signal) =>
+      this.blobs.get(target.key, signal),
+    );
     if (!blob) throw new ReportError('NOT_FOUND');
     // Content addressing makes tampering or a mixed-up blob detectable; never serve it silently.
     // Checked on the stored bytes, before anything is removed for a reader.
@@ -649,9 +717,13 @@ export class PhotoStore {
           const thumbKey = thumbHash
             ? `${actor.orgId}/${thumbHash}.thumb`
             : null;
-          await this.blobs.put(blobKey, photo.bytes, photo.mediaType);
+          await this.blobCall(client, (signal) =>
+            this.blobs.put(blobKey, photo.bytes, photo.mediaType, signal),
+          );
           if (thumb && thumbKey)
-            await this.blobs.put(thumbKey, thumb.bytes, thumb.mediaType);
+            await this.blobCall(client, (signal) =>
+              this.blobs.put(thumbKey, thumb.bytes, thumb.mediaType, signal),
+            );
           const camera = command.source === 'camera' ? command.capture : null;
           // The file's GPS is kept for album uploads only; an in-app capture relies on its fix.
           const gps = command.source === 'album' ? claims.gps : null;
@@ -718,6 +790,7 @@ export class PhotoStore {
           );
           return { ...after, deduplicated: false };
         },
+        photoFor('write'),
       );
     });
   }
@@ -774,6 +847,7 @@ export class PhotoStore {
           );
           return after;
         },
+        photoFor(access),
       );
     });
   }
@@ -814,6 +888,7 @@ export class PhotoStore {
           );
           return after;
         },
+        photoFor(access),
       );
     });
   }

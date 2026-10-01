@@ -230,7 +230,7 @@ async function projects({ client, actor }: Opened) {
       CASE WHEN bool_or(m.role = ANY($3::text[])) THEN 'write' ELSE 'read' END AS access
     FROM "Project" p JOIN "Membership" m ON m."orgId"=p."orgId" AND (m."projectId"=p.id OR (m."projectId" IS NULL AND m.role = ANY($4::text[])))
     WHERE p."orgId"=$1 AND m."accountId"=$2 AND m.role = ANY($5::text[])
-      AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now())
+      AND m."activeFrom"<=$6::timestamptz AND (m."activeUntil" IS NULL OR m."activeUntil">$6::timestamptz)
     GROUP BY p.id, p.name, p.code, p.timezone ORDER BY p.code`,
     [
       actor.orgId,
@@ -238,6 +238,7 @@ async function projects({ client, actor }: Opened) {
       [...WRITE_ROLES],
       [...READ_ROLES],
       [...WRITE_ROLES, ...READ_ROLES],
+      actor.decidedAt,
     ],
   );
   return projected('report.projects', {

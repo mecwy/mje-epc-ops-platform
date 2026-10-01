@@ -31,7 +31,9 @@
     "test:issues": "node --env-file=.env scripts/issue-integration.mjs",
     "test:photos": "node --env-file=.env scripts/photo-integration.mjs",
     "test:field": "node --env-file=.env scripts/field-integration.mjs",
-    "test:add-member": "node --env-file=.env scripts/add-member-integration.mjs"
+    "test:add-member": "node --env-file=.env scripts/add-member-integration.mjs",
+    "test:authz-version": "node --env-file=.env scripts/authz-version-integration.mjs",
+    "test:tx-protocol": "node --env-file=.env scripts/tx-protocol-integration.mjs"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",
