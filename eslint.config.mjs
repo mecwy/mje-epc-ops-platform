@@ -16,6 +16,7 @@ export const BOUNDARY = {
       'report-store.ts',
       'report-reader.ts',
       'report-read-context.ts',
+      'report-commands.ts',
       'report-rules.ts',
       'reader-view.ts',
     ].map((f) => D + f),
@@ -39,6 +40,8 @@ export const BOUNDARY = {
     [`${D}report-read-context.ts`]: {
       only: ['withReportReadContext', 'ReportReadContext'],
     },
+    // A7-0d: the report day writes other modules run in their own transaction.
+    [`${D}report-commands.ts`]: {},
     [`${D}report-rules.ts`]: {},
   },
   /** Files that own SQL today: the only ones that may import `pg` (legacy exception list). */
@@ -48,6 +51,7 @@ export const BOUNDARY = {
       'alpha-store.ts',
       'report-store.ts',
       'report-read-context.ts',
+      'report-commands.ts',
       'issue-store.ts',
       'photo-store.ts',
       'field-store.ts',

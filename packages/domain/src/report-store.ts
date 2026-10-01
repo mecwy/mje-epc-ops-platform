@@ -65,7 +65,7 @@ import {
 import { issuesAsOf } from './issue-store.js';
 import { fieldDayAsOf, nextSeq } from './checkin-store.js';
 import { FieldError, rosterLock } from './field-kit.js';
-import { foremanDayAsOf } from './foreman-store.js';
+import { foremanDayAsOf, recordForemanAdoption } from './foreman-store.js';
 import {
   photoAsOf,
   photographedItems,
@@ -511,21 +511,17 @@ export class ReportStore {
             command.businessDate,
           );
           const adoptionId = randomUUID();
-          await client.query(
-            `INSERT INTO "ForemanAdoption"(id,"orgId","projectId","businessDate","itemKey",value,basis,"daySeq","byAccountId")
-            VALUES($1,$2,$3,$4::date,$5,$6::numeric,$7,$8,$9)`,
-            [
-              adoptionId,
-              actor.orgId,
-              project.id,
-              command.businessDate,
-              command.item,
-              total.value,
-              JSON.stringify(view.basis),
-              daySeq,
-              actor.accountId,
-            ],
-          );
+          await recordForemanAdoption(client, {
+            id: adoptionId,
+            orgId: actor.orgId,
+            projectId: project.id,
+            businessDate: command.businessDate,
+            itemKey: command.item,
+            value: total.value,
+            basis: JSON.stringify(view.basis),
+            daySeq,
+            byAccountId: actor.accountId,
+          });
           await this.audit(
             client,
             actor,

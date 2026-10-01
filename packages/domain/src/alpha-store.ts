@@ -6,6 +6,13 @@ import {
   type AccountAdmission,
   type Actor,
 } from './store-kit.js';
+import {
+  bumpDailyCloseVersion,
+  insertDailyCloseDraft,
+  insertRevisionEvent,
+  insertSubmittedRevision,
+  setCurrentRevisionNumber,
+} from './report-commands.js';
 
 export interface Identity {
   tenantId: string;
@@ -170,22 +177,17 @@ export class AlphaStore {
       if (command.expectedVersion === 0) {
         if (command.baseRevisionNumber !== null)
           throw new AlphaError('VERSION_CONFLICT');
-        const inserted = await client.query(
-          `INSERT INTO "DailyClose"
-          (id,"orgId","updatedAt","updatedBy",version,"businessDate","siteTimezone","scopeKey",state,"expectedReason","projectId","responsiblePersonId")
-          VALUES($1,$2,now(),$3,1,$4,$5,$6,'DRAFT','ALPHA_MANUAL_DECLARATION',$7,$8) ON CONFLICT DO NOTHING`,
-          [
-            command.recordId,
-            actor.orgId,
-            actor.accountId,
-            command.declaration.businessDate,
-            siteTimezone,
-            `alpha:${command.recordId}`,
-            command.projectId,
-            actor.personId,
-          ],
-        );
-        if (inserted.rowCount !== 1) throw new AlphaError('VERSION_CONFLICT');
+        const inserted = await insertDailyCloseDraft(client, {
+          id: command.recordId,
+          orgId: actor.orgId,
+          accountId: actor.accountId,
+          businessDate: command.declaration.businessDate,
+          siteTimezone,
+          scopeKey: `alpha:${command.recordId}`,
+          projectId: command.projectId,
+          responsiblePersonId: actor.personId,
+        });
+        if (inserted !== 1) throw new AlphaError('VERSION_CONFLICT');
       } else {
         const existing = await this.record(client, actor, command.recordId);
         if (
@@ -196,17 +198,14 @@ export class AlphaStore {
         baseRevision = existing.currentRevisionNumber;
         siteTimezone = existing.siteTimezone;
         before = existing.content;
-        const updated = await client.query(
-          `UPDATE "DailyClose" SET version=version+1,"updatedAt"=now(),"updatedBy"=$3
-          WHERE "orgId"=$1 AND id=$2 AND version=$4`,
-          [
-            actor.orgId,
-            command.recordId,
-            actor.accountId,
-            command.expectedVersion,
-          ],
+        const updated = await bumpDailyCloseVersion(
+          client,
+          actor.orgId,
+          command.recordId,
+          actor.accountId,
+          command.expectedVersion,
         );
-        if (updated.rowCount !== 1) throw new AlphaError('VERSION_CONFLICT');
+        if (updated !== 1) throw new AlphaError('VERSION_CONFLICT');
       }
       if (
         command.action === 'SAVE_VERSION' &&
@@ -238,45 +237,39 @@ export class AlphaStore {
         baseRevision + (command.action === 'SAVE_VERSION' ? 1 : 0);
       if (command.action === 'SAVE_VERSION') {
         const revisionId = randomUUID();
-        await client.query(
-          `INSERT INTO "Revision"(id,"orgId","updatedAt","updatedBy","revisionNumber","baseRevisionNumber",state,reason,snapshot,"submittedAt","dailyCloseId")
-          VALUES($1,$2,now(),$3,$4,$5,'SUBMITTED',$6,$7,now(),$8)`,
-          [
-            revisionId,
-            actor.orgId,
-            actor.accountId,
-            revisionNumber,
-            command.baseRevisionNumber,
-            command.reason,
-            {
-              ...content,
-              recordId: command.recordId,
-              projectId: project.id,
-              projectName: project.name,
-              projectCode: project.code,
-              actorAccountId: actor.accountId,
-              actorPersonId: actor.personId,
-              aggregateVersion: version,
-              status: 'SAVED_PENDING_REVIEW',
-            },
-            command.recordId,
-          ],
-        );
-        await client.query(
-          `INSERT INTO "RevisionEvent"(id,"orgId","updatedAt","updatedBy",action,reason,"actorPersonId","revisionId")
-          VALUES($1,$2,now(),$3,'ALPHA_SAVE_VERSION',$4,$5,$6)`,
-          [
-            randomUUID(),
-            actor.orgId,
-            actor.accountId,
-            command.reason,
-            actor.personId,
-            revisionId,
-          ],
-        );
-        await client.query(
-          'UPDATE "DailyClose" SET "currentRevisionNumber"=$3 WHERE "orgId"=$1 AND id=$2',
-          [actor.orgId, command.recordId, revisionNumber],
+        await insertSubmittedRevision(client, {
+          id: revisionId,
+          orgId: actor.orgId,
+          accountId: actor.accountId,
+          revisionNumber,
+          baseRevisionNumber: command.baseRevisionNumber,
+          reason: command.reason,
+          snapshot: {
+            ...content,
+            recordId: command.recordId,
+            projectId: project.id,
+            projectName: project.name,
+            projectCode: project.code,
+            actorAccountId: actor.accountId,
+            actorPersonId: actor.personId,
+            aggregateVersion: version,
+            status: 'SAVED_PENDING_REVIEW',
+          },
+          dailyCloseId: command.recordId,
+        });
+        await insertRevisionEvent(client, {
+          id: randomUUID(),
+          orgId: actor.orgId,
+          accountId: actor.accountId,
+          reason: command.reason,
+          actorPersonId: actor.personId,
+          revisionId,
+        });
+        await setCurrentRevisionNumber(
+          client,
+          actor.orgId,
+          command.recordId,
+          revisionNumber,
         );
       }
       const timestamps = await client.query<{ savedAt: Date }>(
