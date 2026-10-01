@@ -1,6 +1,6 @@
 # ADR-0003：跨模块最小权限——授权上下文、模块出口与投影
 
-日期 2026-10-01。状态：**候选 r3.1**（Codex 第 1、2 轮 REQUEST CHANGES 后修订，第 3 轮为 PM 批准的聚焦轮，只审 D4 目录、D5 锁定函数与事务时长三处；通过后随 A7 首个切片生效）。编号接续私有档案的 ADR-0001（原架构 v0.1，只读原件）与 ADR-0002（Phase 0 实施细化）；本文件是公开仓库中的第一份 ADR。
+日期 2026-10-01。状态：**候选 r3.2**（Codex 第 1、2 轮 REQUEST CHANGES 后修订；第 3 轮为 PM 批准的聚焦轮；r3.2 按 Owner 2026-10-01 决定（方案 A：事务级上界 `transaction_timeout`）修 D5 事务时长一段与 D4 一处引用，第 4 轮只审这两处；通过后随 A7 首个切片生效）。编号接续私有档案的 ADR-0001（原架构 v0.1，只读原件）与 ADR-0002（Phase 0 实施细化）；本文件是公开仓库中的第一份 ADR。
 
 依据（业务规则已由 Owner 确认，本 ADR 只定执行方式）：DG-05 / DG-06 共用设计段 `authorized-projection.md`（随 DG-06 v0.5 确认，K20）、授权管理最低政策 `authorized-projection-policy.md`（Owner 2026-10-01 默认政策 P1–P3 与四个触发条件）、独立技术评议（2026-10-01，Codex）、OD17 / OD18 / OD20 / OD23、经验 L22。三份设计文件在私有档案 `docs/design/dg06-opportunity/`；本 ADR 不复制其中的业务字段表，只引用条款号。
 
@@ -68,7 +68,7 @@
   - `append`：只追加，不带基准，但须校验目标存在、状态允许（如问题未关闭）与范围；
   - `create`：创建，用唯一键或序号（如 `expectedN`）防重。
 - 现有命令的模式（现状，不改契约；每条引用 `packages/contracts/src` 的命令类型与 `packages/domain/src` 的实现，行号按 `ad67b6c` 之基 `155b004`）：
-  - `cas`（日 `expectedVersion`）：facts 保存 `SaveFactsCommand`（`report.ts:58–63`）、submit `SubmitReportCommand`（`report.ts:80–85`）、no-work `NoWorkCommand`（`report.ts:93–98`）、correction start / cancel（`report.ts:86–91, 101–106`）；实现经 `dayForWrite(expectedVersion)`（`report-store.ts:176–200`，不符 → `VERSION_CONFLICT`）。
+  - `cas`（日 `expectedVersion`）：facts 保存 `SaveFactsCommand`（`report.ts:58–63`）、submit `SubmitReportCommand`（`report.ts:80–85`）、no-work `NoWorkCommand`（`report.ts:93–98`）经 `dayForWrite(expectedVersion)`（`report-store.ts:176–223`：版本 0 插入、非零版本条件更新，不符 → `VERSION_CONFLICT`）；correction start / cancel（`report.ts:86–91, 101–106`）在幂等回调内锁读当天并直接比较 `day.version !== command.expectedVersion`（`report-store.ts:1090–1105, 1137–1165`）。
   - `cas`（照片 `expectedVersion` = 关联变更次数）：link / unlink `LinkPhotoCommand` / `UnlinkPhotoCommand`（`photo.ts:51–62`）。
   - `cas`（问题 `expectedVersion`）：note `NoteIssueCommand`（`issue.ts:40–46`）、escalate `SetEscalateCommand`（`issue.ts:47–53`）、close / reopen `CloseIssueCommand`（`issue.ts:55–61`）；实现经 `locked()`（`issue-store.ts:261`，调用处 544 / 590 / 628 / 678）拒绝过期版本。这些命令同时追加历史，但基准是必需的。
   - `append`：reply `ReplyIssueCommand`（`issue.ts:62–67`，无 `expectedVersion`；`issue-store.ts:774–796` 只校验问题存在、范围与 `access === 'read'`）。
@@ -87,7 +87,7 @@
   3. 幂等锁 → 项目 / 日锁（现有顺序不变；账号行锁总在最前，不会与撤权写入者形成环）；
   4. 回调（含 `idempotent()`：**资源授权在重放查找之前**，现状如此；重放时存储响应**经本次上下文的投影函数再投影**后返回，不原样回放）；
   5. `COMMIT`。锁等待用 `lock_timeout`（5 s）→ 与死锁同样映射为 `RETRY`（503）。
-- **事务时长上界**（账号锁整事务持有，所以必须有真实的运行时上界，而不只是语句超时）：`SET LOCAL idle_in_transaction_session_timeout = '20s'`（事务内等待外部调用时数据库处于 idle-in-transaction，超时由服务端终止会话并回滚，之后 `COMMIT` 不可能发生）；事务内的外部等待（照片 Blob 写入是现有唯一一处）必须带操作期限（`AbortSignal`，15 s，小于会话超时），超时后抛错、事务回滚、响应 `RETRY`；现有 `statement_timeout = 10s` 继续约束单条语句。残余行为（明确接受）：撤权最长等待 ≈ 20 s + 当前语句；决策时刻评估的有效期在该上界内可能已过期而仍提交。**失败后的处置**：会话被终止时 PostgreSQL 返回 `25P03`（idle-in-transaction timeout），连接池丢弃该客户端，与死锁 / 序列化失败同样映射为 `RETRY`（503，`app.ts` 现有 `40P01` / `40001` 分支扩展）；事务已回滚，没有数据库行；此前已写入的 Blob 对象成为**内容寻址孤儿**（键 = `orgId/sha256`，只写一次、同字节重传被接受，`photo-blobs.ts` 现有规则），客户端用同一幂等键重试即复用该对象，不产生第二份；不在 A7 增加孤儿清理作业，登记为已知残余（照片与自拍不同：自拍有 #47 的清理与生命周期，照片无）。A7-0b 须含受控的停滞 Blob 测试：Blob 挂起 → 会话被终止、账号锁释放、撤权写入者继续、没有迟到的提交、重试复用对象。
+- **事务时长上界**（Owner 2026-10-01 决定方案 A；账号锁整事务持有，所以必须有事务级的运行时上界）：`BEGIN` 后第一条语句 `SET LOCAL transaction_timeout = '30s'`（PostgreSQL 17 起提供；本地 `postgres:17.6`、Dev 灵活服务器 `version=17` 已核对）。在事务内设置时计时从该 `SET` 开始（早于账号第一锁），超时由服务端终止会话并回滚，之后 `COMMIT` 不可能发生——不论事务是在执行多条短语句、等待锁还是空闲等待外部调用。另保留两层更早的检测：`SET LOCAL idle_in_transaction_session_timeout = '20s'`（事务内空闲等待外部调用时）与现有 `statement_timeout = 10s`（单条语句）；三者中较短者先触发，事务总时长不超过 30 s。事务内的外部等待（照片 Blob 写入是现有唯一一处）带操作期限（`AbortSignal`，15 s），超时后抛错、事务回滚、响应 `RETRY`。残余行为（明确接受）：撤权最长等待在途事务 ≈ 30 s；决策时刻评估的有效期在这 30 s 内可能已过期而仍提交。A7-0b 须以 PostgreSQL 17 实测证明“事务内 `SET LOCAL` 后计时生效”；若实测不生效，改为连接级设置（连接池启动参数 `options=-c transaction_timeout=30s`），上界与测试不变。 **失败后的处置**：会话被终止时 PostgreSQL 返回 `25P04`（transaction timeout）或 `25P03`（idle-in-transaction timeout），连接池丢弃该客户端，与死锁 / 序列化失败同样映射为 `RETRY`（503，`app.ts:116–122` 现有 `40P01` / `40001` 分支扩展）；事务已回滚，没有数据库行；此前已写入的 Blob 对象成为**内容寻址孤儿**（键 = `orgId/sha256`，只写一次、同字节重传被接受，`photo-blobs.ts` 现有规则），客户端用同一幂等键重试即复用该对象，不产生第二份；不在 A7 增加孤儿清理作业，登记为已知残余（照片与自拍不同：自拍有 #47 的清理与生命周期，照片无）。A7-0b 须含两个受控测试：(1) 停滞 Blob：Blob 挂起 → 会话被终止、账号锁释放、撤权写入者继续、没有迟到的提交、重试复用对象；(2) 多语句长事务：事务内连续执行每条都短于 `statement_timeout`、彼此间不空闲的语句（如 200 行逐行 upsert 并注入每行延迟）直至超过 30 s → 会话以 `25P04` 终止、无任何行提交、撤权写入者在 ≈ 30 s 内继续、响应 `RETRY`。
 - 时间有效期（`activeFrom` / `activeUntil`）在步骤 2 以 `decidedAt` 评估一次；事务内到期不再重判（事务很短，可接受，写明）。
 - 设备主体：身份 `FieldDevice.id`，重放按 `d.id` 分键（现状）；授权版本 = `generation` + A6 的决策时刻与高水位时钟判断（`memberUntil`、`state`），不改 A6 的锁顺序与行为。
 - 排队与后台任务（A8 重传、DG-08 导出、清理 job）在执行时与领取结果时各重新授权一次；队列项只存引用，不存投影结果。
@@ -138,7 +138,7 @@
 **落地顺序**：
 
 1. **A7-0a（无行为变化的基础层）**：`authz/surface.ts`、`fields.ts`、`legacy-adapters.ts`、`deferred.ts`、`anchors.test.ts`；路由与 Worker 入口枚举测试；消费路径调用记录测试；`report` 模块出口 `reportReader.forContext` 并入 `reader-view.ts`，`report.projects / days / day / revision / plan / items` 改为经出口；`IssueStore.lag` 改经 `reportReader.lagHistory`；barrel 调整；ESLint 目录规则与 SQL 表名扫描。证据：现有 `test:report` / `test:issues` / `test:photos` / `test:field` 不回退；OD18 全路径负向测试（`/days` 计数、缺报提示、冲突响应、`lag`）。
-2. **A7-0b（事务协议）**：迁移 `LoginAccount.authzVersion` + 触发器 + `app_account_for_identity` 定义者函数（EXECUTE 给应用角色，`LoginAccount` 权限不变）；`inTransaction` 改为经该函数取账号与第一锁、`SET LOCAL lock_timeout` 与 `idle_in_transaction_session_timeout`；Blob 适配器加操作期限；重放再投影；受控时序测试（以应用角色执行）：撤权与写入交错（撤权先提交 → 拒绝；撤权等待 → 撤权在本事务后生效）、重放前撤权 → 拒绝、重放经投影、停滞 Blob → 会话终止、锁释放、无迟到提交；负向：应用角色仍不能 UPDATE `LoginAccount`；`test:field` 不回退（设备路径不变）。
+2. **A7-0b（事务协议）**：迁移 `LoginAccount.authzVersion` + 触发器 + `app_account_for_identity` 定义者函数（EXECUTE 给应用角色，`LoginAccount` 权限不变）；`inTransaction` 改为经该函数取账号与第一锁、`SET LOCAL transaction_timeout`（30 s）、`lock_timeout` 与 `idle_in_transaction_session_timeout`；Blob 适配器加操作期限；重放再投影；受控时序测试（以应用角色执行）：撤权与写入交错（撤权先提交 → 拒绝；撤权等待 → 撤权在本事务后生效）、重放前撤权 → 拒绝、重放经投影、停滞 Blob → 会话终止、锁释放、无迟到提交、多语句长事务 → `25P04` 终止、无行提交；负向：应用角色仍不能 UPDATE `LoginAccount`；`test:field` 不回退（设备路径不变）。
 3. **A7-1 / A7-2 / A7-3 / A7-4**：按 A7 设计 §10（迁移与 `project-status` 命令 → 快照 C19 / C20 与派生数字与首页端点 → 界面）。
 4. **A8**：离线缓存按主体 + `authzVersion` 隔离；重连后先刷新上下文再放行重传；重传队列项只存命令与基准。
 5. **DG-05 首个 PR**：追加显式授权表与授予 / 撤销事件（触发器挂 `authzVersion`）；接入合同方向、份额、条款与金额策略；DG-06 实现时逐条独立复核 §22 的 R4-1 / R4-2 / R4-3。
@@ -160,14 +160,14 @@
 - A7 的工作量增加一个基础层（出口、清单、生成器、事务协议），但 OD18 服务端强制与首页聚合本来就需要同样的读取控制；不做这一层，A7 的负向测试只能逐条手写。
 - 旧 store 文件不一次搬迁；过渡期内 `*-store.ts` 同时承担命令与读取，只要求新入口经出口、`report` 的读取面在 A7-0a 内改完、遗留直读登记在清单里并有移除切片。
 - 隐式授权（角色即授权）在 DG-05 之前继续有效；显式授权表引入后，角色映射改为迁移时生成的授权记录，不删角色字段。
-- 账号行锁让撤权写入等待在途事务结束，上界由 `idle_in_transaction_session_timeout`（20 s）+ `statement_timeout`（10 s）给出；照片上传的 Blob 写入因此必须有操作期限（现无）。锁定经 `SECURITY DEFINER` 函数，不扩大应用角色对身份表的权限。
+- 账号行锁让撤权写入等待在途事务结束，上界由 `transaction_timeout`（30 s，PostgreSQL 17）给出；`idle_in_transaction_session_timeout`（20 s）与 `statement_timeout`（10 s）提供更早的检测；照片上传的 Blob 写入另加操作期限（现无）。锁定经 `SECURITY DEFINER` 函数，不扩大应用角色对身份表的权限。
 - 本 ADR 不改变任何业务规则，不新增可见范围、授予权或代录行为；D1 的过渡映射逐模块等于现状。
 
 ## 5. 验收
 
 - 本 ADR：Codex 技术审核 APPROVE 或 APPROVE WITH NITS 且 nit 已修 / 已记录；文档 PR 预算 2 轮。
 - A7-0a 合并条件：D2 四项机械检查在 CI 生效并覆盖 report / issue / photo / project-status（入口登记）；`report` 读取面全部经出口；OD18 全路径负向测试通过；`test:report` / `test:issues` / `test:photos` / `test:field` 不回退。
-- A7-0b 合并条件：撤权交错、重放再投影、停滞 Blob 的受控时序测试通过（旧实现失败、新实现通过），全部以应用角色执行；应用角色对 `LoginAccount` 无 UPDATE 的负向测试通过；`test:field` / `test:photos` 不回退。
+- A7-0b 合并条件：撤权交错、重放再投影、停滞 Blob、多语句长事务的受控时序测试通过（旧实现失败、新实现通过），全部以应用角色执行；应用角色对 `LoginAccount` 无 UPDATE 的负向测试通过；`test:field` / `test:photos` 不回退。
 - A7 全部切片合并条件：D6 生成器对 report / project-status 的范围 × 授权 × 路径矩阵（方向为 `n/a`）全部通过，必需用例无排除，`deferred.ts` 列出延后维度。
 - 测试通过不等于现场事实已核实，也不等于 AT/LR 应用验收通过（AGENTS）。
 
