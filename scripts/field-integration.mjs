@@ -83,8 +83,8 @@ const step = (name) => {
   stepStartedAt = performance.now();
 };
 // The database clock as a separate connection sees it (a local VM's clock can step back);
-// sampled for the whole run, see clock-watch.mjs. It only holds requests back and labels
-// failures; it never changes how an answer is judged.
+// sampled for the whole run, see clock-watch.mjs. It only labels failures; it never changes
+// how an answer is judged.
 const clock = createClockWatch();
 const STEP_MS = 30_000;
 const WATCHDOG_MS = Number(process.env.FIELD_TEST_WATCHDOG_MS ?? 600_000);
@@ -485,7 +485,7 @@ try {
    * clock policy answers RETRY until it catches up. Bounded, counted and reported at the end;
    * switched off where a test expects the 503.
    */
-  const retry = { on: true, force: false, repeated: 0, heldBack: 0 };
+  const retry = { on: true, force: false, repeated: 0 };
   // Ordering and deadline tests assert their first attempt: no automatic repetition there.
   const FIRST_ATTEMPT = new Set([
     'roster',
@@ -505,21 +505,6 @@ try {
     'foreman: adopt, revision and roster vs submit',
   ]);
   /**
-   * Holds a request back while a fresh probe sample shows the database clock below the highest
-   * time it already showed (the server would refuse with RETRY, or decide on the stepped-back
-   * clock). Released as soon as the clock reaches that time again, so the request is decided no
-   * later in database time than on a clock that never stepped back: a held request can never
-   * cross a database deadline a step set up. Stale samples never hold (clock-watch.mjs).
-   * Bounded, then sent anyway; changes nothing about how answers are judged.
-   */
-  async function clockSettled() {
-    if (!clock.hold(performance.now())) return;
-    retry.heldBack++;
-    const until = performance.now() + 3_000;
-    while (clock.hold(performance.now()) && performance.now() < until)
-      await sleep(5);
-  }
-  /**
    * `counted`: the caller counts throttle hits. A throttle counts the request before its
    * transaction can answer RETRY, so a repeat would spend a second hit and surface later as an
    * unexplained 429; such a RETRY is returned as it is, where it happened.
@@ -527,7 +512,6 @@ try {
   async function http(path, { counted = false, ...options }) {
     const until = Date.now() + 10_000;
     for (;;) {
-      await clockSettled();
       const r = await httpOnce(path, options);
       const repeat =
         !counted &&
@@ -5474,7 +5458,7 @@ try {
 
   const stepBacks = clock.summary();
   console.log(
-    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated; ${retry.heldBack} requests held back while the database clock was behind; database clock step-backs observed: ${stepBacks.count}, max ${stepBacks.maxMs} ms); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
+    `Field roster/devices/entry, check-in/selfie and foreman reports/adoption HTTP/DB integration: ${checks} checks passed (${retry.repeated} RETRY answers repeated; database clock step-backs observed: ${stepBacks.count}, max ${stepBacks.maxMs} ms); synthetic TEST data only. The field web pages are checked separately (vitest and a local browser run).`,
   );
   step('done');
 } catch (error) {

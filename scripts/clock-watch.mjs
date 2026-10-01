@@ -5,9 +5,6 @@
 // connection; it never influences what the server decides and never explains a server answer.
 // Host times are `performance.now()` milliseconds, database times epoch milliseconds.
 
-/** A sample older than this says nothing about the clock now: nothing is held back on it. */
-export const FRESH_MS = 50;
-
 /**
  * Feed it samples in order with `record(start, end, db)`: the host time before the query was
  * sent, the host time its answer arrived, and the database time it returned.
@@ -40,15 +37,6 @@ export function createClockWatch() {
       }
       max = Math.max(max, db);
       previous = { start, end };
-    },
-    /**
-     * Hold a request back now? Only on a fresh sample that is behind: while it holds, the
-     * database clock is below the highest time it already showed, so a request released when it
-     * catches up is decided no later in database time than on a clock that never stepped back
-     * (it can never be pushed past a database deadline). Stale or no samples: never hold.
-     */
-    hold(now) {
-      return open !== null && now - previous.end <= FRESH_MS;
     },
     /** Step-backs whose interval reaches `since` or later: how many, the largest, widest gap (ms). */
     summary(since = -Infinity) {
