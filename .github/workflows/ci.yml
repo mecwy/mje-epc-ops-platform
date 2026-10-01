@@ -31,6 +31,7 @@ jobs:
       - run: pnpm test:integration
       - run: pnpm test:alpha
       - run: pnpm test:alpha-lookups
+      - run: pnpm test:project-status
       - run: pnpm test:report
       - run: pnpm test:issues
       - run: pnpm test:photos

@@ -13,7 +13,8 @@ export type ModuleName =
   | 'issue'
   | 'photo'
   | 'field'
-  | 'apps';
+  | 'apps'
+  | 'project-status';
 
 export interface ModuleSpec {
   /** Repository-relative source files (non-test) that belong to the module. */
@@ -38,6 +39,12 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'IdempotencyRecord',
       'AuditLog',
     ],
+  },
+  'project-status': {
+    files: ['commands.ts', 'reader.ts', 'context.ts', 'rules.ts'].map(
+      (f) => `${D}project-status/${f}`,
+    ),
+    tables: ['ProjectStatusUpdate', 'ProjectStatusNote'],
   },
   /** The rule model (no SQL). */
   authz: { files: [], dirs: [`${D}authz/`], tables: [] },

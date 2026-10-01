@@ -1,0 +1,52 @@
+import { describe, it, expect } from 'vitest';
+import type { PoolClient } from 'pg';
+import type { Actor } from '../store-kit.js';
+import {
+  withProjectStatusReadContext,
+  type ProjectStatusReadContext,
+} from './context.js';
+import { projectStatusReader } from './reader.js';
+const projectId = '11111111-1111-4111-8111-111111111111';
+const ack = {
+  projectId,
+  n: 1,
+  statusUpdateId: '22222222-2222-4222-8222-222222222222',
+};
+describe('project status opaque context', () => {
+  it('refuses forged and copied contexts before any query and closes a kept view', async () => {
+    let calls = 0;
+    const client = {
+      query: () => {
+        calls++;
+        throw new Error('unexpected SQL');
+      },
+    } as unknown as PoolClient;
+    let kept: ReturnType<typeof projectStatusReader.forContext> | undefined;
+    await withProjectStatusReadContext(client, {} as Actor, async (ctx) => {
+      expect(Object.keys(ctx)).toEqual([]);
+      expect(Object.isFrozen(ctx)).toBe(true);
+      const view = projectStatusReader.forContext(ctx);
+      expect(view.acknowledgement(projectId, ack)).toEqual(ack);
+      kept = view;
+      const copy = { ...ctx } as ProjectStatusReadContext;
+      await expect(
+        projectStatusReader.forContext(copy).history(projectId),
+      ).rejects.toThrow('PROJECT_STATUS_CONTEXT_CLOSED');
+      expect(() =>
+        view.acknowledgement('33333333-3333-4333-8333-333333333333', ack),
+      ).toThrow('NOT_FOUND');
+    });
+    await expect(kept!.history(projectId)).rejects.toThrow(
+      'PROJECT_STATUS_CONTEXT_CLOSED',
+    );
+    expect(() => kept!.acknowledgement(projectId, ack)).toThrow(
+      'PROJECT_STATUS_CONTEXT_CLOSED',
+    );
+    expect(calls).toBe(0);
+    await expect(
+      projectStatusReader
+        .forContext({} as ProjectStatusReadContext)
+        .history(projectId),
+    ).rejects.toThrow('PROJECT_STATUS_CONTEXT_CLOSED');
+  });
+});

@@ -19,6 +19,7 @@
     "scripts/entra-mapping.mjs",
     "scripts/publication-policy.mjs",
     "scripts/report-lookups-integration.mts",
-    "scripts/alpha-lookups-integration.mts"
+    "scripts/alpha-lookups-integration.mts",
+    "scripts/project-status-integration.mts"
   ]
 }

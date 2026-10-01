@@ -10,3 +10,5 @@ export * from './photo.js';
 export * from './field.js';
 export * from './checkin.js';
 export * from './foreman.js';
+
+export * from './project-status.js';

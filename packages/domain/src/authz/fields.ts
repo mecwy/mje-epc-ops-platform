@@ -1,3 +1,7 @@
+import type {
+  ProjectStatusHistoryDto,
+  StatusCommandResultDto,
+} from '@mje/contracts';
 /**
  * ADR-0003 D2.3 / D3: every field of the report, issue and photo read DTOs mapped to a layer,
  * per projector (the same key can come from different layers: a writer's `facts` are the live
@@ -150,6 +154,8 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 
 /** The DTO each layered projector produces. */
 export interface ProjectorDtos {
+  'project-status.history': ProjectStatusHistoryDto;
+  'project-status.ack': StatusCommandResultDto;
   'report.projects': ReportProjectsDto;
   'report.days.writer': ReportDayRowDto[];
   'report.days.reader': ReportDayRowDto[];
@@ -288,6 +294,46 @@ const photoMeta = (layer: Layer): Root<PhotoGetDto> => ({
 });
 
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'project-status.history': {
+    fields: {
+      projectId: S,
+      currentN: S,
+      updates: {
+        layer: 'structure',
+        items: {
+          id: S,
+          n: S,
+          status: S,
+          areas: S,
+          situation: { layer: 'public-text' },
+          recovery: { layer: 'public-text' },
+          expectedRecoveryDate: S,
+          expectedRecoveryUnknown: S,
+          needsSupport: S,
+          supportNote: { layer: 'public-text' },
+          declaredAt: S,
+          siteTimezone: S,
+          businessDate: S,
+          declaredBy: S,
+          declaredByPersonId: S,
+          notes: {
+            layer: 'structure',
+            items: {
+              id: S,
+              text: { layer: 'public-text' },
+              byAccountId: S,
+              byPersonId: S,
+              at: S,
+            },
+          },
+        },
+      },
+    },
+  },
+  'project-status.ack': {
+    fields: { projectId: S, n: S, statusUpdateId: S, noteId: S },
+  },
+
   'report.projects': {
     fields: { accountId: S, personId: S, projects: sub('structure') },
   },
