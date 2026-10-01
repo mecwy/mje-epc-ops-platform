@@ -23,8 +23,8 @@ const account = {
   id: 'TEST-account',
   personId: 'TEST-person',
   authzVersion: 7,
-  decidedAt: new Date('2026-10-05T08:00:00Z'),
 };
+const DECIDED = '2026-10-05 08:00:00.123456+00';
 
 function fake(opts: {
   accounts?: unknown[];
@@ -38,6 +38,8 @@ function fake(opts: {
       log.push(text.replace(/\s+/g, ' ').trim().slice(0, 60));
       if (/app_account_for_identity/.test(text))
         return { rows: opts.accounts ?? [account] };
+      if (/clock_timestamp/.test(text))
+        return { rows: [{ decidedAt: DECIDED }] };
       if (/FROM "Membership"/.test(text))
         return {
           rows: opts.roles ?? [{ role: 'PROJECT_MANAGER', projectId: 'p' }],
@@ -57,7 +59,7 @@ function fake(opts: {
 }
 
 describe('account transaction protocol (ADR-0003 D5)', () => {
-  it('BEGIN, transaction_timeout first, the other bounds, identity, the first-lock function, org, memberships', async () => {
+  it('BEGIN, transaction_timeout first, the other bounds, identity, the first-lock function, then the decision clock, org, memberships', async () => {
     const f = fake({});
     const actor = await inTransaction(f.pool, identity, async (_c, a) => a);
     const expected = [
@@ -66,17 +68,18 @@ describe('account transaction protocol (ADR-0003 D5)', () => {
       /^SET LOCAL statement_timeout = '10s'; SET LOCAL lock_timeout /,
       /^SELECT set_config\('app.tenant_id'/,
       /FROM app_account_for_identity|^SELECT a."orgId", a.id, a."personId", a."authzVersion"/,
+      /^SELECT clock_timestamp\(\)::text AS "decidedAt"$/,
       /^SELECT set_config\('app.org_id'/,
       /^SELECT role, "projectId" FROM "Membership"/,
     ];
-    expect(f.log.slice(0, 7).every((l, i) => expected[i]!.test(l))).toBe(true);
+    expect(f.log.slice(0, 8).every((l, i) => expected[i]!.test(l))).toBe(true);
     expect(f.log.at(-1)).toBe('COMMIT');
     expect(actor).toEqual({
       orgId: ORG,
       accountId: 'TEST-account',
       personId: 'TEST-person',
       authzVersion: 7,
-      decidedAt: account.decidedAt,
+      decidedAt: DECIDED,
     });
     expect(f.released).toEqual([null]);
   });
@@ -132,7 +135,7 @@ describe('idempotent replay is re-projected for the current context', () => {
     });
     const f = fake({ stored });
     const client = f.client as unknown as PoolClient;
-    const actor = { ...account, accountId: account.id };
+    const actor = { ...account, accountId: account.id, decidedAt: DECIDED };
     let ran = false;
     const replayed = await idempotent(
       client,

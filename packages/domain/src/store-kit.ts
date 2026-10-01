@@ -13,8 +13,13 @@ export interface Actor {
   personId: string;
   /** LoginAccount.authzVersion read under the account lock (ADR-0003 D5). */
   authzVersion: number;
-  /** Database decision time: memberships are evaluated as of this instant (now() of the transaction). */
-  decidedAt: Date;
+  /**
+   * Database decision time (ADR-0003 D5): clock_timestamp() read after the account lock is held,
+   * kept as PostgreSQL's timestamptz text (microseconds intact) and passed back as
+   * `$n::timestamptz` to every membership predicate of the transaction. Not now(): that is the
+   * transaction start, before the lock, and would admit a revocation committed in between.
+   */
+  decidedAt: string;
 }
 export type Access = 'write' | 'read';
 /** DailyClose.scopeKey of a Site Daily Close report day. */
@@ -118,7 +123,6 @@ interface AccountRow {
   id: string;
   personId: string;
   authzVersion: number;
-  decidedAt: Date;
 }
 export interface AccountAdmission {
   /** True when the memberships active at decidedAt let the account into this store at all. */
@@ -181,11 +185,18 @@ export async function accountTransaction<T>(
       [identity.tenantId, identity.objectId],
     );
     const accounts = await client.query<AccountRow>(
-      'SELECT a."orgId", a.id, a."personId", a."authzVersion", now() AS "decidedAt" FROM app_account_for_identity($1, $2) a',
+      'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity($1, $2) a',
       [identity.tenantId, identity.objectId],
     );
     if (accounts.rows.length !== 1) throw admission.forbidden();
     const account = accounts.rows[0]!;
+    // A separate statement, so the clock is read only after the row lock above is granted: a
+    // revocation that committed while this transaction waited for it is in the past.
+    const decidedAt = (
+      await client.query<{ decidedAt: string }>(
+        'SELECT clock_timestamp()::text AS "decidedAt"',
+      )
+    ).rows[0]!.decidedAt;
     await client.query("SELECT set_config('app.org_id', $1, true)", [
       account.orgId,
     ]);
@@ -194,8 +205,8 @@ export async function accountTransaction<T>(
       projectId: string | null;
     }>(
       `SELECT role, "projectId" FROM "Membership" WHERE "orgId"=$1 AND "accountId"=$2
-      AND "activeFrom"<=$3 AND ("activeUntil" IS NULL OR "activeUntil">$3)`,
-      [account.orgId, account.id, account.decidedAt],
+      AND "activeFrom"<=$3::timestamptz AND ("activeUntil" IS NULL OR "activeUntil">$3::timestamptz)`,
+      [account.orgId, account.id, decidedAt],
     );
     if (!admission.admit(memberships.rows)) throw admission.forbidden();
     const actor: Actor = {
@@ -203,7 +214,7 @@ export async function accountTransaction<T>(
       accountId: account.id,
       personId: account.personId,
       authzVersion: account.authzVersion,
-      decidedAt: account.decidedAt,
+      decidedAt,
     };
     const running = work(client, actor);
     running.catch(() => undefined);
@@ -259,8 +270,8 @@ export async function projectAccess(
   }>(
     `SELECT role, "projectId" FROM "Membership" WHERE "orgId"=$1 AND "accountId"=$2
     AND ("projectId"=$3 OR ("projectId" IS NULL AND role = ANY($4::text[])))
-    AND "activeFrom"<=now() AND ("activeUntil" IS NULL OR "activeUntil">now())`,
-    [actor.orgId, actor.accountId, projectId, [...READ_ROLES]],
+    AND "activeFrom"<=$5::timestamptz AND ("activeUntil" IS NULL OR "activeUntil">$5::timestamptz)`,
+    [actor.orgId, actor.accountId, projectId, [...READ_ROLES], actor.decidedAt],
   );
   const access: Access | null = roles.rows.some((r) =>
     (WRITE_ROLES as readonly string[]).includes(r.role),

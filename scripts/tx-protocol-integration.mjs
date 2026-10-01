@@ -450,6 +450,80 @@ try {
     },
   );
 
+  // ---------- T7 revocation committed after BEGIN, before the account lock is granted ----------
+  for (const mode of ['fresh write', 'replay']) {
+    await testCase(
+      `T7 ${mode}: a revocation that commits after the request's BEGIN but before its account lock is granted is in force (403, no write, no replay)`,
+      async () => {
+        const pm = await newPm();
+        const command = items(1, `TEST t7 ${mode}`);
+        if (mode === 'replay')
+          assert.equal((await call('/items', pm.bearer, command)).status, 200);
+        const before = await count(
+          'SELECT count(*) AS n FROM "IdempotencyRecord" WHERE key=$1',
+          [command.clientMutationId],
+        );
+        // The revoker holds the account row first, so the request's BEGIN (and its now())
+        // happens before the revocation and its lock call waits behind it.
+        const revoker = await owner.connect();
+        let open = true;
+        let request;
+        try {
+          const revokerPid = (
+            await revoker.query('SELECT pg_backend_pid() AS p')
+          ).rows[0].p;
+          await revoker.query('BEGIN');
+          await revoker.query(
+            'SELECT id FROM "LoginAccount" WHERE id=$1 FOR UPDATE',
+            [pm.account],
+          );
+          request = settled(call('/items', pm.bearer, command));
+          await waitFor(
+            async () => {
+              const b = await requestBackend();
+              return b?.blockers.includes(revokerPid) ? b : null;
+            },
+            3000,
+            'request waiting for the account row after BEGIN',
+          );
+          // Effective after the request began (now() of its transaction is earlier).
+          await revoker.query(
+            'UPDATE "Membership" SET "activeUntil"=clock_timestamp() WHERE id=$1',
+            [pm.membershipId],
+          );
+          await revoker.query('COMMIT');
+          open = false;
+          await within(request, 4000, 'request after the revocation');
+          assert.equal(
+            request.value?.status,
+            403,
+            JSON.stringify(request.value),
+          );
+          assert.equal(request.value.body.code, 'FORBIDDEN');
+          assert.equal(request.value.body.items, undefined);
+          assert.equal(
+            await count(
+              'SELECT count(*) AS n FROM "IdempotencyRecord" WHERE key=$1',
+              [command.clientMutationId],
+            ),
+            before,
+          );
+          assert.equal(
+            await count(
+              'SELECT count(*) AS n FROM "ReportItem" WHERE "orgId"=$1 AND label=$2',
+              [org, `TEST t7 ${mode} 0`],
+            ),
+            mode === 'replay' ? 1 : 0,
+          );
+        } finally {
+          if (open) await revoker.query('ROLLBACK');
+          revoker.release();
+          await request?.promise;
+        }
+      },
+    );
+  }
+
   // ---------- T4 stalled Blob: the operation deadline ends the transaction ----------
   await testCase(
     'T4 stalled Blob (15 s deadline): RETRY, account lock released, the waiting writer proceeds, no late commit, retry reuses the object',
@@ -507,7 +581,14 @@ try {
         );
         // The stalled call returns late: nothing commits after the RETRY.
         stalls.at(-1).release?.();
-        await new Promise((r) => setTimeout(r, 300));
+        // Synchronised on the database, not a sleep: whatever continuation the late return
+        // released has ended once no application backend holds an open transaction (an older
+        // implementation's transaction stays open until its late COMMIT).
+        await waitFor(
+          async () => (await requestBackend()) === null,
+          5000,
+          'no application transaction left open after the late return',
+        );
         assert.equal(
           await count(
             'SELECT count(*) AS n FROM "PhotoEvidence" WHERE "blobKey"=$1',

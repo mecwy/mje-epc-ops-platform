@@ -64,8 +64,8 @@ export class AlphaStore {
   ): Promise<ProjectRow> {
     const membership = await client.query(
       `SELECT id FROM "Membership" WHERE "orgId"=$1 AND "accountId"=$2 AND "projectId"=$3
-      AND role='ALPHA_OWNER' AND "activeFrom"<=now() AND ("activeUntil" IS NULL OR "activeUntil">now())`,
-      [actor.orgId, actor.accountId, projectId],
+      AND role='ALPHA_OWNER' AND "activeFrom"<=$4::timestamptz AND ("activeUntil" IS NULL OR "activeUntil">$4::timestamptz)`,
+      [actor.orgId, actor.accountId, projectId, actor.decidedAt],
     );
     if (!membership.rowCount) throw new AlphaError('FORBIDDEN');
     const result = await client.query<ProjectRow>(
@@ -84,8 +84,8 @@ export class AlphaStore {
         `SELECT DISTINCT p.id, p.name, p.code, p.timezone FROM "Project" p
         JOIN "Membership" m ON m."orgId"=p."orgId" AND m."projectId"=p.id
         WHERE p."orgId"=$1 AND m."accountId"=$2 AND m.role='ALPHA_OWNER'
-          AND m."activeFrom"<=now() AND (m."activeUntil" IS NULL OR m."activeUntil">now()) ORDER BY p.code`,
-        [actor.orgId, actor.accountId],
+          AND m."activeFrom"<=$3::timestamptz AND (m."activeUntil" IS NULL OR m."activeUntil">$3::timestamptz) ORDER BY p.code`,
+        [actor.orgId, actor.accountId, actor.decidedAt],
       );
       return {
         accountId: actor.accountId,

@@ -24,6 +24,7 @@ function label(text: string): string {
   if (/^\s*SELECT set_config/.test(text)) return 'set_config';
   // A7-0b: the account row and first lock come through the definer function.
   if (/app_account_for_identity/.test(text)) return 'LoginAccount';
+  if (/clock_timestamp/.test(text)) return 'decidedAt';
   return table ?? text.trim().split(/\s+/).slice(0, 2).join(' ');
 }
 interface Fake {
@@ -54,9 +55,10 @@ function fakePool(): Fake {
             id: 'TEST-account',
             personId: 'TEST-person',
             authzVersion: 1,
-            decidedAt: new Date('2026-10-05T08:00:00Z'),
           },
         ];
+      case 'decidedAt':
+        return [{ decidedAt: '2026-10-05 08:00:00.123456+00' }];
       case 'Membership':
         return revoked
           ? []
@@ -125,12 +127,13 @@ function fakePool(): Fake {
 const LAG_BEFORE_EXIT = [
   'BEGIN',
   // A7-0b (ADR-0003 D5): transaction_timeout first, then the other bounds; the account row
-  // through the first-lock function; the admission membership read that the old account query
+  // through the first-lock function and the decision clock read after it; the admission membership read that the old account query
   // did inside its EXISTS. The read path after it is unchanged.
   'SET LOCAL',
   'SET LOCAL',
   'set_config',
   'LoginAccount',
+  'decidedAt',
   'set_config',
   'Membership',
   'Membership',
