@@ -17,6 +17,7 @@ import {
   target,
 } from './model.js';
 import type { DayHandle, SaveState } from './useDay.js';
+import { leaf } from './draft.js';
 import { FillIssues } from './Issues.js';
 import type { IssuesHandle } from './useIssues.js';
 import { PhotoLine, PhotosCard, UnlinkedReminder } from './Photos.js';
@@ -48,6 +49,97 @@ export function SaveBadge({ save }: { save: SaveState }) {
     >
       {text}
     </span>
+  );
+}
+
+/**
+ * Inputs a conflict reload set aside (another person saved this day first): each is shown
+ * beside the value the day holds now, and only the user's "fill in again" writes it back.
+ */
+function RetainedCard({
+  h,
+  day,
+  locked,
+}: {
+  h: DayHandle;
+  day: DayView;
+  locked: boolean;
+}) {
+  const { t, label, lang } = useI18n();
+  const f = h.facts;
+  if (h.retained.length === 0 || !f) return null;
+  // A narrative preset is stored as its code; show its text, as the editor does.
+  const show = (path: string, v: string | undefined) => {
+    if (v === undefined || v === '') return t('emptyValue');
+    if (path.startsWith('narrative.')) return narrativeText(v, lang);
+    if (v === 'unknown') return t('unknown');
+    if (v === 'na') return t('na');
+    if (path.startsWith('presence.')) {
+      if (v === 'present') return t('present');
+      if (v === 'absent') return t('absent');
+    }
+    return v;
+  };
+  const name = (path: string) => {
+    const [head, key = ''] = path.split('.');
+    const item = day.items.find((i) => i.key === key);
+    const itemName = item ? label(item.label) : key;
+    switch (head) {
+      case 'qty':
+        return `${itemName} · ${t('today')}`;
+      case 'cumulative':
+        return `${itemName} · ${t('cumulative')}`;
+      case 'machinery':
+      case 'materials':
+        return itemName;
+      case 'people': {
+        if (!(key in ROLE_LABEL)) return key;
+        const roleLabel = ROLE_LABEL[key as keyof typeof ROLE_LABEL];
+        return t(roleLabel);
+      }
+      case 'narrative':
+        return key === 'construction' || key === 'quality' || key === 'safety'
+          ? t(key)
+          : key;
+      case 'presence':
+        return `${t('presence')} · ${key}`;
+      case 'weather':
+      case 'temperature':
+        return t(head);
+      default:
+        return path;
+    }
+  };
+  return (
+    <div className="banner warn retained" role="status">
+      <b>{t('retainedTitle')}</b>
+      {h.retained.map((r) => (
+        <div className="qline" key={r.path}>
+          <span className="grow small">
+            <b>{name(r.path)}</b>{' '}
+            {t('retainedLine', {
+              mine: show(r.path, r.mine),
+              now: show(r.path, leaf(f, r.path)),
+            })}
+          </span>
+          <button
+            type="button"
+            className="pill"
+            disabled={locked}
+            onClick={() => h.refill(r.path)}
+          >
+            {t('refill')}
+          </button>
+          <button
+            type="button"
+            className="pill"
+            onClick={() => h.dismiss(r.path)}
+          >
+            {t('dismissRetained')}
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -510,6 +602,7 @@ export function FillPage({
       <main className="page task-page">
         <div className="fwrap">
           <div className="fmain">
+            <RetainedCard h={h} day={day} locked={locked} />
             {day.state === 'correcting' && (
               <div className="banner warn">
                 {t('correctingBanner', {
