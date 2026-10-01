@@ -30,6 +30,7 @@ export const BOUNDARY = {
       except: [
         'readerContent',
         'readerDayState',
+        'readerNextPlan',
         'readerPlan',
         'readerSnapshot',
         'observeReportProjections',

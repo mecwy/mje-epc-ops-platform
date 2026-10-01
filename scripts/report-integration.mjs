@@ -1411,6 +1411,11 @@ try {
       n: null,
       rows: [{ item: 'support', target: '8641' }],
     });
+    // The writer's day shows the frozen draft rows (only readers get the projection).
+    assert.deepEqual(
+      (await dayOf(C1, pm)).nextPlan,
+      writerRev.snapshot.nextPlan,
+    );
     const readerRev = await revisionOf(C1, exec);
     assert.deepEqual(readerRev.snapshot.nextPlan, {
       status: 'draft',
