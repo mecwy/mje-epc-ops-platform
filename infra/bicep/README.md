@@ -52,13 +52,19 @@ retained versions of selfie blobs older than that. The numbers live once, in `@m
 (`packages/domain/src/checkin-rules.ts`); the templates take them as parameters and the job refuses to
 run with a different value.
 
-**What "deleted" means on this account.** The Dev storage account keeps blob versions and a 30-day
+**What "deleted" means on this account.** The Dev storage account keeps blob versions and has a 30-day
 soft-delete window (`dev-alpha.bicep`, `blobServices`). When the sweep deletes a selfie, the row is
-DELETED and audited at once, but the bytes stay restorable by a storage operator: the deleted blob
-for the 30-day soft-delete window, and its versions until the lifecycle rule removes them
-(`selfieBackstopDays` after each version was created). So the bytes are gone, at the latest,
-`max(30, SELFIE_BLOB_BACKSTOP_DAYS)` days after the deletion — not at the deletion itself. The rule
-is limited to the `evidence/selfie/` prefix; evidence photos keep their versions and soft delete.
+DELETED and audited at once, but the bytes are not gone: with versioning on, the deleted blob stays
+as a previous version. The lifecycle rule makes that version _eligible_ for deletion once it is
+`selfieBackstopDays` old (counted from the upload, since a selfie key is never overwritten); the
+lifecycle service runs on its own schedule (typically once a day, sometimes later), and deleting a
+version starts the 30-day soft-delete window for it. So a storage operator can recover a swept
+selfie's bytes until roughly **`SELFIE_BLOB_BACKSTOP_DAYS` + 30 days after the upload** (≈ 75 days
+with the current numbers), plus the lifecycle run delay — whether the sweep deleted it on day 1
+(staged, never attached) or at the end of its retention. There is no earlier deadline, and the
+sweep does not shorten it. The rule is limited to the `evidence/selfie/` prefix; evidence photos keep
+their versions and soft delete untouched. Changing the retention (M4 HR/legal item) changes these
+windows through the one constant in `checkin-rules.ts`; redeploy both templates afterwards.
 
 Values from the code (after `pnpm build`):
 

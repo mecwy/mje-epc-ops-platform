@@ -18,9 +18,9 @@
  *                                when set (the job sets them from its parameters) they must equal
  *                                @mje/domain's constants, so a deployment cannot drift from the code
  *
- * Exit code: 0 clean; 1 when a blob delete failed, an organization's sweep threw, or startup
- * failed for an operational reason (the next run finishes DELETING rows); 2 when the
- * configuration was refused (nothing was swept).
+ * Exit code: 0 clean; 1 when a blob delete failed, an organization's sweep threw, the pool
+ * reported an idle client's error, or startup failed for an operational reason (the next run
+ * finishes DELETING rows); 2 when the configuration was refused (nothing was swept).
  */
 import { pathToFileURL } from 'node:url';
 import {
@@ -184,8 +184,13 @@ export async function runCleanup(
   return failed > 0 ? 1 : 0;
 }
 
+/** What `runMain` needs of a pool: closing, and (pg) the error events of idle clients. */
+export interface PoolLike {
+  end(): Promise<void>;
+  on?(event: 'error', listener: (error: unknown) => void): unknown;
+}
 /** The process's collaborators, so that the whole run can be exercised without Azure or a database. */
-export interface MainDeps<P extends { end(): Promise<void> }> {
+export interface MainDeps<P extends PoolLike> {
   argv: readonly string[];
   env: Readonly<Record<string, string | undefined>>;
   blobs: () => Promise<SelfieBlobStore | undefined>;
@@ -200,7 +205,7 @@ export interface MainDeps<P extends { end(): Promise<void> }> {
  * forbidden setting, an unsafe login) is exit 2 and sweeps nothing; a startup failure for any
  * other reason is exit 1; nothing thrown reaches the caller, and the pool is always closed.
  */
-export async function runMain<P extends { end(): Promise<void> }>(
+export async function runMain<P extends PoolLike>(
   deps: MainDeps<P>,
 ): Promise<0 | 1 | 2> {
   const config = parseCleanupArgs(deps.argv, deps.env);
@@ -209,6 +214,8 @@ export async function runMain<P extends { end(): Promise<void> }>(
     return 2;
   }
   let pool: P | undefined;
+  // An idle client's error (pg-pool emits it, outside any awaited call) is an operational failure.
+  let poolFailed = false;
   try {
     const blobs = await deps.blobs();
     if (!blobs) {
@@ -216,8 +223,17 @@ export async function runMain<P extends { end(): Promise<void> }>(
       return 2;
     }
     pool = deps.pool();
+    pool.on?.('error', (error) => {
+      poolFailed = true;
+      deps.log({ event: 'selfie_cleanup_pool_error', ...classifyError(error) });
+    });
     await deps.assertLogin(pool);
-    return await runCleanup(deps.store(pool, blobs), config.options, deps.log);
+    const code = await runCleanup(
+      deps.store(pool, blobs),
+      config.options,
+      deps.log,
+    );
+    return poolFailed ? 1 : code;
   } catch (error) {
     const what = classifyError(error);
     deps.log({
@@ -233,7 +249,18 @@ export async function runMain<P extends { end(): Promise<void> }>(
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  // The last boundary: whatever escapes everything above is still logged as a code, never printed.
+  const log = (line: LogLine) => console.info(JSON.stringify(line));
+  const escaped = (error: unknown) => {
+    log({ event: 'selfie_cleanup_startup_error', ...classifyError(error) });
+    process.exit(1);
+  };
+  process.on('uncaughtException', escaped);
+  process.on('unhandledRejection', escaped);
   process.exitCode = await runMain<Pool>({
     argv: process.argv.slice(2),
     env: process.env,
@@ -241,5 +268,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
     pool: databasePoolFromEnv,
     assertLogin: assertApplicationLogin,
     store: (pool, blobs) => new CheckInStore(pool, blobs),
-    log: (line) => console.info(JSON.stringify(line)),
+    log,
+  }).catch((error: unknown) => {
+    log({ event: 'selfie_cleanup_startup_error', ...classifyError(error) });
+    return 1;
   });
+}

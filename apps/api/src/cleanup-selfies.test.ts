@@ -1,3 +1,7 @@
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   SELFIE_GRACE_MINUTES,
@@ -216,7 +220,15 @@ describe('cleanup-selfies run', () => {
 
 describe('cleanup-selfies process boundary', () => {
   const pool = () => {
-    const p = { ended: 0, end: async () => void p.ended++ };
+    const listeners: ((error: unknown) => void)[] = [];
+    const p = {
+      ended: 0,
+      end: async () => void p.ended++,
+      on: (_event: 'error', listener: (error: unknown) => void) =>
+        void listeners.push(listener),
+      /** What pg-pool does for an idle client's error: an event, outside any awaited call. */
+      emitError: (error: unknown) => listeners.forEach((l) => l(error)),
+    };
     return p;
   };
   type P = ReturnType<typeof pool>;
@@ -307,6 +319,31 @@ describe('cleanup-selfies process boundary', () => {
     expect(JSON.stringify(unknown.lines)).not.toContain('Jane');
   });
 
+  it("an idle client's error during the sweep is exit 1 with a code only, never its message", async () => {
+    const created: P[] = [];
+    const run = deps({
+      pool: () => {
+        const p = pool();
+        created.push(p);
+        return p;
+      },
+      store: (p) =>
+        fake({
+          [ORG_A]: async () => {
+            (p as P).emitError(pgError('57P01'));
+            return clean;
+          },
+        }),
+    });
+    expect(await runMain(run.base)).toBe(1);
+    expect(run.lines).toEqual([
+      { event: 'selfie_cleanup_pool_error', cause: 'DATABASE', code: '57P01' },
+      { event: 'selfie_cleanup', orgId: ORG_A, dryRun: false, ...clean },
+    ]);
+    expect(JSON.stringify(run.lines)).not.toContain('Jane');
+    expect(created[0]!.ended).toBe(1);
+  });
+
   it('a clean run is exit 0 and closes the pool', async () => {
     const created: P[] = [];
     const ok = deps({
@@ -322,4 +359,69 @@ describe('cleanup-selfies process boundary', () => {
       { event: 'selfie_cleanup', orgId: ORG_A, dryRun: false, ...clean },
     ]);
   });
+});
+
+describe('cleanup-selfies as a process (built dist)', () => {
+  const entry = fileURLToPath(
+    new URL('../dist/cleanup-selfies.js', import.meta.url),
+  );
+  const run = async (
+    args: string[],
+    env: Record<string, string>,
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    try {
+      const r = await promisify(execFile)(process.execPath, [entry, ...args], {
+        env: { PATH: process.env['PATH'] ?? '', ...env },
+      });
+      return { code: 0, stdout: r.stdout, stderr: r.stderr };
+    } catch (e) {
+      const err = e as { code?: number; stdout?: string; stderr?: string };
+      return {
+        code: err.code ?? 1,
+        stdout: err.stdout ?? '',
+        stderr: err.stderr ?? '',
+      };
+    }
+  };
+  const lastLine = (stdout: string) =>
+    JSON.parse(stdout.trim().split('\n').at(-1) ?? 'null') as unknown;
+
+  it('refuses its configuration on stdout as JSON codes, with nothing on stderr, exit 2', async () => {
+    expect(existsSync(entry), `${entry} is built by pnpm build`).toBe(true);
+    const none = await run([], {});
+    expect(none.code).toBe(2);
+    expect(none.stderr).toBe('');
+    expect(lastLine(none.stdout)).toEqual({
+      event: 'selfie_cleanup_config',
+      code: 'NO_ORGANIZATION',
+    });
+    // An organization but no blob store configured: refused before any connection, stderr empty.
+    const noStore = await run(['--org', ORG_A], { [`X_${SECRET}`]: SECRET });
+    expect(noStore.code).toBe(2);
+    expect(noStore.stderr).toBe('');
+    expect(lastLine(noStore.stdout)).toEqual({
+      event: 'selfie_cleanup_config',
+      code: 'NO_BLOB_STORE',
+    });
+    expect(noStore.stdout).not.toContain('Jane');
+  }, 20_000);
+
+  it('a missing database setting with the identity blob store configured is exit 2 by code, stderr empty', async () => {
+    // The identity path builds its clients without any network call; the pool factory then
+    // refuses the missing PGHOST before connecting anywhere.
+    const r = await run(['--org', ORG_A], {
+      AZURE_CLIENT_ID: '00000000-0000-0000-0000-000000000000',
+      BLOB_ACCOUNT_URL: 'https://example.invalid/',
+      [`X_${SECRET}`]: SECRET,
+    });
+    expect(r.stderr).toBe('');
+    expect(r.code).toBe(2);
+    expect(lastLine(r.stdout)).toEqual({
+      event: 'selfie_cleanup_config',
+      cause: 'CONFIGURATION',
+      code: 'MISSING_CONFIGURATION',
+      field: 'PGHOST',
+    });
+    expect(r.stdout).not.toContain('Jane');
+  }, 20_000);
 });
