@@ -124,47 +124,168 @@ export interface TableUse {
   table: string;
   op: SqlOperation;
 }
+/** A lexical token of PostgreSQL SQL that can name a table. */
+type Token =
+  | { kind: 'word'; text: string }
+  | { kind: 'ident'; text: string }
+  | { kind: 'hole' }
+  | { kind: 'punct'; text: string };
+/**
+ * PostgreSQL lexical scan of a folded string (HOLE marks unknown parts): single-quoted
+ * literals ('' escapes; E'' also backslash escapes), double-quoted identifiers ("" escapes),
+ * line comments and nested block comments are recognised as such, so comment markers inside a
+ * literal hide nothing and a table named only inside a literal or comment is not a use.
+ * Dollar-quoted bodies ($$…$$, $tag$…$tag$) are scanned as SQL (conservatively: they are
+ * usually function or DO bodies), not skipped.
+ */
+export function sqlTokens(sql: string): Token[] {
+  const out: Token[] = [];
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const c = sql[i]!;
+    const next = sql[i + 1];
+    if (/\s/.test(c)) i++;
+    else if (c === '-' && next === '-') {
+      while (i < n && sql[i] !== '\n') i++;
+    } else if (c === '/' && next === '*') {
+      let depth = 0;
+      while (i < n) {
+        if (sql[i] === '/' && sql[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (sql[i] === '*' && sql[i + 1] === '/') {
+          depth--;
+          i += 2;
+          if (depth === 0) break;
+        } else i++;
+      }
+    } else if (c === "'" || ((c === 'E' || c === 'e') && next === "'")) {
+      const escapes = c !== "'";
+      i += escapes ? 2 : 1;
+      while (i < n) {
+        if (escapes && sql[i] === '\\') i += 2;
+        else if (sql[i] === "'" && sql[i + 1] === "'") i += 2;
+        else if (sql[i] === "'") {
+          i++;
+          break;
+        } else i++;
+      }
+    } else if (c === '"') {
+      let text = '';
+      i++;
+      while (i < n) {
+        if (sql[i] === '"' && sql[i + 1] === '"') {
+          text += '"';
+          i += 2;
+        } else if (sql[i] === '"') {
+          i++;
+          break;
+        } else text += sql[i++];
+      }
+      out.push({ kind: 'ident', text });
+    } else if (c === '$' && /^\$(?:[A-Za-z_][\w]*)?\$/.test(sql.slice(i))) {
+      const tag = /^\$(?:[A-Za-z_][\w]*)?\$/.exec(sql.slice(i))![0];
+      const end = sql.indexOf(tag, i + tag.length);
+      const body = sql.slice(i + tag.length, end < 0 ? n : end);
+      out.push(...sqlTokens(body));
+      i = end < 0 ? n : end + tag.length;
+    } else if (c === HOLE) {
+      out.push({ kind: 'hole' });
+      i++;
+    } else if (/[A-Za-z_]/.test(c)) {
+      const m = /^[A-Za-z_][\w$]*/.exec(sql.slice(i))![0];
+      out.push({ kind: 'word', text: m.toLowerCase() });
+      i += m.length;
+    } else if (c === '$' && /\d/.test(next ?? '')) {
+      i++;
+      while (i < n && /\d/.test(sql[i]!)) i++;
+    } else {
+      out.push({ kind: 'punct', text: c });
+      i++;
+    }
+  }
+  return out;
+}
 /** Table uses of one SQL string; `unresolved` lists table positions with no known name. */
 export function sqlTables(text: string): {
   uses: TableUse[];
   unresolved: string[];
 } {
-  // SQL comments never hide a keyword from its table.
-  const sql = text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
+  const tokens = sqlTokens(text);
   const uses: TableUse[] = [];
   const unresolved: string[] = [];
-  // A table position: a keyword, optional ONLY, an optional schema, then the name. Unquoted
-  // names fold to lower case in PostgreSQL and so never reach a (quoted, PascalCase) model
-  // table: they are not ours. A position whose name is not known statically is unresolved.
-  const position =
-    /\b(insert\s+into|delete\s+from|merge\s+into|truncate(?:\s+table)?|update|from|join|into|table)\s+(?:only\s+)?((?:"[^"]*"|\w+|\uE000)\s*\.\s*)?("[^"]*"|\w+|\uE000|\()/gi;
-  for (const m of sql.matchAll(position)) {
-    const keyword = m[1]!.toLowerCase().replace(/\s+/g, ' ');
-    const before = sql.slice(0, m.index).trimEnd();
+  const word = (k: number) => {
+    const t = tokens[k];
+    return t?.kind === 'word' ? t.text : undefined;
+  };
+  for (let k = 0; k < tokens.length; k++) {
+    const w = word(k);
+    if (!w) continue;
+    // The second word of INSERT INTO / MERGE INTO / DELETE FROM / TRUNCATE TABLE is handled
+    // with its first word.
+    const prev = word(k - 1);
     if (
-      keyword === 'from' &&
-      /\b(distinct|epoch|year|month|day|hour)$/i.test(before)
+      (w === 'into' && (prev === 'insert' || prev === 'merge')) ||
+      (w === 'from' && prev === 'delete') ||
+      (w === 'table' && prev === 'truncate')
     )
       continue;
-    if (keyword === 'update' && /\b(for|do|key)$/i.test(before)) continue;
-    const token = m[3]!;
-    if (m[2]?.includes(HOLE) || token.includes(HOLE)) {
-      unresolved.push(m[0]);
+    // A table position: a keyword, optional ONLY, an optional schema, then the name. Unquoted
+    // names fold to lower case in PostgreSQL and never reach a (quoted, PascalCase) model
+    // table: they are not ours. A position whose name is not known statically is unresolved.
+    let at = k + 1;
+    let write = false;
+    if (
+      ((w === 'insert' || w === 'merge') && word(at) === 'into') ||
+      (w === 'delete' && word(at) === 'from')
+    ) {
+      write = true;
+      at++;
+    } else if (w === 'truncate') {
+      write = true;
+      if (word(at) === 'table') at++;
+    } else if (w === 'update') {
+      if (['for', 'do', 'key'].includes(word(k - 1) ?? '')) continue;
+      write = true;
+    } else if (w === 'from') {
+      if (
+        ['distinct', 'epoch', 'year', 'month', 'day', 'hour'].includes(
+          word(k - 1) ?? '',
+        )
+      )
+        continue;
+    } else if (!['join', 'into', 'table'].includes(w)) continue;
+    if (word(at) === 'only') at++;
+    let name = tokens[at];
+    const dot = tokens[at + 1];
+    // schema.name: the name follows the dot (an unknown schema stays the unresolved name).
+    const unknownSchema =
+      name?.kind === 'hole' ||
+      (name?.kind === 'ident' && name.text.includes(HOLE));
+    if (dot?.kind === 'punct' && dot.text === '.' && !unknownSchema)
+      name = tokens[at + 2];
+    if (!name) continue;
+    if (
+      name.kind === 'hole' ||
+      (name.kind === 'ident' && name.text.includes(HOLE))
+    ) {
+      unresolved.push(
+        `${w} ${name.kind === 'ident' ? `"${name.text}"` : HOLE}`,
+      );
       continue;
     }
-    const name = token.replace(/"/g, '');
-    if (token.startsWith('"') && models.has(name))
-      uses.push({
-        table: name,
-        op: /^(insert|delete|merge|truncate|update)/.test(keyword)
-          ? 'write'
-          : 'read',
-      });
+    if (name.kind === 'ident' && models.has(name.text))
+      uses.push({ table: name.text, op: write ? 'write' : 'read' });
   }
   // Any other quoted model name in the statement (comma joins, subqueries) is a read.
-  for (const m of sql.matchAll(/"(\w+)"/g))
-    if (models.has(m[1]!) && !uses.some((u) => u.table === m[1]))
-      uses.push({ table: m[1]!, op: 'read' });
+  for (const t of tokens)
+    if (
+      t.kind === 'ident' &&
+      models.has(t.text) &&
+      !uses.some((u) => u.table === t.text)
+    )
+      uses.push({ table: t.text, op: 'read' });
   return { uses, unresolved };
 }
 
@@ -332,6 +453,45 @@ describe('SQL scan counter-examples', () => {
       'parameter in a table position',
       'function h(t: string) { return q(`select 1 from "${t}"`); }',
     ],
+    // PR #51 round 3: comment markers inside literals must not hide a table
+    [
+      'line-comment marker in a string literal',
+      'q(`SELECT \'--\' AS marker FROM "PlanVersion"`);',
+    ],
+    [
+      'block-comment markers in string literals',
+      "q(`SELECT '/*' AS m FROM \"PlanVersion\" WHERE '*/' = '*/'`);",
+    ],
+    [
+      'real comment, then the table',
+      'q(`SELECT 1 /* note */ FROM -- x\n "PlanVersion"`);',
+    ],
+    [
+      'comment marker inside a dollar-quoted string',
+      'q(`SELECT $$ -- not a comment $$ AS t FROM "PlanVersion"`);',
+    ],
+    // PM self-check (c): a dollar-quoted body is scanned as SQL, not skipped.
+    [
+      'query in a dollar-quoted DO body',
+      'q(`DO $$ BEGIN PERFORM 1 FROM "PlanVersion"; END $$`);',
+    ],
+    [
+      'quoted table only inside a dollar-quoted body',
+      'q(`SELECT $$"PlanVersion"$$ FROM "Issue"`);',
+    ],
+    ['tagged dollar quote', 'q(`SELECT $a$ /* $a$ AS t FROM "PlanVersion"`);'],
+    [
+      'nested block comments',
+      'q(`SELECT 1 /* outer /* inner */ still comment */ FROM "PlanVersion"`);',
+    ],
+    [
+      "escaped quote in E'' string",
+      "q(`SELECT E'\\\\' --' AS t FROM \"PlanVersion\"`);",
+    ],
+    [
+      'doubled quote in a literal',
+      "q(`SELECT 'it''s -- fine' AS t FROM \"PlanVersion\"`);",
+    ],
     [
       'nested store file',
       'q(`SELECT 1 FROM "Issue"`);',
@@ -343,6 +503,21 @@ describe('SQL scan counter-examples', () => {
       if (file) expect(moduleOf(file)).toBeUndefined();
       else expect(caught(code)).toBe(true);
     });
+  it('a table only inside a literal or a comment is not a use', () => {
+    expect(caught(`q(\`SELECT '"PlanVersion"' AS label FROM "Issue"\`);`)).toBe(
+      false,
+    );
+    expect(caught('q(`SELECT 1 FROM "Issue" -- see "PlanVersion"\n`);')).toBe(
+      false,
+    );
+    // PM self-check (b): a table name only inside a string literal is not a use.
+    expect(caught(`q(\`SELECT 'PlanVersion' AS label FROM "Issue"\`);`)).toBe(
+      false,
+    );
+    expect(caught(`q(\`SELECT '"PlanVersion"' AS label FROM "Issue"\`);`)).toBe(
+      false,
+    );
+  });
   it('and the legal forms pass', () => {
     expect(
       caught(

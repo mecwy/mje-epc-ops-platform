@@ -5,6 +5,7 @@ type Body =
   | { kind: 'plain'; text: string }
   | { kind: 'raw'; payload: Record<string, unknown> };
 interface Dto {
+  opaqueRows: Record<string, unknown>[];
   body: Body;
   mixed: (string | { payload: Record<string, unknown> })[];
   id: string;
@@ -15,6 +16,7 @@ interface Dto {
   wrapped: { inner: Record<string, unknown>; label: string };
 }
 export const ok: FieldTable<Dto> = {
+  opaqueRows: { layer: 'submitted', projector: 'readerSnapshot' },
   body: {
     layer: 'submitted',
     fields: {

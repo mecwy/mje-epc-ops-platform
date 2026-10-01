@@ -219,6 +219,7 @@
   "packages/domain/src/authz/fixtures/fields-negative-mixed-array.ts",
   "packages/domain/src/authz/fixtures/fields-negative-nested-field.ts",
   "packages/domain/src/authz/fixtures/fields-negative-nested-opaque.ts",
+  "packages/domain/src/authz/fixtures/fields-negative-opaque-array.ts",
   "packages/domain/src/authz/fixtures/fields-negative-opaque-projector.ts",
   "packages/domain/src/authz/fixtures/fields-negative-union-fields.ts",
   "packages/domain/src/authz/fixtures/fields-negative-union-subtree.ts",

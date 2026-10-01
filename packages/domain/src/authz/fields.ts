@@ -115,13 +115,16 @@ export type FieldSpec<V> = [NonNullable<V>] extends [never]
         : | { layer: Layer; fields: FieldTable<ObjMembers<V>> }
           | SubtreeIfClear<V>
       : [ObjMembers<V>] extends [never]
-        ? [Extract<NonNullable<ElemOf<V>>, object>] extends [never]
-          ? { layer: Layer }
-          : | {
-                layer: Layer;
-                items: FieldTable<Extract<NonNullable<ElemOf<V>>, object>>;
-              }
-            | SubtreeIfClear<V>
+        ? // Opaque elements (any member): each element passes the named projector.
+          AnyOpaque<NonNullable<ElemOf<V>>> extends true
+          ? { layer: Layer; projector: OpaqueProjector }
+          : [Extract<NonNullable<ElemOf<V>>, object>] extends [never]
+            ? { layer: Layer }
+            : | {
+                  layer: Layer;
+                  items: FieldTable<Extract<NonNullable<ElemOf<V>>, object>>;
+                }
+              | SubtreeIfClear<V>
         : SubtreeIfClear<V>;
 type KeysOf<T> = T extends unknown ? keyof T : never;
 type ValueAt<T, K extends PropertyKey> = T extends unknown
