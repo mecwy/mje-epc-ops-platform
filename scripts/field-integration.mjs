@@ -4166,6 +4166,83 @@ try {
     );
   }
 
+  step('selfie cleanup: dry run, two instances, a blob already gone, a rerun');
+  {
+    const audits = (id) =>
+      count(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='FIELD_SELFIE_DELETED' AND "entityId"=$1`,
+        [id],
+      );
+    const ups = [];
+    for (const [dev_, tag] of [
+      [dev.s3, 'sw1'],
+      [dev.s5, 'sw2'],
+      [dev.s3, 'sw3'],
+    ])
+      ups.push(
+        (await expectStatus(selfieUpload(dev_.token, testJpeg({ tag })), 200))
+          .selfieId,
+      );
+    // Staged an hour ago, expired six minutes ago: past the grace, eligible.
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '67 minutes', "expiresAt" = clock_timestamp() - interval '6 minutes' WHERE id = ANY($1::uuid[])`,
+      [ups],
+    );
+    // A dry run counts and changes nothing: no claim, no delete, no audit row.
+    const dry = await checkInStore.cleanupSelfies(orgA, { dryRun: true });
+    assert.deepEqual(
+      [dry.eligible >= 3, dry.claimed, dry.deleted, dry.failed],
+      [true, 0, 0, 0],
+    );
+    for (const id of ups) {
+      const r = await selfieRow(id);
+      assert.deepEqual([r.state, r.claimedAt], ['STAGED', null]);
+      assert.equal(selfieBlobs.map.has(r.blobKey), true);
+      assert.equal(await audits(id), 0);
+    }
+    // Two instances at once, each limited to two rows: SKIP LOCKED hands out disjoint claims, a
+    // DELETING row is finished by whichever instance updates it first, and every row is audited once.
+    const [a, b] = await Promise.all([
+      checkInStore.cleanupSelfies(orgA, { limit: 2 }),
+      checkInStore.cleanupSelfies(orgA, { limit: 2 }),
+    ]);
+    assert.equal(a.claimed + b.claimed >= 3, true);
+    assert.equal(a.failed + b.failed, 0);
+    for (const id of ups) {
+      const r = await selfieRow(id);
+      assert.equal(r.state, 'DELETED');
+      assert.equal(selfieBlobs.map.has(r.blobKey), false);
+      assert.equal(await audits(id), 1);
+    }
+    // A blob that is already gone (deleted by the storage backstop, or by an earlier attempt whose
+    // row update was lost): the sweep still finishes the row and audits it once.
+    const gone = (
+      await expectStatus(
+        selfieUpload(dev.s5.token, testJpeg({ tag: 'sw4' })),
+        200,
+      )
+    ).selfieId;
+    await travel(
+      `UPDATE "FieldSelfie" SET "createdAt" = clock_timestamp() - interval '67 minutes', "expiresAt" = clock_timestamp() - interval '6 minutes' WHERE id=$1`,
+      [gone],
+    );
+    selfieBlobs.map.delete((await selfieRow(gone)).blobKey);
+    const third = await checkInStore.cleanupSelfies(orgA);
+    assert.deepEqual([third.claimed, third.deleted, third.failed], [1, 1, 0]);
+    assert.equal((await selfieRow(gone)).state, 'DELETED');
+    assert.equal(await audits(gone), 1);
+    // A rerun with nothing left is a no-op: nothing claimed, no second audit row anywhere.
+    const again = await checkInStore.cleanupSelfies(orgA);
+    assert.deepEqual(
+      [again.eligible, again.claimed, again.deleted, again.failed],
+      [0, 0, 0, 0],
+    );
+    for (const id of [...ups, gone]) assert.equal(await audits(id), 1);
+    pass(
+      'selfie cleanup as the scheduled job runs it: a dry run counts eligible rows and changes nothing; two instances with SKIP LOCKED claim disjoint rows, finish each DELETING row once and audit it once; a blob already gone counts as deleted and is audited once; a rerun claims nothing and adds no audit row',
+    );
+  }
+
   step('check-in: submission boundary under concurrency');
   const R = {};
   {
