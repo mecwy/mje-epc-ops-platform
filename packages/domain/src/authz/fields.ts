@@ -36,7 +36,10 @@ export type Layer =
 
 /** Projectors of opaque values: the only way such a value reaches a response. */
 export type OpaqueProjector =
-  /** report-reader `readerSnapshot`: no field / foreman data, frozen photo fields only. */
+  /**
+   * report-reader `readerSnapshot`: no field / foreman data, frozen photo fields only, and a draft
+   * next-day plan's rows withheld (C20).
+   */
   | 'readerSnapshot'
   /** The stored snapshot as is (writers only). */
   | 'storedSnapshot';
