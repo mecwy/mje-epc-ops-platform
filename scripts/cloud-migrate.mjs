@@ -1,6 +1,8 @@
+// @ts-check
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
+/** @param {string} name */
 function required(name) {
   const value = process.env[name];
   if (!value) throw new Error(`Missing cloud migration configuration: ${name}`);

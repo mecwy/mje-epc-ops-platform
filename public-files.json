@@ -310,5 +310,6 @@
   "scripts/report-integration.mjs",
   "scripts/smoke.mjs",
   "scripts/tx-protocol-integration.mjs",
+  "tsconfig.scripts.json",
   "vitest.config.ts"
 ]

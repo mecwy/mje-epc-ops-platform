@@ -1,10 +1,11 @@
+// @ts-check
 import { execFileSync } from 'node:child_process';
 import {
   isAllowedPublicPath,
   hasCredentialPattern,
 } from './publication-policy.mjs';
 
-const git = (...args) =>
+const git = (/** @type {string[]} */ ...args) =>
   execFileSync('git', args, { maxBuffer: 8 * 1024 * 1024 });
 const allowlist = new Set(
   JSON.parse(git('show', ':public-files.json').toString()),
@@ -15,7 +16,11 @@ const entries = git('ls-files', '--stage', '-z')
   .filter(Boolean);
 const failures = [];
 for (const entry of entries) {
-  const [metadata, path] = entry.split('\t');
+  // git ls-files --stage: '<mode> <object> <stage>\t<path>'. Only the first two parts are read;
+  // a path containing a tab splits further (known defect, listed on PR #56; fixed separately).
+  const [metadata, path] = /** @type {[string, string, ...string[]]} */ (
+    entry.split('\t')
+  );
   const [mode, , stage] = metadata.split(' ');
   if (mode !== '100644' && mode !== '100755') {
     failures.push(`${path}: symlink/submodule or unsupported mode`);

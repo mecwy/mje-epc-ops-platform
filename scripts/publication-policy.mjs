@@ -1,3 +1,4 @@
+// @ts-check
 import { extname } from 'node:path';
 
 const prohibitedExtensions = new Set([
@@ -19,6 +20,10 @@ const prohibitedExtensions = new Set([
   '.bak',
 ]);
 
+/**
+ * @param {string} path
+ * @param {Set<string>} allowlist
+ */
 export function isAllowedPublicPath(path, allowlist) {
   if (!allowlist.has(path)) return false;
   if (
@@ -48,6 +53,7 @@ export function isAllowedPublicPath(path, allowlist) {
 }
 
 // Deliberately narrow heuristics: manual content review is still required.
+/** @param {string} text */
 export function hasCredentialPattern(text) {
   return (
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(text) ||
