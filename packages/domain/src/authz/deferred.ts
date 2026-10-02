@@ -21,6 +21,6 @@ export const DEFERRED: readonly DeferredDimension[] = [
     dimension: 'contract share',
     notApplicableIn: ['report', 'issue', 'photo', 'field', 'project-status'],
     introducedBy: 'DG05-1b (version-pinned project shares)',
-    note: 'DG05-1a adds explicit grants and organization header projection. Project grants return no headers until DG05-1b adds version-pinned shares and its negative matrix',
+    note: 'DG05-1b implements version-pinned shares and current-project projection in the real contract HTTP/database suite. The legacy interpreter has no contract-share objects and does not count these dimensions',
   },
 ];

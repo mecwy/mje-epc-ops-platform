@@ -86,6 +86,12 @@ enum RevisionState {
 }
 
 model Organization {
+  ContractLine_org          ContractLine[]          @relation("ContractLine_org")
+  ContractLineRevision_org  ContractLineRevision[]  @relation("ContractLineRevision_org")
+  ContractScopeVersion_org  ContractScopeVersion[]  @relation("ContractScopeVersion_org")
+  ContractAttention_org     ContractAttention[]     @relation("ContractAttention_org")
+  ContractAttentionRead_org ContractAttentionRead[] @relation("ContractAttentionRead_org")
+
   ContractGrant_org            ContractGrant[]               @relation("ContractGrant_org")
   ContractGrantRevocation_org  ContractGrantRevocation[]     @relation("ContractGrantRevocation_org")
   Contract_org                 Contract[]                    @relation("Contract_org")
@@ -159,6 +165,9 @@ model Organization {
 }
 
 model Company {
+  ContractRevision_counterparty ContractRevision[] @relation("ContractRevision_counterparty")
+  ContractRevision_selfParty    ContractRevision[] @relation("ContractRevision_selfParty")
+
   id                     String          @id @default(uuid()) @db.Uuid
   orgId                  String          @db.Uuid
   org                    Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
@@ -320,6 +329,11 @@ model Area {
 }
 
 model ContractScope {
+  contractId                 String?                @db.Uuid
+  contractLineId             String?                @db.Uuid
+  line                       ContractLine?          @relation("ContractScope_line", fields: [orgId, contractId, contractLineId], references: [orgId, contractId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractScopeVersion_scope ContractScopeVersion[] @relation("ContractScopeVersion_scope")
+
   id                                       String                     @id @default(uuid()) @db.Uuid
   orgId                                    String                     @db.Uuid
   org                                      Organization               @relation(fields: [orgId], references: [id], onDelete: Restrict)
@@ -339,6 +353,8 @@ model ContractScope {
   WorkPackage_contractScopeId              WorkPackage[]              @relation("WorkPackage_contractScopeId")
   ChargeableLaborReference_contractScopeId ChargeableLaborReference[] @relation("ChargeableLaborReference_contractScopeId")
 
+  @@unique([orgId, contractId, contractLineId, id])
+  @@unique([orgId, contractLineId, projectId])
   @@unique([orgId, id])
 }
 
@@ -369,6 +385,10 @@ model WorkPackage {
 }
 
 model Person {
+  ContractScopeVersion_actorPerson  ContractScopeVersion[]  @relation("ContractScopeVersion_actorPerson")
+  ContractAttention_causer          ContractAttention[]     @relation("ContractAttention_causer")
+  ContractAttentionRead_actorPerson ContractAttentionRead[] @relation("ContractAttentionRead_actorPerson")
+
   ContractGrant_person                  ContractGrant[]         @relation("ContractGrant_person")
   ContractGrant_represented             ContractGrant[]         @relation("ContractGrant_represented")
   ContractRevision_informationOwner     ContractRevision[]      @relation("ContractRevision_informationOwner")
@@ -418,6 +438,9 @@ model Person {
 }
 
 model LoginAccount {
+  ContractScopeVersion_actor  ContractScopeVersion[]  @relation("ContractScopeVersion_actor")
+  ContractAttentionRead_actor ContractAttentionRead[] @relation("ContractAttentionRead_actor")
+
   ContractGrant_account           ContractGrant[]               @relation("ContractGrant_account")
   ContractGrant_grantor           ContractGrant[]               @relation("ContractGrant_grantor")
   ContractGrantRevocation_revoker ContractGrantRevocation[]     @relation("ContractGrantRevocation_revoker")
@@ -551,6 +574,12 @@ model WorkforcePlan {
 }
 
 model SourceDocument {
+  ContractLineRevision_document        ContractLineRevision[] @relation("ContractLineRevision_document")
+  ContractLineRevision_removalDocument ContractLineRevision[] @relation("ContractLineRevision_removalDocument")
+  ContractRevision_partiesSource       ContractRevision[]     @relation("ContractRevision_partiesSource")
+  ContractRevision_datesSource         ContractRevision[]     @relation("ContractRevision_datesSource")
+  ContractRevision_totalSource         ContractRevision[]     @relation("ContractRevision_totalSource")
+
   ContractRevisionSource_document  ContractRevisionSource[] @relation("ContractRevisionSource_document")
   id                               String                   @id @default(uuid()) @db.Uuid
   orgId                            String                   @db.Uuid
@@ -1837,6 +1866,8 @@ model ContractGrantRevocation {
 }
 
 model Contract {
+  ContractLine_contract ContractLine[] @relation("ContractLine_contract")
+
   id                        String             @id @default(uuid()) @db.Uuid
   orgId                     String             @db.Uuid
   code                      String
@@ -1853,6 +1884,28 @@ model Contract {
 }
 
 model ContractRevision {
+  counterpartyCompanyId         String?                @db.Uuid
+  selfCompanyId                 String?                @db.Uuid
+  signedOnState                 String                 @default("UNKNOWN")
+  signedOn                      DateTime?              @db.Date
+  effectiveOnState              String                 @default("UNKNOWN")
+  effectiveOn                   DateTime?              @db.Date
+  registrationStatus            String                 @default("SIGNED_PENDING")
+  taxBasis                      String                 @default("UNKNOWN")
+  partiesSourceId               String?                @db.Uuid
+  partiesLocation               String?
+  datesSourceId                 String?                @db.Uuid
+  datesLocation                 String?
+  totalSourceId                 String?                @db.Uuid
+  totalLocation                 String?
+  counterparty                  Company?               @relation("ContractRevision_counterparty", fields: [orgId, counterpartyCompanyId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  selfParty                     Company?               @relation("ContractRevision_selfParty", fields: [orgId, selfCompanyId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  partiesSource                 SourceDocument?        @relation("ContractRevision_partiesSource", fields: [orgId, partiesSourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  datesSource                   SourceDocument?        @relation("ContractRevision_datesSource", fields: [orgId, datesSourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  totalSource                   SourceDocument?        @relation("ContractRevision_totalSource", fields: [orgId, totalSourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractLineRevision_revision ContractLineRevision[] @relation("ContractLineRevision_revision")
+  ContractAttention_revision    ContractAttention[]    @relation("ContractAttention_revision")
+
   id                              String                   @id @default(uuid()) @db.Uuid
   orgId                           String                   @db.Uuid
   contractId                      String                   @db.Uuid
@@ -1893,4 +1946,112 @@ model ContractRevisionSource {
 
   @@unique([orgId, id])
   @@unique([orgId, contractId, n, sourceDocumentId, location])
+}
+
+model ContractLine {
+  id                        String                 @id @default(uuid()) @db.Uuid
+  orgId                     String                 @db.Uuid
+  contractId                String                 @db.Uuid
+  org                       Organization           @relation("ContractLine_org", fields: [orgId], references: [id], onDelete: Restrict)
+  contract                  Contract               @relation("ContractLine_contract", fields: [orgId, contractId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractLineRevision_line ContractLineRevision[] @relation("ContractLineRevision_line")
+  ContractScope_line        ContractScope[]        @relation("ContractScope_line")
+
+  @@unique([orgId, id])
+  @@unique([orgId, contractId, id])
+}
+
+model ContractLineRevision {
+  id                                String                 @id @default(uuid()) @db.Uuid
+  orgId                             String                 @db.Uuid
+  contractId                        String                 @db.Uuid
+  lineId                            String                 @db.Uuid
+  n                                 Int
+  lineNo                            String
+  description                       String
+  quantityState                     String
+  quantity                          Decimal?               @db.Decimal(20, 6)
+  unitRaw                           String
+  unit                              String?
+  pricingType                       String
+  amountState                       String
+  amount                            Decimal?               @db.Decimal(20, 4)
+  includes                          String
+  excludes                          String
+  derivation                        String
+  sourceDocumentId                  String?                @db.Uuid
+  location                          String?
+  removed                           Boolean                @default(false)
+  removalSourceDocumentId           String?                @db.Uuid
+  removalLocation                   String?
+  org                               Organization           @relation("ContractLineRevision_org", fields: [orgId], references: [id], onDelete: Restrict)
+  document                          SourceDocument?        @relation("ContractLineRevision_document", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  removalDocument                   SourceDocument?        @relation("ContractLineRevision_removalDocument", fields: [orgId, removalSourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  line                              ContractLine           @relation("ContractLineRevision_line", fields: [orgId, contractId, lineId], references: [orgId, contractId, id], onDelete: Restrict, onUpdate: NoAction)
+  revision                          ContractRevision       @relation("ContractLineRevision_revision", fields: [orgId, contractId, n], references: [orgId, contractId, n], onDelete: Restrict, onUpdate: NoAction)
+  ContractScopeVersion_lineRevision ContractScopeVersion[] @relation("ContractScopeVersion_lineRevision")
+
+  @@unique([orgId, id])
+  @@unique([orgId, contractId, lineId, n])
+  @@unique([orgId, contractId, n, lineNo])
+}
+
+model ContractScopeVersion {
+  id                   String               @id @default(uuid()) @db.Uuid
+  orgId                String               @db.Uuid
+  contractId           String               @db.Uuid
+  lineId               String               @db.Uuid
+  scopeId              String               @db.Uuid
+  n                    Int
+  contractRevisionN    Int
+  basis                String
+  quantity             Decimal?             @db.Decimal(20, 6)
+  area                 String
+  note                 String
+  retired              Boolean              @default(false)
+  reason               String
+  registeredBy         String               @db.Uuid
+  registeredByPersonId String               @db.Uuid
+  registeredAt         DateTime             @default(now()) @db.Timestamptz(6)
+  org                  Organization         @relation("ContractScopeVersion_org", fields: [orgId], references: [id], onDelete: Restrict)
+  actor                LoginAccount         @relation("ContractScopeVersion_actor", fields: [orgId, registeredBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actorPerson          Person               @relation("ContractScopeVersion_actorPerson", fields: [orgId, registeredByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  scope                ContractScope        @relation("ContractScopeVersion_scope", fields: [orgId, contractId, lineId, scopeId], references: [orgId, contractId, contractLineId, id], onDelete: Restrict, onUpdate: NoAction)
+  lineRevision         ContractLineRevision @relation("ContractScopeVersion_lineRevision", fields: [orgId, contractId, lineId, contractRevisionN], references: [orgId, contractId, lineId, n], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, scopeId, n])
+}
+
+model ContractAttention {
+  id                              String                  @id @default(uuid()) @db.Uuid
+  orgId                           String                  @db.Uuid
+  contractId                      String                  @db.Uuid
+  revisionN                       Int
+  kind                            String
+  causedByPersonId                String                  @db.Uuid
+  createdAt                       DateTime                @default(now()) @db.Timestamptz(6)
+  involvedPersonIds               String[]                @default([]) @db.Uuid
+  org                             Organization            @relation("ContractAttention_org", fields: [orgId], references: [id], onDelete: Restrict)
+  causer                          Person                  @relation("ContractAttention_causer", fields: [orgId, causedByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  revision                        ContractRevision        @relation("ContractAttention_revision", fields: [orgId, contractId, revisionN], references: [orgId, contractId, n], onDelete: Restrict, onUpdate: NoAction)
+  ContractAttentionRead_attention ContractAttentionRead[] @relation("ContractAttentionRead_attention")
+
+  @@unique([orgId, id])
+}
+
+model ContractAttentionRead {
+  id          String            @id @default(uuid()) @db.Uuid
+  orgId       String            @db.Uuid
+  attentionId String            @db.Uuid
+  byAccountId String            @db.Uuid
+  byPersonId  String            @db.Uuid
+  at          DateTime          @default(now()) @db.Timestamptz(6)
+  org         Organization      @relation("ContractAttentionRead_org", fields: [orgId], references: [id], onDelete: Restrict)
+  attention   ContractAttention @relation("ContractAttentionRead_attention", fields: [orgId, attentionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actor       LoginAccount      @relation("ContractAttentionRead_actor", fields: [orgId, byAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actorPerson Person            @relation("ContractAttentionRead_actorPerson", fields: [orgId, byPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, attentionId, byAccountId])
 }

@@ -323,11 +323,14 @@ export async function idempotent<T>(
   command: unknown,
   work: () => Promise<T>,
   project: Projection<T> = asStored,
+  /** Resource-dependent authorization: idem lock → resource lock → reauthorize → replay. */
+  beforeReplay?: () => Promise<void>,
 ): Promise<T> {
   const requestHash = sha(command);
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
     `${actor.orgId}:${actor.accountId}:${route}:${key}`,
   ]);
+  await beforeReplay?.();
   const prior = await client.query<{ requestHash: string; responseBody: T }>(
     `SELECT "requestHash", "responseBody" FROM "IdempotencyRecord"
     WHERE "orgId"=$1 AND "actorId"=$2 AND route=$3 AND key=$4`,

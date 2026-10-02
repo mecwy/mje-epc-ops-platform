@@ -36,6 +36,9 @@ export class ContractRegisterController {
   @Get() async list(@Req() request: Request) {
     return this.reader.list(await this.identity(request));
   }
+  @Get('lookups') async lookups(@Req() request: Request) {
+    return this.reader.lookups(await this.identity(request));
+  }
   @Get(':id') async detail(@Param('id') id: string, @Req() request: Request) {
     return this.reader.detail(await this.identity(request), this.id(id));
   }

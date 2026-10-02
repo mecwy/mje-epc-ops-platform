@@ -168,6 +168,32 @@ describe('idempotent replay is re-projected for the current context', () => {
   });
 });
 
+describe('resource authorization before replay', () => {
+  it('takes the idempotency lock before resource authorization and refuses before reading a stored response', async () => {
+    const f = fake({ stored: { id: 'TEST' } });
+    const actor = { ...account, accountId: account.id, decidedAt: DECIDED };
+    await expect(
+      idempotent(
+        f.client as unknown as PoolClient,
+        actor,
+        'TEST_ROUTE',
+        'key',
+        COMMAND,
+        async () => ({ id: 'NEW' }),
+        undefined,
+        async () => {
+          expect(f.log[0]).toContain('pg_advisory_xact_lock');
+          expect(f.log.some((q) => q.includes('IdempotencyRecord'))).toBe(
+            false,
+          );
+          throw new Error('FORBIDDEN');
+        },
+      ),
+    ).rejects.toThrow('FORBIDDEN');
+    expect(f.log.some((q) => q.includes('IdempotencyRecord'))).toBe(false);
+  });
+});
+
 describe('Blob deadline', () => {
   it('a call that never settles fails at the deadline with BlobDeadlineError and sees its signal abort', async () => {
     let signal: AbortSignal | undefined;

@@ -15,6 +15,8 @@ import type { Layer, ProjectorName } from './fields.js';
 /** ADR-0003 D1 transition table (report / issue / photo / field / device), plus outside-D1 names. */
 export type Capability =
   | 'contract.view'
+  | 'contract.maintain'
+  | 'contract.attention'
   | 'project.status.view'
   | 'project.status.declare'
   | 'project.status.reply'
@@ -279,6 +281,108 @@ const DEVICE = {
 };
 
 const ENTRIES: readonly SurfaceEntry[] = [
+  {
+    entry: 'GET /api/contracts/lookups',
+    kind: 'read',
+    principal: 'account',
+    capability: ['contract.view'],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: { 'contract.view': 'live' },
+    layers: {
+      'contract.view': [
+        'structure',
+        'public-text',
+        'contract-amount',
+        'contract-original',
+        'contract-internal',
+      ],
+    },
+    projector: { 'contract.view': 'contract-register.lookups' },
+    concurrency: 'read',
+    advances: [],
+    discloses: 'none',
+  },
+  {
+    entry: 'GET /api/contracts/:id/editor',
+    kind: 'read',
+    principal: 'account',
+    capability: ['contract.maintain'],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: { 'contract.maintain': 'live' },
+    layers: {
+      'contract.maintain': [
+        'structure',
+        'public-text',
+        'contract-amount',
+        'contract-original',
+        'contract-internal',
+      ],
+    },
+    projector: { 'contract.maintain': 'contract-register.editor' },
+    concurrency: 'read',
+    advances: [],
+    discloses: 'none',
+  },
+  ...(
+    [
+      {
+        entry: 'POST /api/contracts',
+        command: 'create',
+        mode: 'create',
+        protects: [],
+        advances: ['ContractRevision.n'],
+      },
+      {
+        entry: 'POST /api/contracts/:id/corrections',
+        command: 'correct',
+        mode: 'cas',
+        protects: ['ContractRevision.n'],
+        advances: ['ContractRevision.n'],
+      },
+      {
+        entry: 'POST /api/contracts/:id/shares',
+        command: 'shares',
+        mode: 'cas',
+        protects: ['ContractRevision.n', 'ContractScopeVersion.n'],
+        advances: ['ContractScopeVersion.n'],
+      },
+      {
+        entry: 'POST /api/contracts/:id/attention/read',
+        command: 'readAttention',
+        mode: 'append',
+        protects: [],
+        advances: [],
+      },
+    ] as const
+  ).map((s): SurfaceEntry => ({
+    entry: s.entry,
+    kind: 'write',
+    principal: 'account',
+    capability: [
+      s.command === 'readAttention'
+        ? 'contract.attention'
+        : 'contract.maintain',
+    ],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: {
+      [s.command === 'readAttention'
+        ? 'contract.attention'
+        : 'contract.maintain']: 'live',
+    },
+    layers: {
+      [s.command === 'readAttention'
+        ? 'contract.attention'
+        : 'contract.maintain']: ['structure'],
+    },
+    command: `ContractRegisterCommands.${s.command}`,
+    concurrency: s.mode,
+    protects: [...s.protects],
+    advances: [...s.advances],
+    discloses: 'none',
+  })),
   ...(['list', 'detail', 'history'] as const).map((kind): SurfaceEntry => ({
     entry:
       kind === 'list'

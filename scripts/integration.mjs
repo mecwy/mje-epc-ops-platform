@@ -163,7 +163,9 @@ try {
 const blob = BlobServiceClient.fromConnectionString(
   process.env.BLOB_CONNECTION_STRING,
 );
-const container = blob.getContainerClient('phase0-test-' + randomUUID());
+const prefix = process.env.TEST_BLOB_PREFIX ?? 'phase0-test-';
+assert.match(prefix, /^[a-z][a-z0-9-]{0,30}-$/, 'TEST Blob prefix');
+const container = blob.getContainerClient(prefix + randomUUID());
 await container.create();
 try {
   const item = container.getBlockBlobClient('test-evidence.txt');

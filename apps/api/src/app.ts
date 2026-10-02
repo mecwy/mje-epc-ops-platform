@@ -1,6 +1,11 @@
 import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
 import { ContractRegisterController } from './contract-register.controller.js';
-import { ContractRegisterReader, ContractRegisterError } from '@mje/domain';
+import {
+  ContractRegisterReader,
+  ContractRegisterError,
+  ContractRegisterCommands,
+} from '@mje/domain';
+import { ContractCommandsController } from './contract-commands.controller.js';
 import { ProjectStatusController } from './project-status.controller.js';
 import { ProjectHomeController } from './project-home.controller.js';
 import 'reflect-metadata';
@@ -109,7 +114,14 @@ class SafeErrorFilter implements ExceptionFilter {
       code = 'INVALID_INPUT';
     } else if (error instanceof ContractRegisterError) {
       code = error.code;
-      status = code === 'NOT_FOUND' ? 404 : 403;
+      status =
+        code === 'NOT_FOUND'
+          ? 404
+          : code === 'FORBIDDEN'
+            ? 403
+            : code === 'VERSION_CONFLICT' || code === 'IDENTITY_EXISTS'
+              ? 409
+              : 400;
     } else if (error instanceof ProjectStatusError) {
       code = error.code;
       status =
@@ -183,6 +195,7 @@ export interface AlphaRuntime {
   reportStore?: ReportStore;
   projectStatusCommands?: ProjectStatusCommands;
   contractRegisterReader?: ContractRegisterReader;
+  contractRegisterCommands?: ContractRegisterCommands;
   projectStatusReader?: ProjectStatusReader;
   projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
@@ -216,6 +229,9 @@ export async function createApp(alpha?: AlphaRuntime) {
     controllers: [
       HealthController,
       ...(alpha?.contractRegisterReader ? [ContractRegisterController] : []),
+      ...(alpha?.contractRegisterReader && alpha.contractRegisterCommands
+        ? [ContractCommandsController]
+        : []),
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
@@ -243,6 +259,14 @@ export async function createApp(alpha?: AlphaRuntime) {
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
+          ...(alpha.contractRegisterCommands
+            ? [
+                {
+                  provide: ContractRegisterCommands,
+                  useValue: alpha.contractRegisterCommands,
+                },
+              ]
+            : []),
           ...(alpha.contractRegisterReader
             ? [
                 {

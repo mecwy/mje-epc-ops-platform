@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import {
   AlphaStore,
   ContractRegisterReader,
+  ContractRegisterCommands,
 } from '../packages/domain/dist/index.js';
 import { accountTransaction } from '../packages/domain/dist/store-kit.js';
 import { observeContractProjections } from '../packages/domain/dist/contract-register/reader.js';
@@ -17,6 +18,10 @@ import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 import type {
   ContractRegisterItemDto,
   ContractHistoryDto,
+  CreateContractCommand,
+  CorrectContractCommand,
+  SetContractSharesCommand,
+  ContractEditorLookupsDto,
 } from '../packages/contracts/dist/index.js';
 import { assertLocalDatabase } from './local-db.mjs';
 const source = assertLocalDatabase(process.env['DATABASE_URL'] ?? '');
@@ -48,6 +53,10 @@ const pass = (s: string) => {
 const org = randomUUID(),
   otherOrg = randomUUID(),
   person = randomUUID(),
+  reviewerPerson = randomUUID(),
+  reviewer = randomUUID(),
+  reviewerMember = randomUUID(),
+  reviewerOid = randomUUID(),
   foreignPerson = randomUUID(),
   account = randomUUID(),
   twin = randomUUID(),
@@ -69,11 +78,12 @@ try {
   await admin.query(`CREATE DATABASE "${database}"`);
   created = true;
   try {
-    execFileSync('pnpm', ['db:migrate'], {
+    const migrationOutput = execFileSync('pnpm', ['db:migrate'], {
       env: { ...process.env, DATABASE_URL: url.toString() },
       stdio: 'pipe',
       timeout: 180000,
     });
+    writeFileSync(`/private/tmp/${database}-migration.log`, migrationOutput);
   } catch (e) {
     const x = e as { stdout?: Buffer; stderr?: Buffer };
     writeFileSync(
@@ -100,6 +110,7 @@ try {
     );
   for (const [id, o] of [
     [person, org],
+    [reviewerPerson, org],
     [foreignPerson, otherOrg],
   ])
     await owner.query(
@@ -112,6 +123,7 @@ try {
   );
   for (const [id, o, p, obj] of [
     [account, org, person, oid],
+    [reviewer, org, reviewerPerson, reviewerOid],
     [twin, org, person, twinOid],
     [foreignAccount, otherOrg, foreignPerson, foreignOid],
   ])
@@ -121,6 +133,7 @@ try {
     );
   for (const [id, o, a] of [
     [member, org, account],
+    [reviewerMember, org, reviewer],
     [twinMember, org, twin],
     [foreignMember, otherOrg, foreignAccount],
   ])
@@ -198,6 +211,7 @@ try {
     verifier,
     store: new AlphaStore(appPool),
     contractRegisterReader: new ContractRegisterReader(appPool),
+    contractRegisterCommands: new ContractRegisterCommands(appPool),
   });
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
@@ -221,6 +235,7 @@ try {
   }
   const bearer = await token(oid),
     twinBearer = await token(twinOid),
+    reviewerBearer = await token(reviewerOid),
     foreignBearer = await token(foreignOid);
   async function call(path = '', credential: string | null = bearer) {
     const response = await fetch(base + '/api/contracts' + path, {
@@ -232,6 +247,7 @@ try {
         | ContractRegisterItemDto[]
         | ContractRegisterItemDto
         | ContractHistoryDto
+        | ContractEditorLookupsDto
         | { code: string; correlationId: string },
     };
   }
@@ -421,7 +437,7 @@ try {
     );
     await assert.rejects(
       raw.query(
-        'INSERT INTO "Contract"(id,"orgId",code,direction,"createdBy") VALUES($1,$2,\'TEST unauthorized\',\'INCOME\',$3)',
+        'INSERT INTO "ContractGrantRevocation"(id,"orgId","grantId","revokedBy",reason) VALUES($1,$2,$3,$3,\'TEST unauthorized\')',
         [randomUUID(), org, account],
       ),
       (e: { code?: string }) => e.code === '42501',
@@ -431,7 +447,7 @@ try {
     raw.release();
   }
   pass(
-    'non-bypass app role sees only tenant rows and cannot seed grants/contracts',
+    'non-bypass app role sees only tenant rows and cannot seed grants/revocations',
   );
   // Real accountTransaction share lock must serialize revoke; no sleep-based success assumption.
   let release!: () => void, entered!: () => void;
@@ -516,6 +532,445 @@ try {
     'revocation waits on account lock and increments authzVersion; next read immediately loses visibility',
   );
   await grant('contract.view');
+
+  // 1b additions: real commands through signed HTTP and non-owner/RLS application identity.
+  for (const capability of [
+    'contract.view',
+    'contract.amount',
+    'contract.terms',
+    'contract.original',
+    'contract.internal',
+    'contract.maintain',
+    'contract.attention',
+  ])
+    await grant(capability);
+  const newContract = randomUUID(),
+    lineA = randomUUID(),
+    lineB = randomUUID(),
+    projectB = randomUUID();
+  await owner.query(
+    'INSERT INTO "Project"(id,"orgId",code,name,timezone,status,"updatedAt","updatedBy") VALUES($1,$2,\'TEST-P2\',\'TEST second project\',\'UTC\',\'ACTIVE\',now(),$3)',
+    [projectB, org, account],
+  );
+  const loc = { sourceDocumentId: document, location: 'TEST page 1' };
+  const create: CreateContractCommand = {
+    contractId: newContract,
+    code: 'TEST-CREATED',
+    direction: 'INCOME',
+    expenditureSubtype: null,
+    expectedVersion: 0,
+    clientMutationId: randomUUID(),
+    revision: {
+      name: 'TEST created contract',
+      originalNumber: null,
+      counterpartyRaw: null,
+      selfPartyRaw: null,
+      counterpartyCompanyId: null,
+      selfCompanyId: null,
+      informationOwnerPersonId: null,
+      signedOn: { state: 'UNKNOWN', value: null },
+      effectiveOn: { state: 'NOT_STATED', value: null },
+      registrationStatus: 'SIGNED_PENDING',
+      total: { state: 'VALUE', value: '123.4500' },
+      currency: 'EUR',
+      taxBasis: 'UNKNOWN',
+      sources: [loc],
+      headLocs: { parties: loc, dates: null, total: loc },
+      lines: [lineA, lineB].map((id, i) => ({
+        id,
+        lineNo: String(i + 1),
+        description: 'TEST line ' + String(i + 1),
+        quantity: { state: 'VALUE', value: '0.300000' },
+        unitRaw: 'TEST m',
+        unit: 'm',
+        pricingType: 'UNIT_PRICE',
+        amount: { state: 'VALUE', value: i === 0 ? '48.4500' : '75.0000' },
+        includes: 'TEST included',
+        excludes: '',
+        derivation: '',
+        source: loc,
+        removed: false,
+        removalSource: null,
+      })),
+    },
+  };
+  async function post<T extends { clientMutationId: string }>(
+    path: string,
+    body: T,
+    credential = bearer,
+  ) {
+    const response = await fetch(base + '/api/contracts' + path, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${credential}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': body.clientMutationId,
+      },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as { code?: string; version?: number },
+    };
+  }
+  assert.equal((await post('', create)).status, 200);
+  assert.equal((await post('', create)).status, 200);
+  assert.equal(
+    (
+      await owner.query(
+        'SELECT count(*)::int AS n FROM "ContractRevision" WHERE "contractId"=$1',
+        [newContract],
+      )
+    ).rows[0].n,
+    1,
+  );
+  assert.equal(
+    (
+      await post('', {
+        ...create,
+        revision: { ...create.revision, name: 'TEST reused key' },
+      })
+    ).body.code,
+    'IDEMPOTENCY_KEY_REUSED',
+  );
+  assert.equal(
+    (
+      await post(
+        '',
+        {
+          ...create,
+          contractId: randomUUID(),
+          code: 'TEST twin',
+          clientMutationId: randomUUID(),
+        },
+        twinBearer,
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await post('', {
+        ...create,
+        contractId: randomUUID(),
+        code: 'TEST foreign source',
+        clientMutationId: randomUUID(),
+        revision: {
+          ...create.revision,
+          sources: [{ ...loc, sourceDocumentId: foreignDocument }],
+        },
+      })
+    ).status,
+    400,
+  );
+  pass(
+    'create/source/value states and same-key replay use real HTTP transactions; same Person account has no inherited writes',
+  );
+  const shareA = randomUUID(),
+    shareB = randomUUID();
+  const shares: SetContractSharesCommand = {
+    contractId: newContract,
+    lineId: lineA,
+    expectedVersion: 1,
+    clientMutationId: randomUUID(),
+    shares: [
+      {
+        scopeId: shareA,
+        projectId: project,
+        expectedVersion: 0,
+        basis: 'QUANTITY',
+        quantity: '0.100000',
+        area: '',
+        note: '',
+        retired: false,
+        reason: '',
+      },
+      {
+        scopeId: shareB,
+        projectId: projectB,
+        expectedVersion: 0,
+        basis: 'QUANTITY',
+        quantity: '0.200000',
+        area: '',
+        note: '',
+        retired: false,
+        reason: '',
+      },
+    ],
+  };
+  assert.equal((await post('/' + newContract + '/shares', shares)).status, 200);
+  assert.equal((await post('/' + newContract + '/shares', shares)).status, 200);
+  assert.equal(
+    (
+      await owner.query(
+        'SELECT count(*)::int AS n FROM "ContractScopeVersion" WHERE "contractId"=$1',
+        [newContract],
+      )
+    ).rows[0].n,
+    2,
+  );
+  const latest = (await call('/' + newContract))
+    .body as ContractRegisterItemDto;
+  assert.equal(latest.latest.lines[0]!.allocation.state, 'ALLOCATED');
+  assert.equal(latest.latest.lines[0]!.allocation.remaining, '0.000000');
+  for (const cap of ['contract.view', 'contract.amount', 'contract.terms'])
+    await owner.query(
+      'INSERT INTO "ContractGrant"(id,"orgId","membershipId","accountId","personId",capability,direction,scope,"projectId","validFrom","validUntil",basis,source,"grantedBy") VALUES($1,$2,$3,$4,$5,$6,\'INCOME\',\'PROJECT\',$7,\'2000-01-01\',\'2100-01-01\',\'TEST projection\',\'TEST fixture\',$8)',
+      [randomUUID(), org, twinMember, twin, person, cap, project, account],
+    );
+  const projected = (await call('/' + newContract, twinBearer))
+    .body as ContractRegisterItemDto;
+  assert.equal(projected.latest.total.visibility, 'restricted');
+  assert.equal(projected.latest.lines.length, 1);
+  assert.equal(projected.latest.lines[0]!.amount.visibility, 'visible');
+  assert.equal(projected.latest.lines[0]!.sharedLineAmount, true);
+  assert.equal(projected.latest.lines[0]!.shares.length, 1);
+  assert.equal(
+    (await call('/' + newContract + '/editor', twinBearer)).status,
+    403,
+  );
+  assert.equal(
+    (
+      await post(
+        '/' + newContract + '/shares',
+        { ...shares, clientMutationId: randomUUID() },
+        twinBearer,
+      )
+    ).status,
+    403,
+  );
+  pass(
+    'project amount readers see shared whole-line label and their line/share only; every historical header total stays restricted',
+  );
+  const corrected = structuredClone(create.revision);
+  corrected.lines[0]!.quantity.value = '0.400000';
+  corrected.lines[0]!.unit = 'pcs';
+  corrected.lines[0]!.unitRaw = 'TEST pcs';
+  const correction: CorrectContractCommand = {
+    contractId: newContract,
+    expectedVersion: 1,
+    clientMutationId: randomUUID(),
+    reason: 'TEST copied unit correction',
+    revision: corrected,
+  };
+  const competing = { ...correction, clientMutationId: randomUUID() };
+  const races = await Promise.all([
+    post('/' + newContract + '/corrections', correction),
+    post('/' + newContract + '/corrections', competing),
+  ]);
+  assert.deepEqual(races.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(
+    (
+      await owner.query(
+        'SELECT count(*)::int AS n FROM "ContractRevision" WHERE "contractId"=$1',
+        [newContract],
+      )
+    ).rows[0].n,
+    2,
+  );
+  const pinned = (await call('/' + newContract))
+    .body as ContractRegisterItemDto;
+  assert.equal(pinned.latest.lines[0]!.shares[0]!.unit, 'm');
+  assert.equal(pinned.latest.lines[0]!.shares[0]!.pinnedRevisionN, 1);
+  assert.equal(pinned.latest.lines[0]!.allocation.state, 'RECONCILE');
+  assert.equal(
+    (
+      await post('/' + newContract + '/shares', {
+        ...shares,
+        clientMutationId: randomUUID(),
+      })
+    ).status,
+    409,
+  );
+  const partial = {
+    ...shares,
+    expectedVersion: 2,
+    clientMutationId: randomUUID(),
+    shares: [{ ...shares.shares[0]!, expectedVersion: 1 }],
+  };
+  assert.equal(
+    (await post('/' + newContract + '/shares', partial)).body.code,
+    'RECONCILE_REQUIRED',
+  );
+  const over = {
+    ...shares,
+    expectedVersion: 2,
+    clientMutationId: randomUUID(),
+    shares: shares.shares.map((s) => ({
+      ...s,
+      expectedVersion: 1,
+      quantity: '0.300000',
+    })),
+  };
+  assert.equal(
+    (await post('/' + newContract + '/shares', over)).body.code,
+    'SHARE_INVALID',
+  );
+  assert.equal(
+    (
+      await owner.query(
+        'SELECT count(*)::int AS n FROM "ContractScopeVersion" WHERE "contractId"=$1',
+        [newContract],
+      )
+    ).rows[0].n,
+    2,
+  );
+  const reconciled = {
+    ...shares,
+    expectedVersion: 2,
+    clientMutationId: randomUUID(),
+    shares: shares.shares.map((s) => ({ ...s, expectedVersion: 1 })),
+  };
+  assert.equal(
+    (await post('/' + newContract + '/shares', reconciled)).status,
+    200,
+  );
+  assert.equal(
+    ((await call('/' + newContract)).body as ContractRegisterItemDto).latest
+      .lines[0]!.allocation.state,
+    'PARTIAL',
+  );
+  const history = (await call('/' + newContract + '/history', twinBearer))
+    .body as ContractHistoryDto;
+  assert.ok(
+    history.revisions.every((r) => r.total.visibility === 'restricted'),
+  );
+  assert.equal(history.revisions.find((r) => r.n === 1)!.lines[0]!.unit, 'm');
+  assert.equal(
+    (
+      await owner.query(
+        'SELECT count(*)::int AS n FROM "ContractAttention" WHERE "contractId"=$1 AND kind=\'CORRECTION\'',
+        [newContract],
+      )
+    ).rows[0].n,
+    1,
+  );
+  pass(
+    'concurrent correction CAS, fixed old units and atomic unit reconciliation reject stale/partial/overallocated commands without partial writes',
+  );
+  assert.equal(history.shareVersions.length, 2);
+  assert.deepEqual(
+    history.shareVersions.map((s) => [s.version, s.unit, s.quantity]),
+    [
+      [2, 'pcs', '0.100000'],
+      [1, 'm', '0.100000'],
+    ],
+  );
+  const fullHistory = (await call('/' + newContract + '/history'))
+    .body as ContractHistoryDto;
+  assert.equal(fullHistory.shareVersions.length, 4);
+  const lookup = (await call('/lookups')).body as ContractEditorLookupsDto;
+  assert.equal(lookup.accountId, account);
+  assert.deepEqual(lookup.directions, ['INCOME']);
+  assert.ok(lookup.sources.some((s) => s.id === document));
+  const restrictedLookup = (await call('/lookups', twinBearer))
+    .body as ContractEditorLookupsDto;
+  assert.equal(restrictedLookup.accountId, twin);
+  assert.deepEqual(restrictedLookup.sources, []);
+  assert.deepEqual(restrictedLookup.directions, []);
+  await grant('contract.attention');
+  const attentionRow = (await call('/' + newContract))
+    .body as ContractRegisterItemDto;
+  const attention = attentionRow.attention.entries!.find(
+    (e) => e.kind === 'CORRECTION',
+  )!;
+  assert.equal(attention.requiresAnotherPerson, true);
+  assert.equal(attention.read, false);
+  for (const [targetMember, targetAccount, targetPerson] of [
+    [twinMember, twin, person],
+    [reviewerMember, reviewer, reviewerPerson],
+  ])
+    for (const cap of ['contract.view', 'contract.attention'])
+      await owner.query(
+        'INSERT INTO "ContractGrant"(id,"orgId","membershipId","accountId","personId",capability,direction,scope,"validFrom","validUntil",basis,source,"grantedBy") VALUES($1,$2,$3,$4,$5,$6,\'INCOME\',\'ORG\',\'2000-01-01\',\'2100-01-01\',\'TEST\',\'TEST\',$7)',
+        [
+          randomUUID(),
+          org,
+          targetMember,
+          targetAccount,
+          targetPerson,
+          cap,
+          account,
+        ],
+      );
+  const ack = {
+    contractId: newContract,
+    attentionId: attention.id,
+    clientMutationId: randomUUID(),
+  };
+  assert.equal(
+    (await post('/' + newContract + '/attention/read', ack, twinBearer)).status,
+    200,
+  );
+  assert.equal(
+    (
+      (await call('/' + newContract)).body as ContractRegisterItemDto
+    ).attention.entries!.find((e) => e.id === attention.id)!.read,
+    false,
+  );
+  const otherAck = { ...ack, clientMutationId: randomUUID() };
+  assert.equal(
+    (
+      await post(
+        '/' + newContract + '/attention/read',
+        otherAck,
+        reviewerBearer,
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await post(
+        '/' + newContract + '/attention/read',
+        otherAck,
+        reviewerBearer,
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      (await call('/' + newContract)).body as ContractRegisterItemDto
+    ).attention.entries!.find((e) => e.id === attention.id)!.read,
+    true,
+  );
+  assert.equal(
+    (
+      await owner.query(
+        'SELECT count(*)::int AS n FROM "ContractAttentionRead" WHERE "attentionId"=$1',
+        [attention.id],
+      )
+    ).rows[0].n,
+    2,
+  );
+  pass(
+    'version-pinned share history, account-isolated lookup authorization and same-Person attention acknowledgement never count as independent viewing',
+  );
+  const revokeWrite = await grant('contract.maintain');
+  await revoke(revokeWrite);
+  // Revoke every live maintenance grant; replay must authorize before returning its old response.
+  await owner.query(
+    'INSERT INTO "ContractGrantRevocation"(id,"orgId","grantId","revokedBy",reason) SELECT gen_random_uuid(),"orgId",id,$2,\'TEST all writes revoked\' FROM "ContractGrant" g WHERE "orgId"=$1 AND "accountId"=$2 AND capability=\'contract.maintain\' AND NOT EXISTS (SELECT 1 FROM "ContractGrantRevocation" r WHERE r."grantId"=g.id)',
+    [org, account],
+  );
+  assert.equal((await post('', create)).status, 403);
+  assert.equal(
+    (await post('/' + newContract + '/shares', reconciled)).status,
+    403,
+  );
+  const original = (
+    await owner.query(
+      'SELECT quantity::text,unit FROM "ContractLineRevision" WHERE "contractId"=$1 AND "lineId"=$2 AND n=1',
+      [newContract, lineA],
+    )
+  ).rows[0];
+  assert.equal(original.quantity, '0.300000');
+  assert.equal(original.unit, 'm');
+  pass(
+    'replay reauthorization and immutable original versions retain old facts after revocation',
+  );
+
   await owner.query(
     'UPDATE "Membership" SET "activeUntil"=now()-interval \'1 second\' WHERE id=$1',
     [member],
@@ -529,7 +984,7 @@ try {
       database,
       privateSourceRegression: false,
       scope:
-        'organization header reader; project shares and all writes pending',
+        'DG05 header/line reader, version-pinned shares, create/correct CAS and replay authorization; UI remains pending',
     }),
   );
 } catch (error) {

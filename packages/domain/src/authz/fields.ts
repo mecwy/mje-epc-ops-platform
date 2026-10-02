@@ -2,6 +2,9 @@ import type {
   ContractRegisterItemDto,
   ContractHistoryDto,
   ContractRevisionDto,
+  ContractEditorDto,
+  ContractRevisionInput,
+  ContractEditorLookupsDto,
 } from '@mje/contracts';
 import type {
   ProjectStatusHistoryDto,
@@ -176,6 +179,8 @@ export interface ProjectorDtos {
   'contract-register.list': ContractRegisterItemDto[];
   'contract-register.detail': ContractRegisterItemDto;
   'contract-register.history': ContractHistoryDto;
+  'contract-register.editor': ContractEditorDto;
+  'contract-register.lookups': ContractEditorLookupsDto;
   'project-status.history': ProjectStatusHistoryDto;
   'project-status.managers': ProjectManagerProjectionsDto;
   'project-status.home': ProjectStatusHomeDto;
@@ -336,6 +341,28 @@ const reportItemFields = {
   active: S,
 };
 
+const CONTRACT_SHARE: FieldTable<import('@mje/contracts').ContractShareDto> = {
+  scopeId: S,
+  projectId: S,
+  version: S,
+  pinnedRevisionN: S,
+  basis: S,
+  quantity: S,
+  unitRaw: S,
+  unit: S,
+  description: { layer: 'public-text' },
+  retired: S,
+  needsReconciliation: S,
+  internal: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      area: { layer: 'contract-internal' },
+      note: { layer: 'contract-internal' },
+      reason: { layer: 'contract-internal' },
+    },
+  },
+};
 const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
   n: S,
   name: { layer: 'public-text' },
@@ -344,6 +371,49 @@ const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
   selfPartyRaw: { layer: 'public-text' },
   informationOwnerPersonId: S,
   registeredAt: S,
+  signedOn: { layer: 'structure', fields: { state: S, value: S } },
+  effectiveOn: { layer: 'structure', fields: { state: S, value: S } },
+  registrationStatus: S,
+  lines: {
+    layer: 'structure',
+    items: {
+      id: S,
+      lineNo: S,
+      description: { layer: 'public-text' },
+      quantity: { layer: 'structure', fields: { state: S, value: S } },
+      unitRaw: S,
+      unit: S,
+      removed: S,
+      amount: {
+        layer: 'structure',
+        fields: {
+          visibility: S,
+          state: { layer: 'contract-amount' },
+          value: { layer: 'contract-amount' },
+          currency: { layer: 'contract-amount' },
+        },
+      },
+      pricing: {
+        layer: 'structure',
+        fields: { visibility: S, type: { layer: 'contract-internal' } },
+      },
+      internal: {
+        layer: 'structure',
+        fields: {
+          visibility: S,
+          includes: { layer: 'contract-internal' },
+          excludes: { layer: 'contract-internal' },
+          derivation: { layer: 'contract-internal' },
+        },
+      },
+      allocation: { layer: 'structure', fields: { state: S, remaining: S } },
+      sharedLineAmount: { layer: 'contract-amount' },
+      shares: {
+        layer: 'structure',
+        items: CONTRACT_SHARE,
+      },
+    },
+  },
   total: {
     layer: 'structure',
     fields: {
@@ -377,14 +447,132 @@ const CONTRACT_ITEM: FieldTable<ContractRegisterItemDto> = {
   direction: S,
   expenditureSubtype: S,
   latest: { layer: 'structure', fields: CONTRACT_REVISION },
+  attention: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      entries: {
+        layer: 'structure',
+        items: {
+          id: S,
+          revisionN: S,
+          kind: S,
+          read: S,
+          requiresAnotherPerson: S,
+        },
+      },
+    },
+  },
+};
+const LOC = {
+  layer: 'contract-original' as const,
+  fields: {
+    sourceDocumentId: { layer: 'contract-original' as const },
+    location: { layer: 'contract-original' as const },
+  },
+};
+const EDITOR_REVISION: FieldTable<ContractRevisionInput> = {
+  name: S,
+  originalNumber: S,
+  counterpartyRaw: S,
+  selfPartyRaw: S,
+  counterpartyCompanyId: S,
+  selfCompanyId: S,
+  informationOwnerPersonId: S,
+  signedOn: { layer: 'structure', fields: { state: S, value: S } },
+  effectiveOn: { layer: 'structure', fields: { state: S, value: S } },
+  registrationStatus: S,
+  total: {
+    layer: 'contract-amount',
+    fields: {
+      state: { layer: 'contract-amount' },
+      value: { layer: 'contract-amount' },
+    },
+  },
+  currency: { layer: 'contract-amount' },
+  taxBasis: { layer: 'contract-amount' },
+  sources: { layer: 'contract-original', items: LOC.fields },
+  headLocs: {
+    layer: 'contract-original',
+    fields: { parties: LOC, dates: LOC, total: LOC },
+  },
+  lines: {
+    layer: 'structure',
+    items: {
+      id: S,
+      lineNo: S,
+      description: S,
+      quantity: { layer: 'structure', fields: { state: S, value: S } },
+      unitRaw: S,
+      unit: S,
+      pricingType: { layer: 'contract-internal' },
+      amount: {
+        layer: 'contract-amount',
+        fields: {
+          state: { layer: 'contract-amount' },
+          value: { layer: 'contract-amount' },
+        },
+      },
+      includes: { layer: 'contract-internal' },
+      excludes: { layer: 'contract-internal' },
+      derivation: { layer: 'contract-internal' },
+      source: LOC,
+      removed: S,
+      removalSource: LOC,
+    },
+  },
 };
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'contract-register.lookups': {
+    fields: {
+      accountId: S,
+      directions: S,
+      maintainedProjects: {
+        layer: 'structure',
+        items: { direction: S, projectIds: S },
+      },
+      projects: { layer: 'structure', items: { id: S, code: S, name: S } },
+      people: {
+        layer: 'contract-internal',
+        items: {
+          id: { layer: 'contract-internal' },
+          displayName: { layer: 'contract-internal' },
+        },
+      },
+      companies: {
+        layer: 'contract-internal',
+        items: {
+          id: { layer: 'contract-internal' },
+          name: { layer: 'contract-internal' },
+        },
+      },
+      sources: {
+        layer: 'contract-original',
+        items: {
+          id: { layer: 'contract-original' },
+          filename: { layer: 'contract-original' },
+          sha256: { layer: 'contract-original' },
+        },
+      },
+    },
+  },
+  'contract-register.editor': {
+    fields: {
+      id: S,
+      code: S,
+      direction: S,
+      expenditureSubtype: S,
+      version: S,
+      revision: { layer: 'structure', fields: EDITOR_REVISION },
+    },
+  },
   'contract-register.list': { items: CONTRACT_ITEM },
   'contract-register.detail': { fields: CONTRACT_ITEM },
   'contract-register.history': {
     fields: {
       id: S,
       revisions: { layer: 'structure', items: CONTRACT_REVISION },
+      shareVersions: { layer: 'structure', items: CONTRACT_SHARE },
     },
   },
   'project-status.managers': {

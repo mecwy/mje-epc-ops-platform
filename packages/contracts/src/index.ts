@@ -22,4 +22,7 @@ export type {
   ContractRevisionDto,
   ContractRegisterItemDto,
   ContractHistoryDto,
+  ContractLineDto,
+  ContractShareDto,
 } from './contract-register.js';
+export * from './contract-commands.js';

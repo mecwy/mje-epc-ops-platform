@@ -66,3 +66,5 @@ export type {
 
 export { ContractRegisterReader } from './contract-register/reader.js';
 export { ContractRegisterError } from './contract-register/rules.js';
+
+export { ContractRegisterCommands } from './contract-register/commands.js';

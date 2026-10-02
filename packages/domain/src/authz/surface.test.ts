@@ -7,6 +7,8 @@ import { SURFACE, type Capability } from './surface.js';
 
 const D1: Capability[] = [
   'contract.view',
+  'contract.maintain',
+  'contract.attention',
   'project.status.view',
   'project.status.declare',
   'project.status.reply',
@@ -35,6 +37,12 @@ describe('surface.ts', () => {
     expect(
       SURFACE.filter((e) => e.direction !== 'n/a').map((e) => e.entry),
     ).toEqual([
+      'GET /api/contracts/lookups',
+      'GET /api/contracts/:id/editor',
+      'POST /api/contracts',
+      'POST /api/contracts/:id/corrections',
+      'POST /api/contracts/:id/shares',
+      'POST /api/contracts/:id/attention/read',
       'GET /api/contracts',
       'GET /api/contracts/:id',
       'GET /api/contracts/:id/history',
