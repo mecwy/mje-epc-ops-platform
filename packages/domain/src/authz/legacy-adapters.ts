@@ -14,7 +14,8 @@ export type ModuleName =
   | 'photo'
   | 'field'
   | 'apps'
-  | 'project-status';
+  | 'project-status'
+  | 'project-home';
 
 export interface ModuleSpec {
   /** Repository-relative source files (non-test) that belong to the module. */
@@ -50,6 +51,12 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'ReportingExpectationVersion',
     ],
   },
+  'project-home': {
+    files: ['reader.ts', 'aggregate.ts', 'rules.ts'].map(
+      (f) => `${D}project-home/${f}`,
+    ),
+    tables: [],
+  },
   /** The rule model (no SQL). */
   authz: { files: [], dirs: [`${D}authz/`], tables: [] },
   alpha: { files: [`${D}alpha-store.ts`], tables: ['AlphaDraft'] },
@@ -74,7 +81,11 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
     ],
   },
   issue: {
-    files: [`${D}issue-store.ts`, `${D}issue-lookups.ts`],
+    files: [
+      `${D}issue-store.ts`,
+      `${D}issue-reader.ts`,
+      `${D}issue-lookups.ts`,
+    ],
     tables: ['Issue', 'IssueNote', 'IssueTransition', 'LagDismissal'],
   },
   photo: {
@@ -146,6 +157,10 @@ export const KERNEL_USES: readonly {
   // Project and person reads, per module.
   { file: `${D}report-reader.ts`, table: 'Project', op: 'read' },
   { file: `${D}report-reader.ts`, table: 'Membership', op: 'read' },
+  { file: `${D}project-status/reader.ts`, table: 'Project', op: 'read' },
+  { file: `${D}project-status/reader.ts`, table: 'Membership', op: 'read' },
+  { file: `${D}issue-reader.ts`, table: 'Project', op: 'read' },
+  { file: `${D}issue-reader.ts`, table: 'Membership', op: 'read' },
   { file: `${D}checkin-store.ts`, table: 'Project', op: 'read' },
   { file: `${D}checkin-store.ts`, table: 'Person', op: 'read' },
   { file: `${D}field-store.ts`, table: 'Project', op: 'read' },

@@ -41,7 +41,7 @@ import { withReportReadContext } from './report-read-context.js';
  */
 export const ISSUE_KIND = 'SITE_REPORT';
 /** States in which an issue no longer counts as open. */
-const CLOSED_STATES = ['CLOSED', 'VERIFIED_CLOSED'];
+export const CLOSED_STATES = ['CLOSED', 'VERIFIED_CLOSED'];
 
 /** An issue as stored (current state). Dates are site business dates (YYYY-MM-DD). */
 export interface IssueRecord {

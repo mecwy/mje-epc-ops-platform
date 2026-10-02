@@ -74,6 +74,13 @@ export interface ProjectStatusHistoryDto {
   currentN: number;
   updates: StatusUpdateDto[];
 }
+/** Restricted, read-only natural-person projection used to group authorized project cards. */
+export interface ProjectManagerProjectionDto {
+  projectId: string;
+  personId: string;
+  displayName: string;
+}
+export type ProjectManagerProjectionsDto = ProjectManagerProjectionDto[];
 export interface StatusCommandResultDto {
   projectId: string;
   n: number;

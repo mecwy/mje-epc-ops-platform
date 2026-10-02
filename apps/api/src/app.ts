@@ -1,5 +1,6 @@
 import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
 import { ProjectStatusController } from './project-status.controller.js';
+import { ProjectHomeController } from './project-home.controller.js';
 import 'reflect-metadata';
 import {
   ArgumentsHost,
@@ -28,6 +29,7 @@ import {
   ReportStore,
   ProjectStatusCommands,
   ProjectStatusReader,
+  ProjectHomeReader,
   ProjectStatusError,
   RETRY_SQLSTATES,
 } from '@mje/domain';
@@ -176,6 +178,7 @@ export interface AlphaRuntime {
   reportStore?: ReportStore;
   projectStatusCommands?: ProjectStatusCommands;
   projectStatusReader?: ProjectStatusReader;
+  projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
   issueStore?: IssueStore;
   /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
@@ -213,6 +216,12 @@ export async function createApp(alpha?: AlphaRuntime) {
         ? [ProjectStatusController]
         : []),
       ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
+      ...(alpha?.reportStore &&
+      alpha.projectHomeReader &&
+      alpha.projectStatusReader &&
+      alpha.issueStore
+        ? [ProjectHomeController]
+        : []),
       ...(alpha?.reportStore && alpha.photoStore ? [PhotoController] : []),
       ...(alpha?.reportStore && alpha.fieldStore
         ? [FieldController, FieldAdminController]
@@ -236,6 +245,14 @@ export async function createApp(alpha?: AlphaRuntime) {
                 {
                   provide: ProjectStatusReader,
                   useValue: alpha.projectStatusReader,
+                },
+              ]
+            : []),
+          ...(alpha.projectHomeReader
+            ? [
+                {
+                  provide: ProjectHomeReader,
+                  useValue: alpha.projectHomeReader,
                 },
               ]
             : []),

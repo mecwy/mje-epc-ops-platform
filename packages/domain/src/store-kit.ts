@@ -197,9 +197,10 @@ export async function accountTransaction<T>(
         'SELECT clock_timestamp()::text AS "decidedAt"',
       )
     ).rows[0]!.decidedAt;
-    await client.query("SELECT set_config('app.org_id', $1, true)", [
-      account.orgId,
-    ]);
+    await client.query(
+      "SELECT set_config('app.org_id', $1, true), set_config('app.decided_at', $2, true)",
+      [account.orgId, decidedAt],
+    );
     const memberships = await client.query<{
       role: string;
       projectId: string | null;

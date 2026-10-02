@@ -79,7 +79,7 @@ describe('surface.ts', () => {
   it('names the report exit projectors for the report reads, and no other', () => {
     const named = SURFACE.filter((e) => e.capability.includes('report.view'))
       .flatMap((e) => Object.values(e.projector ?? {}))
-      .concat(['report.lagHistory']);
+      .concat(['report.lagHistory', 'report.home']);
     expect([...new Set(named)].sort()).toEqual([...REPORT_PROJECTORS].sort());
   });
   it('every cas base is advanced by some writer (D4/D7)', () => {

@@ -18,6 +18,9 @@ export const BOUNDARY = {
       'context.ts',
       'rules.ts',
     ].map((f) => D + 'project-status/' + f),
+    'project-home': ['reader.ts', 'aggregate.ts', 'rules.ts'].map(
+      (f) => D + 'project-home/' + f,
+    ),
     report: [
       'report-store.ts',
       'report-reader.ts',
@@ -27,7 +30,9 @@ export const BOUNDARY = {
       'report-rules.ts',
       'reader-view.ts',
     ].map((f) => D + f),
-    issue: ['issue-store.ts', 'issue-lookups.ts'].map((f) => D + f),
+    issue: ['issue-store.ts', 'issue-reader.ts', 'issue-lookups.ts'].map(
+      (f) => D + f,
+    ),
     photo: ['photo-store.ts', 'photo-file.ts', 'photo-strip.ts'].map(
       (f) => D + f,
     ),
@@ -36,7 +41,11 @@ export const BOUNDARY = {
   exits: {
     [`${D}project-status/commands.ts`]: { only: ['ProjectStatusCommands'] },
     [`${D}project-status/reader.ts`]: {
-      only: ['ProjectStatusReader', 'projectStatusReader'],
+      only: [
+        'ProjectStatusReader',
+        'projectStatusReader',
+        'ProjectStatusHomeDto',
+      ],
     },
     [`${D}project-status/context.ts`]: {
       only: ['withProjectStatusReadContext', 'ProjectStatusReadContext'],
@@ -57,6 +66,14 @@ export const BOUNDARY = {
     },
     [`${D}report-read-context.ts`]: {
       only: ['withReportReadContext', 'ReportReadContext'],
+    },
+    [`${D}issue-reader.ts`]: {
+      only: [
+        'issueReader',
+        'withIssueReadContext',
+        'IssueReadContext',
+        'IssueHomeDto',
+      ],
     },
     // A7-0d: the report day writes other modules run in their own transaction.
     [`${D}report-commands.ts`]: {},
@@ -80,11 +97,12 @@ export const BOUNDARY = {
     [`${D}issue-lookups.ts`]: { only: ['siteIssueExists'] },
     [`${D}report-rules.ts`]: {},
   },
-  /** Files that own SQL today: the only ones that may import `pg` (legacy exception list). */
+  /** SQL owners and the home transaction composition root may import `pg`. */
   pg: [
     ...['commands.ts', 'reader.ts', 'context.ts'].map(
       (f) => D + 'project-status/' + f,
     ),
+    D + 'project-home/reader.ts',
     ...[
       'store-kit.ts',
       'alpha-store.ts',
@@ -93,6 +111,7 @@ export const BOUNDARY = {
       'report-commands.ts',
       'report-lookups.ts',
       'issue-store.ts',
+      'issue-reader.ts',
       'issue-lookups.ts',
       'photo-store.ts',
       'field-store.ts',
@@ -106,7 +125,7 @@ export const BOUNDARY = {
     'apps/api/src/cleanup-selfies.ts',
     'apps/api/src/runtime-env.ts',
   ],
-  /** Files that may import store-kit: the SQL-owning stores and the package barrel. */
+  /** Files that may import store-kit: SQL owners, cross-module transaction composition, and barrel. */
   storeKit: [
     ...['commands.ts', 'reader.ts', 'context.ts'].map(
       (f) => D + 'project-status/' + f,
@@ -119,12 +138,14 @@ export const BOUNDARY = {
       'report-lookups.ts',
       'report-read-context.ts',
       'issue-store.ts',
+      'issue-reader.ts',
       'photo-store.ts',
       'field-store.ts',
       'field-kit.ts',
       'field-roster.ts',
       'checkin-store.ts',
       'foreman-store.ts',
+      'project-home/reader.ts',
       'index.ts',
     ].map((f) => D + f),
   ],

@@ -317,6 +317,75 @@ const ENTRIES: readonly SurfaceEntry[] = [
       },
     },
   ),
+  read(
+    'GET /api/projects/home',
+    'account',
+    ['report.view-submitted', 'issue.view', 'project.status.view'],
+    'membership',
+    {
+      'report.view-submitted': {
+        temporal: 'submitted',
+        layers: SUBMITTED,
+        projector: 'project-home.home',
+      },
+      'issue.view': {
+        temporal: 'live',
+        layers: ISSUE,
+        projector: 'project-home.home',
+      },
+      'project.status.view': {
+        temporal: 'live',
+        layers: ['structure', 'public-text'],
+        projector: 'project-home.home',
+      },
+    },
+  ),
+  read(
+    'GET /api/projects/:id/overview',
+    'account',
+    ['report.view-submitted', 'issue.view', 'project.status.view'],
+    'path.projectId',
+    {
+      'report.view-submitted': {
+        temporal: 'submitted',
+        layers: SUBMITTED,
+        projector: 'project-home.overview',
+      },
+      'issue.view': {
+        temporal: 'live',
+        layers: ISSUE,
+        projector: 'project-home.overview',
+      },
+      'project.status.view': {
+        temporal: 'live',
+        layers: ['structure', 'public-text'],
+        projector: 'project-home.overview',
+      },
+    },
+  ),
+  read(
+    'GET /api/attention',
+    'account',
+    ['report.view-submitted', 'issue.view', 'project.status.view'],
+    'membership',
+    {
+      'report.view-submitted': {
+        temporal: 'submitted',
+        layers: SUBMITTED,
+        projector: 'project-home.attention',
+      },
+      'issue.view': {
+        temporal: 'live',
+        layers: ISSUE,
+        projector: 'project-home.attention',
+      },
+      'project.status.view': {
+        temporal: 'live',
+        layers: ['structure', 'public-text'],
+        projector: 'project-home.attention',
+      },
+    },
+  ),
   write(
     'POST /api/projects/:id/status',
     'account',

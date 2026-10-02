@@ -9,6 +9,9 @@ import {
   AlphaStore,
   ProjectStatusCommands,
   ProjectStatusReader,
+  ProjectHomeReader,
+  ReportStore,
+  IssueStore,
 } from '../packages/domain/dist/index.js';
 import { observeProjectStatusProjections } from '../packages/domain/dist/project-status/reader.js';
 import type {
@@ -173,8 +176,11 @@ try {
     auth,
     verifier,
     store: new AlphaStore(appPool),
+    reportStore: new ReportStore(appPool),
     projectStatusCommands: new ProjectStatusCommands(appPool),
     projectStatusReader: new ProjectStatusReader(appPool),
+    projectHomeReader: new ProjectHomeReader(appPool),
+    issueStore: new IssueStore(appPool),
   });
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
@@ -309,6 +315,81 @@ try {
     updates: [],
   });
   pass('signed HTTP authentication and authorized empty history (n=0)');
+  const expectationIds = [randomUUID(), randomUUID(), randomUUID()];
+  await owner.query(
+    `WITH p AS (SELECT id,"orgId",timezone FROM "Project" WHERE id=$1),
+      d AS (SELECT p.*, ((now() AT TIME ZONE p.timezone)::date-3) AS due_day FROM p),
+      v(n,id,from_date,workdays,registered_at) AS (
+        SELECT 1,$2::uuid,due_day,ARRAY[EXTRACT(ISODOW FROM due_day)::int],
+          (((due_day-1)::timestamp AT TIME ZONE timezone)-interval '1 minute') FROM d
+        UNION ALL
+        SELECT 2,$3::uuid,due_day+1,
+          ARRAY(SELECT x FROM generate_series(1,7) x WHERE x<>EXTRACT(ISODOW FROM due_day)::int AND x<>EXTRACT(ISODOW FROM due_day+1)::int),
+          (((due_day+1)::timestamp AT TIME ZONE timezone)+interval '1 minute') FROM d
+        UNION ALL
+        SELECT 3,$4::uuid,due_day+1,ARRAY[EXTRACT(ISODOW FROM due_day+1)::int],
+          (((due_day+2)::timestamp AT TIME ZONE timezone)+interval '1 minute') FROM d
+      )
+      INSERT INTO "ReportingExpectationVersion"(id,"orgId","projectId",n,"fromDate",workdays,"registeredAt","registeredBy")
+      SELECT v.id,d."orgId",d.id,v.n,v.from_date,v.workdays,v.registered_at,$5 FROM d CROSS JOIN v`,
+    [project, ...expectationIds, manager],
+  );
+  const home = await call('/api/projects/home?group=manager', reader);
+  assert.equal(home.status, 200);
+  const managerCards = (
+    home.data as {
+      groups: {
+        projects: { id: string; managers: { personId: string }[] }[];
+      }[];
+    }
+  ).groups.flatMap((group) => group.projects);
+  const visibleManagerCard = managerCards.find((card) => card.id === project);
+  assert.ok(visibleManagerCard);
+  assert.equal(visibleManagerCard.managers.length, 1);
+  assert.equal(visibleManagerCard.managers[0]?.personId, person);
+  assert.deepEqual(
+    (
+      home.data as {
+        groups: {
+          projects: { id: string; hints: { code: string; count?: number }[] }[];
+        }[];
+      }
+    ).groups
+      .flatMap((group) => group.projects)
+      .find((card) => card.id === project)
+      ?.hints.find((hint) => hint.code === 'MISSING_REPORT')?.count,
+    1,
+    'expectation versions after a local-day cutoff neither erase that day nor add a previous-day duty',
+  );
+  const overview = await call(`/api/projects/${project}/overview`, reader);
+  assert.equal(overview.status, 200);
+  assert.deepEqual(
+    (overview.data as { statusHistory: ProjectStatusHistoryDto }).statusHistory,
+    {
+      projectId: project,
+      currentN: 0,
+      updates: [],
+    },
+  );
+  assert.equal(
+    (overview.data as { primaryWorkItem: unknown }).primaryWorkItem,
+    null,
+  );
+  code(
+    await call(`/api/projects/${hiddenProject}/overview`, reader),
+    404,
+    'NOT_FOUND',
+  );
+  code(
+    await call(`/api/projects/${otherProject}/overview`, reader),
+    404,
+    'NOT_FOUND',
+  );
+  const attention = await call('/api/attention', reader);
+  assert.equal(attention.status, 200);
+  pass(
+    'A7-2b home, overview and attention enforce module intersection and deduplicate manager person identities',
+  );
   for (const p of [hiddenProject, otherProject, randomUUID()]) {
     code(await call(path(p), pm), 404, 'NOT_FOUND');
     code(await call(path(p), pm, command(0)), 404, 'NOT_FOUND');
