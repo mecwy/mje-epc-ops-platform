@@ -450,7 +450,7 @@ export class IssueStore {
             await client.query(
               `INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,state,summary,"projectId","ownerPersonId",
                 category,escalate,"escalatedAt",controlled,"workItemKey","createdOn","dueOn")
-              VALUES($1,$2,now(),$3,$4,'OPEN',$5,$6,$7,$8,CASE WHEN $9 THEN now() ELSE NULL END,$10,$11,$12::date,$13::date)`,
+              VALUES($1,$2,now(),$3,$4,'OPEN',$5,$6,$7,$8,$9,CASE WHEN $9 THEN now() ELSE NULL END,$10,$11,$12::date,$13::date)`,
               [
                 id,
                 actor.orgId,
