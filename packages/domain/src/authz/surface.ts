@@ -14,6 +14,7 @@ import type { Layer, ProjectorName } from './fields.js';
 
 /** ADR-0003 D1 transition table (report / issue / photo / field / device), plus outside-D1 names. */
 export type Capability =
+  | 'contract.view'
   | 'project.status.view'
   | 'project.status.declare'
   | 'project.status.reply'
@@ -48,6 +49,7 @@ export type Concurrency =
   'read' | 'cas' | 'append' | 'create' | 'legacy-overwrite';
 export type ScopeSource =
   | 'none'
+  | 'explicit.contract-grants'
   | 'membership'
   | 'query.projectId'
   | 'body.projectId'
@@ -72,8 +74,8 @@ export interface SurfaceEntry {
   /** Any one of these allows the entry; listed strongest first. */
   capability: Capability[];
   scopeSource: ScopeSource;
-  /** No module has a direction dimension yet (ADR-0003 D6; deferred.ts). */
-  direction: 'n/a';
+  /** Contract reads use explicit direction grants; legacy modules have no direction. */
+  direction: 'n/a' | 'contract.direction';
   /** Per held capability: which facts in time the response may contain. */
   temporal: Partial<Record<Capability, Temporal>>;
   /** Per held capability: the field layers (fields.ts) the response may contain. */
@@ -277,6 +279,34 @@ const DEVICE = {
 };
 
 const ENTRIES: readonly SurfaceEntry[] = [
+  ...(['list', 'detail', 'history'] as const).map((kind): SurfaceEntry => ({
+    entry:
+      kind === 'list'
+        ? 'GET /api/contracts'
+        : kind === 'detail'
+          ? 'GET /api/contracts/:id'
+          : 'GET /api/contracts/:id/history',
+    kind: 'read',
+    principal: 'account',
+    capability: ['contract.view'],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: { 'contract.view': 'live' },
+    layers: {
+      'contract.view': [
+        'structure',
+        'public-text',
+        'contract-amount',
+        'contract-original',
+        'contract-internal',
+      ],
+    },
+    projector: { 'contract.view': `contract-register.${kind}` },
+    concurrency: 'read',
+    advances: [],
+    discloses: 'none',
+  })),
+
   write(
     'POST /api/projects/:id/primary-work-item',
     'account',

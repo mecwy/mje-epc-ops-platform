@@ -1,4 +1,9 @@
 import type {
+  ContractRegisterItemDto,
+  ContractHistoryDto,
+  ContractRevisionDto,
+} from '@mje/contracts';
+import type {
   ProjectStatusHistoryDto,
   ProjectManagerProjectionsDto,
   StatusCommandResultDto,
@@ -42,6 +47,9 @@ import type { ReportItemDto } from '@mje/contracts';
  * (issue titles and notes); field-writer: check-ins, foreman reports and adoptions (A6.0).
  */
 export type Layer =
+  | 'contract-amount'
+  | 'contract-original'
+  | 'contract-internal'
   | 'structure'
   | 'draft'
   | 'submitted'
@@ -165,6 +173,9 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 
 /** The DTO each layered projector produces. */
 export interface ProjectorDtos {
+  'contract-register.list': ContractRegisterItemDto[];
+  'contract-register.detail': ContractRegisterItemDto;
+  'contract-register.history': ContractHistoryDto;
   'project-status.history': ProjectStatusHistoryDto;
   'project-status.managers': ProjectManagerProjectionsDto;
   'project-status.home': ProjectStatusHomeDto;
@@ -325,7 +336,57 @@ const reportItemFields = {
   active: S,
 };
 
+const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
+  n: S,
+  name: { layer: 'public-text' },
+  originalNumber: { layer: 'public-text' },
+  counterpartyRaw: { layer: 'public-text' },
+  selfPartyRaw: { layer: 'public-text' },
+  informationOwnerPersonId: S,
+  registeredAt: S,
+  total: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      state: { layer: 'contract-amount' },
+      value: { layer: 'contract-amount' },
+      currency: { layer: 'contract-amount' },
+    },
+  },
+  internal: {
+    layer: 'structure',
+    fields: { visibility: S, correctionReason: { layer: 'contract-internal' } },
+  },
+  evidence: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      sources: {
+        layer: 'contract-original',
+        items: {
+          sourceDocumentId: { layer: 'contract-original' },
+          location: { layer: 'contract-original' },
+        },
+      },
+    },
+  },
+};
+const CONTRACT_ITEM: FieldTable<ContractRegisterItemDto> = {
+  id: S,
+  code: S,
+  direction: S,
+  expenditureSubtype: S,
+  latest: { layer: 'structure', fields: CONTRACT_REVISION },
+};
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'contract-register.list': { items: CONTRACT_ITEM },
+  'contract-register.detail': { fields: CONTRACT_ITEM },
+  'contract-register.history': {
+    fields: {
+      id: S,
+      revisions: { layer: 'structure', items: CONTRACT_REVISION },
+    },
+  },
   'project-status.managers': {
     items: { projectId: S, personId: S, displayName: { layer: 'public-text' } },
   },

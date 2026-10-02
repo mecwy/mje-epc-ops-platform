@@ -1,4 +1,6 @@
 import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
+import { ContractRegisterController } from './contract-register.controller.js';
+import { ContractRegisterReader, ContractRegisterError } from '@mje/domain';
 import { ProjectStatusController } from './project-status.controller.js';
 import { ProjectHomeController } from './project-home.controller.js';
 import 'reflect-metadata';
@@ -105,6 +107,9 @@ class SafeErrorFilter implements ExceptionFilter {
     ) {
       status = 400;
       code = 'INVALID_INPUT';
+    } else if (error instanceof ContractRegisterError) {
+      code = error.code;
+      status = code === 'NOT_FOUND' ? 404 : 403;
     } else if (error instanceof ProjectStatusError) {
       code = error.code;
       status =
@@ -177,6 +182,7 @@ export interface AlphaRuntime {
   /** Site Daily Close (U2.1); absent until the report slice is enabled. */
   reportStore?: ReportStore;
   projectStatusCommands?: ProjectStatusCommands;
+  contractRegisterReader?: ContractRegisterReader;
   projectStatusReader?: ProjectStatusReader;
   projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
@@ -209,6 +215,7 @@ export async function createApp(alpha?: AlphaRuntime) {
   @Module({
     controllers: [
       HealthController,
+      ...(alpha?.contractRegisterReader ? [ContractRegisterController] : []),
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
@@ -236,6 +243,14 @@ export async function createApp(alpha?: AlphaRuntime) {
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
+          ...(alpha.contractRegisterReader
+            ? [
+                {
+                  provide: ContractRegisterReader,
+                  useValue: alpha.contractRegisterReader,
+                },
+              ]
+            : []),
           ...(alpha.projectStatusCommands && alpha.projectStatusReader
             ? [
                 {

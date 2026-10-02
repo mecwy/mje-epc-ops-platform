@@ -86,6 +86,11 @@ enum RevisionState {
 }
 
 model Organization {
+  ContractGrant_org            ContractGrant[]               @relation("ContractGrant_org")
+  ContractGrantRevocation_org  ContractGrantRevocation[]     @relation("ContractGrantRevocation_org")
+  Contract_org                 Contract[]                    @relation("Contract_org")
+  ContractRevision_org         ContractRevision[]            @relation("ContractRevision_org")
+  ContractRevisionSource_org   ContractRevisionSource[]      @relation("ContractRevisionSource_org")
   id                           String                        @id @default(uuid()) @db.Uuid
   name                         String
   governanceRef                String?
@@ -208,6 +213,7 @@ model Opportunity {
 }
 
 model Project {
+  ContractGrant_project                   ContractGrant[]               @relation("ContractGrant_project")
   id                                      String                        @id @default(uuid()) @db.Uuid
   orgId                                   String                        @db.Uuid
   org                                     Organization                  @relation(fields: [orgId], references: [id], onDelete: Restrict)
@@ -363,6 +369,10 @@ model WorkPackage {
 }
 
 model Person {
+  ContractGrant_person                  ContractGrant[]         @relation("ContractGrant_person")
+  ContractGrant_represented             ContractGrant[]         @relation("ContractGrant_represented")
+  ContractRevision_informationOwner     ContractRevision[]      @relation("ContractRevision_informationOwner")
+  ContractRevision_registrarPerson      ContractRevision[]      @relation("ContractRevision_registrarPerson")
   id                                    String                  @id @default(uuid()) @db.Uuid
   orgId                                 String                  @db.Uuid
   org                                   Organization            @relation(fields: [orgId], references: [id], onDelete: Restrict)
@@ -408,66 +418,72 @@ model Person {
 }
 
 model LoginAccount {
-  id                    String                        @id @default(uuid()) @db.Uuid
-  orgId                 String                        @db.Uuid
-  org                   Organization                  @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt             DateTime                      @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime                      @updatedAt @db.Timestamptz(6)
-  updatedBy             String                        @db.Uuid
-  version               Int                           @default(1)
-  entraTenantId         String
-  entraObjectId         String
-  active                Boolean                       @default(true)
-  personId              String?                       @db.Uuid
+  ContractGrant_account           ContractGrant[]               @relation("ContractGrant_account")
+  ContractGrant_grantor           ContractGrant[]               @relation("ContractGrant_grantor")
+  ContractGrantRevocation_revoker ContractGrantRevocation[]     @relation("ContractGrantRevocation_revoker")
+  Contract_creator                Contract[]                    @relation("Contract_creator")
+  ContractRevision_registrar      ContractRevision[]            @relation("ContractRevision_registrar")
+  id                              String                        @id @default(uuid()) @db.Uuid
+  orgId                           String                        @db.Uuid
+  org                             Organization                  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                       DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt                       DateTime                      @updatedAt @db.Timestamptz(6)
+  updatedBy                       String                        @db.Uuid
+  version                         Int                           @default(1)
+  entraTenantId                   String
+  entraObjectId                   String
+  active                          Boolean                       @default(true)
+  personId                        String?                       @db.Uuid
   /// Bumped by database triggers on Membership writes and on active/personId changes (ADR-0003 D5).
-  authzVersion          Int                           @default(1)
-  person                Person?                       @relation("LoginAccount_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  alphaDraftUpdates     AlphaDraft[]
-  reportDraftUpdates    DailyReportDraft[]            @relation("DailyReportDraft_actor")
-  planVersionConfirms   PlanVersion[]                 @relation("PlanVersion_actor")
-  planDraftUpdates      PlanDraft[]                   @relation("PlanDraft_actor")
-  issueCloses           Issue[]                       @relation("Issue_closedBy")
-  issueNotes            IssueNote[]                   @relation("IssueNote_account")
-  issueTransitions      IssueTransition[]             @relation("IssueTransition_account")
-  lagDismissals         LagDismissal[]                @relation("LagDismissal_actor")
-  photoUploads          PhotoEvidence[]               @relation("PhotoEvidence_uploadedByAccount")
-  photoLinkSupersedes   EvidenceLink[]                @relation("EvidenceLink_supersededBy")
-  Membership_accountId  Membership[]                  @relation("Membership_accountId")
-  crewCreates           Crew[]                        @relation("Crew_createdBy")
-  assignmentCreates     CrewAssignment[]              @relation("CrewAssignment_createdBy")
-  assignmentCloses      CrewAssignment[]              @relation("CrewAssignment_closedBy")
-  entryCodeCreates      FieldEntryCode[]              @relation("FieldEntryCode_createdBy")
-  entryCodeRetires      FieldEntryCode[]              @relation("FieldEntryCode_retiredBy")
-  deviceConfirms        FieldDevice[]                 @relation("FieldDevice_confirmedByAccount")
-  fieldDeviceEvents     FieldDeviceEvent[]            @relation("FieldDeviceEvent_actorAccount")
-  siteReferences        ProjectSiteReference[]        @relation("ProjectSiteReference_createdBy")
-  fieldSettings         ProjectFieldSetting[]         @relation("ProjectFieldSetting_createdBy")
-  proxyCheckIns         WorkerCheckIn[]               @relation("WorkerCheckIn_actorAccount")
-  voidedCheckIns        WorkerCheckIn[]               @relation("WorkerCheckIn_voidedBy")
-  foremanAdoptions      ForemanAdoption[]             @relation("ForemanAdoption_byAccount")
-  projectStatusUpdates  ProjectStatusUpdate[]         @relation("ProjectStatusUpdateAccount")
-  projectStatusNotes    ProjectStatusNote[]           @relation("ProjectStatusNoteAccount")
-  reportingExpectations ReportingExpectationVersion[]
+  authzVersion                    Int                           @default(1)
+  person                          Person?                       @relation("LoginAccount_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  alphaDraftUpdates               AlphaDraft[]
+  reportDraftUpdates              DailyReportDraft[]            @relation("DailyReportDraft_actor")
+  planVersionConfirms             PlanVersion[]                 @relation("PlanVersion_actor")
+  planDraftUpdates                PlanDraft[]                   @relation("PlanDraft_actor")
+  issueCloses                     Issue[]                       @relation("Issue_closedBy")
+  issueNotes                      IssueNote[]                   @relation("IssueNote_account")
+  issueTransitions                IssueTransition[]             @relation("IssueTransition_account")
+  lagDismissals                   LagDismissal[]                @relation("LagDismissal_actor")
+  photoUploads                    PhotoEvidence[]               @relation("PhotoEvidence_uploadedByAccount")
+  photoLinkSupersedes             EvidenceLink[]                @relation("EvidenceLink_supersededBy")
+  Membership_accountId            Membership[]                  @relation("Membership_accountId")
+  crewCreates                     Crew[]                        @relation("Crew_createdBy")
+  assignmentCreates               CrewAssignment[]              @relation("CrewAssignment_createdBy")
+  assignmentCloses                CrewAssignment[]              @relation("CrewAssignment_closedBy")
+  entryCodeCreates                FieldEntryCode[]              @relation("FieldEntryCode_createdBy")
+  entryCodeRetires                FieldEntryCode[]              @relation("FieldEntryCode_retiredBy")
+  deviceConfirms                  FieldDevice[]                 @relation("FieldDevice_confirmedByAccount")
+  fieldDeviceEvents               FieldDeviceEvent[]            @relation("FieldDeviceEvent_actorAccount")
+  siteReferences                  ProjectSiteReference[]        @relation("ProjectSiteReference_createdBy")
+  fieldSettings                   ProjectFieldSetting[]         @relation("ProjectFieldSetting_createdBy")
+  proxyCheckIns                   WorkerCheckIn[]               @relation("WorkerCheckIn_actorAccount")
+  voidedCheckIns                  WorkerCheckIn[]               @relation("WorkerCheckIn_voidedBy")
+  foremanAdoptions                ForemanAdoption[]             @relation("ForemanAdoption_byAccount")
+  projectStatusUpdates            ProjectStatusUpdate[]         @relation("ProjectStatusUpdateAccount")
+  projectStatusNotes              ProjectStatusNote[]           @relation("ProjectStatusNoteAccount")
+  reportingExpectations           ReportingExpectationVersion[]
 
   @@unique([orgId, id])
   @@unique([orgId, entraTenantId, entraObjectId])
 }
 
 model Membership {
-  id          String       @id @default(uuid()) @db.Uuid
-  orgId       String       @db.Uuid
-  org         Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
-  updatedBy   String       @db.Uuid
-  version     Int          @default(1)
-  role        String
-  activeFrom  DateTime     @db.Timestamptz(6)
-  activeUntil DateTime?    @db.Timestamptz(6)
-  accountId   String       @db.Uuid
-  account     LoginAccount @relation("Membership_accountId", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  projectId   String?      @db.Uuid
-  project     Project?     @relation("Membership_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractGrant_membership ContractGrant[] @relation("ContractGrant_membership")
+  id                       String          @id @default(uuid()) @db.Uuid
+  orgId                    String          @db.Uuid
+  org                      Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime        @updatedAt @db.Timestamptz(6)
+  updatedBy                String          @db.Uuid
+  version                  Int             @default(1)
+  role                     String
+  activeFrom               DateTime        @db.Timestamptz(6)
+  activeUntil              DateTime?       @db.Timestamptz(6)
+  accountId                String          @db.Uuid
+  account                  LoginAccount    @relation("Membership_accountId", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId                String?         @db.Uuid
+  project                  Project?        @relation("Membership_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([orgId, id])
 }
@@ -535,24 +551,25 @@ model WorkforcePlan {
 }
 
 model SourceDocument {
-  id                               String            @id @default(uuid()) @db.Uuid
-  orgId                            String            @db.Uuid
-  org                              Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                        DateTime          @default(now()) @db.Timestamptz(6)
-  updatedAt                        DateTime          @updatedAt @db.Timestamptz(6)
-  updatedBy                        String            @db.Uuid
-  version                          Int               @default(1)
-  sha256                           String            @db.Char(64)
+  ContractRevisionSource_document  ContractRevisionSource[] @relation("ContractRevisionSource_document")
+  id                               String                   @id @default(uuid()) @db.Uuid
+  orgId                            String                   @db.Uuid
+  org                              Organization             @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                        DateTime                 @default(now()) @db.Timestamptz(6)
+  updatedAt                        DateTime                 @updatedAt @db.Timestamptz(6)
+  updatedBy                        String                   @db.Uuid
+  version                          Int                      @default(1)
+  sha256                           String                   @db.Char(64)
   filename                         String
   blobKey                          String
-  reportedDate                     DateTime?         @db.Date
-  importedAt                       DateTime          @default(now()) @db.Timestamptz(6)
+  reportedDate                     DateTime?                @db.Date
+  importedAt                       DateTime                 @default(now()) @db.Timestamptz(6)
   rawPreparerName                  String?
   sourceVersion                    String
   // Hash proves byte identity, not the truth of the report.
-  SourceAssertion_documentId       SourceAssertion[] @relation("SourceAssertion_documentId")
-  ReportingBundle_sourceDocumentId ReportingBundle[] @relation("ReportingBundle_sourceDocumentId")
-  PhotoEvidence_sourceDocumentId   PhotoEvidence[]   @relation("PhotoEvidence_sourceDocumentId")
+  SourceAssertion_documentId       SourceAssertion[]        @relation("SourceAssertion_documentId")
+  ReportingBundle_sourceDocumentId ReportingBundle[]        @relation("ReportingBundle_sourceDocumentId")
+  PhotoEvidence_sourceDocumentId   PhotoEvidence[]          @relation("PhotoEvidence_sourceDocumentId")
 
   @@unique([orgId, id])
   @@unique([orgId, sha256])
@@ -1771,4 +1788,109 @@ model ReportingExpectationVersion {
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, n])
+}
+
+model ContractGrant {
+  id                            String                    @id @default(uuid()) @db.Uuid
+  orgId                         String                    @db.Uuid
+  membershipId                  String                    @db.Uuid
+  accountId                     String                    @db.Uuid
+  personId                      String                    @db.Uuid
+  capability                    String
+  direction                     String
+  scope                         String
+  projectId                     String?                   @db.Uuid
+  validFrom                     DateTime                  @db.Timestamptz(6)
+  validUntil                    DateTime                  @db.Timestamptz(6)
+  basis                         String
+  source                        String
+  templateVersion               String?
+  grantedBy                     String                    @db.Uuid
+  grantedAt                     DateTime                  @default(now()) @db.Timestamptz(6)
+  representedPersonId           String?                   @db.Uuid
+  delegationBasis               String?
+  org                           Organization              @relation("ContractGrant_org", fields: [orgId], references: [id], onDelete: Restrict)
+  membership                    Membership                @relation("ContractGrant_membership", fields: [orgId, membershipId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  account                       LoginAccount              @relation("ContractGrant_account", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  person                        Person                    @relation("ContractGrant_person", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  project                       Project?                  @relation("ContractGrant_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  grantor                       LoginAccount              @relation("ContractGrant_grantor", fields: [orgId, grantedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  represented                   Person?                   @relation("ContractGrant_represented", fields: [orgId, representedPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractGrantRevocation_grant ContractGrantRevocation[] @relation("ContractGrantRevocation_grant")
+
+  @@unique([orgId, id])
+}
+
+model ContractGrantRevocation {
+  id        String        @id @default(uuid()) @db.Uuid
+  orgId     String        @db.Uuid
+  grantId   String        @db.Uuid
+  revokedBy String        @db.Uuid
+  reason    String
+  at        DateTime      @default(now()) @db.Timestamptz(6)
+  org       Organization  @relation("ContractGrantRevocation_org", fields: [orgId], references: [id], onDelete: Restrict)
+  grant     ContractGrant @relation("ContractGrantRevocation_grant", fields: [orgId, grantId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  revoker   LoginAccount  @relation("ContractGrantRevocation_revoker", fields: [orgId, revokedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, grantId])
+}
+
+model Contract {
+  id                        String             @id @default(uuid()) @db.Uuid
+  orgId                     String             @db.Uuid
+  code                      String
+  direction                 String
+  expenditureSubtype        String?
+  createdBy                 String             @db.Uuid
+  createdAt                 DateTime           @default(now()) @db.Timestamptz(6)
+  org                       Organization       @relation("Contract_org", fields: [orgId], references: [id], onDelete: Restrict)
+  creator                   LoginAccount       @relation("Contract_creator", fields: [orgId, createdBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractRevision_contract ContractRevision[] @relation("ContractRevision_contract")
+
+  @@unique([orgId, id])
+  @@unique([orgId, code])
+}
+
+model ContractRevision {
+  id                              String                   @id @default(uuid()) @db.Uuid
+  orgId                           String                   @db.Uuid
+  contractId                      String                   @db.Uuid
+  n                               Int
+  name                            String
+  originalNumber                  String?
+  counterpartyRaw                 String?
+  selfPartyRaw                    String?
+  informationOwnerPersonId        String?                  @db.Uuid
+  totalState                      String
+  totalAmount                     Decimal?                 @db.Decimal(20, 4)
+  currency                        String?                  @db.Char(3)
+  correctionReason                String?
+  registeredBy                    String                   @db.Uuid
+  registeredByPersonId            String                   @db.Uuid
+  registeredAt                    DateTime                 @default(now()) @db.Timestamptz(6)
+  org                             Organization             @relation("ContractRevision_org", fields: [orgId], references: [id], onDelete: Restrict)
+  contract                        Contract                 @relation("ContractRevision_contract", fields: [orgId, contractId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  informationOwner                Person?                  @relation("ContractRevision_informationOwner", fields: [orgId, informationOwnerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  registrar                       LoginAccount             @relation("ContractRevision_registrar", fields: [orgId, registeredBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  registrarPerson                 Person                   @relation("ContractRevision_registrarPerson", fields: [orgId, registeredByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ContractRevisionSource_revision ContractRevisionSource[] @relation("ContractRevisionSource_revision")
+
+  @@unique([orgId, id])
+  @@unique([orgId, contractId, n])
+}
+
+model ContractRevisionSource {
+  id               String           @id @default(uuid()) @db.Uuid
+  orgId            String           @db.Uuid
+  contractId       String           @db.Uuid
+  n                Int
+  sourceDocumentId String           @db.Uuid
+  location         String
+  org              Organization     @relation("ContractRevisionSource_org", fields: [orgId], references: [id], onDelete: Restrict)
+  document         SourceDocument   @relation("ContractRevisionSource_document", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  revision         ContractRevision @relation("ContractRevisionSource_revision", fields: [orgId, contractId, n], references: [orgId, contractId, n], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, contractId, n, sourceDocumentId, location])
 }

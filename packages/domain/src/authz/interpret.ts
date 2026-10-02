@@ -42,6 +42,8 @@ function paths(
 }
 
 export function decide(entry: SurfaceEntry, ctx: TestContext): Decision {
+  if (entry.direction !== 'n/a')
+    throw new Error('EXPLICIT_GRANT_CONTEXT_REQUIRED');
   const denied = { allowed: false, capability: null, visibleKeys: [] };
   if (entry.principal !== ctx.principal) return denied;
   const capability = entry.capability.find((c) => ctx.capabilities.includes(c));

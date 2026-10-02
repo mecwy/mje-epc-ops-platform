@@ -63,3 +63,6 @@ export type {
   Forecast as ProjectHomeForecast,
   ForecastObservation as ProjectHomeForecastObservation,
 } from './project-home/rules.js';
+
+export { ContractRegisterReader } from './contract-register/reader.js';
+export { ContractRegisterError } from './contract-register/rules.js';

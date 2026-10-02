@@ -14,3 +14,12 @@ export * from './foreman.js';
 export * from './project-status.js';
 export * from './project-master.js';
 export * from './project-home.js';
+
+export type {
+  ContractDirection,
+  ContractValueState,
+  ContractAmountDto,
+  ContractRevisionDto,
+  ContractRegisterItemDto,
+  ContractHistoryDto,
+} from './contract-register.js';

@@ -19,6 +19,7 @@ describe('import boundary', () => {
       'photo',
       'project-status',
       'project-home',
+      'contract-register',
     ] as const)
       expect([...BOUNDARY.modules[m]].sort()).toEqual(
         [...MODULES[m].files].sort(),

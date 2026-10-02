@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import {
+  ContractRegisterReader,
   AlphaStore,
   CheckInStore,
   FieldStore,
@@ -40,6 +41,9 @@ function runtime(): AlphaRuntime {
   return {
     store: Object.create(AlphaStore.prototype) as AlphaStore,
     reportStore,
+    contractRegisterReader: Object.create(
+      ContractRegisterReader.prototype,
+    ) as ContractRegisterReader,
     projectStatusCommands: Object.create(
       ProjectStatusCommands.prototype,
     ) as ProjectStatusCommands,

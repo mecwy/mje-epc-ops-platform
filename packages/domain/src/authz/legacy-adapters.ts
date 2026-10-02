@@ -6,6 +6,7 @@
  */
 
 export type ModuleName =
+  | 'contract-register'
   | 'platform'
   | 'authz'
   | 'alpha'
@@ -28,6 +29,18 @@ export interface ModuleSpec {
 
 const D = 'packages/domain/src/';
 export const MODULES: Record<ModuleName, ModuleSpec> = {
+  'contract-register': {
+    files: ['grants.ts', 'reader.ts', 'rules.ts'].map(
+      (f) => D + 'contract-register/' + f,
+    ),
+    tables: [
+      'ContractGrant',
+      'ContractGrantRevocation',
+      'Contract',
+      'ContractRevision',
+      'ContractRevisionSource',
+    ],
+  },
   /** Identity, tenancy, idempotency and audit plumbing (store-kit) and the package barrel. */
   platform: {
     files: [`${D}store-kit.ts`, `${D}image-bytes.ts`, `${D}index.ts`],
@@ -142,6 +155,7 @@ export const KERNEL_USES: readonly {
   table: string;
   op: SqlOperation;
 }[] = [
+  { file: D + 'contract-register/grants.ts', table: 'Membership', op: 'read' },
   // Alpha slice: its own copy of the idempotency and audit plumbing; since A7-0b its account
   // transaction is store-kit's (ADR-0003 D5), so it no longer reads LoginAccount itself.
   { file: `${D}alpha-store.ts`, table: 'Membership', op: 'read' },
