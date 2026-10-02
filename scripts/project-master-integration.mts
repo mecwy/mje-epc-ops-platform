@@ -769,16 +769,15 @@ try {
     ).find((m) => m.key === 'node')?.plannedDate;
     if (mutation === 'primary') {
       assert.equal(frozenMilestoneDate, beforeMilestoneDate);
-      assert.ok(
-        frozenPrimary === beforePrimary ||
-          (order === 'edit-first' && frozenPrimary === afterPrimary),
+      assert.equal(
+        frozenPrimary,
+        order === 'edit-first' ? afterPrimary : beforePrimary,
       );
     } else {
       assert.equal(frozenPrimary, beforePrimary);
-      assert.ok(
-        frozenMilestoneDate === beforeMilestoneDate ||
-          (order === 'edit-first' &&
-            frozenMilestoneDate === afterMilestoneDate),
+      assert.equal(
+        frozenMilestoneDate,
+        order === 'edit-first' ? afterMilestoneDate : beforeMilestoneDate,
       );
     }
   };
