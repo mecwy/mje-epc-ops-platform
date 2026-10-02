@@ -13,7 +13,7 @@ import {
   inTransaction,
   idempotent,
   audit,
-  lockProjectForUpdate,
+  lockProjectForNoKeyUpdate,
   setProjectPrimaryWorkItem,
 } from '../store-kit.js';
 import type { Identity } from '../alpha-store.js';
@@ -43,7 +43,7 @@ export class ProjectStatusCommands {
             const fields = requiredStatusFields(c);
             if (fields.length)
               throw new ProjectStatusError('STATUS_FIELDS_REQUIRED', fields);
-            const project = await lockProjectForUpdate(
+            const project = await lockProjectForNoKeyUpdate(
               client,
               actor.orgId,
               c.projectId,
@@ -112,7 +112,7 @@ export class ProjectStatusCommands {
           c.clientMutationId,
           c,
           async () => {
-            await lockProjectForUpdate(client, actor.orgId, c.projectId);
+            await lockProjectForNoKeyUpdate(client, actor.orgId, c.projectId);
             const target = await client.query<{ id: string }>(
               'SELECT id FROM "ProjectStatusUpdate" WHERE "orgId"=$1 AND "projectId"=$2 AND n=$3',
               [actor.orgId, c.projectId, c.n],
@@ -164,7 +164,7 @@ export class ProjectStatusCommands {
           c.clientMutationId,
           c,
           async () => {
-            const project = await lockProjectForUpdate(
+            const project = await lockProjectForNoKeyUpdate(
               client,
               actor.orgId,
               c.projectId,
@@ -220,7 +220,7 @@ export class ProjectStatusCommands {
           c.clientMutationId,
           c,
           async () => {
-            await lockProjectForUpdate(client, actor.orgId, c.projectId);
+            await lockProjectForNoKeyUpdate(client, actor.orgId, c.projectId);
             const latest = await client.query<{ n: number }>(
               'SELECT COALESCE(max(n),0)::int AS n FROM "ReportingExpectationVersion" WHERE "orgId"=$1 AND "projectId"=$2',
               [actor.orgId, c.projectId],

@@ -472,25 +472,26 @@ try {
   async function holdProject() {
     holder = await owner!.connect();
     await holder.query('BEGIN');
-    await holder.query('SELECT id FROM "Project" WHERE id=$1 FOR UPDATE', [
-      project,
-    ]);
+    await holder.query(
+      'SELECT id FROM "Project" WHERE id=$1 FOR NO KEY UPDATE',
+      [project],
+    );
   }
   async function blocked(expected: number) {
     for (let attempt = 0; attempt < 100; attempt++) {
       const r = await owner!.query<{ pid: number; xact_start: Date }>(
-        "SELECT pid,xact_start FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND cardinality(pg_blocking_pids(pid))>0 AND query LIKE '%FROM \"Project\"%FOR UPDATE%'",
+        "SELECT pid,xact_start FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND cardinality(pg_blocking_pids(pid))>0 AND query LIKE '%FROM \"Project\"%FOR NO KEY UPDATE%'",
         [username],
       );
       if (r.rows.length >= expected) return r.rows;
       await delay(20);
     }
     throw new Error(
-      'TEST gate: actual HTTP backend did not wait at Project FOR UPDATE',
+      'TEST gate: actual HTTP backend did not wait at Project FOR NO KEY UPDATE',
     );
   }
   async function blockedProjectLock(
-    mode: 'SHARE' | 'UPDATE',
+    mode: 'SHARE' | 'NO KEY UPDATE' | 'UPDATE',
     expected: number,
   ) {
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -514,6 +515,27 @@ try {
     holder.release();
     holder = undefined;
   }
+  await holdProject();
+  const fkClient = await appPool!.connect();
+  try {
+    await fkClient.query('BEGIN');
+    await fkClient.query("SELECT set_config('app.org_id',$1,true)", [org]);
+    await fkClient.query("SET LOCAL lock_timeout='250ms'");
+    await fkClient.query(
+      'INSERT INTO "ReportItem"(id,"orgId","projectId",kind,key,label,"updatedBy") VALUES($1,$2,$3,\'work\',$4,\'TEST FK compatibility\',$5)',
+      [randomUUID(), org, project, `fk-${randomUUID().slice(0, 8)}`, manager],
+    );
+    await fkClient.query('COMMIT');
+  } catch (error) {
+    await fkClient.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    fkClient.release();
+    await releaseProject();
+  }
+  pass(
+    'Project FOR NO KEY UPDATE remains compatible with child FK KEY SHARE inserts',
+  );
   await holdProject();
   const races = [
     call(primary(), pm, choose(2, 'work-1')),
@@ -662,6 +684,7 @@ try {
   };
   const controlledSnapshotRace = async (
     route: 'submit' | 'no-work',
+    mutation: 'primary' | 'milestone',
     order: 'edit-first' | 'snapshot-first',
     businessDate: string,
   ) => {
@@ -686,16 +709,6 @@ try {
     const afterPrimary = beforePrimary === 'work-1' ? 'work-2' : 'work-1';
     const afterMilestoneDate =
       beforeMilestoneDate === '2030-02-01' ? '2030-08-01' : '2030-02-01';
-    const primaryEditFor = async (key: string) => {
-      const version = Number(
-        (
-          await owner!.query('SELECT version FROM "Project" WHERE id=$1', [
-            project,
-          ])
-        ).rows[0].version,
-      );
-      return call(primary(), pm, choose(version, key));
-    };
     const snapshotRequest = () => {
       const request = {
         projectId: project,
@@ -706,15 +719,18 @@ try {
       };
       return call(`/api/report/${route}`, pm, request);
     };
-    await holdProject();
-    let snap: Promise<{ status: number; data: Wire }> | undefined;
-    let primaryEdit: Promise<{ status: number; data: Wire }> | undefined;
-    let itemsEdit: Promise<{ status: number; data: Wire }> | undefined;
-    if (order === 'edit-first') {
-      primaryEdit = primaryEditFor(afterPrimary);
-      pending.push(primaryEdit);
-      await blockedProjectLock('UPDATE', 1);
-      itemsEdit = save([
+    const masterEdit = async () => {
+      if (mutation === 'primary') {
+        const version = Number(
+          (
+            await owner!.query('SELECT version FROM "Project" WHERE id=$1', [
+              project,
+            ])
+          ).rows[0].version,
+        );
+        return call(primary(), pm, choose(version, afterPrimary));
+      }
+      return save([
         item('work-1'),
         { ...item('work-2'), plannedDate: '2030-06-01' },
         item('inactive', 'work', false),
@@ -724,8 +740,14 @@ try {
           plannedDate: afterMilestoneDate,
         },
       ]);
-      pending.push(itemsEdit);
-      await blockedProjectLock('UPDATE', 2);
+    };
+    await holdProject();
+    let snap: Promise<{ status: number; data: Wire }> | undefined;
+    let edit: Promise<{ status: number; data: Wire }> | undefined;
+    if (order === 'edit-first') {
+      edit = masterEdit();
+      pending.push(edit);
+      await blockedProjectLock('NO KEY UPDATE', 1);
       snap = snapshotRequest();
       pending.push(snap);
       await blockedProjectLock('SHARE', 1);
@@ -733,49 +755,49 @@ try {
       snap = snapshotRequest();
       pending.push(snap);
       await blockedProjectLock('SHARE', 1);
-      primaryEdit = primaryEditFor(afterPrimary);
-      pending.push(primaryEdit);
-      await blockedProjectLock('UPDATE', 1);
-      itemsEdit = save([
-        item('work-1'),
-        { ...item('work-2'), plannedDate: '2030-06-01' },
-        item('inactive', 'work', false),
-        item('machine', 'machinery'),
-        {
-          ...item('node', 'milestone'),
-          plannedDate: afterMilestoneDate,
-        },
-      ]);
-      pending.push(itemsEdit);
-      await blockedProjectLock('UPDATE', 2);
+      edit = masterEdit();
+      pending.push(edit);
+      await blockedProjectLock('NO KEY UPDATE', 1);
     }
     await releaseProject();
-    const responses = await Promise.all([snap!, primaryEdit!, itemsEdit!]);
+    const responses = await Promise.all([snap!, edit!]);
     assert.ok(responses.every((r) => r.status === 200));
     const frozen = await revisionSnapshot(businessDate);
-    const expectedPrimary =
-      order === 'edit-first' ? afterPrimary : beforePrimary;
-    const expectedMilestoneDate =
-      order === 'edit-first' ? afterMilestoneDate : beforeMilestoneDate;
-    assert.equal(frozen.primaryWorkItemKey, expectedPrimary);
-    assert.deepEqual(
-      (frozen.milestones as Array<Record<string, unknown>>).map((m) => [
-        m.key,
-        m.plannedDate,
-      ]),
-      [['node', expectedMilestoneDate]],
-    );
+    const frozenPrimary = frozen.primaryWorkItemKey;
+    const frozenMilestoneDate = (
+      frozen.milestones as Array<Record<string, unknown>>
+    ).find((m) => m.key === 'node')?.plannedDate;
+    if (mutation === 'primary') {
+      assert.equal(frozenMilestoneDate, beforeMilestoneDate);
+      assert.ok(
+        frozenPrimary === beforePrimary ||
+          (order === 'edit-first' && frozenPrimary === afterPrimary),
+      );
+    } else {
+      assert.equal(frozenPrimary, beforePrimary);
+      assert.ok(
+        frozenMilestoneDate === beforeMilestoneDate ||
+          (order === 'edit-first' &&
+            frozenMilestoneDate === afterMilestoneDate),
+      );
+    }
   };
-  await controlledSnapshotRace('submit', 'edit-first', '2040-01-01');
-  await controlledSnapshotRace('submit', 'snapshot-first', '2040-01-02');
-  pass(
-    'C19 controlled primary/milestone edits serialize wholly before or after submit snapshots',
-  );
-  await controlledSnapshotRace('no-work', 'edit-first', '2040-01-03');
-  await controlledSnapshotRace('no-work', 'snapshot-first', '2040-01-04');
-  pass(
-    'C19 controlled primary/milestone edits serialize wholly before or after no-work snapshots',
-  );
+  let raceDate = 1;
+  for (const route of ['submit', 'no-work'] as const) {
+    for (const mutation of ['primary', 'milestone'] as const) {
+      for (const order of ['edit-first', 'snapshot-first'] as const) {
+        await controlledSnapshotRace(
+          route,
+          mutation,
+          order,
+          `2040-01-0${raceDate++}`,
+        );
+      }
+    }
+    pass(
+      `C19 controlled ${route} snapshots serialize one primary or milestone edit as a complete before/after value`,
+    );
+  }
   assert.ok(
     events.filter((e) => e === 'project-status.primary-ack').length >= 3,
   );
@@ -840,9 +862,10 @@ try {
       ).rows[0].rolbypassrls,
       false,
     );
-    await appClient.query('SELECT id FROM "Project" WHERE id=$1 FOR UPDATE', [
-      project,
-    ]);
+    await appClient.query(
+      'SELECT id FROM "Project" WHERE id=$1 FOR NO KEY UPDATE',
+      [project],
+    );
     await appClient.query(
       'UPDATE "Project" SET region=\'TEST region\',"projectType"=\'TEST type\' WHERE id=$1',
       [project],

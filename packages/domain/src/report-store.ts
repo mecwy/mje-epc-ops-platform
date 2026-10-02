@@ -59,7 +59,7 @@ import {
   idempotent,
   inTransaction,
   lockReportDay,
-  lockProjectForUpdate,
+  lockProjectForNoKeyUpdate,
   lockProjectForShare,
   projectWriter,
   type Actor,
@@ -840,7 +840,7 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
-          await lockProjectForUpdate(client, actor.orgId, project.id);
+          await lockProjectForNoKeyUpdate(client, actor.orgId, project.id);
           const before = await itemRows(client, actor.orgId, project.id);
           for (const item of command.items)
             await client.query(
