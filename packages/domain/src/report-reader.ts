@@ -68,6 +68,7 @@ export type { ReportReadContext };
  */
 export const REPORT_PROJECTORS = [
   'report.projects',
+  'report.home',
   'report.days.writer',
   'report.days.reader',
   'report.day.writer',
@@ -263,6 +264,111 @@ async function projects({ client, actor }: Opened) {
     personId: actor.personId,
     projects: result.rows,
   });
+}
+
+export interface ReportHomeSnapshotDto {
+  businessDate: string;
+  submittedAt: string;
+  firstSubmittedAt: string;
+  primaryWorkItemKey?: string | null;
+  items: ReportItemDto[];
+  milestones?: {
+    id: string;
+    key: string;
+    label: string;
+    plannedDate: string | null;
+  }[];
+  facts: {
+    qty: Record<string, Reported>;
+    cumulative: Record<string, Reported>;
+    cumulativeCarry?: Record<string, CarriedCumulative>;
+    people: Record<string, Reported>;
+    milestones: Record<string, { actual: string; note: string }>;
+  };
+  baseline: { n: number; rows: { item: string; target: string }[] } | null;
+}
+export interface ReportHomeProjectDto {
+  id: string;
+  name: string;
+  code: string;
+  timezone: string;
+  region: string | null;
+  projectType: string | null;
+  primaryWorkItemKey: string | null;
+  today: string;
+  access: Access;
+  items: ReportItemDto[];
+  snapshots: ReportHomeSnapshotDto[];
+  reportDays: { businessDate: string; submitted: boolean }[];
+}
+export interface ReportHomeDto {
+  projects: ReportHomeProjectDto[];
+}
+
+/** Submitted-only batch for the project-home consumer; one bounded module query per request. */
+async function homeData(
+  { client, actor }: Opened,
+  projectId?: string,
+): Promise<ReportHomeDto> {
+  const result = await client.query<ReportHomeProjectDto>(
+    `SELECT p.id,p.name,p.code,p.timezone,p.region,p."projectType",p."primaryWorkItemKey",
+      ( $6::timestamptz AT TIME ZONE p.timezone )::date::text AS today,
+      CASE WHEN bool_or(m.role = ANY($3::text[])) THEN 'write' ELSE 'read' END AS access,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object(
+        'kind',i.kind,'key',i.key,'label',i.label,'unit',i.unit,'designQty',i."designQty",
+        'openingCumulative',i."openingCumulative",'sortOrder',i."sortOrder",'active',i.active,
+        'plannedDate',i."plannedDate"::text) ORDER BY i."sortOrder",i.key)
+        FROM "ReportItem" i WHERE i."orgId"=p."orgId" AND i."projectId"=p.id), '[]'::jsonb) AS items,
+      COALESCE((SELECT jsonb_agg(
+        (jsonb_build_object('businessDate',x.businessDate,'submittedAt',x."submittedAt",
+          'firstSubmittedAt',x."firstSubmittedAt",
+          'items',x.snapshot->'items','baseline',x.snapshot->'baseline',
+          'facts',jsonb_build_object('qty',COALESCE(x.snapshot->'facts'->'qty','{}'::jsonb),
+            'cumulative',COALESCE(x.snapshot->'facts'->'cumulative','{}'::jsonb),
+            'cumulativeCarry',COALESCE(x.snapshot->'cumulativeCarry','{}'::jsonb),
+            'people',COALESCE(x.snapshot->'facts'->'people','{}'::jsonb),
+            'milestones',COALESCE(x.snapshot->'facts'->'milestones','{}'::jsonb)))
+          || CASE WHEN x.snapshot ? 'primaryWorkItemKey'
+            THEN jsonb_build_object('primaryWorkItemKey',x.snapshot->'primaryWorkItemKey') ELSE '{}'::jsonb END
+          || CASE WHEN x.snapshot ? 'milestones'
+            THEN jsonb_build_object('milestones',x.snapshot->'milestones') ELSE '{}'::jsonb END)
+        ORDER BY x.businessDate)
+        FROM (SELECT d."businessDate"::text AS businessDate,r."submittedAt",
+            (SELECT min(first."submittedAt") FROM "Revision" first
+              WHERE first."orgId"=d."orgId" AND first."dailyCloseId"=d.id AND first.state='SUBMITTED') AS "firstSubmittedAt",
+            r.snapshot
+          FROM "DailyClose" d JOIN "Revision" r ON r."orgId"=d."orgId"
+            AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
+          WHERE d."orgId"=p."orgId" AND d."projectId"=p.id AND d."scopeKey"=$7
+            AND d.state='SUBMITTED'
+            AND d."businessDate" BETWEEN ((($6::timestamptz AT TIME ZONE p.timezone)::date)-29)
+              AND ($6::timestamptz AT TIME ZONE p.timezone)::date
+        ) x), '[]'::jsonb) AS snapshots,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('businessDate',g.day::date::text,
+        'submitted',EXISTS(SELECT 1 FROM "DailyClose" d WHERE d."orgId"=p."orgId" AND d."projectId"=p.id
+          AND d."scopeKey"=$7 AND d.state='SUBMITTED' AND d."businessDate"=g.day::date
+          AND d."currentRevisionNumber">0)) ORDER BY g.day)
+        FROM generate_series(((($6::timestamptz AT TIME ZONE p.timezone)::date)-6),
+          ($6::timestamptz AT TIME ZONE p.timezone)::date, interval '1 day') AS g(day)), '[]'::jsonb) AS "reportDays"
+    FROM "Project" p JOIN "Membership" m ON m."orgId"=p."orgId"
+      AND (m."projectId"=p.id OR (m."projectId" IS NULL AND m.role=ANY($4::text[])))
+    WHERE p."orgId"=$1 AND m."accountId"=$2 AND m.role=ANY($5::text[])
+      AND ($8::uuid IS NULL OR p.id=$8::uuid)
+      AND m."activeFrom"<=$6::timestamptz AND (m."activeUntil" IS NULL OR m."activeUntil">$6::timestamptz)
+    GROUP BY p.id,p.name,p.code,p.timezone,p.region,p."projectType",p."primaryWorkItemKey"
+    ORDER BY p.code`,
+    [
+      actor.orgId,
+      actor.accountId,
+      [...WRITE_ROLES],
+      [...READ_ROLES],
+      [...WRITE_ROLES, ...READ_ROLES],
+      actor.decidedAt,
+      REPORT_SCOPE,
+      projectId ?? null,
+    ],
+  );
+  return projected('report.home', { projects: result.rows });
 }
 
 /** Day rows in a date range (at most 62 days). Reading never creates a row (rule 3). */
@@ -618,6 +724,7 @@ export const reportReader = {
     const open = () => openReportReadContext(ctx);
     return {
       projects: async () => projects(open()),
+      homeData: async (projectId?: string) => homeData(open(), projectId),
       days: async (projectId: string, from: string, to: string) =>
         days(open(), projectId, from, to),
       day: async (projectId: string, businessDate: string) =>

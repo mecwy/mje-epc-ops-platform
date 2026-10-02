@@ -44,3 +44,22 @@ export {
   projectStatusReader,
 } from './project-status/reader.js';
 export { ProjectStatusError } from './project-status/rules.js';
+export {
+  ProjectHomeReader,
+  observeProjectHomeProjections,
+  PROJECT_HOME_PROJECTORS,
+} from './project-home/reader.js';
+export {
+  aggregateProjectAttention,
+  aggregateProjectHome,
+} from './project-home/aggregate.js';
+export {
+  completion as projectHomeCompletion,
+  forecastCompletion as projectHomeForecastCompletion,
+  statusAge as projectHomeStatusAge,
+} from './project-home/rules.js';
+export type {
+  Completion as ProjectHomeCompletion,
+  Forecast as ProjectHomeForecast,
+  ForecastObservation as ProjectHomeForecastObservation,
+} from './project-home/rules.js';

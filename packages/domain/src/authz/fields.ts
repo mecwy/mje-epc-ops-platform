@@ -1,8 +1,14 @@
 import type {
   ProjectStatusHistoryDto,
+  ProjectManagerProjectionsDto,
   StatusCommandResultDto,
   PrimaryWorkItemResultDto,
   ReportingExpectationResultDto,
+} from '@mje/contracts';
+import type {
+  ProjectAttentionDto,
+  ProjectHomeDto,
+  ProjectOverviewDto,
 } from '@mje/contracts';
 /**
  * ADR-0003 D2.3 / D3: every field of the report, issue and photo read DTOs mapped to a layer,
@@ -20,9 +26,12 @@ import type {
   ReportLagDayDto,
   ReportPlanDto,
   ReportProjectsDto,
+  ReportHomeDto,
   ReportRevisionDto,
 } from '../report-reader.js';
+import type { IssueHomeDto } from '../issue-reader.js';
 import type { IssueStore } from '../issue-store.js';
+import type { ProjectStatusHomeDto } from '../project-status/reader.js';
 import type { PhotoStore } from '../photo-store.js';
 import type { ReportItemDto } from '@mje/contracts';
 
@@ -157,10 +166,13 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 /** The DTO each layered projector produces. */
 export interface ProjectorDtos {
   'project-status.history': ProjectStatusHistoryDto;
+  'project-status.managers': ProjectManagerProjectionsDto;
+  'project-status.home': ProjectStatusHomeDto;
   'project-status.ack': StatusCommandResultDto;
   'project-status.primary-ack': PrimaryWorkItemResultDto;
   'project-status.expectation-ack': ReportingExpectationResultDto;
   'report.projects': ReportProjectsDto;
+  'report.home': ReportHomeDto;
   'report.days.writer': ReportDayRowDto[];
   'report.days.reader': ReportDayRowDto[];
   'report.day.writer': ReportDayWriterDto;
@@ -172,8 +184,12 @@ export interface ProjectorDtos {
   'report.items': ReportItemDto[];
   'report.lagHistory': ReportLagDayDto[];
   'issue.list': IssueListDto;
+  'issue.home': IssueHomeDto;
   'issue.get': IssueGetDto;
   'issue.lag': IssueLagDto;
+  'project-home.home': ProjectHomeDto;
+  'project-home.attention': ProjectAttentionDto;
+  'project-home.overview': ProjectOverviewDto;
   'photo.list.writer': PhotoListDto;
   'photo.list.reader': PhotoListDto;
   'photo.meta.writer': PhotoGetDto;
@@ -297,7 +313,65 @@ const photoMeta = (layer: Layer): Root<PhotoGetDto> => ({
   fields: { access: S, photo: { layer, fields: photo(layer) } },
 });
 
+const reportItemFields = {
+  kind: S,
+  key: S,
+  label: S,
+  unit: S,
+  designQty: S,
+  openingCumulative: S,
+  plannedDate: S,
+  sortOrder: S,
+  active: S,
+};
+
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'project-status.managers': {
+    items: { projectId: S, personId: S, displayName: { layer: 'public-text' } },
+  },
+  'project-status.home': {
+    fields: {
+      projects: {
+        layer: 'structure',
+        items: {
+          projectId: S,
+          expectationDueDates: {
+            layer: 'structure',
+            items: { businessDate: S, cutoff: S },
+          },
+          latest: {
+            layer: 'structure',
+            fields: {
+              id: S,
+              n: S,
+              status: S,
+              previousStatus: S,
+              needsSupport: S,
+              supportNote: { layer: 'public-text' },
+              declaredAt: S,
+              businessDate: S,
+              siteTimezone: S,
+            },
+          },
+          recent: {
+            layer: 'structure',
+            items: {
+              id: S,
+              n: S,
+              status: S,
+              previousStatus: S,
+              needsSupport: S,
+              supportNote: { layer: 'public-text' },
+              declaredAt: S,
+              businessDate: S,
+              siteTimezone: S,
+            },
+          },
+          previousStatus: S,
+        },
+      },
+    },
+  },
   'project-status.history': {
     fields: {
       projectId: S,
@@ -347,6 +421,51 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.projects': {
     fields: { accountId: S, personId: S, projects: sub('structure') },
   },
+  'report.home': {
+    fields: {
+      projects: {
+        layer: 'structure',
+        items: {
+          id: S,
+          name: S,
+          code: S,
+          timezone: S,
+          region: S,
+          projectType: S,
+          primaryWorkItemKey: S,
+          today: S,
+          access: S,
+          items: { layer: 'structure', items: reportItemFields },
+          snapshots: {
+            layer: 'submitted',
+            items: {
+              businessDate: S,
+              submittedAt: S,
+              firstSubmittedAt: S,
+              primaryWorkItemKey: S,
+              baseline: sub('submitted'),
+              items: { layer: 'submitted', items: reportItemFields },
+              milestones: sub('submitted'),
+              facts: {
+                layer: 'submitted',
+                fields: {
+                  qty: sub('submitted'),
+                  cumulative: sub('submitted'),
+                  cumulativeCarry: sub('submitted'),
+                  people: sub('submitted'),
+                  milestones: sub('submitted'),
+                },
+              },
+            },
+          },
+          reportDays: {
+            layer: 'structure',
+            items: { businessDate: S, submitted: S },
+          },
+        },
+      },
+    },
+  },
   'report.days.writer': days('draft'),
   'report.days.reader': days('submitted'),
   'report.day.writer': {
@@ -373,17 +492,7 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.plan.writer': plan('draft'),
   'report.plan.reader': plan('structure'),
   'report.items': {
-    items: {
-      kind: S,
-      key: S,
-      label: S,
-      unit: S,
-      designQty: S,
-      openingCumulative: S,
-      plannedDate: S,
-      sortOrder: S,
-      active: S,
-    },
+    items: reportItemFields,
   },
   'report.lagHistory': {
     items: {
@@ -400,8 +509,209 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
       issues: sub('public-text'),
     },
   },
+  'issue.home': {
+    fields: {
+      projects: {
+        layer: 'structure',
+        items: {
+          projectId: S,
+          lagOpenKeys: { layer: 'structure' },
+          lagDismissedKeys: { layer: 'structure' },
+          issues: {
+            layer: 'public-text',
+            items: {
+              id: S,
+              title: { layer: 'public-text' },
+              category: S,
+              createdOn: S,
+              dueOn: S,
+              state: S,
+              workItemKey: S,
+              escalate: S,
+              attentionAt: S,
+            },
+          },
+        },
+      },
+    },
+  },
   'issue.get': {
     fields: { access: S, issue: sub('public-text') },
+  },
+  'project-home.home': {
+    fields: {
+      groupBy: S,
+      page: S,
+      size: S,
+      total: S,
+      counts: {
+        layer: 'structure',
+        fields: {
+          OFF_TRACK: S,
+          AT_RISK: S,
+          STALE: S,
+          PAUSED: S,
+          UNDECLARED: S,
+          NORMAL: S,
+        },
+      },
+      groups: {
+        layer: 'structure',
+        items: {
+          key: S,
+          count: S,
+          projects: {
+            layer: 'structure',
+            items: {
+              id: S,
+              code: S,
+              name: S,
+              timezone: S,
+              region: S,
+              projectType: S,
+              managers: {
+                layer: 'structure',
+                items: { personId: S, displayName: { layer: 'public-text' } },
+              },
+              status: {
+                layer: 'structure',
+                fields: {
+                  value: S,
+                  declaredStatus: S,
+                  declaredAt: S,
+                  businessDate: S,
+                  staleDays: S,
+                },
+              },
+              completion: sub('submitted'),
+              forecast: sub('submitted'),
+              hints: {
+                layer: 'submitted',
+                items: { code: S, count: S, expectedDate: S },
+              },
+              reportsLast7: {
+                layer: 'structure',
+                items: { businessDate: S, submitted: S },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  'project-home.attention': {
+    fields: {
+      items: {
+        layer: 'public-text',
+        items: {
+          kind: S,
+          id: S,
+          projectId: S,
+          projectCode: S,
+          projectName: S,
+          title: { layer: 'public-text' },
+          at: S,
+        },
+      },
+    },
+  },
+  'project-home.overview': {
+    fields: {
+      projectId: S,
+      projectCode: S,
+      projectName: S,
+      timezone: S,
+      statusHistory: {
+        layer: 'structure',
+        fields: {
+          projectId: S,
+          currentN: S,
+          updates: {
+            layer: 'public-text',
+            items: {
+              id: S,
+              n: S,
+              status: S,
+              areas: S,
+              situation: { layer: 'public-text' },
+              recovery: { layer: 'public-text' },
+              expectedRecoveryDate: S,
+              expectedRecoveryUnknown: S,
+              needsSupport: S,
+              supportNote: { layer: 'public-text' },
+              declaredAt: S,
+              siteTimezone: S,
+              businessDate: S,
+              declaredBy: S,
+              declaredByPersonId: S,
+              notes: {
+                layer: 'public-text',
+                items: {
+                  id: S,
+                  text: { layer: 'public-text' },
+                  byAccountId: S,
+                  byPersonId: S,
+                  at: S,
+                },
+              },
+            },
+          },
+        },
+      },
+      cumulative: { layer: 'submitted', items: { businessDate: S, value: S } },
+      primaryWorkItem: {
+        layer: 'submitted',
+        fields: {
+          key: S,
+          label: S,
+          unit: S,
+          designQty: S,
+          completion: sub('submitted'),
+          forecast: sub('submitted'),
+          plannedDate: S,
+        },
+      },
+      workItems: {
+        layer: 'structure',
+        items: {
+          kind: S,
+          key: S,
+          label: S,
+          unit: S,
+          designQty: S,
+          openingCumulative: S,
+          sortOrder: S,
+          active: S,
+          plannedDate: S,
+        },
+      },
+      milestones: {
+        layer: 'submitted',
+        items: {
+          id: S,
+          key: S,
+          label: S,
+          plannedDate: S,
+          actual: S,
+          active: S,
+        },
+      },
+      peopleLast7: {
+        layer: 'submitted',
+        items: { businessDate: S, categories: sub('submitted') },
+      },
+      openIssues: {
+        layer: 'public-text',
+        items: {
+          id: S,
+          title: { layer: 'public-text' },
+          category: S,
+          createdOn: S,
+          dueOn: S,
+          state: S,
+        },
+      },
+    },
   },
   'issue.lag': {
     fields: { projectId: S, businessDate: S, suggestions: sub('submitted') },

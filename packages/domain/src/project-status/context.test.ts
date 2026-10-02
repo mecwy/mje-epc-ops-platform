@@ -13,6 +13,32 @@ const ack = {
   statusUpdateId: '22222222-2222-4222-8222-222222222222',
 };
 describe('project status opaque context', () => {
+  it('reads only the restricted manager projection through the module exit', async () => {
+    const rows = [
+      {
+        projectId,
+        personId: '33333333-3333-4333-8333-333333333333',
+        displayName: 'TEST Manager',
+      },
+    ];
+    const queries: string[] = [];
+    const client = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        return { rows };
+      },
+    } as unknown as PoolClient;
+    await withProjectStatusReadContext(client, {} as Actor, async (ctx) => {
+      const projected = await projectStatusReader
+        .forContext(ctx)
+        .managerProjections();
+      expect(projected).toEqual(rows);
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain('project_managers_for_org()');
+    expect(queries[0]).not.toContain('Membership');
+  });
+
   it('refuses forged and copied contexts before any query and closes a kept view', async () => {
     let calls = 0;
     const client = {

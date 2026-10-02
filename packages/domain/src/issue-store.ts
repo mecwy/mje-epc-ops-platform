@@ -41,7 +41,7 @@ import { withReportReadContext } from './report-read-context.js';
  */
 export const ISSUE_KIND = 'SITE_REPORT';
 /** States in which an issue no longer counts as open. */
-const CLOSED_STATES = ['CLOSED', 'VERIFIED_CLOSED'];
+export const CLOSED_STATES = ['CLOSED', 'VERIFIED_CLOSED'];
 
 /** An issue as stored (current state). Dates are site business dates (YYYY-MM-DD). */
 export interface IssueRecord {
@@ -449,8 +449,8 @@ export class IssueStore {
           try {
             await client.query(
               `INSERT INTO "Issue"(id,"orgId","updatedAt","updatedBy",kind,state,summary,"projectId","ownerPersonId",
-                category,escalate,controlled,"workItemKey","createdOn","dueOn")
-              VALUES($1,$2,now(),$3,$4,'OPEN',$5,$6,$7,$8,$9,$10,$11,$12::date,$13::date)`,
+                category,escalate,"escalatedAt",controlled,"workItemKey","createdOn","dueOn")
+              VALUES($1,$2,now(),$3,$4,'OPEN',$5,$6,$7,$8,$9,CASE WHEN $9 THEN now() ELSE NULL END,$10,$11,$12::date,$13::date)`,
               [
                 id,
                 actor.orgId,
@@ -574,7 +574,7 @@ export class IssueStore {
             client,
             actor,
             before,
-            'category=$4, escalate=$5',
+            'category=$4, escalate=$5, "escalatedAt"=CASE WHEN $5 THEN CASE WHEN NOT escalate THEN clock_timestamp() ELSE "escalatedAt" END ELSE NULL END',
             [category || null, command.escalate],
             'ISSUE_ESCALATE',
             '',

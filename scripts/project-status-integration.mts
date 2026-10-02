@@ -9,6 +9,9 @@ import {
   AlphaStore,
   ProjectStatusCommands,
   ProjectStatusReader,
+  ProjectHomeReader,
+  ReportStore,
+  IssueStore,
 } from '../packages/domain/dist/index.js';
 import { observeProjectStatusProjections } from '../packages/domain/dist/project-status/reader.js';
 import type {
@@ -63,13 +66,16 @@ const project = randomUUID(),
   hiddenProject = randomUUID(),
   otherProject = randomUUID(),
   emptyProject = randomUUID();
+const inactiveManagerPerson = randomUUID();
 const manager = randomUUID(),
   twin = randomUUID(),
+  inactiveManager = randomUUID(),
   executive = randomUUID(),
   other = randomUUID();
 const tenant = randomUUID(),
   object = randomUUID(),
   twinObject = randomUUID(),
+  inactiveObject = randomUUID(),
   execObject = randomUUID(),
   otherObject = randomUUID();
 const managerMembership = randomUUID(),
@@ -106,6 +112,7 @@ try {
   for (const [id, orgId] of [
     [person, org],
     [readerPerson, org],
+    [inactiveManagerPerson, org],
     [otherPerson, otherOrg],
   ])
     await owner.query(
@@ -125,6 +132,7 @@ try {
   for (const [id, orgId, personId, oid] of [
     [manager, org, person, object],
     [twin, org, person, twinObject],
+    [inactiveManager, org, inactiveManagerPerson, inactiveObject],
     [executive, org, readerPerson, execObject],
     [other, otherOrg, otherPerson, otherObject],
   ])
@@ -135,6 +143,7 @@ try {
   for (const [id, orgId, accountId, projectId, role] of [
     [managerMembership, org, manager, project, 'PROJECT_MANAGER'],
     [randomUUID(), org, twin, project, 'PROJECT_MANAGER'],
+    [randomUUID(), org, inactiveManager, project, 'PROJECT_MANAGER'],
     [executiveMembership, org, executive, project, 'EXECUTIVE_READER'],
     [randomUUID(), otherOrg, other, otherProject, 'PROJECT_MANAGER'],
     [randomUUID(), org, manager, emptyProject, 'PROJECT_MANAGER'],
@@ -143,6 +152,9 @@ try {
       'INSERT INTO "Membership"(id,"orgId","accountId","projectId",role,"activeFrom","updatedAt","updatedBy") VALUES($1,$2,$3,$4,$5,now()-interval \'1 day\',now(),$6)',
       [id, orgId, accountId, projectId, role, seed],
     );
+  await owner.query('UPDATE "LoginAccount" SET active=false WHERE id=$1', [
+    inactiveManager,
+  ]);
   const requireApi = createRequire(
     new URL('../apps/api/package.json', import.meta.url),
   );
@@ -173,8 +185,11 @@ try {
     auth,
     verifier,
     store: new AlphaStore(appPool),
+    reportStore: new ReportStore(appPool),
     projectStatusCommands: new ProjectStatusCommands(appPool),
     projectStatusReader: new ProjectStatusReader(appPool),
+    projectHomeReader: new ProjectHomeReader(appPool),
+    issueStore: new IssueStore(appPool),
   });
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
@@ -285,7 +300,7 @@ try {
       audits: number;
       keys: number;
     }>(
-      'SELECT (SELECT count(*)::int FROM "ProjectStatusUpdate") AS updates,(SELECT count(*)::int FROM "ProjectStatusNote") AS notes,(SELECT count(*)::int FROM "AuditLog" WHERE "entityType" LIKE \'PROJECT_STATUS_%\') AS audits,(SELECT count(*)::int FROM "IdempotencyRecord") AS keys',
+      'SELECT (SELECT count(*)::int FROM "ProjectStatusUpdate") AS updates,(SELECT count(*)::int FROM "ProjectStatusNote") AS notes,(SELECT count(*)::int FROM "AuditLog" WHERE "entityType" LIKE \'PROJECT_STATUS_%\') AS audits,(SELECT count(*)::int FROM "IdempotencyRecord" WHERE route LIKE \'PROJECT_STATUS_%\') AS keys',
     );
     return r.rows[0]!;
   }
@@ -309,6 +324,271 @@ try {
     updates: [],
   });
   pass('signed HTTP authentication and authorized empty history (n=0)');
+  const expectationIds = [randomUUID(), randomUUID(), randomUUID()];
+  await owner.query(
+    `WITH p AS (SELECT id,"orgId",timezone FROM "Project" WHERE id=$1),
+      d AS (SELECT p.*, ((now() AT TIME ZONE p.timezone)::date-3) AS due_day FROM p),
+      v(n,id,from_date,workdays,registered_at) AS (
+        SELECT 1,$2::uuid,due_day,ARRAY[EXTRACT(ISODOW FROM due_day)::int],
+          (((due_day-1)::timestamp AT TIME ZONE timezone)-interval '1 minute') FROM d
+        UNION ALL
+        SELECT 2,$3::uuid,due_day+1,
+          ARRAY(SELECT x FROM generate_series(1,7) x WHERE x<>EXTRACT(ISODOW FROM due_day)::int AND x<>EXTRACT(ISODOW FROM due_day+1)::int),
+          (((due_day+1)::timestamp AT TIME ZONE timezone)+interval '1 minute') FROM d
+        UNION ALL
+        SELECT 3,$4::uuid,due_day+1,ARRAY[EXTRACT(ISODOW FROM due_day+1)::int],
+          (((due_day+2)::timestamp AT TIME ZONE timezone)+interval '1 minute') FROM d
+      )
+      INSERT INTO "ReportingExpectationVersion"(id,"orgId","projectId",n,"fromDate",workdays,"registeredAt","registeredBy")
+      SELECT v.id,d."orgId",d.id,v.n,v.from_date,v.workdays,v.registered_at,$5 FROM d CROSS JOIN v`,
+    [project, ...expectationIds, manager],
+  );
+  const home = await call('/api/projects/home?group=manager', reader);
+  assert.equal(home.status, 200);
+  const managerCards = (
+    home.data as {
+      groups: {
+        projects: { id: string; managers: { personId: string }[] }[];
+      }[];
+    }
+  ).groups.flatMap((group) => group.projects);
+  const visibleManagerCard = managerCards.find((card) => card.id === project);
+  assert.ok(visibleManagerCard);
+  assert.equal(visibleManagerCard.managers.length, 1);
+  assert.equal(visibleManagerCard.managers[0]?.personId, person);
+  assert.deepEqual(
+    (
+      home.data as {
+        groups: {
+          projects: { id: string; hints: { code: string; count?: number }[] }[];
+        }[];
+      }
+    ).groups
+      .flatMap((group) => group.projects)
+      .find((card) => card.id === project)
+      ?.hints.find((hint) => hint.code === 'MISSING_REPORT')?.count,
+    1,
+    'expectation versions after a local-day cutoff neither erase that day nor add a previous-day duty',
+  );
+  const overview = await call(`/api/projects/${project}/overview`, reader);
+  assert.equal(overview.status, 200);
+  assert.deepEqual(
+    (overview.data as { statusHistory: ProjectStatusHistoryDto }).statusHistory,
+    {
+      projectId: project,
+      currentN: 0,
+      updates: [],
+    },
+  );
+  assert.equal(
+    (overview.data as { primaryWorkItem: unknown }).primaryWorkItem,
+    null,
+  );
+  code(
+    await call(`/api/projects/${hiddenProject}/overview`, reader),
+    404,
+    'NOT_FOUND',
+  );
+  code(
+    await call(`/api/projects/${otherProject}/overview`, reader),
+    404,
+    'NOT_FOUND',
+  );
+  const attention = await call('/api/attention', reader);
+  assert.equal(attention.status, 200);
+  pass(
+    'A7-2b home, overview and attention enforce module intersection and deduplicate manager person identities',
+  );
+  const due = (
+    await owner.query<{ businessDate: string; timezone: string; cutoff: Date }>(
+      `SELECT e."fromDate"::text AS "businessDate",p.timezone,
+        ((e."fromDate"+1)::timestamp AT TIME ZONE p.timezone) AS cutoff
+       FROM "ReportingExpectationVersion" e JOIN "Project" p
+         ON p."orgId"=e."orgId" AND p.id=e."projectId" WHERE e.id=$1`,
+      [expectationIds[0]],
+    )
+  ).rows[0]!;
+  const priorDate = (
+    await owner.query<{ day: string }>('SELECT ($1::date-1)::text AS day', [
+      due.businessDate,
+    ])
+  ).rows[0]!.day;
+  const primaryItem = {
+    kind: 'work',
+    key: 'module',
+    label: 'TEST module',
+    unit: 'm',
+    designQty: '10',
+    openingCumulative: '0',
+    sortOrder: 1,
+    active: true,
+    plannedDate: null,
+  };
+  const seedSubmittedDay = async (
+    businessDate: string,
+    revisionSnapshots: {
+      snapshot: Record<string, unknown>;
+      submittedAt: Date;
+    }[],
+  ) => {
+    const closeId = randomUUID();
+    await owner!.query(
+      `INSERT INTO "DailyClose"(id,"orgId","updatedAt","updatedBy","businessDate","siteTimezone","scopeKey",state,"expectedReason","currentRevisionNumber","projectId")
+       VALUES($1,$2,now(),$3,$4::date,$5,'report','SUBMITTED','TEST integration seed',$6,$7)`,
+      [
+        closeId,
+        org,
+        manager,
+        businessDate,
+        due.timezone,
+        revisionSnapshots.length,
+        project,
+      ],
+    );
+    for (const [index, revision] of revisionSnapshots.entries())
+      await owner!.query(
+        `INSERT INTO "Revision"(id,"orgId","updatedAt","updatedBy","revisionNumber","baseRevisionNumber",state,reason,snapshot,"submittedAt","dailyCloseId")
+         VALUES($1,$2,now(),$3,$4,$5,'SUBMITTED','TEST integration seed',$6::jsonb,$7,$8)`,
+        [
+          randomUUID(),
+          org,
+          manager,
+          index + 1,
+          index === 0 ? null : index,
+          JSON.stringify(revision.snapshot),
+          revision.submittedAt,
+          closeId,
+        ],
+      );
+  };
+  const firstSubmittedAt = new Date(due.cutoff.getTime() - 60_000);
+  const correctedSubmittedAt = new Date(due.cutoff.getTime() + 60_000);
+  await seedSubmittedDay(priorDate, [
+    {
+      submittedAt: new Date(firstSubmittedAt.getTime() - 86_400_000),
+      snapshot: {
+        items: [primaryItem],
+        primaryWorkItemKey: 'module',
+        milestones: [],
+        baseline: null,
+        facts: {
+          qty: { module: '5' },
+          cumulative: { module: '5' },
+          people: {},
+          milestones: {},
+        },
+        cumulativeCarry: { module: { value: '5', asOf: priorDate } },
+      },
+    },
+  ]);
+  await seedSubmittedDay(due.businessDate, [
+    {
+      submittedAt: firstSubmittedAt,
+      snapshot: {
+        items: [primaryItem],
+        primaryWorkItemKey: 'module',
+        milestones: [],
+        baseline: null,
+        facts: {
+          qty: { module: '' },
+          cumulative: { module: '' },
+          people: {},
+          milestones: {},
+        },
+        cumulativeCarry: { module: { value: '5', asOf: priorDate } },
+      },
+    },
+    {
+      submittedAt: correctedSubmittedAt,
+      snapshot: {
+        items: [primaryItem],
+        primaryWorkItemKey: 'module',
+        milestones: [],
+        baseline: null,
+        facts: {
+          qty: { module: '' },
+          cumulative: { module: '' },
+          people: {},
+          milestones: {},
+        },
+        cumulativeCarry: { module: { value: '5', asOf: priorDate } },
+      },
+    },
+  ]);
+  const seededHome = await call('/api/projects/home?group=region', reader);
+  assert.equal(seededHome.status, 200);
+  const seededCard = (
+    seededHome.data as {
+      groups: {
+        projects: {
+          id: string;
+          completion: { state: string; percent?: string };
+          hints: { code: string }[];
+        }[];
+      }[];
+    }
+  ).groups
+    .flatMap((group) => group.projects)
+    .find((card) => card.id === project);
+  assert.equal(seededCard?.completion.state, 'COMPUTABLE');
+  assert.equal(seededCard?.completion.percent, '50.0');
+  assert.ok(!seededCard?.hints.some((hint) => hint.code === 'MISSING_REPORT'));
+  const escalatedIssueId = randomUUID();
+  await owner.query(
+    `INSERT INTO "Issue"(id,"orgId","createdAt","updatedAt","updatedBy",kind,state,summary,"projectId",category,escalate,controlled,"createdOn")
+     VALUES($1,$2,now()-interval '30 days',now(),$3,'SITE_REPORT','OPEN','TEST late escalation',$4,NULL,false,false,(now()-interval '30 days')::date)`,
+    [escalatedIssueId, org, manager, project],
+  );
+  const today = (
+    await owner.query<{ today: string }>(
+      'SELECT (now() AT TIME ZONE timezone)::date::text AS today FROM "Project" WHERE id=$1',
+      [project],
+    )
+  ).rows[0]!.today;
+  const escalated = await call('/api/report/issues/escalate', pm, {
+    issueId: escalatedIssueId,
+    expectedVersion: 1,
+    clientMutationId: randomUUID(),
+    escalate: true,
+    category: 'safety',
+  });
+  assert.equal(escalated.status, 200);
+  const escalationTime = (
+    await owner.query<{ escalatedAt: Date }>(
+      'SELECT "escalatedAt" FROM "Issue" WHERE id=$1',
+      [escalatedIssueId],
+    )
+  ).rows[0]!.escalatedAt;
+  const noteResult = await call('/api/report/issues/note', pm, {
+    issueId: escalatedIssueId,
+    businessDate: today,
+    expectedVersion: 2,
+    clientMutationId: randomUUID(),
+    text: 'TEST note after escalation',
+  });
+  assert.equal(noteResult.status, 200);
+  const afterNote = (
+    await owner.query<{ escalatedAt: Date }>(
+      'SELECT "escalatedAt" FROM "Issue" WHERE id=$1',
+      [escalatedIssueId],
+    )
+  ).rows[0]!.escalatedAt;
+  assert.equal(afterNote.getTime(), escalationTime.getTime());
+  const refreshedAttention = await call('/api/attention', reader);
+  const escalationItem = (
+    refreshedAttention.data as {
+      items: { id: string; at: string }[];
+    }
+  ).items.find((item) => item.id === escalatedIssueId);
+  assert.ok(escalationItem);
+  assert.equal(
+    Date.parse(escalationItem.at),
+    escalationTime.getTime(),
+    'a later issue note does not move the escalation in the attention feed',
+  );
+  pass(
+    'database-backed home projection keeps carried completion and original on-time submission through correction; escalation time stays fixed when a later note is added',
+  );
   for (const p of [hiddenProject, otherProject, randomUUID()]) {
     code(await call(path(p), pm), 404, 'NOT_FOUND');
     code(await call(path(p), pm, command(0)), 404, 'NOT_FOUND');

@@ -9,6 +9,7 @@ import {
   ReportStore,
   ProjectStatusCommands,
   ProjectStatusReader,
+  ProjectHomeReader,
 } from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
 import { TokenVerifier } from './auth/token-verifier.js';
@@ -38,6 +39,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     reportStore: new ReportStore(pool),
     projectStatusCommands: new ProjectStatusCommands(pool),
     projectStatusReader: new ProjectStatusReader(pool),
+    projectHomeReader: new ProjectHomeReader(pool),
     issueStore: new IssueStore(pool),
     fieldStore: new FieldStore(pool),
     foremanStore: new ForemanStore(pool),
