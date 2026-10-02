@@ -300,7 +300,7 @@ try {
       audits: number;
       keys: number;
     }>(
-      'SELECT (SELECT count(*)::int FROM "ProjectStatusUpdate") AS updates,(SELECT count(*)::int FROM "ProjectStatusNote") AS notes,(SELECT count(*)::int FROM "AuditLog" WHERE "entityType" LIKE \'PROJECT_STATUS_%\') AS audits,(SELECT count(*)::int FROM "IdempotencyRecord") AS keys',
+      'SELECT (SELECT count(*)::int FROM "ProjectStatusUpdate") AS updates,(SELECT count(*)::int FROM "ProjectStatusNote") AS notes,(SELECT count(*)::int FROM "AuditLog" WHERE "entityType" LIKE \'PROJECT_STATUS_%\') AS audits,(SELECT count(*)::int FROM "IdempotencyRecord" WHERE route LIKE \'PROJECT_STATUS_%\') AS keys',
     );
     return r.rows[0]!;
   }
@@ -534,14 +534,46 @@ try {
   assert.equal(seededCard?.completion.percent, '50.0');
   assert.ok(!seededCard?.hints.some((hint) => hint.code === 'MISSING_REPORT'));
   const escalatedIssueId = randomUUID();
-  const escalatedIssue = (
-    await owner.query<{ updatedAt: Date }>(
-      `INSERT INTO "Issue"(id,"orgId","createdAt","updatedAt","updatedBy",kind,state,summary,"projectId",category,escalate,controlled,"createdOn")
-       VALUES($1,$2,now()-interval '30 days',now(),$3,'SITE_REPORT','OPEN','TEST late escalation',$4,'safety',true,false,(now()-interval '30 days')::date)
-       RETURNING "updatedAt"`,
-      [escalatedIssueId, org, manager, project],
+  await owner.query(
+    `INSERT INTO "Issue"(id,"orgId","createdAt","updatedAt","updatedBy",kind,state,summary,"projectId",category,escalate,controlled,"createdOn")
+     VALUES($1,$2,now()-interval '30 days',now(),$3,'SITE_REPORT','OPEN','TEST late escalation',$4,NULL,false,false,(now()-interval '30 days')::date)`,
+    [escalatedIssueId, org, manager, project],
+  );
+  const today = (
+    await owner.query<{ today: string }>(
+      'SELECT (now() AT TIME ZONE timezone)::date::text AS today FROM "Project" WHERE id=$1',
+      [project],
     )
-  ).rows[0]!;
+  ).rows[0]!.today;
+  const escalated = await call('/api/report/issues/escalate', pm, {
+    issueId: escalatedIssueId,
+    expectedVersion: 1,
+    clientMutationId: randomUUID(),
+    escalate: true,
+    category: 'safety',
+  });
+  assert.equal(escalated.status, 200);
+  const escalationTime = (
+    await owner.query<{ escalatedAt: Date }>(
+      'SELECT "escalatedAt" FROM "Issue" WHERE id=$1',
+      [escalatedIssueId],
+    )
+  ).rows[0]!.escalatedAt;
+  const noteResult = await call('/api/report/issues/note', pm, {
+    issueId: escalatedIssueId,
+    businessDate: today,
+    expectedVersion: 2,
+    clientMutationId: randomUUID(),
+    text: 'TEST note after escalation',
+  });
+  assert.equal(noteResult.status, 200);
+  const afterNote = (
+    await owner.query<{ escalatedAt: Date }>(
+      'SELECT "escalatedAt" FROM "Issue" WHERE id=$1',
+      [escalatedIssueId],
+    )
+  ).rows[0]!.escalatedAt;
+  assert.equal(afterNote.getTime(), escalationTime.getTime());
   const refreshedAttention = await call('/api/attention', reader);
   const escalationItem = (
     refreshedAttention.data as {
@@ -551,11 +583,11 @@ try {
   assert.ok(escalationItem);
   assert.equal(
     Date.parse(escalationItem.at),
-    escalatedIssue.updatedAt.getTime(),
-    'attention ordering time follows the current escalation event, not the old issue creation date',
+    escalationTime.getTime(),
+    'a later issue note does not move the escalation in the attention feed',
   );
   pass(
-    'database-backed home projection keeps carried completion, original on-time submission through correction, and recent escalation time',
+    'database-backed home projection keeps carried completion and original on-time submission through correction; escalation time stays fixed when a later note is added',
   );
   for (const p of [hiddenProject, otherProject, randomUUID()]) {
     code(await call(path(p), pm), 404, 'NOT_FOUND');

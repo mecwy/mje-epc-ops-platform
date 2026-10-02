@@ -937,6 +937,7 @@ model Issue {
   /// One of the 8 escalation categories (CHECK constraint in SQL); escalate requires it.
   category      String?
   escalate      Boolean           @default(false)
+  escalatedAt   DateTime?         @db.Timestamptz(6)
   /// Needs expert confirmation; the project manager cannot close it.
   controlled    Boolean           @default(false)
   workItemKey   String?
