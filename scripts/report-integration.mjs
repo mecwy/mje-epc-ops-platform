@@ -1409,13 +1409,14 @@ try {
     assert.deepEqual(writerRev.snapshot.nextPlan, {
       status: 'draft',
       n: null,
+      rows: [],
+    });
+    // The writer's live day preview remains unchanged; only the stored revision omits draft rows.
+    assert.deepEqual((await dayOf(C1, pm)).nextPlan, {
+      status: 'draft',
+      n: null,
       rows: [{ item: 'support', target: '8641' }],
     });
-    // The writer's day shows the frozen draft rows (only readers get the projection).
-    assert.deepEqual(
-      (await dayOf(C1, pm)).nextPlan,
-      writerRev.snapshot.nextPlan,
-    );
     const readerRev = await revisionOf(C1, exec);
     assert.deepEqual(readerRev.snapshot.nextPlan, {
       status: 'draft',
@@ -1463,9 +1464,91 @@ try {
     assert.deepEqual((await revisionOf(C2, pm)).snapshot.nextPlan, confirmed);
     assert.deepEqual((await revisionOf(C2, exec)).snapshot.nextPlan, confirmed);
     assert.deepEqual((await dayOf(C2, exec)).nextPlan, confirmed);
+
+    // Reconstruct a pre-A7-2a immutable revision: no C19 keys, but a C20-era
+    // draft row, so the writer/read-only projections and absence semantics are exercised.
+    const day = (
+      await owner.query(
+        `SELECT d.id, d."currentRevisionNumber", r.snapshot
+         FROM "DailyClose" d JOIN "Revision" r
+           ON r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
+         WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."businessDate"=$3::date`,
+        [orgA, projectA, C1],
+      )
+    ).rows[0];
+    assert.equal(day.currentRevisionNumber, 1);
+    const legacySnapshot = structuredClone(day.snapshot);
+    delete legacySnapshot.primaryWorkItemKey;
+    delete legacySnapshot.milestones;
+    legacySnapshot.nextPlan = {
+      status: 'draft',
+      n: null,
+      rows: [{ item: 'support', target: '8641' }],
+    };
+    const legacyRevisionId = randomUUID();
+    await owner.query(
+      `INSERT INTO "Revision"(id,"orgId","updatedAt","updatedBy","revisionNumber","baseRevisionNumber",state,reason,snapshot,"submittedAt","dailyCloseId")
+       VALUES($1,$2,now(),$3,2,1,'SUBMITTED','TEST legacy snapshot',$4,now(),$5)`,
+      [legacyRevisionId, orgA, accountPm, legacySnapshot, day.id],
+    );
+    await owner.query(
+      `INSERT INTO "RevisionEvent"(id,"orgId","updatedAt","updatedBy",action,reason,"actorPersonId","revisionId")
+       VALUES($1,$2,now(),$3,'TEST_FIXTURE','TEST legacy snapshot',$4,$5)`,
+      [randomUUID(), orgA, accountPm, personPm, legacyRevisionId],
+    );
+    await owner.query(
+      `UPDATE "DailyClose" SET "currentRevisionNumber"=2 WHERE id=$1`,
+      [day.id],
+    );
+    const legacyRevisionOf = (bearer) =>
+      expectStatus(
+        call(`/revision?projectId=${projectA}&businessDate=${C1}&n=2`, bearer),
+        200,
+      );
+    const writerLegacy = await legacyRevisionOf(pm);
+    assert.deepEqual(writerLegacy.snapshot, legacySnapshot);
+    assert.equal(
+      Object.hasOwn(writerLegacy.snapshot, 'primaryWorkItemKey'),
+      false,
+    );
+    assert.equal(Object.hasOwn(writerLegacy.snapshot, 'milestones'), false);
+    const readerLegacy = await legacyRevisionOf(exec);
+    assert.equal(
+      Object.hasOwn(readerLegacy.snapshot, 'primaryWorkItemKey'),
+      false,
+    );
+    assert.equal(Object.hasOwn(readerLegacy.snapshot, 'milestones'), false);
+    assert.deepEqual(readerLegacy.snapshot.nextPlan.rows, []);
+    assert.deepEqual((await dayOf(C1, exec)).nextPlan, {
+      status: 'draft',
+      n: null,
+      rows: [],
+    });
+
+    await owner.query(
+      `UPDATE "Project" SET "primaryWorkItemKey"='support' WHERE id=$1`,
+      [projectA],
+    );
+    const oldSnapshotAfterMasterEdit = (
+      await owner.query(`SELECT snapshot FROM "Revision" WHERE id=$1`, [
+        legacyRevisionId,
+      ])
+    ).rows[0].snapshot;
+    assert.deepEqual(oldSnapshotAfterMasterEdit, legacySnapshot);
+    assert.equal(
+      Object.hasOwn(oldSnapshotAfterMasterEdit, 'primaryWorkItemKey'),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(oldSnapshotAfterMasterEdit, 'milestones'),
+      false,
+    );
+    pass(
+      'C19 legacy revisions remain absent/unfrozen after master edits; writer sees stored rows unchanged and readers project only draft rows away',
+    );
   }
   pass(
-    'C20: a revision that froze a draft next-day plan gives a reader its status and no rows, on the revision and the day (also after the plan is confirmed later); a plan confirmed before submission stays visible; the writer and the stored snapshot are unchanged',
+    'C20: a new revision freezes draft status without draft rows while the writer live preview stays unchanged; later confirmation does not alter it, and a pre-confirmed plan freezes its rows',
   );
 
   // ---------- A7-0a (ADR-0003): OD18 on write rejections and conflicts ----------

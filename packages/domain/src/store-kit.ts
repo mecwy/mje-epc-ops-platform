@@ -385,14 +385,31 @@ export async function audit(
   );
 }
 
-/** Shared Project capture point. Caller authorizes first, then takes its idempotency lock. */
-export async function lockProjectForUpdate(
+/**
+ * Exclusive, non-key Project capture point. Conflicts with submit's FOR SHARE while remaining
+ * compatible with FK KEY SHARE lookups because project key columns are not changed here.
+ */
+export async function lockProjectForNoKeyUpdate(
   client: PoolClient,
   orgId: string,
   projectId: string,
 ): Promise<ProjectMasterRow> {
   const r = await client.query<ProjectMasterRow>(
-    'SELECT id,name,code,timezone,version,"primaryWorkItemKey",region,"projectType" FROM "Project" WHERE "orgId"=$1 AND id=$2 FOR UPDATE',
+    'SELECT id,name,code,timezone,version,"primaryWorkItemKey",region,"projectType" FROM "Project" WHERE "orgId"=$1 AND id=$2 FOR NO KEY UPDATE',
+    [orgId, projectId],
+  );
+  if (!r.rows[0]) throw new ReportError('NOT_FOUND');
+  return r.rows[0];
+}
+
+/** Submission captures masters under a shared row lock, before roster/day locks. */
+export async function lockProjectForShare(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+): Promise<ProjectMasterRow> {
+  const r = await client.query<ProjectMasterRow>(
+    'SELECT id,name,code,timezone,version,"primaryWorkItemKey",region,"projectType" FROM "Project" WHERE "orgId"=$1 AND id=$2 FOR SHARE',
     [orgId, projectId],
   );
   if (!r.rows[0]) throw new ReportError('NOT_FOUND');

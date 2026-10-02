@@ -495,7 +495,7 @@ try {
   );
   holder = await owner.connect();
   await holder.query('BEGIN');
-  await holder.query('SELECT id FROM "Project" WHERE id=$1 FOR UPDATE', [
+  await holder.query('SELECT id FROM "Project" WHERE id=$1 FOR NO KEY UPDATE', [
     project,
   ]);
   const a = call(path(), pm, command(1)),
@@ -506,7 +506,7 @@ try {
   do {
     waiting = (
       await owner.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND query LIKE '%FROM \"Project\"%FOR UPDATE%'",
+        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND query LIKE '%FROM \"Project\"%FOR NO KEY UPDATE%'",
         [username],
       )
     ).rows[0]!.n;
