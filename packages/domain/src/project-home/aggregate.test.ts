@@ -226,6 +226,48 @@ describe('project attention ordering', () => {
     expect(result.items[0]?.id).toBe('issue-50');
     expect(result.items[0]?.at).toBe('2030-01-01T00:00:00.500Z');
   });
+
+  it('preserves unknown historical escalation time and sorts it after known events', () => {
+    const projectId = ID;
+    const issues = [
+      {
+        id: 'legacy-unknown',
+        title: 'TEST legacy issue',
+        category: 'safety',
+        createdOn: '2030-01-01',
+        dueOn: null,
+        state: 'OPEN',
+        workItemKey: null,
+        escalate: true,
+        attentionAt: null,
+      },
+      {
+        id: 'known-escalation',
+        title: 'TEST known issue',
+        category: 'safety',
+        createdOn: '2029-01-01',
+        dueOn: null,
+        state: 'OPEN',
+        workItemKey: null,
+        escalate: true,
+        attentionAt: '2030-01-01T00:00:00.000Z',
+      },
+    ];
+    const result = aggregateProjectAttention({
+      report: { projects: [report()] },
+      statuses: { projects: [{ projectId, latest: null, recent: [] }] },
+      issues: {
+        projects: [
+          { projectId, issues, lagOpenKeys: [], lagDismissedKeys: [] },
+        ],
+      },
+      managers: [],
+    } as never);
+    expect(result.items.map(({ id, at }) => [id, at])).toEqual([
+      ['known-escalation', '2030-01-01T00:00:00.000Z'],
+      ['legacy-unknown', null],
+    ]);
+  });
 });
 
 describe('project overview uses only frozen snapshot identity', () => {

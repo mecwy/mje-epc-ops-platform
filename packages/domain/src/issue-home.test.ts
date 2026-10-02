@@ -21,7 +21,7 @@ describe('issue home module exit', () => {
             state: 'OPEN',
             workItemKey: 'module',
             escalate: false,
-            attentionAt: '2030-01-01T10:00:00.000Z',
+            attentionAt: null,
           },
         ],
       },

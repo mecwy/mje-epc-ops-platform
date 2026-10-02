@@ -298,7 +298,7 @@ export function aggregateProjectAttention(input: {
     kind: ProjectAttentionItem['kind'],
     id: string,
     title: string,
-    at: string,
+    at: string | null,
   ): ProjectAttentionItem | null => {
     const project = projectById.get(projectId);
     if (!project || !statusById.has(projectId) || !issueById.has(projectId))
@@ -310,7 +310,7 @@ export function aggregateProjectAttention(input: {
       projectCode: project.code,
       projectName: project.name,
       title,
-      at: new Date(at).toISOString(),
+      at: at === null ? null : new Date(at).toISOString(),
     };
   };
   const byKind: Record<ProjectAttentionItem['kind'], ProjectAttentionItem[]> = {
@@ -360,11 +360,17 @@ export function aggregateProjectAttention(input: {
       );
       if (item) byKind.ESCALATED_ISSUE.push(item);
     }
+  const byTimeDescending = (
+    a: ProjectAttentionItem,
+    b: ProjectAttentionItem,
+  ) => {
+    if (a.at === null) return b.at === null ? 0 : 1;
+    if (b.at === null) return -1;
+    return Date.parse(b.at) - Date.parse(a.at);
+  };
   const items = Object.values(byKind)
-    .flatMap((rows) =>
-      rows.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 50),
-    )
-    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    .flatMap((rows) => rows.sort(byTimeDescending).slice(0, 50))
+    .sort(byTimeDescending);
   return { items };
 }
 

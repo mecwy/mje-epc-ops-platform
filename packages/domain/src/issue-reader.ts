@@ -43,7 +43,7 @@ export interface IssueHomeItemDto {
   state: string;
   workItemKey: string | null;
   escalate: boolean;
-  attentionAt: string;
+  attentionAt: string | null;
 }
 export interface IssueHomeProjectDto {
   projectId: string;
@@ -82,7 +82,7 @@ export const issueReader = {
             COALESCE(jsonb_agg(jsonb_build_object(
             'id',i.id,'title',i.summary,'category',COALESCE(i.category,''),
             'createdOn',i."createdOn"::text,
-            'attentionAt',COALESCE(i."escalatedAt",i."createdAt"),
+            'attentionAt',i."escalatedAt",
             'dueOn',i."dueOn"::text,'state',i.state::text,
             'workItemKey',i."workItemKey",'escalate',i.escalate)
             ORDER BY i."createdOn",i.seq) FILTER (WHERE i.id IS NOT NULL),'[]'::jsonb) AS issues

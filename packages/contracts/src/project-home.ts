@@ -64,7 +64,7 @@ export interface ProjectAttentionItem {
   projectCode: string;
   projectName: string;
   title: string;
-  at: string;
+  at: string | null;
 }
 export interface ProjectAttentionDto {
   items: ProjectAttentionItem[];
