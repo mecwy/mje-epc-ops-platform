@@ -39,6 +39,11 @@ import type {
   ForemanDayDto,
   PmProxyCheckInCommand,
   RosterDto,
+  ProjectHomeDto,
+  ProjectAttentionDto,
+  ProjectStatusHistoryDto,
+  StatusCommandResultDto,
+  DeclareStatusCommand,
 } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
@@ -380,9 +385,38 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
   ) => request<T>(`/api/report/${path}?${qs(params)}`, await token());
   const post = async <T>(path: string, command: Command) =>
     request<T>(`/api/report/${path}`, await token(), command, onRetry);
+  const apiGet = async <T>(path: string) => request<T>(path, await token());
+  const apiPost = async <T>(path: string, command: Command) =>
+    request<T>(path, await token(), command, onRetry);
   return {
     projects: async () =>
       request<ProjectsResponse>('/api/report/projects', await token()),
+    projectHome: (query: {
+      group: 'region' | 'manager' | 'type';
+      status: string | null;
+      q: string;
+      page: number;
+      size: number;
+    }) =>
+      apiGet<ProjectHomeDto>(
+        `/api/projects/home?${qs({
+          group: query.group,
+          ...(query.status ? { status: query.status } : {}),
+          q: query.q,
+          page: query.page,
+          size: query.size,
+        })}`,
+      ),
+    projectAttention: () => apiGet<ProjectAttentionDto>('/api/attention'),
+    projectStatus: (projectId: string) =>
+      apiGet<ProjectStatusHistoryDto>(
+        `/api/projects/${encodeURIComponent(projectId)}/status`,
+      ),
+    declareProjectStatus: (command: DeclareStatusCommand) =>
+      apiPost<StatusCommandResultDto>(
+        `/api/projects/${encodeURIComponent(command.projectId)}/status`,
+        command,
+      ),
     day: (projectId: string, businessDate: string) =>
       get<DayView>('day', { projectId, businessDate }),
     revision: (projectId: string, businessDate: string, n: number) =>
