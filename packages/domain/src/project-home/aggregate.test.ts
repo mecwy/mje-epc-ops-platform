@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateProjectHome, aggregateProjectOverview } from './aggregate.js';
+import {
+  aggregateProjectAttention,
+  aggregateProjectHome,
+  aggregateProjectOverview,
+} from './aggregate.js';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 
@@ -190,6 +194,37 @@ describe('project home aggregation', () => {
     ).toBe(20);
     expect(first.counts.UNDECLARED).toBe(120);
     expect(page(1, 'NORMAL').total).toBe(0);
+  });
+});
+
+describe('project attention ordering', () => {
+  it('uses the escalation update time and compares mixed database timestamp formats by instant', () => {
+    const projectId = ID;
+    const issues = Array.from({ length: 51 }, (_, index) => ({
+      id: `issue-${index}`,
+      title: `TEST issue ${index}`,
+      category: 'safety',
+      createdOn: '2030-01-01',
+      dueOn: null,
+      state: 'OPEN',
+      workItemKey: null,
+      escalate: true,
+      attentionAt: '2030-01-01T00:00:00.250+00:00',
+    }));
+    issues[50]!.attentionAt = '2030-01-01T01:00:00.500+01:00';
+    const result = aggregateProjectAttention({
+      report: { projects: [report()] },
+      statuses: { projects: [{ projectId, latest: null, recent: [] }] },
+      issues: {
+        projects: [
+          { projectId, issues, lagOpenKeys: [], lagDismissedKeys: [] },
+        ],
+      },
+      managers: [],
+    } as never);
+    expect(result.items).toHaveLength(50);
+    expect(result.items[0]?.id).toBe('issue-50');
+    expect(result.items[0]?.at).toBe('2030-01-01T00:00:00.500Z');
   });
 });
 

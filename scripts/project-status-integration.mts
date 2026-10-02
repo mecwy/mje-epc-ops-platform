@@ -399,6 +399,164 @@ try {
   pass(
     'A7-2b home, overview and attention enforce module intersection and deduplicate manager person identities',
   );
+  const due = (
+    await owner.query<{ businessDate: string; timezone: string; cutoff: Date }>(
+      `SELECT e."fromDate"::text AS "businessDate",p.timezone,
+        ((e."fromDate"+1)::timestamp AT TIME ZONE p.timezone) AS cutoff
+       FROM "ReportingExpectationVersion" e JOIN "Project" p
+         ON p."orgId"=e."orgId" AND p.id=e."projectId" WHERE e.id=$1`,
+      [expectationIds[0]],
+    )
+  ).rows[0]!;
+  const priorDate = (
+    await owner.query<{ day: string }>('SELECT ($1::date-1)::text AS day', [
+      due.businessDate,
+    ])
+  ).rows[0]!.day;
+  const primaryItem = {
+    kind: 'work',
+    key: 'module',
+    label: 'TEST module',
+    unit: 'm',
+    designQty: '10',
+    openingCumulative: '0',
+    sortOrder: 1,
+    active: true,
+    plannedDate: null,
+  };
+  const seedSubmittedDay = async (
+    businessDate: string,
+    revisionSnapshots: {
+      snapshot: Record<string, unknown>;
+      submittedAt: Date;
+    }[],
+  ) => {
+    const closeId = randomUUID();
+    await owner!.query(
+      `INSERT INTO "DailyClose"(id,"orgId","updatedAt","updatedBy","businessDate","siteTimezone","scopeKey",state,"expectedReason","currentRevisionNumber","projectId")
+       VALUES($1,$2,now(),$3,$4::date,$5,'report','SUBMITTED','TEST integration seed',$6,$7)`,
+      [
+        closeId,
+        org,
+        manager,
+        businessDate,
+        due.timezone,
+        revisionSnapshots.length,
+        project,
+      ],
+    );
+    for (const [index, revision] of revisionSnapshots.entries())
+      await owner!.query(
+        `INSERT INTO "Revision"(id,"orgId","updatedAt","updatedBy","revisionNumber","baseRevisionNumber",state,reason,snapshot,"submittedAt","dailyCloseId")
+         VALUES($1,$2,now(),$3,$4,$5,'SUBMITTED','TEST integration seed',$6::jsonb,$7,$8)`,
+        [
+          randomUUID(),
+          org,
+          manager,
+          index + 1,
+          index === 0 ? null : index,
+          JSON.stringify(revision.snapshot),
+          revision.submittedAt,
+          closeId,
+        ],
+      );
+  };
+  const firstSubmittedAt = new Date(due.cutoff.getTime() - 60_000);
+  const correctedSubmittedAt = new Date(due.cutoff.getTime() + 60_000);
+  await seedSubmittedDay(priorDate, [
+    {
+      submittedAt: new Date(firstSubmittedAt.getTime() - 86_400_000),
+      snapshot: {
+        items: [primaryItem],
+        primaryWorkItemKey: 'module',
+        milestones: [],
+        baseline: null,
+        facts: {
+          qty: { module: '5' },
+          cumulative: { module: '5' },
+          people: {},
+          milestones: {},
+        },
+        cumulativeCarry: { module: { value: '5', asOf: priorDate } },
+      },
+    },
+  ]);
+  await seedSubmittedDay(due.businessDate, [
+    {
+      submittedAt: firstSubmittedAt,
+      snapshot: {
+        items: [primaryItem],
+        primaryWorkItemKey: 'module',
+        milestones: [],
+        baseline: null,
+        facts: {
+          qty: { module: '' },
+          cumulative: { module: '' },
+          people: {},
+          milestones: {},
+        },
+        cumulativeCarry: { module: { value: '5', asOf: priorDate } },
+      },
+    },
+    {
+      submittedAt: correctedSubmittedAt,
+      snapshot: {
+        items: [primaryItem],
+        primaryWorkItemKey: 'module',
+        milestones: [],
+        baseline: null,
+        facts: {
+          qty: { module: '' },
+          cumulative: { module: '' },
+          people: {},
+          milestones: {},
+        },
+        cumulativeCarry: { module: { value: '5', asOf: priorDate } },
+      },
+    },
+  ]);
+  const seededHome = await call('/api/projects/home?group=region', reader);
+  assert.equal(seededHome.status, 200);
+  const seededCard = (
+    seededHome.data as {
+      groups: {
+        projects: {
+          id: string;
+          completion: { state: string; percent?: string };
+          hints: { code: string }[];
+        }[];
+      }[];
+    }
+  ).groups
+    .flatMap((group) => group.projects)
+    .find((card) => card.id === project);
+  assert.equal(seededCard?.completion.state, 'COMPUTABLE');
+  assert.equal(seededCard?.completion.percent, '50.0');
+  assert.ok(!seededCard?.hints.some((hint) => hint.code === 'MISSING_REPORT'));
+  const escalatedIssueId = randomUUID();
+  const escalatedIssue = (
+    await owner.query<{ updatedAt: Date }>(
+      `INSERT INTO "Issue"(id,"orgId","createdAt","updatedAt","updatedBy",kind,state,summary,"projectId",category,escalate,controlled,"createdOn")
+       VALUES($1,$2,now()-interval '30 days',now(),$3,'SITE_REPORT','OPEN','TEST late escalation',$4,'safety',true,false,(now()-interval '30 days')::date)
+       RETURNING "updatedAt"`,
+      [escalatedIssueId, org, manager, project],
+    )
+  ).rows[0]!;
+  const refreshedAttention = await call('/api/attention', reader);
+  const escalationItem = (
+    refreshedAttention.data as {
+      items: { id: string; at: string }[];
+    }
+  ).items.find((item) => item.id === escalatedIssueId);
+  assert.ok(escalationItem);
+  assert.equal(
+    Date.parse(escalationItem.at),
+    escalatedIssue.updatedAt.getTime(),
+    'attention ordering time follows the current escalation event, not the old issue creation date',
+  );
+  pass(
+    'database-backed home projection keeps carried completion, original on-time submission through correction, and recent escalation time',
+  );
   for (const p of [hiddenProject, otherProject, randomUUID()]) {
     code(await call(path(p), pm), 404, 'NOT_FOUND');
     code(await call(path(p), pm, command(0)), 404, 'NOT_FOUND');

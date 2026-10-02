@@ -528,7 +528,7 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
               state: S,
               workItemKey: S,
               escalate: S,
-              createdAt: S,
+              attentionAt: S,
             },
           },
         },
