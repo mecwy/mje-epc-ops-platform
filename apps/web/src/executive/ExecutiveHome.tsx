@@ -16,6 +16,7 @@ import type { Project, ReportApi } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
 import { ProjectStatusSession } from './status-session.js';
+import { ErrorText } from '../field/ErrorText.js';
 
 type Props = {
   api: Pick<ReportApi, 'projectHome' | 'projectAttention'>;
@@ -653,7 +654,11 @@ function StatusPage({
           )}
           {session.read.error && session.read.error !== 'STALE' && (
             <div className="banner err" role="alert">
-              {t('execCommandError', { code: session.read.error })}
+              <ErrorText
+                code={session.read.error}
+                write
+                uncertain={session.lastAttemptMayBeRecorded}
+              />
             </div>
           )}
           {session.lastAttemptMayBeRecorded && (
