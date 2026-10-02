@@ -441,6 +441,7 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
             items: {
               businessDate: S,
               submittedAt: S,
+              firstSubmittedAt: S,
               primaryWorkItemKey: S,
               baseline: sub('submitted'),
               items: { layer: 'submitted', items: reportItemFields },
@@ -526,6 +527,8 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
               dueOn: S,
               state: S,
               workItemKey: S,
+              escalate: S,
+              createdAt: S,
             },
           },
         },

@@ -32,7 +32,10 @@ function fixturePool() {
         moduleQueries.push(sql);
         return { rows: [] };
       }
-      if (sql.includes('FROM "Project" p JOIN "Membership"')) {
+      if (
+        sql.includes('FROM "Project" p JOIN "Membership"') ||
+        sql.includes('FROM "Project" p\n          LEFT JOIN "Issue"')
+      ) {
         moduleQueries.push(sql);
         if (sql.includes('"DailyClose"'))
           return {

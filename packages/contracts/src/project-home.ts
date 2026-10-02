@@ -94,7 +94,10 @@ export interface ProjectOverviewDto {
     actual: string | null;
     active: boolean;
   }[];
-  peopleLast7: { businessDate: string; categories: Record<string, string> }[];
+  peopleLast7: {
+    businessDate: string;
+    categories: Record<string, string> | null;
+  }[];
   openIssues: {
     id: string;
     title: string;

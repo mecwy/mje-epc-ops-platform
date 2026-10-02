@@ -48,7 +48,7 @@ export type Forecast =
   | { state: 'AT_DESIGN' }
   | { state: 'ESTIMATE'; expectedDate: string; sampleDays: number };
 
-/** Forecast only a stable suffix of the last seven submitted observations. */
+/** Forecast from submitted observations in the seven site business-date slots ending today. */
 export function forecastCompletion(args: {
   today: string;
   primaryWorkItemKey: string | null;
@@ -65,9 +65,12 @@ export function forecastCompletion(args: {
   const remaining = design - cumulative;
   if (remaining <= 0n) return { state: 'AT_DESIGN' };
 
-  const recent = [...args.observations]
-    .sort((a, b) => a.businessDate.localeCompare(b.businessDate))
-    .slice(-7);
+  const firstDate = shiftDate(args.today, -6);
+  const recent = args.observations
+    .filter(
+      (day) => day.businessDate >= firstDate && day.businessDate <= args.today,
+    )
+    .sort((a, b) => a.businessDate.localeCompare(b.businessDate));
   // A key/unit change invalidates all observations before the latest transition.
   let start = 0;
   for (let i = 0; i < recent.length; i++)

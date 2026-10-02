@@ -105,4 +105,36 @@ describe('project home derived values', () => {
       state: 'NOT_COMPUTABLE',
     });
   });
+
+  it('ignores submitted observations outside the seven business-date window', () => {
+    expect(
+      forecastCompletion({
+        today: '2030-01-10',
+        primaryWorkItemKey: 'module',
+        unit: 'piece',
+        designQty: '20',
+        cumulative: '4',
+        observations: [
+          {
+            businessDate: '2030-01-01',
+            primaryWorkItemKey: 'module',
+            unit: 'piece',
+            qty: '100',
+          },
+          {
+            businessDate: '2030-01-09',
+            primaryWorkItemKey: 'module',
+            unit: 'piece',
+            qty: '2',
+          },
+          {
+            businessDate: '2030-01-10',
+            primaryWorkItemKey: 'module',
+            unit: 'piece',
+            qty: '2',
+          },
+        ],
+      }),
+    ).toEqual({ state: 'ESTIMATE', expectedDate: '2030-01-18', sampleDays: 2 });
+  });
 });

@@ -269,6 +269,7 @@ async function projects({ client, actor }: Opened) {
 export interface ReportHomeSnapshotDto {
   businessDate: string;
   submittedAt: string;
+  firstSubmittedAt: string;
   primaryWorkItemKey?: string | null;
   items: ReportItemDto[];
   milestones?: {
@@ -305,7 +306,10 @@ export interface ReportHomeDto {
 }
 
 /** Submitted-only batch for the project-home consumer; one bounded module query per request. */
-async function homeData({ client, actor }: Opened): Promise<ReportHomeDto> {
+async function homeData(
+  { client, actor }: Opened,
+  projectId?: string,
+): Promise<ReportHomeDto> {
   const result = await client.query<ReportHomeProjectDto>(
     `SELECT p.id,p.name,p.code,p.timezone,p.region,p."projectType",p."primaryWorkItemKey",
       ( $6::timestamptz AT TIME ZONE p.timezone )::date::text AS today,
@@ -317,10 +321,11 @@ async function homeData({ client, actor }: Opened): Promise<ReportHomeDto> {
         FROM "ReportItem" i WHERE i."orgId"=p."orgId" AND i."projectId"=p.id), '[]'::jsonb) AS items,
       COALESCE((SELECT jsonb_agg(
         (jsonb_build_object('businessDate',x.businessDate,'submittedAt',x."submittedAt",
+          'firstSubmittedAt',x."firstSubmittedAt",
           'items',x.snapshot->'items','baseline',x.snapshot->'baseline',
           'facts',jsonb_build_object('qty',COALESCE(x.snapshot->'facts'->'qty','{}'::jsonb),
             'cumulative',COALESCE(x.snapshot->'facts'->'cumulative','{}'::jsonb),
-            'cumulativeCarry',COALESCE(x.snapshot->'cumulativeBase','{}'::jsonb),
+            'cumulativeCarry',COALESCE(x.snapshot->'cumulativeCarry','{}'::jsonb),
             'people',COALESCE(x.snapshot->'facts'->'people','{}'::jsonb),
             'milestones',COALESCE(x.snapshot->'facts'->'milestones','{}'::jsonb)))
           || CASE WHEN x.snapshot ? 'primaryWorkItemKey'
@@ -328,7 +333,10 @@ async function homeData({ client, actor }: Opened): Promise<ReportHomeDto> {
           || CASE WHEN x.snapshot ? 'milestones'
             THEN jsonb_build_object('milestones',x.snapshot->'milestones') ELSE '{}'::jsonb END)
         ORDER BY x.businessDate)
-        FROM (SELECT d."businessDate"::text AS businessDate,r."submittedAt",r.snapshot
+        FROM (SELECT d."businessDate"::text AS businessDate,r."submittedAt",
+            (SELECT min(first."submittedAt") FROM "Revision" first
+              WHERE first."orgId"=d."orgId" AND first."dailyCloseId"=d.id AND first.state='SUBMITTED') AS "firstSubmittedAt",
+            r.snapshot
           FROM "DailyClose" d JOIN "Revision" r ON r."orgId"=d."orgId"
             AND r."dailyCloseId"=d.id AND r."revisionNumber"=d."currentRevisionNumber"
           WHERE d."orgId"=p."orgId" AND d."projectId"=p.id AND d."scopeKey"=$7
@@ -345,6 +353,7 @@ async function homeData({ client, actor }: Opened): Promise<ReportHomeDto> {
     FROM "Project" p JOIN "Membership" m ON m."orgId"=p."orgId"
       AND (m."projectId"=p.id OR (m."projectId" IS NULL AND m.role=ANY($4::text[])))
     WHERE p."orgId"=$1 AND m."accountId"=$2 AND m.role=ANY($5::text[])
+      AND ($8::uuid IS NULL OR p.id=$8::uuid)
       AND m."activeFrom"<=$6::timestamptz AND (m."activeUntil" IS NULL OR m."activeUntil">$6::timestamptz)
     GROUP BY p.id,p.name,p.code,p.timezone,p.region,p."projectType",p."primaryWorkItemKey"
     ORDER BY p.code`,
@@ -356,6 +365,7 @@ async function homeData({ client, actor }: Opened): Promise<ReportHomeDto> {
       [...WRITE_ROLES, ...READ_ROLES],
       actor.decidedAt,
       REPORT_SCOPE,
+      projectId ?? null,
     ],
   );
   return projected('report.home', { projects: result.rows });
@@ -714,7 +724,7 @@ export const reportReader = {
     const open = () => openReportReadContext(ctx);
     return {
       projects: async () => projects(open()),
-      homeData: async () => homeData(open()),
+      homeData: async (projectId?: string) => homeData(open(), projectId),
       days: async (projectId: string, from: string, to: string) =>
         days(open(), projectId, from, to),
       day: async (projectId: string, businessDate: string) =>

@@ -99,10 +99,10 @@ export class ProjectHomeReader {
       identity,
       async (client, actor) => {
         const report = await withReportReadContext(client, actor, (ctx) =>
-          reports.forContext(ctx).homeData(),
+          reports.forContext(ctx).homeData(projectId),
         );
         const issues = await withIssueReadContext(client, actor, (ctx) =>
-          issueReader.forContext(ctx).homeData(),
+          issueReader.forContext(ctx).homeData(projectId),
         );
         const history = await withProjectStatusReadContext(
           client,

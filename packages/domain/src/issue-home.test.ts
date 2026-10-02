@@ -5,7 +5,7 @@ import { issueReader, withIssueReadContext } from './issue-reader.js';
 import type { IssueReadContext } from './issue-reader.js';
 
 describe('issue home module exit', () => {
-  it('keeps the batch projection inside its live context and returns only escalated open issues', async () => {
+  it('keeps the batch projection inside its live context and returns open issues with escalation metadata', async () => {
     const projects = [
       {
         projectId: '11111111-1111-4111-8111-111111111111',
@@ -19,6 +19,9 @@ describe('issue home module exit', () => {
             createdOn: '2030-01-01',
             dueOn: null,
             state: 'OPEN',
+            workItemKey: 'module',
+            escalate: false,
+            createdAt: '2030-01-01T10:00:00.000Z',
           },
         ],
       },
@@ -40,7 +43,7 @@ describe('issue home module exit', () => {
     });
     await expect(view!.homeData()).rejects.toThrow('ISSUE_READ_CONTEXT_CLOSED');
     expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain('i.escalate');
+    expect(statements[0]).toContain("'escalate',i.escalate");
     expect(statements[0]).toContain('LEFT JOIN "Issue"');
   });
 });

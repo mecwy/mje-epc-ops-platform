@@ -66,13 +66,16 @@ const project = randomUUID(),
   hiddenProject = randomUUID(),
   otherProject = randomUUID(),
   emptyProject = randomUUID();
+const inactiveManagerPerson = randomUUID();
 const manager = randomUUID(),
   twin = randomUUID(),
+  inactiveManager = randomUUID(),
   executive = randomUUID(),
   other = randomUUID();
 const tenant = randomUUID(),
   object = randomUUID(),
   twinObject = randomUUID(),
+  inactiveObject = randomUUID(),
   execObject = randomUUID(),
   otherObject = randomUUID();
 const managerMembership = randomUUID(),
@@ -109,6 +112,7 @@ try {
   for (const [id, orgId] of [
     [person, org],
     [readerPerson, org],
+    [inactiveManagerPerson, org],
     [otherPerson, otherOrg],
   ])
     await owner.query(
@@ -128,6 +132,7 @@ try {
   for (const [id, orgId, personId, oid] of [
     [manager, org, person, object],
     [twin, org, person, twinObject],
+    [inactiveManager, org, inactiveManagerPerson, inactiveObject],
     [executive, org, readerPerson, execObject],
     [other, otherOrg, otherPerson, otherObject],
   ])
@@ -138,6 +143,7 @@ try {
   for (const [id, orgId, accountId, projectId, role] of [
     [managerMembership, org, manager, project, 'PROJECT_MANAGER'],
     [randomUUID(), org, twin, project, 'PROJECT_MANAGER'],
+    [randomUUID(), org, inactiveManager, project, 'PROJECT_MANAGER'],
     [executiveMembership, org, executive, project, 'EXECUTIVE_READER'],
     [randomUUID(), otherOrg, other, otherProject, 'PROJECT_MANAGER'],
     [randomUUID(), org, manager, emptyProject, 'PROJECT_MANAGER'],
@@ -146,6 +152,9 @@ try {
       'INSERT INTO "Membership"(id,"orgId","accountId","projectId",role,"activeFrom","updatedAt","updatedBy") VALUES($1,$2,$3,$4,$5,now()-interval \'1 day\',now(),$6)',
       [id, orgId, accountId, projectId, role, seed],
     );
+  await owner.query('UPDATE "LoginAccount" SET active=false WHERE id=$1', [
+    inactiveManager,
+  ]);
   const requireApi = createRequire(
     new URL('../apps/api/package.json', import.meta.url),
   );

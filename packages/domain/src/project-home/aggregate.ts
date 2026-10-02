@@ -13,7 +13,17 @@ import type { ReportHomeDto, ReportHomeProjectDto } from '../report-reader.js';
 import type { ProjectStatusHomeDto } from '../project-status/reader.js';
 import type { ProjectStatusHistoryDto } from '@mje/contracts';
 import { completion, forecastCompletion, statusAge } from './rules.js';
-import { lagSuggestions } from '../report-rules.js';
+import { lagSuggestions, shiftDate } from '../report-rules.js';
+
+function cumulativeValue(
+  snapshot: ReportHomeProjectDto['snapshots'][number],
+  key: string,
+) {
+  const value = snapshot.facts.cumulative[key];
+  return value === undefined || value === ''
+    ? (snapshot.facts.cumulativeCarry?.[key]?.value ?? null)
+    : value;
+}
 
 function reportCard(
   report: ReportHomeProjectDto,
@@ -35,11 +45,7 @@ function reportCard(
         )
       : undefined;
   const cumulative =
-    frozenKey && latest
-      ? latest.facts.cumulative[frozenKey] ||
-        latest.facts.cumulativeCarry?.[frozenKey]?.value ||
-        null
-      : null;
+    frozenKey && latest ? cumulativeValue(latest, frozenKey) : null;
   const derivedCompletion = completion(
     frozenKey,
     primary?.designQty ?? null,
@@ -89,13 +95,14 @@ function reportCard(
       !report.snapshots.some(
         (snapshot) =>
           snapshot.businessDate === due.businessDate &&
-          Date.parse(snapshot.submittedAt) <= Date.parse(due.cutoff),
+          Date.parse(snapshot.firstSubmittedAt) <= Date.parse(due.cutoff),
       ),
   );
   if (missingDates.length)
     hints.push({ code: 'MISSING_REPORT', count: missingDates.length });
-  if (issue.issues.length)
-    hints.push({ code: 'OPEN_ESCALATION', count: issue.issues.length });
+  const escalated = issue.issues.filter((item) => item.escalate);
+  if (escalated.length)
+    hints.push({ code: 'OPEN_ESCALATION', count: escalated.length });
   const lastSnapshot = report.snapshots.at(-1);
   if (lastSnapshot?.businessDate === report.today) {
     const belowBaseline = lagSuggestions(
@@ -209,51 +216,55 @@ export function aggregateProjectHome(input: {
       ? [reportCard(project, status, issue, input.managers)]
       : [];
   });
-  const filtered = cards
-    .filter(
-      (card) =>
-        input.query.status === null || card.status.value === input.query.status,
-    )
-    .filter((card) => {
-      if (!input.query.query) return true;
-      const needle = input.query.query.trim().toLocaleLowerCase();
-      return [
-        card.code,
-        card.name,
-        card.region ?? '',
-        card.projectType ?? '',
-        ...card.managers.map((manager) => manager.displayName),
-      ].some((value) => value.toLocaleLowerCase().includes(needle));
-    });
+  const searched = cards.filter((card) => {
+    if (!input.query.query) return true;
+    const needle = input.query.query.trim().toLocaleLowerCase();
+    return [
+      card.code,
+      card.name,
+      card.region ?? '',
+      card.projectType ?? '',
+      ...card.managers.map((manager) => manager.displayName),
+    ].some((value) => value.toLocaleLowerCase().includes(needle));
+  });
   const counts = emptyCounts();
-  for (const card of filtered) counts[card.status.value]++;
+  for (const card of searched) counts[card.status.value]++;
+  const filtered = searched.filter(
+    (card) =>
+      input.query.status === null || card.status.value === input.query.status,
+  );
+  const ordered = [...filtered].sort(
+    (a, b) =>
+      priority[a.status.value] - priority[b.status.value] ||
+      a.code.localeCompare(b.code),
+  );
+  const offset = (input.query.page - 1) * input.query.size;
+  const pageCards = ordered.slice(offset, offset + input.query.size);
 
   const grouped = new Map<
     string,
-    { label: string; projects: ProjectHomeCard[] }
+    { label: string; count: number; projects: ProjectHomeCard[] }
   >();
   for (const card of filtered)
     for (const group of groupValues(card, input.query.groupBy)) {
       const found = grouped.get(group.key) ?? {
         label: group.label,
+        count: 0,
         projects: [],
       };
-      found.projects.push(card);
+      found.count++;
       grouped.set(group.key, found);
     }
-  const offset = (input.query.page - 1) * input.query.size;
+  for (const card of pageCards)
+    for (const group of groupValues(card, input.query.groupBy))
+      grouped.get(group.key)?.projects.push(card);
   const groups = [...grouped.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, group]) => {
-      const ordered = [...group.projects].sort(
-        (a, b) =>
-          priority[a.status.value] - priority[b.status.value] ||
-          a.code.localeCompare(b.code),
-      );
       return {
         key,
-        count: ordered.length,
-        projects: ordered.slice(offset, offset + input.query.size),
+        count: group.count,
+        projects: group.projects,
       };
     })
     .filter((group) => group.projects.length > 0);
@@ -339,12 +350,13 @@ export function aggregateProjectAttention(input: {
   }
   for (const project of input.issues.projects)
     for (const issue of project.issues) {
+      if (!issue.escalate) continue;
       const item = make(
         project.projectId,
         'ESCALATED_ISSUE',
         issue.id,
         issue.title,
-        issue.createdOn,
+        new Date(issue.createdAt).toISOString(),
       );
       if (item) byKind.ESCALATED_ISSUE.push(item);
     }
@@ -378,10 +390,7 @@ export function aggregateProjectOverview(input: {
       : undefined;
     if (typeof key !== 'string')
       return { businessDate: snapshot.businessDate, value: null };
-    const value =
-      snapshot.facts.cumulative[key] ??
-      snapshot.facts.cumulativeCarry?.[key]?.value ??
-      null;
+    const value = cumulativeValue(snapshot, key);
     return {
       businessDate: snapshot.businessDate,
       value: value === '' ? null : value,
@@ -394,10 +403,7 @@ export function aggregateProjectOverview(input: {
           primaryWorkItemKey: frozenKey,
           unit: primary.unit,
           designQty: primary.designQty,
-          cumulative:
-            latest?.facts.cumulative[frozenKey] ??
-            latest?.facts.cumulativeCarry?.[frozenKey]?.value ??
-            null,
+          cumulative: latest ? cumulativeValue(latest, frozenKey) : null,
           observations: input.report.snapshots.map((snapshot) => {
             const key = Object.hasOwn(snapshot, 'primaryWorkItemKey')
               ? (snapshot.primaryWorkItemKey ?? null)
@@ -418,9 +424,7 @@ export function aggregateProjectOverview(input: {
     typeof frozenKey === 'string' ? frozenKey : frozenKey,
     primary?.designQty ?? null,
     typeof frozenKey === 'string' && latest
-      ? (latest.facts.cumulative[frozenKey] ??
-          latest.facts.cumulativeCarry?.[frozenKey]?.value ??
-          null)
+      ? cumulativeValue(latest, frozenKey)
       : null,
   );
   const milestones = (latest?.milestones ?? []).flatMap((milestone) => {
@@ -454,10 +458,22 @@ export function aggregateProjectOverview(input: {
         : null,
     workItems: input.report.items.filter((item) => item.kind === 'work'),
     milestones,
-    peopleLast7: input.report.snapshots.slice(-7).map((snapshot) => ({
-      businessDate: snapshot.businessDate,
-      categories: snapshot.facts.people,
-    })),
-    openIssues: input.issues,
+    peopleLast7: Array.from({ length: 7 }, (_, index) => {
+      const businessDate = shiftDate(input.report.today, index - 6);
+      const snapshot = input.report.snapshots.find(
+        (candidate) => candidate.businessDate === businessDate,
+      );
+      return { businessDate, categories: snapshot?.facts.people ?? null };
+    }),
+    openIssues: input.issues.map(
+      ({ id, title, category, createdOn, dueOn, state }) => ({
+        id,
+        title,
+        category,
+        createdOn,
+        dueOn,
+        state,
+      }),
+    ),
   };
 }

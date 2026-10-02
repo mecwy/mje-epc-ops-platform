@@ -69,6 +69,128 @@ describe('project home aggregation', () => {
       aggregateProjectHome(excluded).groups[0]?.projects[0]?.hints,
     ).not.toContainEqual({ code: 'BELOW_BASELINE', count: 1 });
   });
+
+  it('uses carried cumulative values and the first submission time for corrected reports', () => {
+    const data = {
+      report: {
+        projects: [
+          report({
+            snapshots: [
+              {
+                businessDate: '2030-01-03',
+                submittedAt: '2030-01-10T12:00:00.000Z',
+                firstSubmittedAt: '2030-01-03T12:00:00.000Z',
+                primaryWorkItemKey: 'module',
+                items: [
+                  {
+                    kind: 'work',
+                    key: 'module',
+                    label: 'TEST module',
+                    unit: 'm',
+                    designQty: '10',
+                    openingCumulative: '0',
+                    sortOrder: 1,
+                    active: true,
+                  },
+                ],
+                facts: {
+                  qty: {},
+                  cumulative: { module: '' },
+                  cumulativeCarry: {
+                    module: { value: '5', asOf: '2030-01-02' },
+                  },
+                  people: {},
+                  milestones: {},
+                },
+              },
+            ],
+          }),
+        ],
+      },
+      statuses: {
+        projects: [
+          {
+            projectId: ID,
+            latest: null,
+            recent: [],
+            previousStatus: null,
+            expectationDueDates: [
+              {
+                businessDate: '2030-01-03',
+                cutoff: '2030-01-03T18:00:00.000Z',
+              },
+            ],
+          },
+        ],
+      },
+      issues: {
+        projects: [
+          { projectId: ID, issues: [], lagOpenKeys: [], lagDismissedKeys: [] },
+        ],
+      },
+      managers: [],
+      query: { groupBy: 'region', status: null, query: '', page: 1, size: 50 },
+    } as never;
+    const card = aggregateProjectHome(data).groups[0]?.projects[0];
+    expect(card?.completion).toEqual({
+      state: 'COMPUTABLE',
+      percent: '50.0',
+      aboveDesign: false,
+    });
+    expect(card?.hints).not.toContainEqual({
+      code: 'MISSING_REPORT',
+      count: 1,
+    });
+  });
+
+  it('applies status counts before status filtering and paginates projects globally', () => {
+    const projects = Array.from({ length: 120 }, (_, index) => {
+      const id = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+      return report({
+        id,
+        code: `TEST-${String(index).padStart(3, '0')}`,
+        region: `R${index % 3}`,
+      });
+    });
+    const statuses = projects.map((project) => ({
+      projectId: project.id,
+      latest: null,
+      recent: [],
+      previousStatus: null,
+      expectationDueDates: [],
+    }));
+    const issues = projects.map((project) => ({
+      projectId: project.id,
+      issues: [],
+      lagOpenKeys: [],
+      lagDismissedKeys: [],
+    }));
+    const base = {
+      report: { projects },
+      statuses: { projects: statuses },
+      issues: { projects: issues },
+      managers: [],
+    };
+    const page = (page: number, status: 'NORMAL' | null = null) =>
+      aggregateProjectHome({
+        ...base,
+        query: { groupBy: 'region', status, query: '', page, size: 50 },
+      } as never);
+    const first = page(1);
+    const second = page(2);
+    const third = page(3);
+    expect(
+      first.groups.reduce((n, group) => n + group.projects.length, 0),
+    ).toBe(50);
+    expect(
+      second.groups.reduce((n, group) => n + group.projects.length, 0),
+    ).toBe(50);
+    expect(
+      third.groups.reduce((n, group) => n + group.projects.length, 0),
+    ).toBe(20);
+    expect(first.counts.UNDECLARED).toBe(120);
+    expect(page(1, 'NORMAL').total).toBe(0);
+  });
 });
 
 describe('project overview uses only frozen snapshot identity', () => {

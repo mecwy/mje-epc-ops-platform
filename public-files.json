@@ -220,6 +220,7 @@
   "packages/domain/prisma/migrations/202610080002_project_status/migration.sql",
   "packages/domain/prisma/migrations/202610090001_project_master/migration.sql",
   "packages/domain/prisma/migrations/202610100001_project_manager_projection/migration.sql",
+  "packages/domain/prisma/migrations/202610110001_project_manager_account_active/migration.sql",
   "packages/domain/prisma/migrations/migration_lock.toml",
   "packages/domain/prisma/schema.prisma",
   "packages/domain/src/alpha-store.ts",

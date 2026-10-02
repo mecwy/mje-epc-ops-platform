@@ -42,6 +42,8 @@ export interface IssueHomeItemDto {
   dueOn: string | null;
   state: string;
   workItemKey: string | null;
+  escalate: boolean;
+  createdAt: string;
 }
 export interface IssueHomeProjectDto {
   projectId: string;
@@ -61,7 +63,7 @@ export function observeIssueHomeProjection(next: typeof issueHomeObserver) {
 export const issueReader = {
   forContext(ctx: IssueReadContext) {
     return {
-      async homeData(): Promise<IssueHomeDto> {
+      async homeData(projectId?: string): Promise<IssueHomeDto> {
         const state =
           typeof ctx === 'object' && ctx !== null
             ? issueReadContexts.get(ctx)
@@ -79,15 +81,18 @@ export const issueReader = {
                 AND d."workItemKey" IS NOT NULL), '[]'::jsonb) AS "lagDismissedKeys",
             COALESCE(jsonb_agg(jsonb_build_object(
             'id',i.id,'title',i.summary,'category',COALESCE(i.category,''),
-            'createdOn',i."createdOn"::text,'dueOn',i."dueOn"::text,'state',i.state::text,
-            'workItemKey',i."workItemKey")
+            'createdOn',i."createdOn"::text,'createdAt',i."createdAt",
+            'dueOn',i."dueOn"::text,'state',i.state::text,
+            'workItemKey',i."workItemKey",'escalate',i.escalate)
             ORDER BY i."createdOn",i.seq) FILTER (WHERE i.id IS NOT NULL),'[]'::jsonb) AS issues
-          FROM "Project" p JOIN "Membership" m ON m."orgId"=p."orgId"
-            AND (m."projectId"=p.id OR (m."projectId" IS NULL AND m.role=ANY($3::text[])))
+          FROM "Project" p
           LEFT JOIN "Issue" i ON i."orgId"=p."orgId" AND i."projectId"=p.id
-            AND i.kind=$4 AND i.escalate AND i.state::text <> ALL($5::text[])
-          WHERE p."orgId"=$1 AND m."accountId"=$2 AND m.role=ANY($6::text[])
-            AND m."activeFrom"<=$7::timestamptz AND (m."activeUntil" IS NULL OR m."activeUntil">$7::timestamptz)
+            AND i.kind=$4 AND i.state::text <> ALL($5::text[])
+          WHERE p."orgId"=$1 AND ($8::uuid IS NULL OR p.id=$8::uuid)
+            AND EXISTS(SELECT 1 FROM "Membership" m WHERE m."orgId"=p."orgId"
+              AND (m."projectId"=p.id OR (m."projectId" IS NULL AND m.role=ANY($3::text[])))
+              AND m."accountId"=$2 AND m.role=ANY($6::text[])
+              AND m."activeFrom"<=$7::timestamptz AND (m."activeUntil" IS NULL OR m."activeUntil">$7::timestamptz))
           GROUP BY p.id`,
           [
             actor.orgId,
@@ -97,6 +102,7 @@ export const issueReader = {
             CLOSED_STATES,
             [...WRITE_ROLES, ...READ_ROLES],
             actor.decidedAt,
+            projectId ?? null,
           ],
         );
         try {
