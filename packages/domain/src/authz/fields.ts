@@ -53,6 +53,7 @@ export type Layer =
   | 'contract-amount'
   | 'contract-original'
   | 'contract-internal'
+  | 'contract-terms'
   | 'structure'
   | 'draft'
   | 'submitted'
@@ -341,6 +342,13 @@ const reportItemFields = {
   active: S,
 };
 
+const SOURCE: FieldTable<import('@mje/contracts').ContractSourceDto> = {
+  sourceDocumentId: { layer: 'contract-original' },
+  location: { layer: 'contract-original' },
+  filename: { layer: 'contract-original' },
+  sha256: { layer: 'contract-original' },
+};
+const SOURCE_NODE = { layer: 'contract-original' as const, fields: SOURCE };
 const CONTRACT_SHARE: FieldTable<import('@mje/contracts').ContractShareDto> = {
   scopeId: S,
   projectId: S,
@@ -370,6 +378,7 @@ const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
   counterpartyRaw: { layer: 'public-text' },
   selfPartyRaw: { layer: 'public-text' },
   informationOwnerPersonId: S,
+  informationOwnerDisplayName: S,
   registeredAt: S,
   signedOn: { layer: 'structure', fields: { state: S, value: S } },
   effectiveOn: { layer: 'structure', fields: { state: S, value: S } },
@@ -388,14 +397,16 @@ const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
         layer: 'structure',
         fields: {
           visibility: S,
+          restriction: S,
           state: { layer: 'contract-amount' },
           value: { layer: 'contract-amount' },
           currency: { layer: 'contract-amount' },
+          taxBasis: { layer: 'contract-amount' },
         },
       },
       pricing: {
         layer: 'structure',
-        fields: { visibility: S, type: { layer: 'contract-internal' } },
+        fields: { visibility: S, type: { layer: 'contract-terms' } },
       },
       internal: {
         layer: 'structure',
@@ -406,8 +417,17 @@ const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
           derivation: { layer: 'contract-internal' },
         },
       },
+      evidence: {
+        layer: 'structure',
+        fields: {
+          visibility: S,
+          source: SOURCE_NODE,
+          removalSource: SOURCE_NODE,
+        },
+      },
       allocation: { layer: 'structure', fields: { state: S, remaining: S } },
       sharedLineAmount: { layer: 'contract-amount' },
+      canMaintainShares: S,
       shares: {
         layer: 'structure',
         items: CONTRACT_SHARE,
@@ -418,9 +438,11 @@ const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
     layer: 'structure',
     fields: {
       visibility: S,
+      restriction: S,
       state: { layer: 'contract-amount' },
       value: { layer: 'contract-amount' },
       currency: { layer: 'contract-amount' },
+      taxBasis: { layer: 'contract-amount' },
     },
   },
   internal: {
@@ -431,11 +453,21 @@ const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
     layer: 'structure',
     fields: {
       visibility: S,
+      headLocs: {
+        layer: 'contract-original',
+        fields: {
+          parties: SOURCE_NODE,
+          dates: SOURCE_NODE,
+          total: SOURCE_NODE,
+        },
+      },
       sources: {
         layer: 'contract-original',
         items: {
           sourceDocumentId: { layer: 'contract-original' },
           location: { layer: 'contract-original' },
+          filename: { layer: 'contract-original' },
+          sha256: { layer: 'contract-original' },
         },
       },
     },
@@ -505,7 +537,7 @@ const EDITOR_REVISION: FieldTable<ContractRevisionInput> = {
       quantity: { layer: 'structure', fields: { state: S, value: S } },
       unitRaw: S,
       unit: S,
-      pricingType: { layer: 'contract-internal' },
+      pricingType: { layer: 'contract-terms' },
       amount: {
         layer: 'contract-amount',
         fields: {

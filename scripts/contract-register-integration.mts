@@ -319,7 +319,10 @@ try {
   const view = await grant('contract.view');
   assert.equal((await call()).status, 200);
   assert.equal(((await call()).body as ContractRegisterItemDto[]).length, 1);
-  assert.deepEqual((await detail()).latest.total, { visibility: 'restricted' });
+  assert.deepEqual((await detail()).latest.total, {
+    visibility: 'restricted',
+    restriction: 'CAPABILITY',
+  });
   assert.deepEqual((await detail()).latest.evidence, {
     visibility: 'restricted',
   });
@@ -333,7 +336,10 @@ try {
   await grant('contract.internal');
   await grant('contract.original');
   let row = await detail();
-  assert.deepEqual(row.latest.total, { visibility: 'restricted' });
+  assert.deepEqual(row.latest.total, {
+    visibility: 'restricted',
+    restriction: 'CAPABILITY',
+  });
   assert.deepEqual(row.latest.internal, { visibility: 'restricted' });
   assert.equal(row.latest.evidence.sources?.[0]?.sourceDocumentId, document);
   const amount = await grant('contract.amount');
@@ -361,7 +367,10 @@ try {
   );
   observeContractProjections(null);
   await revoke(amount);
-  assert.deepEqual((await detail()).latest.total, { visibility: 'restricted' });
+  assert.deepEqual((await detail()).latest.total, {
+    visibility: 'restricted',
+    restriction: 'CAPABILITY',
+  });
   assert.deepEqual(
     (
       (await call('/' + income + '/history')).body as ContractHistoryDto
@@ -544,6 +553,43 @@ try {
     'contract.attention',
   ])
     await grant(capability);
+  const submittedDay = randomUUID(),
+    submittedRevision = randomUUID(),
+    designItem = randomUUID();
+  await owner.query(
+    'INSERT INTO "DailyClose"(id,"orgId","projectId","businessDate","siteTimezone","scopeKey","expectedReason",state,"currentRevisionNumber","updatedAt","updatedBy") VALUES($1,$2,$3,\'2030-01-15\',\'UTC\',\'TEST\',\'TEST\',\'SUBMITTED\',1,now(),$4)',
+    [submittedDay, org, project, account],
+  );
+  await owner.query(
+    'INSERT INTO "Revision"(id,"orgId","dailyCloseId","revisionNumber",state,reason,snapshot,"submittedAt","updatedAt","updatedBy") VALUES($1,$2,$3,1,\'SUBMITTED\',\'TEST frozen report\',$4,now(),now(),$5)',
+    [
+      submittedRevision,
+      org,
+      submittedDay,
+      {
+        facts: { headcount: 'TEST declared only' },
+        items: [{ designQty: '0.300000', actualQuantity: 'TEST unknown' }],
+        contractReferences: [],
+      },
+      account,
+    ],
+  );
+  await owner.query(
+    'INSERT INTO "ReportItem"(id,"orgId","projectId",kind,key,label,"designQty","updatedBy") VALUES($1,$2,$3,\'work\',\'TEST_existing_item\',\'TEST item\',\'0.300000\',$4)',
+    [designItem, org, project, account],
+  );
+  const reportBefore = (
+    await owner.query(
+      'SELECT snapshot,"updatedAt",version FROM "Revision" WHERE id=$1',
+      [submittedRevision],
+    )
+  ).rows[0];
+  const designBefore = (
+    await owner.query(
+      'SELECT "designQty","openingCumulative","updatedAt" FROM "ReportItem" WHERE id=$1',
+      [designItem],
+    )
+  ).rows[0];
   const newContract = randomUUID(),
     lineA = randomUUID(),
     lineB = randomUUID(),
@@ -721,6 +767,8 @@ try {
   const projected = (await call('/' + newContract, twinBearer))
     .body as ContractRegisterItemDto;
   assert.equal(projected.latest.total.visibility, 'restricted');
+  assert.equal(projected.latest.total.restriction, 'PROJECT_SCOPE');
+  assert.equal(projected.latest.lines[0]!.canMaintainShares, false);
   assert.equal(projected.latest.lines.length, 1);
   assert.equal(projected.latest.lines[0]!.amount.visibility, 'visible');
   assert.equal(projected.latest.lines[0]!.sharedLineAmount, true);
@@ -946,6 +994,27 @@ try {
   );
   pass(
     'version-pinned share history, account-isolated lookup authorization and same-Person attention acknowledgement never count as independent viewing',
+  );
+  assert.deepEqual(
+    (
+      await owner.query(
+        'SELECT snapshot,"updatedAt",version FROM "Revision" WHERE id=$1',
+        [submittedRevision],
+      )
+    ).rows[0],
+    reportBefore,
+  );
+  assert.deepEqual(
+    (
+      await owner.query(
+        'SELECT "designQty","openingCumulative","updatedAt" FROM "ReportItem" WHERE id=$1',
+        [designItem],
+      )
+    ).rows[0],
+    designBefore,
+  );
+  pass(
+    'contract registration, correction and share reconciliation never alter a previously submitted report snapshot or existing report design quantity',
   );
   const revokeWrite = await grant('contract.maintain');
   await revoke(revokeWrite);

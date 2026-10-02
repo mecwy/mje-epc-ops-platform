@@ -38,6 +38,7 @@ import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
+import { ContractsWorkspace } from './contracts/ContractsWorkspace.js';
 import {
   ResumeKeeper,
   renewal,
@@ -421,7 +422,9 @@ function Workspace({
       className="tabs"
       aria-label={t('mainNav')}
       // The column count applies to the phone's bottom bar only; wider screens use a sidebar.
-      style={task ? undefined : ({ '--tabs': views.length } as CSSProperties)}
+      style={
+        task ? undefined : ({ '--tabs': views.length + 1 } as CSSProperties)
+      }
     >
       {views.map((v) => {
         const NavIcon = navIcon[v];
@@ -442,6 +445,17 @@ function Workspace({
           </button>
         );
       })}
+      <button
+        type="button"
+        onClick={() =>
+          void h.flush().then((outcome) => {
+            if (outcome === 'ok') window.location.assign('/contracts');
+          })
+        }
+      >
+        <Icon.report />
+        <span>{t('ctTitle')}</span>
+      </button>
     </nav>
   );
 
@@ -827,7 +841,7 @@ function Root() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => {
-    if (!session) return;
+    if (!session || window.location.pathname === '/contracts') return;
     reportApi(session.token)
       .projects()
       .then((r) => setProjects(r.projects))
@@ -859,19 +873,35 @@ function Root() {
         </button>
       </main>
     );
+  if (session && window.location.pathname === '/contracts')
+    return (
+      <ContractsWorkspace
+        token={session.token}
+        signOut={session.signOut}
+        renew={session.renew}
+        expired={state.expired}
+      />
+    );
   if (error || failed)
     return (
       <main className="page">
         <div className="banner err">
           {failed === 'FORBIDDEN' ? t('noProject') : t('saveFail')}
         </div>
+        {session && <a href="/contracts">{t('ctTitle')}</a>}
       </main>
     );
   if (!session || !projects)
     return <main className="page muted">{t('loading')}</main>;
   const project =
     projects.find((p) => p.id === resume.state?.projectId) ?? projects[0];
-  if (!project) return <main className="page">{t('noProject')}</main>;
+  if (!project)
+    return (
+      <main className="page">
+        <p>{t('noProject')}</p>
+        <a href="/contracts">{t('ctTitle')}</a>
+      </main>
+    );
   return (
     <Workspace
       session={session}

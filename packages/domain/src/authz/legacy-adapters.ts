@@ -168,6 +168,12 @@ export const KERNEL_USES: readonly {
 }[] = [
   { file: D + 'contract-register/reader.ts', table: 'Project', op: 'read' },
   { file: D + 'contract-register/reader.ts', table: 'Person', op: 'read' },
+  { file: D + 'contract-register/data.ts', table: 'Person', op: 'read' },
+  {
+    file: D + 'contract-register/data.ts',
+    table: 'SourceDocument',
+    op: 'read',
+  },
   { file: D + 'contract-register/reader.ts', table: 'Company', op: 'read' },
   {
     file: D + 'contract-register/reader.ts',

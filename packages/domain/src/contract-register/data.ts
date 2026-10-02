@@ -32,6 +32,13 @@ export interface Snapshot {
   registeredByPersonId: string;
   registeredAt: string;
   correctionReason: string | null;
+  informationOwnerDisplayName: string | null;
+  sourceLabels: {
+    sourceDocumentId: string;
+    location: string;
+    filename: string;
+    sha256: string;
+  }[];
   revision: ContractRevisionInput;
 }
 interface HeaderRow extends Omit<
@@ -41,6 +48,7 @@ interface HeaderRow extends Omit<
   n: number;
   registeredByPersonId: string;
   registeredAt: Date;
+  ownerName: string | null;
   correctionReason: string | null;
   signedOnState: ContractRevisionInput['signedOn']['state'];
   signedOn: string | null;
@@ -86,14 +94,14 @@ export async function snapshot(
 ): Promise<Snapshot | null> {
   const r = (
     await c.query<HeaderRow>(
-      `SELECT *,"totalAmount"::text,"signedOn"::text,"effectiveOn"::text FROM "ContractRevision" WHERE "orgId"=$1 AND "contractId"=$2 AND ($3::int IS NULL OR n=$3) ORDER BY n DESC LIMIT 1`,
+      `SELECT r.*,r."totalAmount"::text,r."signedOn"::text,r."effectiveOn"::text,p."displayName" AS "ownerName" FROM "ContractRevision" r LEFT JOIN "Person" p ON p."orgId"=r."orgId" AND p.id=r."informationOwnerPersonId" WHERE r."orgId"=$1 AND r."contractId"=$2 AND ($3::int IS NULL OR r.n=$3) ORDER BY r.n DESC LIMIT 1`,
       [orgId, id, n ?? null],
     )
   ).rows[0];
   if (!r) return null;
   const sources = (
-    await c.query<ContractLocation>(
-      'SELECT "sourceDocumentId",location FROM "ContractRevisionSource" WHERE "orgId"=$1 AND "contractId"=$2 AND n=$3 ORDER BY "sourceDocumentId",location',
+    await c.query<ContractLocation & { filename: string; sha256: string }>(
+      'SELECT r."sourceDocumentId",r.location,d.filename,d.sha256 FROM "ContractRevisionSource" r JOIN "SourceDocument" d ON d."orgId"=r."orgId" AND d.id=r."sourceDocumentId" WHERE r."orgId"=$1 AND r."contractId"=$2 AND r.n=$3 ORDER BY r."sourceDocumentId",r.location',
       [orgId, id, r.n],
     )
   ).rows;
@@ -102,6 +110,8 @@ export async function snapshot(
     registeredByPersonId: r.registeredByPersonId,
     registeredAt: r.registeredAt.toISOString(),
     correctionReason: r.correctionReason,
+    informationOwnerDisplayName: r.ownerName,
+    sourceLabels: sources,
     revision: {
       name: r.name,
       originalNumber: r.originalNumber,
@@ -116,7 +126,10 @@ export async function snapshot(
       total: { state: r.totalState, value: r.totalAmount },
       currency: r.currency,
       taxBasis: r.taxBasis,
-      sources,
+      sources: sources.map((s) => ({
+        sourceDocumentId: s.sourceDocumentId,
+        location: s.location,
+      })),
       headLocs: {
         parties: location(r.partiesSourceId, r.partiesLocation),
         dates: location(r.datesSourceId, r.datesLocation),

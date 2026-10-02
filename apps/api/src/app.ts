@@ -211,7 +211,10 @@ export interface AlphaRuntime {
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
-export async function createApp(alpha?: AlphaRuntime) {
+export async function createApp(
+  alpha?: AlphaRuntime,
+  lifecycle: { installSignalHandlers?: boolean } = {},
+) {
   @Controller('api')
   class ConfigurationController {
     @Get('auth-config') config() {
@@ -356,6 +359,6 @@ export async function createApp(alpha?: AlphaRuntime) {
       }),
     );
   app.useGlobalFilters(new SafeErrorFilter());
-  app.enableShutdownHooks();
+  if (lifecycle.installSignalHandlers !== false) app.enableShutdownHooks();
   return app;
 }

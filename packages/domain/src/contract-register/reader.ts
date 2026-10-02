@@ -62,6 +62,20 @@ function revision(
   const r = s.revision;
   const amount = allowsHeader(g, 'contract.amount', row.direction);
   const orgView = allowsHeader(g, 'contract.view', row.direction);
+  const source = (loc: typeof r.headLocs.parties) =>
+    loc
+      ? {
+          ...loc,
+          filename:
+            s.sourceLabels.find(
+              (d) => d.sourceDocumentId === loc.sourceDocumentId,
+            )?.filename ?? '',
+          sha256:
+            s.sourceLabels.find(
+              (d) => d.sourceDocumentId === loc.sourceDocumentId,
+            )?.sha256 ?? '',
+        }
+      : null;
   const lines: ContractLineDto[] = r.lines
     .filter(
       (l) =>
@@ -77,7 +91,11 @@ function revision(
       const shares = all.filter((p) => p.pinnedLine.id === l.id);
       const active = shares.filter((p) => !p.retired);
       const lineAllows = (
-        cap: 'contract.amount' | 'contract.terms' | 'contract.internal',
+        cap:
+          | 'contract.amount'
+          | 'contract.terms'
+          | 'contract.internal'
+          | 'contract.original',
       ) =>
         allowsHeader(g, cap, row.direction) ||
         active.some(
@@ -115,6 +133,7 @@ function revision(
               state: l.amount.state,
               value: l.amount.value,
               currency: r.currency,
+              taxBasis: r.taxBasis,
             }
           : { visibility: 'restricted' },
         pricing: lineAllows('contract.terms')
@@ -128,8 +147,22 @@ function revision(
               derivation: l.derivation,
             }
           : { visibility: 'restricted' },
+        evidence: lineAllows('contract.original')
+          ? {
+              visibility: 'visible',
+              source: source(l.source),
+              removalSource: source(l.removalSource),
+            }
+          : { visibility: 'restricted' },
         allocation,
         sharedLineAmount: canAmount && active.length > 1,
+        canMaintainShares:
+          maintainsOrganization(g, row.direction) ||
+          maintainsProjects(
+            g,
+            row.direction,
+            active.map((p) => p.projectId),
+          ),
         shares: shares
           .filter(
             (p) =>
@@ -147,6 +180,7 @@ function revision(
     counterpartyRaw: r.counterpartyRaw,
     selfPartyRaw: r.selfPartyRaw,
     informationOwnerPersonId: r.informationOwnerPersonId,
+    informationOwnerDisplayName: s.informationOwnerDisplayName,
     registeredAt: s.registeredAt,
     signedOn: { ...r.signedOn },
     effectiveOn: { ...r.effectiveOn },
@@ -158,14 +192,35 @@ function revision(
           state: r.total.state,
           value: r.total.value,
           currency: r.currency,
+          taxBasis: r.taxBasis,
         }
-      : { visibility: 'restricted' },
+      : {
+          visibility: 'restricted',
+          restriction:
+            !orgView &&
+            all.some(
+              (p) =>
+                !p.retired &&
+                allowsProject(g, 'contract.view', row.direction, p.projectId) &&
+                allowsProject(g, 'contract.amount', row.direction, p.projectId),
+            )
+              ? 'PROJECT_SCOPE'
+              : 'CAPABILITY',
+        },
     internal:
       amount && allowsHeader(g, 'contract.internal', row.direction)
         ? { visibility: 'visible', correctionReason: s.correctionReason }
         : { visibility: 'restricted' },
     evidence: allowsHeader(g, 'contract.original', row.direction)
-      ? { visibility: 'visible', sources: r.sources.map((x) => ({ ...x })) }
+      ? {
+          visibility: 'visible',
+          sources: s.sourceLabels.map((x) => ({ ...x })),
+          headLocs: {
+            parties: source(r.headLocs.parties),
+            dates: source(r.headLocs.dates),
+            total: source(r.headLocs.total),
+          },
+        }
       : { visibility: 'restricted' },
   };
 }

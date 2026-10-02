@@ -24,5 +24,6 @@ export type {
   ContractHistoryDto,
   ContractLineDto,
   ContractShareDto,
+  ContractSourceDto,
 } from './contract-register.js';
 export * from './contract-commands.js';

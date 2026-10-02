@@ -15,6 +15,7 @@
     "scripts/cloud-bootstrap.mjs",
     "scripts/cloud-migrate.mjs",
     "scripts/dev-deploy.mts",
+    "scripts/dev-contract-server.mts",
     "scripts/dev-deploy.test.mts",
     "scripts/entra-mapping.mjs",
     "scripts/publication-policy.mjs",

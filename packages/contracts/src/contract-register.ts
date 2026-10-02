@@ -4,9 +4,17 @@ export type ContractValueState =
   'VALUE' | 'BLANK' | 'UNKNOWN' | 'NA' | 'NOT_STATED';
 export interface ContractAmountDto {
   visibility: 'visible' | 'restricted';
+  restriction?: 'PROJECT_SCOPE' | 'CAPABILITY';
   state?: ContractValueState;
   value?: string | null;
   currency?: string | null;
+  taxBasis?: 'INCLUSIVE' | 'EXCLUSIVE' | 'UNKNOWN';
+}
+export interface ContractSourceDto {
+  sourceDocumentId: string;
+  location: string;
+  filename: string;
+  sha256: string;
 }
 export interface ContractRevisionDto {
   n: number;
@@ -15,6 +23,7 @@ export interface ContractRevisionDto {
   counterpartyRaw: string | null;
   selfPartyRaw: string | null;
   informationOwnerPersonId: string | null;
+  informationOwnerDisplayName: string | null;
   registeredAt: string;
   signedOn: { state: 'VALUE' | 'UNKNOWN' | 'NOT_STATED'; value: string | null };
   effectiveOn: {
@@ -30,7 +39,12 @@ export interface ContractRevisionDto {
   };
   evidence: {
     visibility: 'visible' | 'restricted';
-    sources?: { sourceDocumentId: string; location: string }[];
+    sources?: ContractSourceDto[];
+    headLocs?: {
+      parties: ContractSourceDto | null;
+      dates: ContractSourceDto | null;
+      total: ContractSourceDto | null;
+    };
   };
 }
 export interface ContractLineDto {
@@ -49,6 +63,11 @@ export interface ContractLineDto {
     excludes?: string;
     derivation?: string;
   };
+  evidence: {
+    visibility: 'visible' | 'restricted';
+    source?: ContractSourceDto | null;
+    removalSource?: ContractSourceDto | null;
+  };
   shares: ContractShareDto[];
   allocation: {
     state:
@@ -61,6 +80,7 @@ export interface ContractLineDto {
     remaining: string | null;
   };
   sharedLineAmount: boolean;
+  canMaintainShares: boolean;
 }
 export interface ContractShareDto {
   scopeId: string;

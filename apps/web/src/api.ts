@@ -39,6 +39,15 @@ import type {
   ForemanDayDto,
   PmProxyCheckInCommand,
   RosterDto,
+  ContractRegisterItemDto,
+  ContractHistoryDto,
+  ContractEditorDto,
+  ContractEditorLookupsDto,
+  ContractCommandResultDto,
+  CreateContractCommand,
+  CorrectContractCommand,
+  SetContractSharesCommand,
+  ReadContractAttentionCommand,
 } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
@@ -250,6 +259,8 @@ async function request<T>(
   command?: Command,
   onRetry?: () => void,
 ): Promise<T> {
+  const body = command ? JSON.stringify(command) : undefined;
+  const mutationId = command?.clientMutationId;
   for (let attempt = 0; ; attempt++) {
     let response: Response;
     try {
@@ -261,11 +272,11 @@ async function request<T>(
           ...(command
             ? {
                 'Content-Type': 'application/json',
-                'Idempotency-Key': command.clientMutationId,
+                'Idempotency-Key': mutationId!,
               }
             : {}),
         },
-        ...(command ? { body: JSON.stringify(command) } : {}),
+        ...(body !== undefined ? { body } : {}),
       });
     } catch (error) {
       if (attempt >= 3) throw new ApiError('NETWORK', 0);
@@ -476,3 +487,31 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
   };
 }
 export type ReportApi = ReturnType<typeof reportApi>;
+
+/** All commercial reads are already projected by the authenticated server. */
+export function contractApi(token: () => Promise<string>) {
+  const get = async <T>(path: string) =>
+    request<T>('/api/contracts' + path, await token());
+  const post = async <T>(path: string, body: Command) =>
+    request<T>('/api/contracts' + path, await token(), body);
+  return {
+    list: () => get<ContractRegisterItemDto[]>(''),
+    lookups: () => get<ContractEditorLookupsDto>('/lookups'),
+    history: (id: string) => get<ContractHistoryDto>('/' + id + '/history'),
+    editor: (id: string) => get<ContractEditorDto>('/' + id + '/editor'),
+    create: (body: CreateContractCommand) =>
+      post<ContractCommandResultDto>('', body),
+    correct: (body: CorrectContractCommand) =>
+      post<ContractCommandResultDto>(
+        '/' + body.contractId + '/corrections',
+        body,
+      ),
+    shares: (body: SetContractSharesCommand) =>
+      post<ContractCommandResultDto>('/' + body.contractId + '/shares', body),
+    read: (body: ReadContractAttentionCommand) =>
+      post<ContractCommandResultDto>(
+        '/' + body.contractId + '/attention/read',
+        body,
+      ),
+  };
+}

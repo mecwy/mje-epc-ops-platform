@@ -1645,3 +1645,214 @@ ul.plainlist:not(.card) {
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
+
+/* DG05: contract registration, projected reads and retained correction drafts. */
+.ct-workspace {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px;
+}
+.ct-header,
+.ct-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ct-header {
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.ct-header h1 {
+  margin: 0;
+}
+.ct-actions {
+  margin: 16px 0;
+}
+.ct-workspace button,
+.ct-workspace select,
+.ct-workspace input,
+.ct-workspace textarea {
+  min-height: 44px;
+  border: 1px solid var(--field);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: var(--surface);
+}
+.ct-workspace button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.ct-workspace button:disabled {
+  opacity: 0.55;
+}
+.ct-workspace a {
+  color: var(--accent);
+  padding: 12px;
+}
+.ct-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 24px;
+}
+.ct-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.ct-list button {
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.ct-list button[aria-current] {
+  border: 2px solid var(--accent);
+  background: var(--accent-soft);
+}
+.ct-detail,
+.ct-revision,
+.ct-form {
+  min-width: 0;
+}
+.ct-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.ct-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+.ct-field input,
+.ct-field textarea,
+.ct-field select {
+  width: 100%;
+  min-width: 0;
+}
+.ct-field input[type='checkbox'] {
+  width: 26px;
+  min-height: 26px;
+}
+.ct-field textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+.ct-pair {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.ct-pair select,
+.ct-pair input {
+  flex: 1;
+  width: 50%;
+}
+.ct-line,
+.ct-location,
+.ct-share,
+.ct-merge fieldset {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 18px;
+  margin: 16px 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ct-line legend,
+.ct-location legend {
+  font-weight: 600;
+}
+.ct-share {
+  background: var(--ground);
+  margin: 10px 0;
+}
+.ct-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+}
+.ct-facts p {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.ct-steps {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ct-steps li[aria-current] button {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.ct-warning {
+  color: var(--warn);
+}
+.ct-workspace details {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 16px;
+  border-radius: 12px;
+  margin: 12px 0;
+}
+.ct-workspace summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+@media (max-width: 900px) {
+  .ct-layout {
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 16px;
+  }
+  .ct-grid,
+  .ct-facts {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 600px) {
+  .ct-workspace {
+    padding: 16px;
+  }
+  .ct-layout {
+    grid-template-columns: 1fr;
+  }
+  .ct-list {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .ct-steps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ct-steps button {
+    width: 100%;
+  }
+  .ct-actions button {
+    flex: 1;
+  }
+  .ct-pair {
+    flex-direction: column;
+  }
+  .ct-pair select,
+  .ct-pair input {
+    width: 100%;
+  }
+  .ct-header {
+    align-items: flex-start;
+  }
+  .ct-line,
+  .ct-location {
+    padding: 14px;
+  }
+}
