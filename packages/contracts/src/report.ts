@@ -112,6 +112,14 @@ export const REPORT_ITEM_KINDS = [
 ] as const;
 export type ReportItemKind = (typeof REPORT_ITEM_KINDS)[number];
 /** Project master row: a work item, a machine or a material. Quantities are reported text. */
+/** Explicit C19 master capture. A legacy snapshot without these rows is unfrozen. */
+export interface FrozenMilestoneDto {
+  id: string;
+  key: string;
+  label: string;
+  plannedDate: string | null;
+}
+
 export interface ReportItemDto {
   kind: ReportItemKind;
   key: string;

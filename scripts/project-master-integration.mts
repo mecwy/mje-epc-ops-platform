@@ -489,6 +489,25 @@ try {
       'TEST gate: actual HTTP backend did not wait at Project FOR UPDATE',
     );
   }
+  async function blockedProjectLock(
+    mode: 'SHARE' | 'UPDATE',
+    expected: number,
+  ) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const r = await owner!.query<{ pid: number; query: string }>(
+        `SELECT pid,query FROM pg_stat_activity
+         WHERE usename=$1 AND wait_event_type='Lock'
+           AND cardinality(pg_blocking_pids(pid))>0
+           AND query LIKE $2`,
+        [username, `%FROM "Project"%FOR ${mode}%`],
+      );
+      if (r.rows.length >= expected) return r.rows;
+      await delay(20);
+    }
+    throw new Error(
+      `TEST gate: actual HTTP backend did not wait at Project FOR ${mode}`,
+    );
+  }
   async function releaseProject() {
     assert.ok(holder);
     await holder.query('COMMIT');
@@ -586,7 +605,7 @@ try {
   const clockCall = call(expectation(), pm, calendar());
   pending.push(clockCall);
   const waiting = await blocked(1);
-  await delay(350);
+  await delay(750);
   const releaseAt = (
     await owner.query<{ at: Date }>('SELECT clock_timestamp() AS at')
   ).rows[0]!.at;
@@ -600,7 +619,7 @@ try {
     'registration clock must be read after Project lock release',
   );
   assert.ok(
-    insertedAt - started >= 300,
+    insertedAt - started >= 700,
     'registration must not use transaction-start now()',
   );
   const offset = Date.parse('2030-01-01T23:59:59.800Z') - started;
@@ -629,6 +648,134 @@ try {
     '2030-07-01',
   );
   pass('saveItems also waits at Project lock before master reads/writes');
+
+  const revisionSnapshot = async (businessDate: string) => {
+    const result = await owner!.query<{ snapshot: Record<string, unknown> }>(
+      `SELECT r.snapshot FROM "DailyClose" d
+       JOIN "Revision" r ON r."dailyCloseId"=d.id
+         AND r."revisionNumber"=d."currentRevisionNumber"
+       WHERE d."projectId"=$1 AND d."businessDate"=$2`,
+      [project, businessDate],
+    );
+    assert.equal(result.rows.length, 1);
+    return result.rows[0]!.snapshot;
+  };
+  const controlledSnapshotRace = async (
+    route: 'submit' | 'no-work',
+    order: 'edit-first' | 'snapshot-first',
+    businessDate: string,
+  ) => {
+    const currentMaster = await owner!.query<{
+      primaryWorkItemKey: string | null;
+      plannedDate: string | null;
+    }>(
+      `SELECT p."primaryWorkItemKey", i."plannedDate"::text AS "plannedDate"
+       FROM "Project" p
+       JOIN "ReportItem" i ON i."orgId"=p."orgId" AND i."projectId"=p.id
+       WHERE p.id=$1 AND i.key='node' AND i.kind='milestone'`,
+      [project],
+    );
+    assert.equal(currentMaster.rows.length, 1);
+    const beforePrimary = currentMaster.rows[0]!.primaryWorkItemKey;
+    assert.ok(beforePrimary === 'work-1' || beforePrimary === 'work-2');
+    const beforeMilestoneDate = currentMaster.rows[0]!.plannedDate;
+    assert.ok(
+      beforeMilestoneDate === '2030-02-01' ||
+        beforeMilestoneDate === '2030-08-01',
+    );
+    const afterPrimary = beforePrimary === 'work-1' ? 'work-2' : 'work-1';
+    const afterMilestoneDate =
+      beforeMilestoneDate === '2030-02-01' ? '2030-08-01' : '2030-02-01';
+    const primaryEditFor = async (key: string) => {
+      const version = Number(
+        (
+          await owner!.query('SELECT version FROM "Project" WHERE id=$1', [
+            project,
+          ])
+        ).rows[0].version,
+      );
+      return call(primary(), pm, choose(version, key));
+    };
+    const snapshotRequest = () => {
+      const request = {
+        projectId: project,
+        businessDate,
+        expectedVersion: 0,
+        clientMutationId: randomUUID(),
+        ...(route === 'no-work' ? { reason: 'weather', note: 'TEST' } : {}),
+      };
+      return call(`/api/report/${route}`, pm, request);
+    };
+    await holdProject();
+    let snap: Promise<{ status: number; data: Wire }> | undefined;
+    let primaryEdit: Promise<{ status: number; data: Wire }> | undefined;
+    let itemsEdit: Promise<{ status: number; data: Wire }> | undefined;
+    if (order === 'edit-first') {
+      primaryEdit = primaryEditFor(afterPrimary);
+      pending.push(primaryEdit);
+      await blockedProjectLock('UPDATE', 1);
+      itemsEdit = save([
+        item('work-1'),
+        { ...item('work-2'), plannedDate: '2030-06-01' },
+        item('inactive', 'work', false),
+        item('machine', 'machinery'),
+        {
+          ...item('node', 'milestone'),
+          plannedDate: afterMilestoneDate,
+        },
+      ]);
+      pending.push(itemsEdit);
+      await blockedProjectLock('UPDATE', 2);
+      snap = snapshotRequest();
+      pending.push(snap);
+      await blockedProjectLock('SHARE', 1);
+    } else {
+      snap = snapshotRequest();
+      pending.push(snap);
+      await blockedProjectLock('SHARE', 1);
+      primaryEdit = primaryEditFor(afterPrimary);
+      pending.push(primaryEdit);
+      await blockedProjectLock('UPDATE', 1);
+      itemsEdit = save([
+        item('work-1'),
+        { ...item('work-2'), plannedDate: '2030-06-01' },
+        item('inactive', 'work', false),
+        item('machine', 'machinery'),
+        {
+          ...item('node', 'milestone'),
+          plannedDate: afterMilestoneDate,
+        },
+      ]);
+      pending.push(itemsEdit);
+      await blockedProjectLock('UPDATE', 2);
+    }
+    await releaseProject();
+    const responses = await Promise.all([snap!, primaryEdit!, itemsEdit!]);
+    assert.ok(responses.every((r) => r.status === 200));
+    const frozen = await revisionSnapshot(businessDate);
+    const expectedPrimary =
+      order === 'edit-first' ? afterPrimary : beforePrimary;
+    const expectedMilestoneDate =
+      order === 'edit-first' ? afterMilestoneDate : beforeMilestoneDate;
+    assert.equal(frozen.primaryWorkItemKey, expectedPrimary);
+    assert.deepEqual(
+      (frozen.milestones as Array<Record<string, unknown>>).map((m) => [
+        m.key,
+        m.plannedDate,
+      ]),
+      [['node', expectedMilestoneDate]],
+    );
+  };
+  await controlledSnapshotRace('submit', 'edit-first', '2040-01-01');
+  await controlledSnapshotRace('submit', 'snapshot-first', '2040-01-02');
+  pass(
+    'C19 controlled primary/milestone edits serialize wholly before or after submit snapshots',
+  );
+  await controlledSnapshotRace('no-work', 'edit-first', '2040-01-03');
+  await controlledSnapshotRace('no-work', 'snapshot-first', '2040-01-04');
+  pass(
+    'C19 controlled primary/milestone edits serialize wholly before or after no-work snapshots',
+  );
   assert.ok(
     events.filter((e) => e === 'project-status.primary-ack').length >= 3,
   );

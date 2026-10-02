@@ -9,6 +9,7 @@ import type {
   NoWorkCommand,
   PlanRowDto,
   ReportItemDto,
+  FrozenMilestoneDto,
   SaveFactsCommand,
   SaveItemsCommand,
   SavePlanDraftCommand,
@@ -59,9 +60,11 @@ import {
   inTransaction,
   lockReportDay,
   lockProjectForUpdate,
+  lockProjectForShare,
   projectWriter,
   type Actor,
   type ReportProjectRow,
+  type ProjectMasterRow,
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
 import { fieldDayAsOf, nextSeq } from './checkin-store.js';
@@ -272,7 +275,7 @@ export class ReportStore {
   private async submitRevision(
     client: PoolClient,
     actor: Actor,
-    project: ProjectRow,
+    project: ProjectMasterRow,
     day: DayRow,
     businessDate: string,
     facts: DayFacts,
@@ -317,6 +320,23 @@ export class ReportStore {
         reason,
         {
           ...snapshot,
+          primaryWorkItemKey: project.primaryWorkItemKey,
+          milestones: items
+            .filter((i) => i.kind === 'milestone')
+            .map((i) => ({
+              id: i.id,
+              key: i.key,
+              label: i.label,
+              plannedDate: i.plannedDate ?? null,
+            })) satisfies FrozenMilestoneDto[],
+          // C20 applies to the stored revision, not the writer's live plan preview.
+          nextPlan: {
+            ...snapshot.nextPlan,
+            rows:
+              snapshot.nextPlan.status === 'confirmed'
+                ? snapshot.nextPlan.rows
+                : [],
+          },
           field,
           revisionNumber,
           correctionReason: reason,
@@ -367,7 +387,7 @@ export class ReportStore {
   /** Rule 1 and 5: submit freezes the current facts; coverage is recorded, not enforced. */
   async submit(identity: Identity, command: SubmitReportCommand) {
     return this.transaction(identity, async (client, actor) => {
-      const project = await this.writer(client, actor, command.projectId);
+      await this.writer(client, actor, command.projectId);
       return this.idempotent(
         client,
         actor,
@@ -375,6 +395,12 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          // Account/scope -> idempotency -> Project SHARE -> roster -> DailyClose/day.
+          const project = await lockProjectForShare(
+            client,
+            actor.orgId,
+            command.projectId,
+          );
           // Level 0 shared before the DailyClose row (level 3), never after (design §5).
           await rosterLock(client, actor.orgId, project.id, true);
           const day = await this.dayForWrite(
@@ -406,7 +432,7 @@ export class ReportStore {
   /** Rule 6: no work today = reason (+ note) and an immediate submission. */
   async noWork(identity: Identity, command: NoWorkCommand) {
     return this.transaction(identity, async (client, actor) => {
-      const project = await this.writer(client, actor, command.projectId);
+      await this.writer(client, actor, command.projectId);
       return this.idempotent(
         client,
         actor,
@@ -414,6 +440,12 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          // Account/scope -> idempotency -> Project SHARE -> roster -> DailyClose/day.
+          const project = await lockProjectForShare(
+            client,
+            actor.orgId,
+            command.projectId,
+          );
           // Level 0 shared before the DailyClose row (level 3), never after (design §5).
           await rosterLock(client, actor.orgId, project.id, true);
           const day = await this.dayForWrite(

@@ -1409,13 +1409,14 @@ try {
     assert.deepEqual(writerRev.snapshot.nextPlan, {
       status: 'draft',
       n: null,
+      rows: [],
+    });
+    // The writer's live day preview remains unchanged; only the stored revision omits draft rows.
+    assert.deepEqual((await dayOf(C1, pm)).nextPlan, {
+      status: 'draft',
+      n: null,
       rows: [{ item: 'support', target: '8641' }],
     });
-    // The writer's day shows the frozen draft rows (only readers get the projection).
-    assert.deepEqual(
-      (await dayOf(C1, pm)).nextPlan,
-      writerRev.snapshot.nextPlan,
-    );
     const readerRev = await revisionOf(C1, exec);
     assert.deepEqual(readerRev.snapshot.nextPlan, {
       status: 'draft',
@@ -1465,7 +1466,7 @@ try {
     assert.deepEqual((await dayOf(C2, exec)).nextPlan, confirmed);
   }
   pass(
-    'C20: a revision that froze a draft next-day plan gives a reader its status and no rows, on the revision and the day (also after the plan is confirmed later); a plan confirmed before submission stays visible; the writer and the stored snapshot are unchanged',
+    'C20: a new revision freezes draft status without draft rows while the writer live preview stays unchanged; later confirmation does not alter it, and a pre-confirmed plan freezes its rows',
   );
 
   // ---------- A7-0a (ADR-0003): OD18 on write rejections and conflicts ----------
