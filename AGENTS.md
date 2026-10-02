@@ -4,9 +4,9 @@
 
 ## 当前状态（会变；以此段为准，历史在 git log）
 
-- 代码能力（main，已审核合并）：Site Daily Close 规则与契约（A1）、日报数据库与 API（A2）、问题与上报 API（A3）、Web 日报界面（A4a）与问题界面（A4b）、照片后端（A5：存储、API、快照关联）、Dev 引导作业脚本（B3）。Dev 已部署应用并完成登录引导（由所有者 CLI 执行）。所有数值为申报，不是核实；照片界面、签到/报量、总监多项目首页、离线队列尚未合并。
-- 验证边界：本机与 CI 的单元/集成测试（合成 TEST 数据）、Dev 健康检查；真实 Entra 登录、真实手机、云端持久化、真实来源 AT/LR 应用验收均未完成。
-- 审核流程：每个 PR 由 Codex 独立审核（仓库外进行），处理意见后才合并；不启用 auto-merge。
+- Merged main: Site Daily Close, issue/photo workflows, field check-in and foreman declarations, offline command handling, protected module readers, and project status declarations/replies. Executive multi-project home remains pending. Figures are declarations, not verification.
+- Verification: local/CI synthetic TEST checks and previously recorded Dev health evidence. New merged slices are not yet deployed; real Entra sign-in, phones, cloud persistence and private-source AT/LR application acceptance remain unverified.
+- Each PR uses the assigned independent V2 reviewer (currently Claude CLI Opus 5.5 high), fixes or records remaining nits, and requires successful CI on its reviewed head before normal merge. No auto-merge.
 
 ## 持续规则
 

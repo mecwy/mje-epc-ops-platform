@@ -4,14 +4,20 @@ import type {
   DeclareStatusCommand,
   AddStatusNoteCommand,
   StatusCommandResultDto,
+  SetPrimaryWorkItemCommand,
+  RegisterExpectationCommand,
+  PrimaryWorkItemResultDto,
+  ReportingExpectationResultDto,
 } from '@mje/contracts';
 import {
   inTransaction,
   idempotent,
   audit,
   lockProjectForUpdate,
+  setProjectPrimaryWorkItem,
 } from '../store-kit.js';
 import type { Identity } from '../alpha-store.js';
+import { activeWorkItemExists } from '../report-lookups.js';
 import { statusProject, projectStatusReader } from './reader.js';
 import { withProjectStatusReadContext } from './context.js';
 import { requiredStatusFields, ProjectStatusError } from './rules.js';
@@ -142,6 +148,120 @@ export class ProjectStatusCommands {
             projectStatusReader
               .forContext(ctx)
               .acknowledgement(c.projectId, value),
+        ),
+      );
+    });
+  }
+  setPrimaryWorkItem(identity: Identity, c: SetPrimaryWorkItemCommand) {
+    return inTransaction(this.pool, identity, async (client, actor) => {
+      const access = await statusProject(client, actor, c.projectId);
+      if (access.access !== 'write') throw new ProjectStatusError('READ_ONLY');
+      return withProjectStatusReadContext(client, actor, async (ctx) =>
+        idempotent<PrimaryWorkItemResultDto>(
+          client,
+          actor,
+          'PROJECT_SET_PRIMARY',
+          c.clientMutationId,
+          c,
+          async () => {
+            const project = await lockProjectForUpdate(
+              client,
+              actor.orgId,
+              c.projectId,
+            );
+            if (project.version !== c.expectedVersion)
+              throw new ProjectStatusError('VERSION_CONFLICT');
+            if (
+              !(await activeWorkItemExists(
+                client,
+                actor.orgId,
+                c.projectId,
+                c.key,
+              ))
+            )
+              throw new ProjectStatusError('ITEM_NOT_FOUND');
+            const version = await setProjectPrimaryWorkItem(
+              client,
+              actor.orgId,
+              c.projectId,
+              actor.accountId,
+              c.key,
+              c.expectedVersion,
+            );
+            await audit(
+              client,
+              actor,
+              { type: 'PROJECT_MASTER', id: c.projectId, version },
+              'PRIMARY_WORK_ITEM_SET',
+              '',
+              { key: project.primaryWorkItemKey, version: project.version },
+              { ...c, version },
+              c.clientMutationId,
+            );
+            return { projectId: c.projectId, key: c.key, version };
+          },
+          (value) =>
+            projectStatusReader
+              .forContext(ctx)
+              .primaryAcknowledgement(c.projectId, value),
+        ),
+      );
+    });
+  }
+  registerExpectation(identity: Identity, c: RegisterExpectationCommand) {
+    return inTransaction(this.pool, identity, async (client, actor) => {
+      const access = await statusProject(client, actor, c.projectId);
+      if (access.access !== 'write') throw new ProjectStatusError('READ_ONLY');
+      return withProjectStatusReadContext(client, actor, async (ctx) =>
+        idempotent<ReportingExpectationResultDto>(
+          client,
+          actor,
+          'PROJECT_REGISTER_EXPECTATION',
+          c.clientMutationId,
+          c,
+          async () => {
+            await lockProjectForUpdate(client, actor.orgId, c.projectId);
+            const latest = await client.query<{ n: number }>(
+              'SELECT COALESCE(max(n),0)::int AS n FROM "ReportingExpectationVersion" WHERE "orgId"=$1 AND "projectId"=$2',
+              [actor.orgId, c.projectId],
+            );
+            const n = latest.rows[0]!.n + 1,
+              id = randomUUID();
+            const inserted = await client.query<{ registeredAt: Date }>(
+              'INSERT INTO "ReportingExpectationVersion"(id,"orgId","projectId",n,"fromDate","toDate",workdays,"registeredAt","registeredBy") VALUES($1,$2,$3,$4,$5::date,$6::date,$7,clock_timestamp(),$8) RETURNING "registeredAt"',
+              [
+                id,
+                actor.orgId,
+                c.projectId,
+                n,
+                c.fromDate,
+                c.toDate,
+                c.workdays,
+                actor.accountId,
+              ],
+            );
+            const registeredAt = inserted.rows[0]!.registeredAt.toISOString();
+            await audit(
+              client,
+              actor,
+              { type: 'REPORTING_EXPECTATION', id, version: n },
+              'REPORTING_EXPECTATION_REGISTERED',
+              '',
+              null,
+              { ...c, n, registeredAt },
+              c.clientMutationId,
+            );
+            return {
+              projectId: c.projectId,
+              expectationId: id,
+              n,
+              registeredAt,
+            };
+          },
+          (value) =>
+            projectStatusReader
+              .forContext(ctx)
+              .expectationAcknowledgement(c.projectId, value),
         ),
       );
     });

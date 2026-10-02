@@ -44,7 +44,11 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
     files: ['commands.ts', 'reader.ts', 'context.ts', 'rules.ts'].map(
       (f) => `${D}project-status/${f}`,
     ),
-    tables: ['ProjectStatusUpdate', 'ProjectStatusNote'],
+    tables: [
+      'ProjectStatusUpdate',
+      'ProjectStatusNote',
+      'ReportingExpectationVersion',
+    ],
   },
   /** The rule model (no SQL). */
   authz: { files: [], dirs: [`${D}authz/`], tables: [] },

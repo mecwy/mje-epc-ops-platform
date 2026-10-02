@@ -86,13 +86,13 @@ enum RevisionState {
 }
 
 model Organization {
-  id                           String                     @id @default(uuid()) @db.Uuid
+  id                           String                        @id @default(uuid()) @db.Uuid
   name                         String
   governanceRef                String?
-  createdAt                    DateTime                   @default(now()) @db.Timestamptz(6)
-  updatedAt                    DateTime                   @updatedAt @db.Timestamptz(6)
-  updatedBy                    String                     @db.Uuid
-  version                      Int                        @default(1)
+  createdAt                    DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime                      @updatedAt @db.Timestamptz(6)
+  updatedBy                    String                        @db.Uuid
+  version                      Int                           @default(1)
   alphaDraftRows               AlphaDraft[]
   reportDrafts                 DailyReportDraft[]
   planVersions                 PlanVersion[]
@@ -150,6 +150,7 @@ model Organization {
   fieldDeviceEventRows         FieldDeviceEvent[]
   projectStatusUpdates         ProjectStatusUpdate[]
   projectStatusNotes           ProjectStatusNote[]
+  reportingExpectations        ReportingExpectationVersion[]
 }
 
 model Company {
@@ -207,48 +208,52 @@ model Opportunity {
 }
 
 model Project {
-  id                                      String                 @id @default(uuid()) @db.Uuid
-  orgId                                   String                 @db.Uuid
-  org                                     Organization           @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                               DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt                               DateTime               @updatedAt @db.Timestamptz(6)
-  updatedBy                               String                 @db.Uuid
-  version                                 Int                    @default(1)
+  id                                      String                        @id @default(uuid()) @db.Uuid
+  orgId                                   String                        @db.Uuid
+  org                                     Organization                  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                               DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt                               DateTime                      @updatedAt @db.Timestamptz(6)
+  updatedBy                               String                        @db.Uuid
+  version                                 Int                           @default(1)
   code                                    String
   name                                    String
   timezone                                String
   status                                  String
-  customerId                              String?                @db.Uuid
-  customer                                Customer?              @relation("Project_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  opportunityId                           String?                @db.Uuid
-  opportunity                             Opportunity?           @relation("Project_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  ProjectSite_projectId                   ProjectSite[]          @relation("ProjectSite_projectId")
-  ContractScope_projectId                 ContractScope[]        @relation("ContractScope_projectId")
-  WorkPackage_projectId                   WorkPackage[]          @relation("WorkPackage_projectId")
-  Membership_projectId                    Membership[]           @relation("Membership_projectId")
-  PersonAssignment_projectId              PersonAssignment[]     @relation("PersonAssignment_projectId")
-  WorkforcePlan_projectId                 WorkforcePlan[]        @relation("WorkforcePlan_projectId")
-  ReportingBundle_titleProjectCandidateId ReportingBundle[]      @relation("ReportingBundle_titleProjectCandidateId")
-  DailyTask_projectId                     DailyTask[]            @relation("DailyTask_projectId")
-  Issue_projectId                         Issue[]                @relation("Issue_projectId")
-  DailyClose_projectId                    DailyClose[]           @relation("DailyClose_projectId")
-  PlanVersion_project                     PlanVersion[]          @relation("PlanVersion_project")
-  PlanDraft_project                       PlanDraft[]            @relation("PlanDraft_project")
-  ReportItem_project                      ReportItem[]           @relation("ReportItem_project")
-  LagDismissal_project                    LagDismissal[]         @relation("LagDismissal_project")
-  PhotoEvidence_project                   PhotoEvidence[]        @relation("PhotoEvidence_project")
-  Crew_project                            Crew[]                 @relation("Crew_project")
-  ProjectRoster_project                   ProjectRoster[]        @relation("ProjectRoster_project")
-  FieldEntryCode_project                  FieldEntryCode[]       @relation("FieldEntryCode_project")
-  FieldDevice_project                     FieldDevice[]          @relation("FieldDevice_project")
-  FieldPersonConfirm_project              FieldPersonConfirm[]   @relation("FieldPersonConfirm_project")
-  FieldDeviceEvent_project                FieldDeviceEvent[]     @relation("FieldDeviceEvent_project")
-  ProjectSiteReference_project            ProjectSiteReference[] @relation("ProjectSiteReference_project")
-  ProjectFieldSetting_project             ProjectFieldSetting[]  @relation("ProjectFieldSetting_project")
-  FieldDay_project                        FieldDay[]             @relation("FieldDay_project")
-  WorkerCheckIn_project                   WorkerCheckIn[]        @relation("WorkerCheckIn_project")
+  customerId                              String?                       @db.Uuid
+  customer                                Customer?                     @relation("Project_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  opportunityId                           String?                       @db.Uuid
+  opportunity                             Opportunity?                  @relation("Project_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ProjectSite_projectId                   ProjectSite[]                 @relation("ProjectSite_projectId")
+  ContractScope_projectId                 ContractScope[]               @relation("ContractScope_projectId")
+  WorkPackage_projectId                   WorkPackage[]                 @relation("WorkPackage_projectId")
+  Membership_projectId                    Membership[]                  @relation("Membership_projectId")
+  PersonAssignment_projectId              PersonAssignment[]            @relation("PersonAssignment_projectId")
+  WorkforcePlan_projectId                 WorkforcePlan[]               @relation("WorkforcePlan_projectId")
+  ReportingBundle_titleProjectCandidateId ReportingBundle[]             @relation("ReportingBundle_titleProjectCandidateId")
+  DailyTask_projectId                     DailyTask[]                   @relation("DailyTask_projectId")
+  Issue_projectId                         Issue[]                       @relation("Issue_projectId")
+  DailyClose_projectId                    DailyClose[]                  @relation("DailyClose_projectId")
+  PlanVersion_project                     PlanVersion[]                 @relation("PlanVersion_project")
+  PlanDraft_project                       PlanDraft[]                   @relation("PlanDraft_project")
+  ReportItem_project                      ReportItem[]                  @relation("ReportItem_project")
+  LagDismissal_project                    LagDismissal[]                @relation("LagDismissal_project")
+  PhotoEvidence_project                   PhotoEvidence[]               @relation("PhotoEvidence_project")
+  Crew_project                            Crew[]                        @relation("Crew_project")
+  ProjectRoster_project                   ProjectRoster[]               @relation("ProjectRoster_project")
+  FieldEntryCode_project                  FieldEntryCode[]              @relation("FieldEntryCode_project")
+  FieldDevice_project                     FieldDevice[]                 @relation("FieldDevice_project")
+  FieldPersonConfirm_project              FieldPersonConfirm[]          @relation("FieldPersonConfirm_project")
+  FieldDeviceEvent_project                FieldDeviceEvent[]            @relation("FieldDeviceEvent_project")
+  ProjectSiteReference_project            ProjectSiteReference[]        @relation("ProjectSiteReference_project")
+  ProjectFieldSetting_project             ProjectFieldSetting[]         @relation("ProjectFieldSetting_project")
+  FieldDay_project                        FieldDay[]                    @relation("FieldDay_project")
+  WorkerCheckIn_project                   WorkerCheckIn[]               @relation("WorkerCheckIn_project")
   projectStatusUpdates                    ProjectStatusUpdate[]
   projectStatusNotes                      ProjectStatusNote[]
+  primaryWorkItemKey                      String?
+  region                                  String?
+  projectType                             String?
+  reportingExpectations                   ReportingExpectationVersion[]
 
   @@unique([orgId, id])
   @@unique([orgId, code])
@@ -403,45 +408,46 @@ model Person {
 }
 
 model LoginAccount {
-  id                   String                 @id @default(uuid()) @db.Uuid
-  orgId                String                 @db.Uuid
-  org                  Organization           @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt            DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime               @updatedAt @db.Timestamptz(6)
-  updatedBy            String                 @db.Uuid
-  version              Int                    @default(1)
-  entraTenantId        String
-  entraObjectId        String
-  active               Boolean                @default(true)
-  personId             String?                @db.Uuid
+  id                    String                        @id @default(uuid()) @db.Uuid
+  orgId                 String                        @db.Uuid
+  org                   Organization                  @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt             DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                      @updatedAt @db.Timestamptz(6)
+  updatedBy             String                        @db.Uuid
+  version               Int                           @default(1)
+  entraTenantId         String
+  entraObjectId         String
+  active                Boolean                       @default(true)
+  personId              String?                       @db.Uuid
   /// Bumped by database triggers on Membership writes and on active/personId changes (ADR-0003 D5).
-  authzVersion         Int                    @default(1)
-  person               Person?                @relation("LoginAccount_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  alphaDraftUpdates    AlphaDraft[]
-  reportDraftUpdates   DailyReportDraft[]     @relation("DailyReportDraft_actor")
-  planVersionConfirms  PlanVersion[]          @relation("PlanVersion_actor")
-  planDraftUpdates     PlanDraft[]            @relation("PlanDraft_actor")
-  issueCloses          Issue[]                @relation("Issue_closedBy")
-  issueNotes           IssueNote[]            @relation("IssueNote_account")
-  issueTransitions     IssueTransition[]      @relation("IssueTransition_account")
-  lagDismissals        LagDismissal[]         @relation("LagDismissal_actor")
-  photoUploads         PhotoEvidence[]        @relation("PhotoEvidence_uploadedByAccount")
-  photoLinkSupersedes  EvidenceLink[]         @relation("EvidenceLink_supersededBy")
-  Membership_accountId Membership[]           @relation("Membership_accountId")
-  crewCreates          Crew[]                 @relation("Crew_createdBy")
-  assignmentCreates    CrewAssignment[]       @relation("CrewAssignment_createdBy")
-  assignmentCloses     CrewAssignment[]       @relation("CrewAssignment_closedBy")
-  entryCodeCreates     FieldEntryCode[]       @relation("FieldEntryCode_createdBy")
-  entryCodeRetires     FieldEntryCode[]       @relation("FieldEntryCode_retiredBy")
-  deviceConfirms       FieldDevice[]          @relation("FieldDevice_confirmedByAccount")
-  fieldDeviceEvents    FieldDeviceEvent[]     @relation("FieldDeviceEvent_actorAccount")
-  siteReferences       ProjectSiteReference[] @relation("ProjectSiteReference_createdBy")
-  fieldSettings        ProjectFieldSetting[]  @relation("ProjectFieldSetting_createdBy")
-  proxyCheckIns        WorkerCheckIn[]        @relation("WorkerCheckIn_actorAccount")
-  voidedCheckIns       WorkerCheckIn[]        @relation("WorkerCheckIn_voidedBy")
-  foremanAdoptions     ForemanAdoption[]      @relation("ForemanAdoption_byAccount")
-  projectStatusUpdates ProjectStatusUpdate[]  @relation("ProjectStatusUpdateAccount")
-  projectStatusNotes   ProjectStatusNote[]    @relation("ProjectStatusNoteAccount")
+  authzVersion          Int                           @default(1)
+  person                Person?                       @relation("LoginAccount_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  alphaDraftUpdates     AlphaDraft[]
+  reportDraftUpdates    DailyReportDraft[]            @relation("DailyReportDraft_actor")
+  planVersionConfirms   PlanVersion[]                 @relation("PlanVersion_actor")
+  planDraftUpdates      PlanDraft[]                   @relation("PlanDraft_actor")
+  issueCloses           Issue[]                       @relation("Issue_closedBy")
+  issueNotes            IssueNote[]                   @relation("IssueNote_account")
+  issueTransitions      IssueTransition[]             @relation("IssueTransition_account")
+  lagDismissals         LagDismissal[]                @relation("LagDismissal_actor")
+  photoUploads          PhotoEvidence[]               @relation("PhotoEvidence_uploadedByAccount")
+  photoLinkSupersedes   EvidenceLink[]                @relation("EvidenceLink_supersededBy")
+  Membership_accountId  Membership[]                  @relation("Membership_accountId")
+  crewCreates           Crew[]                        @relation("Crew_createdBy")
+  assignmentCreates     CrewAssignment[]              @relation("CrewAssignment_createdBy")
+  assignmentCloses      CrewAssignment[]              @relation("CrewAssignment_closedBy")
+  entryCodeCreates      FieldEntryCode[]              @relation("FieldEntryCode_createdBy")
+  entryCodeRetires      FieldEntryCode[]              @relation("FieldEntryCode_retiredBy")
+  deviceConfirms        FieldDevice[]                 @relation("FieldDevice_confirmedByAccount")
+  fieldDeviceEvents     FieldDeviceEvent[]            @relation("FieldDeviceEvent_actorAccount")
+  siteReferences        ProjectSiteReference[]        @relation("ProjectSiteReference_createdBy")
+  fieldSettings         ProjectFieldSetting[]         @relation("ProjectFieldSetting_createdBy")
+  proxyCheckIns         WorkerCheckIn[]               @relation("WorkerCheckIn_actorAccount")
+  voidedCheckIns        WorkerCheckIn[]               @relation("WorkerCheckIn_voidedBy")
+  foremanAdoptions      ForemanAdoption[]             @relation("ForemanAdoption_byAccount")
+  projectStatusUpdates  ProjectStatusUpdate[]         @relation("ProjectStatusUpdateAccount")
+  projectStatusNotes    ProjectStatusNote[]           @relation("ProjectStatusNoteAccount")
+  reportingExpectations ReportingExpectationVersion[]
 
   @@unique([orgId, id])
   @@unique([orgId, entraTenantId, entraObjectId])
@@ -1265,7 +1271,7 @@ model ReportItem {
   org               Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
   projectId         String            @db.Uuid
   project           Project           @relation("ReportItem_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  /// 'work' | 'machinery' | 'material' (CHECK constraint in SQL)
+  /// 'work' | 'machinery' | 'material' | 'milestone' (SQL CHECK)
   kind              String
   key               String
   label             String
@@ -1277,6 +1283,7 @@ model ReportItem {
   updatedAt         DateTime          @default(now()) @db.Timestamptz(6)
   updatedBy         String            @db.Uuid
   foremanAdoptions  ForemanAdoption[] @relation("ForemanAdoption_item")
+  plannedDate       DateTime?         @db.Date
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, kind, key])
@@ -1745,4 +1752,22 @@ model ProjectStatusNote {
 
   @@unique([orgId, id])
   @@index([orgId, projectId, statusUpdateId, at, id], map: "ProjectStatusNote_update_idx")
+}
+
+model ReportingExpectationVersion {
+  id           String       @id @db.Uuid
+  orgId        String       @db.Uuid
+  projectId    String       @db.Uuid
+  n            Int
+  fromDate     DateTime     @db.Date
+  toDate       DateTime?    @db.Date
+  workdays     Int[]
+  registeredAt DateTime     @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+  registeredBy String       @db.Uuid
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  project      Project      @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  account      LoginAccount @relation(fields: [orgId, registeredBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, n])
 }

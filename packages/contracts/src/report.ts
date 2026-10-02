@@ -104,7 +104,12 @@ export interface CancelCorrectionCommand {
   expectedVersion: number;
   clientMutationId: string;
 }
-export const REPORT_ITEM_KINDS = ['work', 'machinery', 'material'] as const;
+export const REPORT_ITEM_KINDS = [
+  'work',
+  'machinery',
+  'material',
+  'milestone',
+] as const;
 export type ReportItemKind = (typeof REPORT_ITEM_KINDS)[number];
 /** Project master row: a work item, a machine or a material. Quantities are reported text. */
 export interface ReportItemDto {
@@ -116,6 +121,8 @@ export interface ReportItemDto {
   openingCumulative: Reported;
   sortOrder: number;
   active: boolean;
+  /** Missing preserves an existing master date on save; null explicitly clears it. */
+  plannedDate?: string | null;
 }
 export interface SaveItemsCommand {
   projectId: string;
@@ -355,12 +362,29 @@ export function parseSaveItemsCommand(v: unknown): SaveItemsCommand {
       const active = row['active'] ?? true;
       if (typeof active !== 'boolean')
         throw new InvalidReportInput(`items.${i}.active`);
+      const unit = str(row['unit'] ?? '', `items.${i}.unit`, 20);
+      const designQty = reported(
+        row['designQty'] ?? '',
+        `items.${i}.designQty`,
+      );
+      if (kind === 'milestone' && (unit !== '' || designQty !== ''))
+        throw new InvalidReportInput(`items.${i}.milestone`);
+      const planned =
+        row['plannedDate'] === undefined
+          ? {}
+          : {
+              plannedDate:
+                row['plannedDate'] === null
+                  ? null
+                  : date(row['plannedDate'], `items.${i}.plannedDate`),
+            };
       return {
         kind,
         key,
         label,
-        unit: str(row['unit'] ?? '', `items.${i}.unit`, 20),
-        designQty: reported(row['designQty'] ?? '', `items.${i}.designQty`),
+        unit,
+        designQty,
+        ...planned,
         openingCumulative: reported(
           row['openingCumulative'] ?? '',
           `items.${i}.openingCumulative`,

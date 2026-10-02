@@ -105,7 +105,12 @@ class SafeErrorFilter implements ExceptionFilter {
       code = 'INVALID_INPUT';
     } else if (error instanceof ProjectStatusError) {
       code = error.code;
-      status = code === 'NOT_FOUND' ? 404 : code === 'READ_ONLY' ? 403 : 409;
+      status =
+        code === 'NOT_FOUND' || code === 'ITEM_NOT_FOUND'
+          ? 404
+          : code === 'READ_ONLY'
+            ? 403
+            : 409;
       if (code === 'STATUS_FIELDS_REQUIRED')
         fields = error.fields.filter((f) => STATUS_FIELD_NAMES.includes(f));
     } else if (error instanceof FieldError) {

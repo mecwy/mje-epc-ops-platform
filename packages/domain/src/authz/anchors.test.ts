@@ -21,6 +21,7 @@ const account = (
 const PM: Capability[] = [
   'project.status.view',
   'project.status.declare',
+  'project.master.write',
   'project.status.reply',
   'report.view',
   'report.write',
@@ -105,6 +106,41 @@ describe('ADR-0003 anchors (hand-written)', () => {
     capability?: Capability;
     keys?: string[];
   }[] = [
+    {
+      name: 'PM changes primary work item with project CAS',
+      entry: 'POST /api/projects/:id/primary-work-item',
+      ctx: account(PM),
+      allowed: true,
+      capability: 'project.master.write',
+      keys: ['projectId', 'key', 'version'],
+    },
+    {
+      name: 'reader cannot change project masters',
+      entry: 'POST /api/projects/:id/primary-work-item',
+      ctx: account(READER),
+      allowed: false,
+    },
+    {
+      name: 'PM registers append-only calendar',
+      entry: 'POST /api/projects/:id/reporting-expectation',
+      ctx: account(PM),
+      allowed: true,
+      capability: 'project.master.write',
+      keys: ['projectId', 'expectationId', 'n', 'registeredAt'],
+    },
+    {
+      name: 'reader cannot register calendar',
+      entry: 'POST /api/projects/:id/reporting-expectation',
+      ctx: account(READER),
+      allowed: false,
+    },
+    {
+      name: 'master capability never crosses project scope',
+      entry: 'POST /api/projects/:id/primary-work-item',
+      ctx: account(PM, 'other-project'),
+      allowed: false,
+    },
+
     {
       name: 'PM declares a status: structural acknowledgement only',
       entry: 'POST /api/projects/:id/status',

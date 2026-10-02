@@ -390,11 +390,34 @@ export async function lockProjectForUpdate(
   client: PoolClient,
   orgId: string,
   projectId: string,
-): Promise<ReportProjectRow> {
-  const r = await client.query<ReportProjectRow>(
-    'SELECT id,name,code,timezone FROM "Project" WHERE "orgId"=$1 AND id=$2 FOR UPDATE',
+): Promise<ProjectMasterRow> {
+  const r = await client.query<ProjectMasterRow>(
+    'SELECT id,name,code,timezone,version,"primaryWorkItemKey",region,"projectType" FROM "Project" WHERE "orgId"=$1 AND id=$2 FOR UPDATE',
     [orgId, projectId],
   );
   if (!r.rows[0]) throw new ReportError('NOT_FOUND');
   return r.rows[0];
+}
+
+export interface ProjectMasterRow extends ReportProjectRow {
+  version: number;
+  primaryWorkItemKey: string | null;
+  region: string | null;
+  projectType: string | null;
+}
+/** Platform-owned write; caller holds the Project row lock and has current PM authority. */
+export async function setProjectPrimaryWorkItem(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  accountId: string,
+  key: string,
+  expectedVersion: number,
+): Promise<number> {
+  const row = await client.query<{ version: number }>(
+    'UPDATE "Project" SET "primaryWorkItemKey"=$1,version=version+1,"updatedAt"=now(),"updatedBy"=$2 WHERE "orgId"=$3 AND id=$4 AND version=$5 RETURNING version',
+    [key, accountId, orgId, projectId, expectedVersion],
+  );
+  if (!row.rows[0]) throw new ReportError('VERSION_CONFLICT');
+  return row.rows[0].version;
 }
