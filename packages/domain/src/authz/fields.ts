@@ -1,6 +1,8 @@
 import type {
   ProjectStatusHistoryDto,
   StatusCommandResultDto,
+  PrimaryWorkItemResultDto,
+  ReportingExpectationResultDto,
 } from '@mje/contracts';
 /**
  * ADR-0003 D2.3 / D3: every field of the report, issue and photo read DTOs mapped to a layer,
@@ -156,6 +158,8 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 export interface ProjectorDtos {
   'project-status.history': ProjectStatusHistoryDto;
   'project-status.ack': StatusCommandResultDto;
+  'project-status.primary-ack': PrimaryWorkItemResultDto;
+  'project-status.expectation-ack': ReportingExpectationResultDto;
   'report.projects': ReportProjectsDto;
   'report.days.writer': ReportDayRowDto[];
   'report.days.reader': ReportDayRowDto[];
@@ -334,6 +338,12 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
     fields: { projectId: S, n: S, statusUpdateId: S, noteId: S },
   },
 
+  'project-status.primary-ack': {
+    fields: { projectId: S, key: S, version: S },
+  },
+  'project-status.expectation-ack': {
+    fields: { projectId: S, expectationId: S, n: S, registeredAt: S },
+  },
   'report.projects': {
     fields: { accountId: S, personId: S, projects: sub('structure') },
   },
@@ -370,6 +380,7 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
       unit: S,
       designQty: S,
       openingCumulative: S,
+      plannedDate: S,
       sortOrder: S,
       active: S,
     },

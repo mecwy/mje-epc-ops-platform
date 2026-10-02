@@ -4,6 +4,8 @@ import type {
   StatusUpdateDto,
   StatusNoteDto,
   StatusCommandResultDto,
+  PrimaryWorkItemResultDto,
+  ReportingExpectationResultDto,
 } from '@mje/contracts';
 import {
   inTransaction,
@@ -22,6 +24,8 @@ import type { Identity } from '../alpha-store.js';
 export const PROJECT_STATUS_PROJECTORS = [
   'project-status.history',
   'project-status.ack',
+  'project-status.primary-ack',
+  'project-status.expectation-ack',
 ] as const;
 let observer:
   ((name: (typeof PROJECT_STATUS_PROJECTORS)[number]) => void) | null = null;
@@ -115,6 +119,33 @@ export const projectStatusReader = {
           projectId,
           currentN: rows.rows[0]!.latestN,
           updates,
+        });
+      },
+      primaryAcknowledgement(
+        projectId: string,
+        value: PrimaryWorkItemResultDto,
+      ): PrimaryWorkItemResultDto {
+        openProjectStatusReadContext(ctx);
+        if (value.projectId !== projectId)
+          throw new ProjectStatusError('NOT_FOUND');
+        return projected('project-status.primary-ack', {
+          projectId,
+          key: value.key,
+          version: value.version,
+        });
+      },
+      expectationAcknowledgement(
+        projectId: string,
+        value: ReportingExpectationResultDto,
+      ): ReportingExpectationResultDto {
+        openProjectStatusReadContext(ctx);
+        if (value.projectId !== projectId)
+          throw new ProjectStatusError('NOT_FOUND');
+        return projected('project-status.expectation-ack', {
+          projectId,
+          expectationId: value.expectationId,
+          n: value.n,
+          registeredAt: value.registeredAt,
         });
       },
       acknowledgement(

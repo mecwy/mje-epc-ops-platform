@@ -9,6 +9,7 @@ const D1: Capability[] = [
   'project.status.view',
   'project.status.declare',
   'project.status.reply',
+  'project.master.write',
   'report.view',
   'report.view-submitted',
   'report.write',
@@ -61,7 +62,9 @@ describe('surface.ts', () => {
     const layered = SURFACE.filter(
       (e) =>
         e.kind === 'read' &&
-        e.capability.some((c) => /^(report|issue|project\.status)\./.test(c)),
+        e.capability.some((c) =>
+          /^(report|issue|project\.(status|master))\./.test(c),
+        ),
     );
     for (const e of layered)
       for (const c of e.capability)

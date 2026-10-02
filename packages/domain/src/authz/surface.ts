@@ -17,6 +17,7 @@ export type Capability =
   | 'project.status.view'
   | 'project.status.declare'
   | 'project.status.reply'
+  | 'project.master.write'
   | 'report.view'
   | 'report.view-submitted'
   | 'report.write'
@@ -276,6 +277,33 @@ const DEVICE = {
 };
 
 const ENTRIES: readonly SurfaceEntry[] = [
+  write(
+    'POST /api/projects/:id/primary-work-item',
+    'account',
+    'project.master.write',
+    'path.projectId',
+    'ProjectStatusCommands.setPrimaryWorkItem',
+    'cas',
+    { protects: ['Project.version'], advances: ['Project.version'] },
+    {
+      layers: { 'project.master.write': ['structure'] },
+      projector: { 'project.master.write': 'project-status.primary-ack' },
+    },
+  ),
+  write(
+    'POST /api/projects/:id/reporting-expectation',
+    'account',
+    'project.master.write',
+    'path.projectId',
+    'ProjectStatusCommands.registerExpectation',
+    'create',
+    { advances: ['ReportingExpectationVersion.n'] },
+    {
+      layers: { 'project.master.write': ['structure'] },
+      projector: { 'project.master.write': 'project-status.expectation-ack' },
+    },
+  ),
+
   read(
     'GET /api/projects/:id/status',
     'account',

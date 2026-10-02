@@ -22,6 +22,8 @@ import {
   parseDeclareStatusCommand,
   parseAddStatusNoteCommand,
   statusSequence,
+  parseSetPrimaryWorkItemCommand,
+  parseRegisterExpectationCommand,
 } from '@mje/contracts';
 import { TokenVerifier } from './auth/token-verifier.js';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -95,5 +97,31 @@ export class ProjectStatusController {
     );
     this.key(key, c.clientMutationId);
     return this.commands.addStatusNote(await this.identity(request), c);
+  }
+  @Post(':id/primary-work-item')
+  @HttpCode(200)
+  async primary(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: unknown,
+    @Req() request: Request,
+  ) {
+    const identity = await this.identity(request);
+    const c = parseSetPrimaryWorkItemCommand(body, this.id(id));
+    this.key(key, c.clientMutationId);
+    return this.commands.setPrimaryWorkItem(identity, c);
+  }
+  @Post(':id/reporting-expectation')
+  @HttpCode(200)
+  async expectation(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: unknown,
+    @Req() request: Request,
+  ) {
+    const identity = await this.identity(request);
+    const c = parseRegisterExpectationCommand(body, this.id(id));
+    this.key(key, c.clientMutationId);
+    return this.commands.registerExpectation(identity, c);
   }
 }

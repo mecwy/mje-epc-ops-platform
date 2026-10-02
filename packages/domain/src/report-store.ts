@@ -58,6 +58,7 @@ import {
   idempotent,
   inTransaction,
   lockReportDay,
+  lockProjectForUpdate,
   projectWriter,
   type Actor,
   type ReportProjectRow,
@@ -119,6 +120,7 @@ export const publicItem = (r: ItemRow): ReportItemDto => ({
   openingCumulative: r.openingCumulative,
   sortOrder: r.sortOrder,
   active: r.active,
+  ...(r.plannedDate == null ? {} : { plannedDate: r.plannedDate }),
 });
 export type DayState = 'empty' | 'draft' | 'submitted' | 'correcting';
 
@@ -806,13 +808,14 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          await lockProjectForUpdate(client, actor.orgId, project.id);
           const before = await itemRows(client, actor.orgId, project.id);
           for (const item of command.items)
             await client.query(
-              `INSERT INTO "ReportItem"(id,"orgId","projectId",kind,key,label,unit,"designQty","openingCumulative","sortOrder",active,"updatedBy")
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+              `INSERT INTO "ReportItem"(id,"orgId","projectId",kind,key,label,unit,"designQty","openingCumulative","sortOrder",active,"updatedBy","plannedDate")
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::date)
             ON CONFLICT ("orgId","projectId",kind,key) DO UPDATE SET label=excluded.label, unit=excluded.unit, "designQty"=excluded."designQty",
-              "openingCumulative"=excluded."openingCumulative", "sortOrder"=excluded."sortOrder", active=excluded.active, "updatedAt"=now(), "updatedBy"=excluded."updatedBy"`,
+              "openingCumulative"=excluded."openingCumulative", "sortOrder"=excluded."sortOrder", active=excluded.active, "plannedDate"=CASE WHEN $14 THEN excluded."plannedDate" ELSE "ReportItem"."plannedDate" END, "updatedAt"=now(), "updatedBy"=excluded."updatedBy"`,
               [
                 randomUUID(),
                 actor.orgId,
@@ -826,6 +829,8 @@ export class ReportStore {
                 item.sortOrder,
                 item.active,
                 actor.accountId,
+                item.plannedDate ?? null,
+                item.plannedDate !== undefined,
               ],
             );
           const after = await itemRows(client, actor.orgId, project.id);
@@ -927,7 +932,7 @@ export async function itemRows(
   projectId: string,
 ) {
   const r = await client.query<ItemRow>(
-    `SELECT id, kind, key, label, unit, "designQty", "openingCumulative", "sortOrder", active
+    `SELECT id, kind, key, label, unit, "designQty", "openingCumulative", "sortOrder", active,"plannedDate"::text AS "plannedDate"
     FROM "ReportItem" WHERE "orgId"=$1 AND "projectId"=$2 ORDER BY kind, "sortOrder", key`,
     [orgId, projectId],
   );
