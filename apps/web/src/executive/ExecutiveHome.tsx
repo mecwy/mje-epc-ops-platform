@@ -10,6 +10,7 @@ import type {
   ProjectHomeGroupBy,
   ProjectHomeState,
   ProjectStatus,
+  ProjectStatusHistoryDto,
   StatusArea,
 } from '@mje/contracts';
 import type { Project, ReportApi } from '../api.js';
@@ -246,6 +247,7 @@ export function ExecutiveHome({
     if (project?.access === 'write')
       return (
         <StatusPage
+          api={api}
           apiProjectName={currentStatusCard.name}
           card={currentStatusCard}
           session={statusSession(statusProjectId)}
@@ -580,11 +582,13 @@ function ProjectCard({
 }
 
 function StatusPage({
+  api,
   apiProjectName,
   card,
   session,
   onBack,
 }: {
+  api: Pick<ReportApi, 'projectHome'>;
   apiProjectName: string;
   card: ProjectHomeCard;
   session: ProjectStatusSession;
@@ -592,11 +596,47 @@ function StatusPage({
 }) {
   const { t } = useI18n();
   const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const [summary, setSummary] = useState<{
+    history: ProjectStatusHistoryDto;
+    card: ProjectHomeCard;
+  } | null>(null);
+  const [summaryError, setSummaryError] = useState(false);
   useEffect(() => {
     const unsubscribe = session.subscribe(redraw);
     if (!session.read.data && !session.read.busy) void session.load();
     return unsubscribe;
   }, [session]);
+  const history = session.read.data;
+  useEffect(() => {
+    let current = true;
+    setSummary(null);
+    setSummaryError(false);
+    if (history) {
+      void api
+        .projectHome({
+          group: 'region',
+          status: null,
+          q: card.code,
+          page: 1,
+          size: 50,
+        })
+        .then((value) => {
+          if (!current) return;
+          const fresh = value.groups
+            .flatMap((group) => group.projects)
+            .find((project) => project.id === card.id);
+          if (fresh) setSummary({ history, card: fresh });
+          else setSummaryError(true);
+        })
+        .catch(() => {
+          if (current) setSummaryError(true);
+        });
+    }
+    return () => {
+      current = false;
+    };
+  }, [api, card.id, card.code, history]);
+  const currentSummary = summary?.history === history ? summary.card : null;
   const draft = session.commands.owned ? null : session.draft;
   const owned = session.ownedSnapshot;
   const readLatest = session.read.data?.updates[0] ?? null;
@@ -644,12 +684,23 @@ function StatusPage({
         <section className="card exec-status-current">
           <span>{t('execManagerDeclaration')}</span>
           <b>{latest ? statusLabel(t, latest) : t('execNoDeclaration')}</b>
-          <span className={stateClass(card.status.value)}>
-            {t('execSystemStatus')}: {statusLabel(t, card.status.value)}
-          </span>
-          {card.hints.map((hint) => (
-            <small key={hint.code}>{hintLabel(t, hint)}</small>
-          ))}
+          {currentSummary ? (
+            <>
+              <span className={stateClass(currentSummary.status.value)}>
+                {t('execSystemStatus')}:{' '}
+                {statusLabel(t, currentSummary.status.value)}
+              </span>
+              {currentSummary.hints.map((hint) => (
+                <small key={hint.code}>{hintLabel(t, hint)}</small>
+              ))}
+            </>
+          ) : summaryError ? (
+            <div className="banner err" role="alert">
+              <ErrorText code="REQUEST_FAILED" />
+            </div>
+          ) : (
+            <span role="status">{t('loading')}</span>
+          )}
           {session.read.readError && (
             <div className="banner err" role="alert">
               {t('execReadError', { code: session.read.readError })}
