@@ -33,6 +33,8 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
+import { ExecutiveHome } from './executive/ExecutiveHome.js';
+import { ProjectStatusSession } from './executive/status-session.js';
 import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
@@ -153,10 +155,12 @@ function Workspace({
   project,
   signin,
   resume,
+  onExecutiveHome,
 }: {
   session: Session;
   project: Project;
   signin: SignInState;
+  onExecutiveHome: () => void;
   /** What was put aside before a sign-in redirect. */
   resume: ResumeKeeper;
 }) {
@@ -421,7 +425,9 @@ function Workspace({
       className="tabs"
       aria-label={t('mainNav')}
       // The column count applies to the phone's bottom bar only; wider screens use a sidebar.
-      style={task ? undefined : ({ '--tabs': views.length } as CSSProperties)}
+      style={
+        task ? undefined : ({ '--tabs': views.length + 1 } as CSSProperties)
+      }
     >
       {views.map((v) => {
         const NavIcon = navIcon[v];
@@ -442,6 +448,18 @@ function Workspace({
           </button>
         );
       })}
+      <button
+        type="button"
+        className="portfolio-nav"
+        onClick={() => {
+          void h.flush();
+          setTask(null);
+          onExecutiveHome();
+        }}
+      >
+        <Icon.home />
+        <span>{t('nav_home')}</span>
+      </button>
     </nav>
   );
 
@@ -826,6 +844,34 @@ function Root() {
   const [resume] = useState(() => new ResumeKeeper(sessionStore(), Date.now()));
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
+  const [showExecutiveHome, setShowExecutiveHome] = useState(false);
+  const executiveApi = useMemo(
+    () => (session ? reportApi(session.token) : null),
+    [session],
+  );
+  const statusSessions = useMemo(
+    () => new Map<string, ProjectStatusSession>(),
+    [session],
+  );
+  const getStatusSession = useCallback(
+    (projectId: string) => {
+      if (!executiveApi) throw new Error('Session missing');
+      let store = statusSessions.get(projectId);
+      if (!store) {
+        store = new ProjectStatusSession(executiveApi, projectId);
+        statusSessions.set(projectId, store);
+      }
+      return store;
+    },
+    [executiveApi, statusSessions],
+  );
+  useEffect(() => {
+    setSelectedProjectId(null);
+    setShowExecutiveHome(false);
+  }, [session]);
   useEffect(() => {
     if (!session) return;
     reportApi(session.token)
@@ -835,6 +881,13 @@ function Root() {
         setFailed(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
       );
   }, [session]);
+  useEffect(() => {
+    if (selectedProjectId || !projects?.length) return;
+    setSelectedProjectId(
+      projects.find((p) => p.id === resume.state?.projectId)?.id ??
+        projects[0]!.id,
+    );
+  }, [projects, resume, selectedProjectId]);
   // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
   const renewing = Boolean(session?.renew && state.expired && !projects);
   if (needLogin || renewing)
@@ -870,15 +923,33 @@ function Root() {
   if (!session || !projects)
     return <main className="page muted">{t('loading')}</main>;
   const project =
-    projects.find((p) => p.id === resume.state?.projectId) ?? projects[0];
+    projects.find((p) => p.id === selectedProjectId) ?? projects[0];
   if (!project) return <main className="page">{t('noProject')}</main>;
   return (
-    <Workspace
-      session={session}
-      project={project}
-      signin={state}
-      resume={resume}
-    />
+    <>
+      <div className={showExecutiveHome ? 'workspace-hidden' : undefined}>
+        <Workspace
+          key={project.id}
+          session={session}
+          project={project}
+          signin={state}
+          resume={resume}
+          onExecutiveHome={() => setShowExecutiveHome(true)}
+        />
+      </div>
+      {showExecutiveHome && executiveApi && (
+        <ExecutiveHome
+          api={executiveApi}
+          projects={projects}
+          statusSession={getStatusSession}
+          onBack={() => setShowExecutiveHome(false)}
+          onOpenProject={(id) => {
+            setSelectedProjectId(id);
+            setShowExecutiveHome(false);
+          }}
+        />
+      )}
+    </>
   );
 }
 

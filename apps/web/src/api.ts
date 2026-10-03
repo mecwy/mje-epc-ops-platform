@@ -39,7 +39,14 @@ import type {
   ForemanDayDto,
   PmProxyCheckInCommand,
   RosterDto,
+  ProjectHomeDto,
+  ProjectAttentionDto,
+  ProjectStatusHistoryDto,
+  StatusCommandResultDto,
+  DeclareStatusCommand,
+  StatusFieldName,
 } from '@mje/contracts';
+import { STATUS_FIELD_NAMES } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
 export interface AuthConfig {
@@ -214,6 +221,8 @@ export class ApiError extends Error {
     public readonly status: number,
     /** This answer came after an earlier attempt of the same request was lost (a resend). */
     public readonly afterLostAttempt = false,
+    /** Sanitized fixed names; never response text or original input. */
+    public readonly fields: readonly StatusFieldName[] = [],
   ) {
     super(code);
   }
@@ -237,6 +246,30 @@ export function responseCode(status: number, body: string): string {
   // A gateway in front of the API can refuse a large body without the API's JSON.
   if (status === 413) return 'PHOTO_TOO_LARGE';
   return 'REQUEST_FAILED';
+}
+function statusFields(body: string): StatusFieldName[] {
+  try {
+    const value: unknown = JSON.parse(body);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    if (
+      record.code !== 'STATUS_FIELDS_REQUIRED' ||
+      !Array.isArray(record.fields)
+    )
+      return [];
+    const fields: unknown[] = record.fields;
+    if (
+      !fields.every(
+        (field): field is StatusFieldName =>
+          typeof field === 'string' &&
+          STATUS_FIELD_NAMES.some((name) => name === field),
+      )
+    )
+      return [];
+    return [...new Set(fields)];
+  } catch {
+    return [];
+  }
 }
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -274,12 +307,15 @@ async function request<T>(
       void error;
       continue;
     }
-    if (!response.ok)
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
       throw new ApiError(
-        responseCode(response.status, await response.text().catch(() => '')),
+        responseCode(response.status, body),
         response.status,
         attempt > 0,
+        statusFields(body),
       );
+    }
     return (await response.json()) as T;
   }
 }
@@ -380,9 +416,38 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
   ) => request<T>(`/api/report/${path}?${qs(params)}`, await token());
   const post = async <T>(path: string, command: Command) =>
     request<T>(`/api/report/${path}`, await token(), command, onRetry);
+  const apiGet = async <T>(path: string) => request<T>(path, await token());
+  const apiPost = async <T>(path: string, command: Command) =>
+    request<T>(path, await token(), command, onRetry);
   return {
     projects: async () =>
       request<ProjectsResponse>('/api/report/projects', await token()),
+    projectHome: (query: {
+      group: 'region' | 'manager' | 'type';
+      status: string | null;
+      q: string;
+      page: number;
+      size: number;
+    }) =>
+      apiGet<ProjectHomeDto>(
+        `/api/projects/home?${qs({
+          group: query.group,
+          ...(query.status ? { status: query.status } : {}),
+          q: query.q,
+          page: query.page,
+          size: query.size,
+        })}`,
+      ),
+    projectAttention: () => apiGet<ProjectAttentionDto>('/api/attention'),
+    projectStatus: (projectId: string) =>
+      apiGet<ProjectStatusHistoryDto>(
+        `/api/projects/${encodeURIComponent(projectId)}/status`,
+      ),
+    declareProjectStatus: (command: DeclareStatusCommand) =>
+      apiPost<StatusCommandResultDto>(
+        `/api/projects/${encodeURIComponent(command.projectId)}/status`,
+        command,
+      ),
     day: (projectId: string, businessDate: string) =>
       get<DayView>('day', { projectId, businessDate }),
     revision: (projectId: string, businessDate: string, n: number) =>
