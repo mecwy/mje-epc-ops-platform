@@ -221,7 +221,7 @@ export function ExecutiveHome({
     return () => {
       current = false;
     };
-  }, [api]);
+  }, [api, refreshEpoch]);
 
   const accessByProject = useMemo(
     () => new Map(projects.map((project) => [project.id, project])),
@@ -249,7 +249,10 @@ export function ExecutiveHome({
           apiProjectName={currentStatusCard.name}
           card={currentStatusCard}
           session={statusSession(statusProjectId)}
-          onBack={() => setStatusProjectId(null)}
+          onBack={() => {
+            setStatusProjectId(null);
+            setRefreshEpoch((epoch) => epoch + 1);
+          }}
         />
       );
   }
@@ -691,24 +694,26 @@ function StatusPage({
                 {t('execVersion', { n: owned.expectedN })}
               </span>
               <span>{owned.situation || t('execNoSituation')}</span>
-              <div className="exec-card-actions">
-                <button
-                  type="button"
-                  className="primary small"
-                  disabled={session.read.busy}
-                  onClick={() => void session.retry()}
-                >
-                  {session.read.busy ? t('saving') : t('retry')}
-                </button>
-                <button
-                  type="button"
-                  className="ghost small"
-                  disabled={session.read.busy}
-                  onClick={() => void session.abandon()}
-                >
-                  {t('execGiveUp')}
-                </button>
-              </div>
+              {session.commands.unresolved !== null ? (
+                <div className="exec-card-actions">
+                  <button
+                    type="button"
+                    className="primary small"
+                    onClick={() => void session.retry()}
+                  >
+                    {t('retry')}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => void session.abandon()}
+                  >
+                    {t('execGiveUp')}
+                  </button>
+                </div>
+              ) : (
+                <span role="status">{t('saving')}</span>
+              )}
             </div>
           )}
         </section>

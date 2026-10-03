@@ -159,17 +159,24 @@ export class ProjectStatusSession {
   }
 
   async retry() {
-    if (this.read.pending || this.commands.unresolved !== null) {
+    if (this.commands.owned) {
+      if (this.commands.unresolved === null) return;
       const result = await this.commands.retry();
       this.finish(result);
       return;
     }
     if (this.savedNeedsRefresh || this.read.error === 'STALE') {
+      const refreshingSaved = this.savedNeedsRefresh;
       await this.read.retry();
       if (!this.read.error && !this.read.readError) {
         this.savedNeedsRefresh = false;
-        if (this.draft) this.draft = { ...this.draft, dirty: false };
-        this.syncCleanDraft();
+        this.activePayload = null;
+        // A pre-send read failure did not save the draft. Recovery must not
+        // replace its input or move its original expected version.
+        if (refreshingSaved) {
+          if (this.draft) this.draft = { ...this.draft, dirty: false };
+          this.syncCleanDraft();
+        }
       }
       this.emit();
       return;
@@ -178,7 +185,7 @@ export class ProjectStatusSession {
   }
 
   async abandon() {
-    if (!this.commands.owned || this.read.busy) return;
+    if (this.commands.unresolved === null || this.read.busy) return;
     this.lastAttemptMayBeRecorded = true;
     this.savedNeedsRefresh = true;
     this.commands.discard();
@@ -215,9 +222,17 @@ export class ProjectStatusSession {
       this.lastAttemptMayBeRecorded = result.uncertain;
       if (result.code === 'READ_ONLY' || result.code === 'FORBIDDEN')
         this.permissionLost = true;
+      const refusedPayload = this.activePayload;
       this.activePayload = null;
-      if (this.draft) this.draft = { ...this.draft, dirty: false };
-      this.syncCleanDraft();
+      // A refusal is not a saved declaration. Keep the exact submitted input and
+      // its original version even if the protected reread has already advanced.
+      if (refusedPayload) {
+        this.draft = {
+          ...refusedPayload,
+          areas: [...refusedPayload.areas],
+          dirty: true,
+        };
+      }
     }
     this.emit();
   }
