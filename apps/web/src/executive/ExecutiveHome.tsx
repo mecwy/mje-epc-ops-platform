@@ -390,7 +390,10 @@ export function ExecutiveHome({
             <input
               value={query}
               maxLength={160}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(1);
+              }}
             />
           </label>
           <label>
