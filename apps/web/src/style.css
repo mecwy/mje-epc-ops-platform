@@ -246,6 +246,16 @@ input:disabled {
   gap: 12px;
   padding-top: 10px;
 }
+.exec-normal-group {
+  margin-top: 12px;
+}
+.exec-normal-group > summary {
+  display: list-item;
+  list-style-position: inside;
+}
+.exec-normal-group > summary .muted {
+  float: right;
+}
 .exec-card {
   min-width: 0;
   gap: 10px;

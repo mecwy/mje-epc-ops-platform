@@ -438,34 +438,37 @@ export function ExecutiveHome({
           <div className="card muted">{t('execNoProjects')}</div>
         )}
         {home?.groups.map((group) => {
-          const exceptionCount = group.projects.filter(
+          const exceptions = group.projects.filter(
             (project) => project.status.value !== 'NORMAL',
-          ).length;
+          );
+          const normal = group.projects.filter(
+            (project) => project.status.value === 'NORMAL',
+          );
+          const projectCard = (project: ProjectHomeCard) => (
+            <ProjectCard
+              key={project.id}
+              card={project}
+              canPublish={accessByProject.get(project.id)?.access === 'write'}
+              onOpen={() => onOpenProject(project.id)}
+              onStatus={() => setStatusProjectId(project.id)}
+            />
+          );
           return (
-            <details
-              className="exec-group"
-              key={group.key}
-              open={exceptionCount > 0 || undefined}
-            >
+            <details className="exec-group" key={group.key} open>
               <summary>
                 <span>{group.key}</span>
                 <span className="muted">{group.count}</span>
               </summary>
-              <div className="exec-cards">
-                {group.projects.map((project) => {
-                  const canPublish =
-                    accessByProject.get(project.id)?.access === 'write';
-                  return (
-                    <ProjectCard
-                      key={project.id}
-                      card={project}
-                      canPublish={canPublish}
-                      onOpen={() => onOpenProject(project.id)}
-                      onStatus={() => setStatusProjectId(project.id)}
-                    />
-                  );
-                })}
-              </div>
+              <div className="exec-cards">{exceptions.map(projectCard)}</div>
+              {normal.length > 0 && (
+                <details className="exec-group exec-normal-group">
+                  <summary>
+                    <span>{statusLabel(t, 'NORMAL')}</span>
+                    <span className="muted">{normal.length}</span>
+                  </summary>
+                  <div className="exec-cards">{normal.map(projectCard)}</div>
+                </details>
+              )}
             </details>
           );
         })}
@@ -553,7 +556,6 @@ function ProjectCard({
           days: card.forecast.sampleDays,
         })
       : forecastLabel(t, card.forecast.state);
-  const openByDefault = card.status.value !== 'NORMAL';
   return (
     <article className="card exec-card">
       <div className="exec-card-head">
@@ -640,9 +642,6 @@ function ProjectCard({
           {t('execOpenProject')}
         </button>
       </div>
-      {openByDefault && (
-        <span className="sr-only">{t('execExceptionExpanded')}</span>
-      )}
     </article>
   );
 }
