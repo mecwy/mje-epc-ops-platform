@@ -206,7 +206,7 @@ input:disabled {
 }
 .exec-controls input,
 .exec-controls select,
-.exec-status-form input:not([type='checkbox']),
+.exec-status-form input:not([type='checkbox']):not([type='radio']),
 .exec-status-form select,
 .exec-status-form textarea {
   width: 100%;
@@ -431,6 +431,26 @@ input:disabled {
 }
 .exec-status-form .blk-row {
   align-items: baseline;
+}
+.exec-status-form [aria-invalid='true'] {
+  outline: 2px solid var(--err);
+  outline-offset: 2px;
+}
+.exec-conflict {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.exec-conflict fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.exec-conflict-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .exec-area-fieldset {
   margin: 0;

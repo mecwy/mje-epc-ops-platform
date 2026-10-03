@@ -15,6 +15,309 @@ function history(projectId: string, currentN: number): ProjectStatusHistoryDto {
 }
 
 describe('ProjectStatusSession', () => {
+  it('blocks incomplete local declarations before acquiring a command or sending', async () => {
+    const sent: DeclareStatusCommand[] = [];
+    const session = new ProjectStatusSession(
+      {
+        projectStatus: async () => history(A, 0),
+        declareProjectStatus: async (command) => {
+          sent.push(command);
+          throw new ApiError('VERSION_CONFLICT', 409);
+        },
+      },
+      A,
+    );
+    await session.load();
+    session.edit({ status: 'AT_RISK' });
+    expect(session.requiredFields).toEqual([
+      'areas',
+      'situation',
+      'recovery',
+      'expectedRecoveryDate',
+      'expectedRecoveryUnknown',
+    ]);
+    await session.publish();
+    expect(sent).toHaveLength(0);
+    expect(session.commands.owned).toBe(false);
+    session.edit({
+      areas: ['SCHEDULE'],
+      situation: 'TEST situation',
+      recovery: 'TEST recovery',
+    });
+    expect(session.requiredFields).toEqual([
+      'expectedRecoveryDate',
+      'expectedRecoveryUnknown',
+    ]);
+    session.edit({ expectedRecoveryUnknown: true });
+    expect(session.requiredFields).toEqual([]);
+    await session.publish();
+    expect(sent).toHaveLength(1);
+  });
+
+  it('does not adopt mixed conflict choices that violate the existing required-field rules', async () => {
+    let currentN = 0;
+    const session = new ProjectStatusSession(
+      {
+        projectStatus: async () => ({
+          projectId: A,
+          currentN,
+          updates: currentN
+            ? [
+                {
+                  id: 'TEST-latest',
+                  n: currentN,
+                  status: 'NORMAL',
+                  areas: [],
+                  situation: 'TEST latest',
+                  recovery: '',
+                  expectedRecoveryDate: null,
+                  expectedRecoveryUnknown: false,
+                  needsSupport: false,
+                  supportNote: '',
+                  declaredAt: '2026-10-03T12:00:00Z',
+                  siteTimezone: 'UTC',
+                  businessDate: '2026-10-03',
+                  declaredBy: 'TEST-account',
+                  declaredByPersonId: 'TEST-person',
+                  notes: [],
+                },
+              ]
+            : [],
+        }),
+        declareProjectStatus: async () => {
+          throw Error('TEST no send');
+        },
+      },
+      A,
+    );
+    await session.load();
+    session.edit({
+      status: 'AT_RISK',
+      areas: ['SCHEDULE'],
+      situation: 'TEST mine',
+      recovery: 'TEST plan',
+      expectedRecoveryUnknown: true,
+    });
+    currentN = 1;
+    await session.load();
+    const review = session.reviewConflict();
+    if (!review) throw Error('TEST missing comparison');
+    const mixed = {
+      status: 'latest',
+      areas: 'mine',
+      situation: 'mine',
+      recovery: 'mine',
+      expectedRecoveryDate: 'mine',
+      expectedRecoveryUnknown: 'mine',
+      needsSupport: 'mine',
+      supportNote: 'mine',
+    } as const;
+    expect(session.confirmConflict(review, mixed)).toBe(false);
+    expect(session.draft).toMatchObject({
+      status: 'AT_RISK',
+      expectedN: 0,
+      areas: ['SCHEDULE'],
+    });
+  });
+  it('requires all explicit field choices before adopting a reviewed latest version', async () => {
+    let currentN = 0;
+    const session = new ProjectStatusSession(
+      {
+        projectStatus: async () => ({
+          projectId: A,
+          currentN,
+          updates: currentN
+            ? [
+                {
+                  id: 'TEST-latest',
+                  n: currentN,
+                  status: 'AT_RISK',
+                  areas: ['RESOURCE'],
+                  situation: 'TEST latest situation',
+                  recovery: 'TEST latest recovery',
+                  expectedRecoveryDate: null,
+                  expectedRecoveryUnknown: true,
+                  needsSupport: false,
+                  supportNote: '',
+                  declaredAt: '2026-10-03T12:00:00Z',
+                  siteTimezone: 'UTC',
+                  businessDate: '2026-10-03',
+                  declaredBy: 'TEST-account',
+                  declaredByPersonId: 'TEST-person',
+                  notes: [],
+                },
+              ]
+            : [],
+        }),
+        declareProjectStatus: async () => {
+          throw Error('TEST must not send during review');
+        },
+      },
+      A,
+    );
+    await session.load();
+    session.edit({
+      status: 'AT_RISK',
+      areas: ['SCHEDULE'],
+      situation: 'TEST mine',
+      recovery: 'TEST my recovery',
+      expectedRecoveryUnknown: true,
+    });
+    currentN = 1;
+    await session.load();
+    const review = session.reviewConflict();
+    expect(review).not.toBeNull();
+    if (!review) throw Error('TEST missing review');
+    expect(session.confirmConflict(review, { status: 'mine' })).toBe(false);
+    expect(session.draft?.expectedN).toBe(0);
+    expect(session.draft?.situation).toBe('TEST mine');
+    expect(
+      session.confirmConflict(review, {
+        status: 'mine',
+        areas: 'latest',
+        situation: 'mine',
+        recovery: 'latest',
+        expectedRecoveryDate: 'latest',
+        expectedRecoveryUnknown: 'latest',
+        needsSupport: 'latest',
+        supportNote: 'latest',
+      }),
+    ).toBe(true);
+    expect(session.draft).toMatchObject({
+      expectedN: 1,
+      situation: 'TEST mine',
+      recovery: 'TEST latest recovery',
+      areas: ['RESOURCE'],
+    });
+  });
+
+  it('rejects confirmation if input or latest read changes during comparison', async () => {
+    let currentN = 1;
+    const api = {
+      projectStatus: async () =>
+        ({
+          projectId: A,
+          currentN,
+          updates: [
+            {
+              id: 'TEST-latest',
+              n: currentN,
+              status: 'NORMAL',
+              areas: [],
+              situation: 'TEST latest',
+              recovery: '',
+              expectedRecoveryDate: null,
+              expectedRecoveryUnknown: false,
+              needsSupport: false,
+              supportNote: '',
+              declaredAt: '2026-10-03T12:00:00Z',
+              siteTimezone: 'UTC',
+              businessDate: '2026-10-03',
+              declaredBy: 'TEST-account',
+              declaredByPersonId: 'TEST-person',
+              notes: [],
+            },
+          ],
+        }) satisfies ProjectStatusHistoryDto,
+      declareProjectStatus: async () => {
+        throw Error('TEST no send');
+      },
+    };
+    const session = new ProjectStatusSession(api, A);
+    await session.load();
+    session.edit({ situation: 'TEST mine' });
+    currentN = 2;
+    await session.load();
+    const choices = {
+      status: 'mine',
+      areas: 'mine',
+      situation: 'mine',
+      recovery: 'mine',
+      expectedRecoveryDate: 'mine',
+      expectedRecoveryUnknown: 'mine',
+      needsSupport: 'mine',
+      supportNote: 'mine',
+    } as const;
+    const edited = session.reviewConflict();
+    if (!edited) throw Error('TEST missing review');
+    session.edit({ situation: 'TEST changed during review' });
+    expect(session.confirmConflict(edited, choices)).toBe(false);
+    const reread = session.reviewConflict();
+    if (!reread) throw Error('TEST missing rereview');
+    currentN = 3;
+    await session.load();
+    expect(session.confirmConflict(reread, choices)).toBe(false);
+    expect(session.draft).toMatchObject({
+      expectedN: 1,
+      situation: 'TEST changed during review',
+    });
+  });
+
+  it('retains explicitly reviewed values/version when another declaration races the next send', async () => {
+    let currentN = 0;
+    const sent: DeclareStatusCommand[] = [];
+    const api = {
+      projectStatus: async () =>
+        ({
+          projectId: A,
+          currentN,
+          updates: currentN
+            ? [
+                {
+                  id: 'TEST-concurrent',
+                  n: currentN,
+                  status: 'NORMAL',
+                  areas: [],
+                  situation: 'TEST other manager',
+                  recovery: '',
+                  expectedRecoveryDate: null,
+                  expectedRecoveryUnknown: false,
+                  needsSupport: false,
+                  supportNote: '',
+                  declaredAt: '2026-10-03T12:00:00Z',
+                  siteTimezone: 'UTC',
+                  businessDate: '2026-10-03',
+                  declaredBy: 'TEST-account',
+                  declaredByPersonId: 'TEST-person',
+                  notes: [],
+                },
+              ]
+            : [],
+        }) satisfies ProjectStatusHistoryDto,
+      declareProjectStatus: async (command: DeclareStatusCommand) => {
+        sent.push(structuredClone(command));
+        throw new ApiError('VERSION_CONFLICT', 409);
+      },
+    };
+    const session = new ProjectStatusSession(api, A);
+    await session.load();
+    session.edit({ situation: 'TEST my retained values' });
+    currentN = 1;
+    await session.load();
+    const review = session.reviewConflict();
+    if (!review) throw Error('TEST missing comparison');
+    expect(
+      session.confirmConflict(review, {
+        status: 'mine',
+        areas: 'mine',
+        situation: 'mine',
+        recovery: 'mine',
+        expectedRecoveryDate: 'mine',
+        expectedRecoveryUnknown: 'mine',
+        needsSupport: 'mine',
+        supportNote: 'mine',
+      }),
+    ).toBe(true);
+    const reviewed = structuredClone(session.draft);
+    currentN = 2;
+    await session.publish();
+    expect(sent[0]).toMatchObject({
+      expectedN: 1,
+      situation: 'TEST my retained values',
+    });
+    expect(session.draft).toEqual(reviewed);
+    expect(session.read.data?.currentN).toBe(2);
+  });
   it('keeps the edited project and expected version when a newer read lands', async () => {
     let currentN = 0;
     const sent: DeclareStatusCommand[] = [];
@@ -32,7 +335,13 @@ describe('ProjectStatusSession', () => {
     } as Pick<ReportApi, 'projectStatus' | 'declareProjectStatus'>;
     const session = new ProjectStatusSession(api, A);
     await session.load();
-    session.edit({ status: 'AT_RISK', areas: ['SCHEDULE'] });
+    session.edit({
+      status: 'AT_RISK',
+      areas: ['SCHEDULE'],
+      situation: 'TEST delay',
+      recovery: 'TEST recovery',
+      expectedRecoveryUnknown: true,
+    });
     currentN = 1;
     await session.load();
     await session.publish();

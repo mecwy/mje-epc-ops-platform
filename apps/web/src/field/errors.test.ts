@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { FieldErrorCode } from '@mje/domain';
 import { MESSAGES, translate, type MessageKey } from '@mje/ui';
-import { FIELD_ERRORS, fieldErrorKey, type KnownFieldCode } from './errors.js';
+import {
+  FIELD_ERRORS,
+  fieldErrorKey,
+  outcomeKey,
+  type KnownFieldCode,
+} from './errors.js';
 
 // Compile-time: every code the domain can throw has a message (tsc fails when one is added).
 const everyDomainCode: Record<FieldErrorCode, MessageKey> = FIELD_ERRORS;
@@ -13,6 +18,20 @@ const adoptCodes: KnownFieldCode[] = [
 ];
 
 describe('field error messages', () => {
+  it('gives required status fields safe guidance without changing uncertain outcome priority', () => {
+    expect(fieldErrorKey('STATUS_FIELDS_REQUIRED')).toBe(
+      'fe_statusFieldsRequired',
+    );
+    expect(
+      outcomeKey('STATUS_FIELDS_REQUIRED', { write: true, uncertain: true }),
+    ).toBe('fe_statusFieldsRequired');
+    expect(outcomeKey('REQUEST_FAILED', { write: true, uncertain: true })).toBe(
+      'fu_server',
+    );
+    expect(outcomeKey('READ_ONLY', { write: true, uncertain: true })).toBe(
+      'fe_accessMaybeRecorded',
+    );
+  });
   it('maps every domain, adoption and transport code to a four-language message', () => {
     const codes = Object.keys(FIELD_ERRORS) as KnownFieldCode[];
     expect(codes).toEqual(expect.arrayContaining(Object.keys(everyDomainCode)));

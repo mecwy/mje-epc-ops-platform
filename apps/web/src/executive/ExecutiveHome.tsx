@@ -16,7 +16,13 @@ import type {
 import type { Project, ReportApi } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
-import { ProjectStatusSession } from './status-session.js';
+import {
+  ProjectStatusSession,
+  STATUS_CONFLICT_FIELDS,
+  type StatusConflict,
+  type StatusConflictChoices,
+  type StatusConflictField,
+} from './status-session.js';
 import { ErrorText } from '../field/ErrorText.js';
 
 type Props = {
@@ -86,6 +92,45 @@ function areaLabel(t: Translate, area: StatusArea) {
     case 'EXTERNAL':
       return t('execAreaExternal');
   }
+}
+
+function conflictFieldLabel(t: Translate, field: StatusConflictField) {
+  switch (field) {
+    case 'status':
+      return t('execStatusLabel');
+    case 'areas':
+      return t('execAreas');
+    case 'situation':
+      return t('execSituation');
+    case 'recovery':
+      return t('execRecovery');
+    case 'expectedRecoveryDate':
+      return t('execExpectedRecovery');
+    case 'expectedRecoveryUnknown':
+      return t('execRecoveryUnknown');
+    case 'needsSupport':
+      return t('execNeedsSupport');
+    case 'supportNote':
+      return t('execSupportNote');
+  }
+}
+
+function conflictValue(
+  t: Translate,
+  field: StatusConflictField,
+  payload: StatusConflict['mine'],
+) {
+  if (field === 'status') return statusLabel(t, payload.status);
+  if (field === 'areas')
+    return (
+      payload.areas.map((area) => areaLabel(t, area)).join(', ') ||
+      t('execBlankValue')
+    );
+  const value = payload[field];
+  if (typeof value === 'boolean')
+    return value ? t('execBooleanTrue') : t('execBooleanFalse');
+  if (value === null) return t('none');
+  return value || t('execBlankValue');
 }
 
 function completionLabel(
@@ -188,11 +233,9 @@ export function ExecutiveHome({
             setHome(value);
             setLoadError(null);
           })
-          .catch((error: unknown) => {
+          .catch(() => {
             if (!current) return;
-            setLoadError(
-              error instanceof Error ? error.message : 'REQUEST_FAILED',
-            );
+            setLoadError('REQUEST_FAILED');
           })
           .finally(() => {
             if (current) setLoading(false);
@@ -601,6 +644,8 @@ function StatusPage({
     card: ProjectHomeCard;
   } | null>(null);
   const [summaryError, setSummaryError] = useState(false);
+  const [comparison, setComparison] = useState<StatusConflict | null>(null);
+  const [choices, setChoices] = useState<StatusConflictChoices>({});
   useEffect(() => {
     const unsubscribe = session.subscribe(redraw);
     if (!session.read.data && !session.read.busy) void session.load();
@@ -638,6 +683,11 @@ function StatusPage({
   }, [api, card.id, card.code, history]);
   const currentSummary = summary?.history === history ? summary.card : null;
   const draft = session.commands.owned ? null : session.draft;
+  const requiredFields = session.requiredFields;
+  const conflictFields =
+    comparison && session.conflictIsCurrent(comparison)
+      ? session.conflictRequiredFields(comparison, choices)
+      : [];
   const owned = session.ownedSnapshot;
   const readLatest = session.read.data?.updates[0] ?? null;
   const latest = readLatest?.status ?? card.status.declaredStatus;
@@ -703,18 +753,23 @@ function StatusPage({
           )}
           {session.read.readError && (
             <div className="banner err" role="alert">
-              {t('execReadError', { code: session.read.readError })}
+              <ErrorText code={session.read.readError} />
             </div>
           )}
-          {session.read.error && session.read.error !== 'STALE' && (
-            <div className="banner err" role="alert">
-              <ErrorText
-                code={session.read.error}
-                write
-                uncertain={session.lastAttemptMayBeRecorded}
-              />
-            </div>
-          )}
+          {session.read.error &&
+            session.read.error !== 'STALE' &&
+            !(
+              session.read.error === 'STATUS_FIELDS_REQUIRED' &&
+              requiredFields.length > 0
+            ) && (
+              <div className="banner err" role="alert">
+                <ErrorText
+                  code={session.read.error}
+                  write
+                  uncertain={session.lastAttemptMayBeRecorded}
+                />
+              </div>
+            )}
           {session.lastAttemptMayBeRecorded && (
             <div className="banner warn" role="alert">
               {t('execMayBeRecorded')}
@@ -787,10 +842,106 @@ function StatusPage({
                   <button
                     className="textbtn"
                     type="button"
-                    onClick={() => void session.retry()}
+                    onClick={() => {
+                      setComparison(session.reviewConflict());
+                      setChoices({});
+                    }}
                   >
                     {t('execReloadForm')}
                   </button>
+                </div>
+              )}
+              {comparison && session.conflictIsCurrent(comparison) && (
+                <section className="exec-conflict">
+                  <p>{t('execConflictChoices')}</p>
+                  {STATUS_CONFLICT_FIELDS.map((field) => (
+                    <fieldset
+                      key={field}
+                      disabled={session.locked}
+                      aria-invalid={
+                        field !== 'status' && conflictFields.includes(field)
+                      }
+                    >
+                      <legend>{conflictFieldLabel(t, field)}</legend>
+                      <p className="exec-conflict-value">
+                        {t('retainedLine', {
+                          mine: conflictValue(t, field, comparison.mine),
+                          now: conflictValue(t, field, comparison.latest),
+                        })}
+                      </p>
+                      <label className="checkline">
+                        <input
+                          type="radio"
+                          name={`conflict-${field}`}
+                          checked={choices[field] === 'mine'}
+                          onChange={() =>
+                            setChoices((previous) => ({
+                              ...previous,
+                              [field]: 'mine',
+                            }))
+                          }
+                        />
+                        {t('execConflictMine')}
+                      </label>
+                      <label className="checkline">
+                        <input
+                          type="radio"
+                          name={`conflict-${field}`}
+                          checked={choices[field] === 'latest'}
+                          onChange={() =>
+                            setChoices((previous) => ({
+                              ...previous,
+                              [field]: 'latest',
+                            }))
+                          }
+                        />
+                        {t('execConflictLatest')}
+                      </label>
+                    </fieldset>
+                  ))}
+                  {conflictFields.length > 0 && (
+                    <div className="banner err" role="alert">
+                      {t('fe_statusFieldsRequired')}
+                      <ul>
+                        {conflictFields.map((field) => (
+                          <li key={field}>{conflictFieldLabel(t, field)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="primary wide"
+                    disabled={
+                      session.locked ||
+                      conflictFields.length > 0 ||
+                      !STATUS_CONFLICT_FIELDS.every((field) => choices[field])
+                    }
+                    onClick={() => {
+                      if (session.confirmConflict(comparison, choices)) {
+                        setComparison(null);
+                        setChoices({});
+                      }
+                    }}
+                  >
+                    {t('execConflictConfirm', {
+                      n: comparison.history.currentN,
+                    })}
+                  </button>
+                </section>
+              )}
+              {requiredFields.length > 0 && (
+                <div
+                  className="banner err"
+                  role="alert"
+                  id="exec-required-fields"
+                >
+                  {t('fe_statusFieldsRequired')}
+                  <ul>
+                    {requiredFields.map((field) => (
+                      <li key={field}>{conflictFieldLabel(t, field)}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
               <label>
@@ -814,6 +965,12 @@ function StatusPage({
               {statusValue !== 'NORMAL' && (
                 <fieldset
                   className="exec-area-fieldset"
+                  aria-invalid={requiredFields.includes('areas')}
+                  aria-describedby={
+                    requiredFields.includes('areas')
+                      ? 'exec-required-fields'
+                      : undefined
+                  }
                   disabled={session.locked || !draft}
                 >
                   <legend>{t('execAreas')}</legend>
@@ -844,6 +1001,12 @@ function StatusPage({
                   rows={3}
                   maxLength={4000}
                   value={draft?.situation ?? ''}
+                  aria-invalid={requiredFields.includes('situation')}
+                  aria-describedby={
+                    requiredFields.includes('situation')
+                      ? 'exec-required-fields'
+                      : undefined
+                  }
                   disabled={session.locked || !draft}
                   onChange={(event) =>
                     session.edit({ situation: event.target.value })
@@ -857,6 +1020,12 @@ function StatusPage({
                     rows={3}
                     maxLength={4000}
                     value={draft?.recovery ?? ''}
+                    aria-invalid={requiredFields.includes('recovery')}
+                    aria-describedby={
+                      requiredFields.includes('recovery')
+                        ? 'exec-required-fields'
+                        : undefined
+                    }
                     disabled={session.locked || !draft}
                     onChange={(event) =>
                       session.edit({ recovery: event.target.value })
@@ -870,6 +1039,14 @@ function StatusPage({
                     <span>{t('execExpectedRecovery')}</span>
                     <input
                       type="date"
+                      aria-invalid={requiredFields.includes(
+                        'expectedRecoveryDate',
+                      )}
+                      aria-describedby={
+                        requiredFields.includes('expectedRecoveryDate')
+                          ? 'exec-required-fields'
+                          : undefined
+                      }
                       value={draft?.expectedRecoveryDate ?? ''}
                       disabled={
                         session.locked ||
@@ -887,6 +1064,14 @@ function StatusPage({
                     <input
                       type="checkbox"
                       checked={draft?.expectedRecoveryUnknown ?? false}
+                      aria-invalid={requiredFields.includes(
+                        'expectedRecoveryUnknown',
+                      )}
+                      aria-describedby={
+                        requiredFields.includes('expectedRecoveryUnknown')
+                          ? 'exec-required-fields'
+                          : undefined
+                      }
                       disabled={session.locked || !draft}
                       onChange={(event) =>
                         session.edit({
@@ -902,6 +1087,12 @@ function StatusPage({
                 <input
                   type="checkbox"
                   checked={draft?.needsSupport ?? false}
+                  aria-invalid={requiredFields.includes('needsSupport')}
+                  aria-describedby={
+                    requiredFields.includes('needsSupport')
+                      ? 'exec-required-fields'
+                      : undefined
+                  }
                   disabled={
                     session.locked || !draft || statusValue === 'NORMAL'
                   }
@@ -918,6 +1109,12 @@ function StatusPage({
                     rows={2}
                     maxLength={4000}
                     value={draft.supportNote}
+                    aria-invalid={requiredFields.includes('supportNote')}
+                    aria-describedby={
+                      requiredFields.includes('supportNote')
+                        ? 'exec-required-fields'
+                        : undefined
+                    }
                     disabled={session.locked}
                     onChange={(event) =>
                       session.edit({ supportNote: event.target.value })
@@ -925,15 +1122,15 @@ function StatusPage({
                   />
                 </label>
               )}
-              {session.read.error === 'STALE' && (
-                <div className="banner warn" role="status">
-                  {t('execSavedNeedsRefresh')}
-                </div>
-              )}
               <button
                 type="submit"
                 className="primary wide"
-                disabled={session.locked || !draft}
+                disabled={
+                  session.locked ||
+                  !draft ||
+                  requiredFields.length > 0 ||
+                  draft.expectedN !== session.read.data.currentN
+                }
               >
                 {t('execPublishStatus')}
               </button>

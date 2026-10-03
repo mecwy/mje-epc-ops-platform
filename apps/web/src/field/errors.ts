@@ -3,7 +3,8 @@ import type { MessageKey } from '@mje/ui';
 /**
  * Every field, check-in, binding, roster, foreman and adoption code the API returns (the
  * domain's FieldErrorCode plus the report codes adopt uses), each with its own user message.
- * The error body carries only a code; the message never repeats a name, code or coordinate.
+ * Messages are chosen only by code and never repeat a name, code or coordinate. A status
+ * refusal may also carry sanitized fixed field names, handled by the status form separately.
  * errors.test.ts checks this table against the domain's FieldErrorCode at compile time and
  * that no two codes share a message (INVALID_JSON is INVALID_INPUT's transport form).
  */
@@ -24,6 +25,7 @@ export const FIELD_ERRORS = {
   CHALLENGE_INVALID: 'fe_challengeInvalid',
   CONFIRM_STALE: 'fe_confirmStale',
   VERSION_CONFLICT: 'conflictReloaded',
+  STATUS_FIELDS_REQUIRED: 'fe_statusFieldsRequired',
   IDEMPOTENCY_KEY_REUSED: 'fe_keyReused',
   ASSIGNMENT_OVERLAP: 'fe_assignmentOverlap',
   ASSIGNMENT_CLOSED: 'fe_assignmentClosed',
