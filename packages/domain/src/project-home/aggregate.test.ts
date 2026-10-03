@@ -301,7 +301,79 @@ describe('project overview uses only frozen snapshot identity', () => {
     expect(value.primaryWorkItem).toBeNull();
     expect(value.milestones).toEqual([]);
     expect(value.cumulative).toEqual([
-      { businessDate: '2030-01-03', value: null },
+      {
+        businessDate: '2030-01-03',
+        value: null,
+        workItemKey: null,
+        unit: null,
+      },
+    ]);
+  });
+});
+
+describe('overview cumulative point identity', () => {
+  it('projects the original frozen primary and unit per point, retaining tokens and missing metadata', () => {
+    const snapshots = [
+      { key: 'old', unit: 'm', value: '0' },
+      { key: 'old', unit: 'km', value: 'unknown' },
+      { key: 'new', unit: 'sets', value: 'na' },
+      { key: 'missing', unit: null, value: '12.3400' },
+    ].map((point, i) => ({
+      businessDate: `2030-01-0${i + 1}`,
+      submittedAt: `2030-01-0${i + 1}T12:00:00Z`,
+      primaryWorkItemKey: point.key,
+      items:
+        point.unit === null
+          ? []
+          : [
+              {
+                kind: 'work',
+                key: point.key,
+                label: 'TEST frozen',
+                unit: point.unit,
+                designQty: '100',
+                active: true,
+                openingCumulative: '0',
+                sortOrder: 1,
+              },
+            ],
+      facts: {
+        qty: {},
+        cumulative: { [point.key]: point.value },
+        people: {},
+        milestones: {},
+      },
+      milestones: [],
+    }));
+    const result = aggregateProjectOverview({
+      report: report({
+        snapshots,
+        primaryWorkItemKey: 'current',
+        items: [{ kind: 'work', key: 'missing', unit: 'current-unit' }],
+      }),
+      history: { projectId: ID, currentN: 0, updates: [] },
+      issues: [],
+    } as never);
+    expect(result.cumulative).toEqual([
+      { businessDate: '2030-01-01', value: '0', workItemKey: 'old', unit: 'm' },
+      {
+        businessDate: '2030-01-02',
+        value: 'unknown',
+        workItemKey: 'old',
+        unit: 'km',
+      },
+      {
+        businessDate: '2030-01-03',
+        value: 'na',
+        workItemKey: 'new',
+        unit: 'sets',
+      },
+      {
+        businessDate: '2030-01-04',
+        value: '12.3400',
+        workItemKey: 'missing',
+        unit: null,
+      },
     ]);
   });
 });
