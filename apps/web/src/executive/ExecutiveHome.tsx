@@ -7,6 +7,7 @@ import {
 } from 'react';
 import type {
   ProjectHomeCard,
+  ProjectAttentionItem,
   ProjectHomeGroupBy,
   ProjectHomeState,
   ProjectStatus,
@@ -31,6 +32,8 @@ type Props = {
   statusSession: (projectId: string) => ProjectStatusSession;
   onBack: () => void;
   onOpenProject: (projectId: string) => void;
+  onOpenAttention?: () => void;
+  onOpenAttentionItem?: (item: ProjectAttentionItem) => void;
 };
 
 const STATES: ProjectHomeState[] = [
@@ -222,6 +225,8 @@ export function ExecutiveHome({
   statusSession,
   onBack,
   onOpenProject,
+  onOpenAttention,
+  onOpenAttentionItem,
 }: Props) {
   const { t, locale } = useI18n();
   const [groupBy, setGroupBy] = useState<ProjectHomeGroupBy>('region');
@@ -495,7 +500,19 @@ export function ExecutiveHome({
         )}
 
         <section className="exec-attention">
-          <h2>{t('attention', { n: attention?.items.length ?? '—' })}</h2>
+          <h2>
+            {onOpenAttention ? (
+              <button
+                type="button"
+                className="textbtn"
+                onClick={onOpenAttention}
+              >
+                {t('attention', { n: attention?.items.length ?? '—' })}
+              </button>
+            ) : (
+              t('attention', { n: attention?.items.length ?? '—' })
+            )}
+          </h2>
           {attentionError && (
             <div className="banner warn">{t('execAttentionUnavailable')}</div>
           )}
@@ -507,7 +524,11 @@ export function ExecutiveHome({
               type="button"
               className="card exec-attention-row"
               key={`${item.kind}:${item.projectId}:${item.id}`}
-              onClick={() => onOpenProject(item.projectId)}
+              onClick={() =>
+                onOpenAttentionItem
+                  ? onOpenAttentionItem(item)
+                  : onOpenProject(item.projectId)
+              }
             >
               <span className="exec-attention-kind">
                 {attentionLabel(t, item.kind)}

@@ -35,6 +35,14 @@ import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
 import { ExecutiveHome } from './executive/ExecutiveHome.js';
 import { ProjectStatusSession } from './executive/status-session.js';
+import { ProjectOverview } from './executive/ProjectOverview.js';
+import { AttentionInbox } from './executive/AttentionInbox.js';
+import { ProjectIssueEntry } from './executive/ProjectIssueEntry.js';
+import { ProjectOverviewSession } from './executive/overview-session.js';
+import {
+  executiveHref,
+  parseExecutiveRoute,
+} from './executive/overview-routing.js';
 import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
@@ -847,7 +855,21 @@ function Root() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null,
   );
-  const [showExecutiveHome, setShowExecutiveHome] = useState(false);
+  const [route, setRoute] = useState(() =>
+    parseExecutiveRoute(window.location.hash),
+  );
+  const [projectsOwner, setProjectsOwner] = useState<Session | null>(null);
+  useEffect(() => {
+    const changed = () => setRoute(parseExecutiveRoute(window.location.hash));
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
+  const showExecutiveHome = route?.kind === 'home';
+  const openReport = (projectId?: string) => {
+    if (projectId) setSelectedProjectId(projectId);
+    window.location.hash = '';
+    setRoute(null);
+  };
   const executiveApi = useMemo(
     () => (session ? reportApi(session.token) : null),
     [session],
@@ -856,6 +878,19 @@ function Root() {
     () => new Map<string, ProjectStatusSession>(),
     [session],
   );
+  const overviewSessions = useMemo(
+    () => new Map<string, ProjectOverviewSession>(),
+    [session],
+  );
+  const getOverviewSession = (projectId: string) => {
+    if (!executiveApi) throw new Error('Session missing');
+    let store = overviewSessions.get(projectId);
+    if (!store) {
+      store = new ProjectOverviewSession(executiveApi, projectId);
+      overviewSessions.set(projectId, store);
+    }
+    return store;
+  };
   const getStatusSession = useCallback(
     (projectId: string) => {
       if (!executiveApi) throw new Error('Session missing');
@@ -870,16 +905,28 @@ function Root() {
   );
   useEffect(() => {
     setSelectedProjectId(null);
-    setShowExecutiveHome(false);
   }, [session]);
   useEffect(() => {
-    if (!session) return;
-    reportApi(session.token)
-      .projects()
-      .then((r) => setProjects(r.projects))
-      .catch((e) =>
-        setFailed(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
-      );
+    let current = true;
+    setProjects(null);
+    setProjectsOwner(null);
+    setFailed(null);
+    if (session)
+      void reportApi(session.token)
+        .projects()
+        .then((r) => {
+          if (current) {
+            setProjects(r.projects);
+            setProjectsOwner(session);
+          }
+        })
+        .catch((e) => {
+          if (current)
+            setFailed(e instanceof ApiError ? e.code : 'REQUEST_FAILED');
+        });
+    return () => {
+      current = false;
+    };
   }, [session]);
   useEffect(() => {
     if (selectedProjectId || !projects?.length) return;
@@ -920,21 +967,28 @@ function Root() {
         </div>
       </main>
     );
-  if (!session || !projects)
+  if (!session || !projects || projectsOwner !== session)
     return <main className="page muted">{t('loading')}</main>;
   const project =
     projects.find((p) => p.id === selectedProjectId) ?? projects[0];
   if (!project) return <main className="page">{t('noProject')}</main>;
+  const routedProject =
+    route && 'projectId' in route
+      ? projects.find((p) => p.id === route.projectId)
+      : null;
+  const unavailableRoute = route && 'projectId' in route && !routedProject;
   return (
     <>
-      <div className={showExecutiveHome ? 'workspace-hidden' : undefined}>
+      <div className={route ? 'workspace-hidden' : undefined}>
         <Workspace
           key={project.id}
           session={session}
           project={project}
           signin={state}
           resume={resume}
-          onExecutiveHome={() => setShowExecutiveHome(true)}
+          onExecutiveHome={() => {
+            window.location.hash = executiveHref({ kind: 'home' });
+          }}
         />
       </div>
       {showExecutiveHome && executiveApi && (
@@ -942,11 +996,53 @@ function Root() {
           api={executiveApi}
           projects={projects}
           statusSession={getStatusSession}
-          onBack={() => setShowExecutiveHome(false)}
+          onBack={() => openReport()}
           onOpenProject={(id) => {
-            setSelectedProjectId(id);
-            setShowExecutiveHome(false);
+            window.location.hash = executiveHref({
+              kind: 'overview',
+              projectId: id,
+            });
           }}
+          onOpenAttention={() => {
+            window.location.hash = executiveHref({ kind: 'attention' });
+          }}
+          onOpenAttentionItem={(item) => {
+            window.location.hash = executiveHref(
+              item.kind === 'ESCALATED_ISSUE'
+                ? { kind: 'issue', projectId: item.projectId, issueId: item.id }
+                : {
+                    kind: 'overview',
+                    projectId: item.projectId,
+                    statusId: item.id,
+                  },
+            );
+          }}
+        />
+      )}
+      {unavailableRoute && (
+        <main className="page">
+          <p role="alert">{t('noProject')}</p>
+          <a href={executiveHref({ kind: 'home' })}>{t('execHomeTitle')}</a>
+        </main>
+      )}
+      {route?.kind === 'overview' && routedProject && executiveApi && (
+        <ProjectOverview
+          key={routedProject.id}
+          session={getOverviewSession(routedProject.id)}
+          {...(route.statusId ? { statusId: route.statusId } : {})}
+          onReport={() => openReport(routedProject.id)}
+        />
+      )}
+      {route?.kind === 'attention' && executiveApi && (
+        <AttentionInbox api={executiveApi} projects={projects} />
+      )}
+      {route?.kind === 'issue' && routedProject && executiveApi && (
+        <ProjectIssueEntry
+          key={`${routedProject.id}:${route.issueId}`}
+          api={executiveApi}
+          project={routedProject}
+          issueId={route.issueId}
+          onReport={() => openReport(routedProject.id)}
         />
       )}
     </>

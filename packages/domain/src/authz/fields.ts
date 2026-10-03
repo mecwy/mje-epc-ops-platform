@@ -658,7 +658,10 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
           },
         },
       },
-      cumulative: { layer: 'submitted', items: { businessDate: S, value: S } },
+      cumulative: {
+        layer: 'submitted',
+        items: { businessDate: S, value: S, workItemKey: S, unit: S },
+      },
       primaryWorkItem: {
         layer: 'submitted',
         fields: {

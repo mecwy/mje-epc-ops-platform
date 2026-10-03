@@ -75,7 +75,13 @@ export interface ProjectOverviewDto {
   projectName: string;
   timezone: string;
   statusHistory: import('./project-status.js').ProjectStatusHistoryDto;
-  cumulative: { businessDate: string; value: string | null }[];
+  cumulative: {
+    businessDate: string;
+    value: string | null;
+    /** Identity and unit frozen in this point's own report, never current master data. */
+    workItemKey: string | null;
+    unit: string | null;
+  }[];
   primaryWorkItem: {
     key: string;
     label: string;

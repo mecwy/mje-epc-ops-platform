@@ -395,11 +395,20 @@ export function aggregateProjectOverview(input: {
       ? snapshot.primaryWorkItemKey
       : undefined;
     if (typeof key !== 'string')
-      return { businessDate: snapshot.businessDate, value: null };
+      return {
+        businessDate: snapshot.businessDate,
+        value: null,
+        workItemKey: null,
+        unit: null,
+      };
     const value = cumulativeValue(snapshot, key);
     return {
       businessDate: snapshot.businessDate,
       value: value === '' ? null : value,
+      workItemKey: key,
+      unit:
+        snapshot.items.find((item) => item.kind === 'work' && item.key === key)
+          ?.unit ?? null,
     };
   });
   const forecast =

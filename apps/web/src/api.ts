@@ -40,6 +40,8 @@ import type {
   PmProxyCheckInCommand,
   RosterDto,
   ProjectHomeDto,
+  ProjectOverviewDto,
+  AddStatusNoteCommand,
   ProjectAttentionDto,
   ProjectStatusHistoryDto,
   StatusCommandResultDto,
@@ -439,6 +441,20 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
         })}`,
       ),
     projectAttention: () => apiGet<ProjectAttentionDto>('/api/attention'),
+    projectOverview: (projectId: string, statusPage = 1) =>
+      apiGet<ProjectOverviewDto>(
+        `/api/projects/${encodeURIComponent(projectId)}/overview?${qs({ statusPage })}`,
+      ),
+    addProjectStatusNote: (command: AddStatusNoteCommand) => {
+      const body = {
+        clientMutationId: command.clientMutationId,
+        text: command.text,
+      };
+      return apiPost<StatusCommandResultDto>(
+        `/api/projects/${encodeURIComponent(command.projectId)}/status/${command.n}/notes`,
+        body,
+      );
+    },
     projectStatus: (projectId: string) =>
       apiGet<ProjectStatusHistoryDto>(
         `/api/projects/${encodeURIComponent(projectId)}/status`,
