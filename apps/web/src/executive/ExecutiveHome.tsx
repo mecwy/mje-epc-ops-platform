@@ -190,6 +190,25 @@ function localDate(value: string, locale: string) {
       }).format(date);
 }
 
+function localInstant(
+  value: string,
+  locale: string,
+  timezone: string | undefined,
+) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  if (!timezone) return date.toISOString();
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: timezone,
+    }).format(date);
+  } catch {
+    return date.toISOString();
+  }
+}
+
 function stateClass(state: ProjectHomeState) {
   if (state === 'NORMAL') return 'exec-state good';
   if (state === 'UNDECLARED') return 'exec-state muted';
@@ -455,7 +474,7 @@ export function ExecutiveHome({
               disabled={page <= 1}
               onClick={() => setPage(page - 1)}
             >
-              {t('back')}
+              {t('execPageOf', { page: Math.max(1, page - 1), pages })}
             </button>
             <span>{t('execPageOf', { page, pages })}</span>
             <button
@@ -464,7 +483,7 @@ export function ExecutiveHome({
               disabled={page >= pages}
               onClick={() => setPage(page + 1)}
             >
-              {t('nextDay')}
+              {t('execPageOf', { page: Math.min(pages, page + 1), pages })}
             </button>
           </div>
         )}
@@ -493,10 +512,11 @@ export function ExecutiveHome({
               <span>{item.title}</span>
               {item.at && (
                 <small className="muted">
-                  {new Intl.DateTimeFormat(locale, {
-                    dateStyle: 'medium',
-                    timeStyle: 'short',
-                  }).format(new Date(item.at))}
+                  {localInstant(
+                    item.at,
+                    locale,
+                    accessByProject.get(item.projectId)?.timezone,
+                  ) ?? t('unknown')}
                 </small>
               )}
             </button>
@@ -1013,26 +1033,24 @@ function StatusPage({
                   }
                 />
               </label>
-              {statusValue !== 'NORMAL' && (
-                <label>
-                  <span>{t('execRecovery')}</span>
-                  <textarea
-                    rows={3}
-                    maxLength={4000}
-                    value={draft?.recovery ?? ''}
-                    aria-invalid={requiredFields.includes('recovery')}
-                    aria-describedby={
-                      requiredFields.includes('recovery')
-                        ? 'exec-required-fields'
-                        : undefined
-                    }
-                    disabled={session.locked || !draft}
-                    onChange={(event) =>
-                      session.edit({ recovery: event.target.value })
-                    }
-                  />
-                </label>
-              )}
+              <label>
+                <span>{t('execRecovery')}</span>
+                <textarea
+                  rows={3}
+                  maxLength={4000}
+                  value={draft?.recovery ?? ''}
+                  aria-invalid={requiredFields.includes('recovery')}
+                  aria-describedby={
+                    requiredFields.includes('recovery')
+                      ? 'exec-required-fields'
+                      : undefined
+                  }
+                  disabled={session.locked || !draft}
+                  onChange={(event) =>
+                    session.edit({ recovery: event.target.value })
+                  }
+                />
+              </label>
               {statusValue !== 'NORMAL' && (
                 <div className="exec-recovery-date">
                   <label>
