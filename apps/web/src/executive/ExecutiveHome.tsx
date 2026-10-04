@@ -25,6 +25,7 @@ import {
   type StatusConflictField,
 } from './status-session.js';
 import { ErrorText } from '../field/ErrorText.js';
+import { projectGroupTitle } from './overview-values.js';
 
 type Props = {
   api: Pick<ReportApi, 'projectHome' | 'projectAttention'>;
@@ -461,7 +462,7 @@ export function ExecutiveHome({
           return (
             <details className="exec-group" key={group.key} open>
               <summary>
-                <span>{group.key}</span>
+                <span>{projectGroupTitle(t, home.groupBy, group)}</span>
                 <span className="muted">{group.count}</span>
               </summary>
               <div className="exec-cards">{exceptions.map(projectCard)}</div>
