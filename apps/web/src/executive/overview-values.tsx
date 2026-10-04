@@ -1,6 +1,28 @@
 import { useI18n } from '../i18n.js';
 import { shown } from '../report/format.js';
 import type { ProjectStatus, StatusArea } from '@mje/contracts';
+import type { ProjectHomeCard, ProjectHomeGroupBy } from '@mje/contracts';
+export function projectGroupTitle(
+  t: ReturnType<typeof useI18n>['t'],
+  groupBy: ProjectHomeGroupBy,
+  group: {
+    key: string;
+    projects: readonly Pick<ProjectHomeCard, 'managers'>[];
+  },
+) {
+  if (group.key === '__UNASSIGNED__') {
+    if (groupBy === 'region') return t('execNoRegion');
+    if (groupBy === 'manager') return t('execUnassigned');
+    return t('execNoType');
+  }
+  if (groupBy === 'manager') {
+    const name = group.projects
+      .flatMap((project) => project.managers)
+      .find((manager) => manager.personId === group.key)?.displayName;
+    return name?.trim() ? name : t('unknown');
+  }
+  return group.key;
+}
 export function overviewStatus(
   t: ReturnType<typeof useI18n>['t'],
   status: ProjectStatus,

@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import express from 'express';
+import { publicAssets } from './public-assets.js';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
@@ -311,6 +312,7 @@ export async function createApp(alpha?: AlphaRuntime) {
   app.use(express.json({ limit: '256kb', strict: true }));
   if (process.env['WEB_ROOT'])
     app.use(
+      publicAssets(resolve(process.env['WEB_ROOT'])),
       express.static(resolve(process.env['WEB_ROOT']), {
         dotfiles: 'deny',
         index: 'index.html',

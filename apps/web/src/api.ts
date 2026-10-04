@@ -459,11 +459,13 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
       apiGet<ProjectStatusHistoryDto>(
         `/api/projects/${encodeURIComponent(projectId)}/status`,
       ),
-    declareProjectStatus: (command: DeclareStatusCommand) =>
-      apiPost<StatusCommandResultDto>(
-        `/api/projects/${encodeURIComponent(command.projectId)}/status`,
-        command,
-      ),
+    declareProjectStatus: (command: DeclareStatusCommand) => {
+      const { projectId, ...body } = command;
+      return apiPost<StatusCommandResultDto>(
+        `/api/projects/${encodeURIComponent(projectId)}/status`,
+        body,
+      );
+    },
     day: (projectId: string, businessDate: string) =>
       get<DayView>('day', { projectId, businessDate }),
     revision: (projectId: string, businessDate: string, n: number) =>
