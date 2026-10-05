@@ -61,7 +61,7 @@ const lineAssertion = (l: ContractLineInput) => [
   l.lineNo,
   ...executionFields(l),
   l.pricingType,
-  l.amount,
+  decimalAssertion(l.amount, 4),
   l.derivation,
 ];
 export function executionChanged(
@@ -160,7 +160,8 @@ export function needsCorrectionAttention(
   return next.lines.some((l) => {
     const old = previous.lines.find((o) => o.id === l.id);
     return old
-      ? executionChanged(old, l) || !same(old.amount, l.amount)
+      ? executionChanged(old, l) ||
+          !same(decimalAssertion(old.amount, 4), decimalAssertion(l.amount, 4))
       : l.amount.state === 'VALUE' || !l.removed;
   });
 }

@@ -911,6 +911,131 @@ try {
   assert.equal(lookup.accountId, account);
   assert.deepEqual(lookup.directions, ['INCOME']);
   assert.ok(lookup.sources.some((s) => s.id === document));
+  // F2: same-tenant source ownership does not confer direction or intake rights.
+  const secretSource = randomUUID(),
+    intakeSource = randomUUID(),
+    unclassifiedSource = randomUUID();
+  for (const [id, hash] of [
+    [secretSource, 'c'],
+    [intakeSource, 'd'],
+    [unclassifiedSource, 'e'],
+  ])
+    await owner.query(
+      'INSERT INTO "SourceDocument"(id,"orgId",sha256,filename,"blobKey","sourceVersion","updatedAt","updatedBy") VALUES($1,$2,$3,$4,\'TEST-only\',\'TEST-v1\',now(),$5)',
+      [id, org, hash!.repeat(64), 'TEST sensitive opposite direction', account],
+    );
+  for (const [id, direction] of [
+    [secretSource, 'EXPENDITURE'],
+    [intakeSource, 'INCOME'],
+  ])
+    await owner.query(
+      'INSERT INTO "ContractSourceIntake"(id,"orgId","sourceDocumentId",direction,basis,"registeredBy") VALUES($1,$2,$3,$4,\'TEST controlled classification\',$5)',
+      [randomUUID(), org, id, direction, account],
+    );
+  const sourceLookup = (await call('/lookups'))
+    .body as ContractEditorLookupsDto;
+  assert.equal(
+    sourceLookup.sources.some((x) => x.id === secretSource),
+    false,
+  );
+  assert.equal(
+    sourceLookup.sources.some((x) => x.id === unclassifiedSource),
+    false,
+  );
+  assert.equal(
+    sourceLookup.sources.some((x) => x.id === intakeSource),
+    true,
+  );
+  const withSource = (sourceDocumentId: string): CreateContractCommand => {
+    const next = structuredClone(create);
+    next.contractId = randomUUID();
+    next.code = 'TEST source ' + next.contractId;
+    next.clientMutationId = randomUUID();
+    next.revision.sources.forEach(
+      (x) => (x.sourceDocumentId = sourceDocumentId),
+    );
+    for (const loc of Object.values(next.revision.headLocs))
+      if (loc) loc.sourceDocumentId = sourceDocumentId;
+    for (const line of next.revision.lines) {
+      line.id = randomUUID();
+      if (line.source) line.source.sourceDocumentId = sourceDocumentId;
+    }
+    return next;
+  };
+  for (const source of [secretSource, unclassifiedSource]) {
+    const denied = withSource(source);
+    assert.equal((await post('', denied)).status, 400);
+    assert.equal(
+      (
+        await owner.query('SELECT count(*)::int FROM "Contract" WHERE id=$1', [
+          denied.contractId,
+        ])
+      ).rows[0].count,
+      0,
+    );
+    assert.equal(
+      (
+        await owner.query(
+          'SELECT count(*)::int FROM "IdempotencyRecord" WHERE key=$1',
+          [denied.clientMutationId],
+        )
+      ).rows[0].count,
+      0,
+    );
+  }
+  assert.equal((await post('', withSource(intakeSource))).status, 200);
+  await assert.rejects(
+    owner.query(
+      'UPDATE "ContractSourceIntake" SET direction=\'EXPENDITURE\' WHERE "sourceDocumentId"=$1',
+      [intakeSource],
+    ),
+  );
+  await assert.rejects(
+    appPool.query(
+      'INSERT INTO "ContractSourceIntake"(id,"orgId","sourceDocumentId",direction,basis,"registeredBy") VALUES($1,$2,$3,\'INCOME\',\'TEST forbidden self grant\',$4)',
+      [randomUUID(), org, secretSource, account],
+    ),
+  );
+  pass(
+    'F2 same-direction cited/explicit-intake sources only; opposite/unclassified lookup and bind denial, rollback, immutable classification and no app self-grant',
+  );
+  // F1: explicit retirement creates attention once; repeated retired assertion does not.
+  const retire = {
+    ...reconciled,
+    clientMutationId: randomUUID(),
+    shares: [
+      {
+        ...reconciled.shares[0]!,
+        expectedVersion: 2,
+        retired: true,
+        reason: 'TEST explicit retirement',
+      },
+    ],
+  };
+  const attentionCount = async () =>
+    (
+      await owner!.query(
+        'SELECT count(*)::int AS n FROM "ContractAttention" WHERE "contractId"=$1 AND kind=\'SHARE_MISASSIGNED\'',
+        [newContract],
+      )
+    ).rows[0].n as number;
+  const beforeRetire = await attentionCount();
+  assert.equal((await post('/' + newContract + '/shares', retire)).status, 200);
+  assert.equal(await attentionCount(), beforeRetire + 1);
+  assert.equal(
+    (
+      await post('/' + newContract + '/shares', {
+        ...retire,
+        clientMutationId: randomUUID(),
+        shares: retire.shares.map((x) => ({ ...x, expectedVersion: 3 })),
+      })
+    ).status,
+    200,
+  );
+  assert.equal(await attentionCount(), beforeRetire + 1);
+  pass(
+    'F1 active-to-retired transition produces one attention; repeated retired history does not',
+  );
   const restrictedLookup = (await call('/lookups', twinBearer))
     .body as ContractEditorLookupsDto;
   assert.equal(restrictedLookup.accountId, twin);

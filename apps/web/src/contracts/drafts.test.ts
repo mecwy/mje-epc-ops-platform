@@ -4,6 +4,7 @@ import {
   freezeWrite,
   ContractDrafts,
   mergeRevision,
+  confirmedShares,
 } from './drafts.js';
 describe('contract drafts and immutable retry ownership', () => {
   it('isolates accounts sharing one browser even when Person and project are the same', () => {
@@ -127,4 +128,92 @@ describe('contract drafts and immutable retry ownership', () => {
       'line:TEST-line:source',
     );
   });
+});
+
+describe('review F3 assertion-group conflicts', () => {
+  it('requires an explicit header group choice when parallel assertions have different sources', () => {
+    const base = blankDraft('INCOME', () => 'id').revision;
+    const a = { sourceDocumentId: 'TEST-A', location: 'TEST page A' };
+    const b = { sourceDocumentId: 'TEST-B', location: 'TEST page B' };
+    base.headLocs.parties = a;
+    base.name = 'TEST base';
+    const mine = structuredClone(base),
+      latest = structuredClone(base);
+    mine.counterpartyRaw = 'TEST mine';
+    mine.headLocs.parties = b;
+    latest.name = 'TEST other';
+    const merge = mergeRevision(base, mine, latest);
+    expect(merge.conflicts.map((c) => c.key)).toContain('header:parties');
+    const resolved = mergeRevision(base, mine, latest, {
+      'header:parties': 'mine',
+    });
+    expect(resolved.revision.name).toBe('TEST base');
+    expect(resolved.revision.counterpartyRaw).toBe('TEST mine');
+    expect(resolved.revision.headLocs.parties).toEqual(b);
+  });
+  it('requires a whole-line choice for removal racing an edit in either direction', () => {
+    const base = blankDraft('INCOME', () => 'id').revision;
+    base.lines = [
+      {
+        id: 'TEST-L',
+        lineNo: '1',
+        description: 'TEST base',
+        quantity: { state: 'UNKNOWN', value: null },
+        unitRaw: '',
+        unit: null,
+        pricingType: 'UNKNOWN',
+        amount: { state: 'UNKNOWN', value: null },
+        includes: '',
+        excludes: '',
+        derivation: '',
+        source: null,
+        removed: false,
+        removalSource: null,
+      },
+    ];
+    const edited = structuredClone(base),
+      removed = structuredClone(base);
+    edited.lines[0]!.description = 'TEST edit';
+    removed.lines[0]!.removed = true;
+    removed.lines[0]!.removalSource = {
+      sourceDocumentId: 'TEST-doc',
+      location: 'TEST removal',
+    };
+    for (const [mine, latest] of [
+      [edited, removed],
+      [removed, edited],
+    ]) {
+      const result = mergeRevision(base, mine!, latest!);
+      expect(result.conflicts.map((c) => c.key)).toContain('line:TEST-L');
+      expect(
+        mergeRevision(base, mine!, latest!, { 'line:TEST-L': 'mine' }).revision
+          .lines[0],
+      ).toEqual(mine!.lines[0]);
+    }
+  });
+});
+
+it('F1 only confirms explicitly chosen shares, leaving active reconciliation and retired history untouched', () => {
+  const row = {
+    scopeId: 'A',
+    projectId: 'TEST-P',
+    expectedVersion: 1,
+    basis: 'NOTE' as const,
+    quantity: null,
+    area: '',
+    note: '',
+    retired: false,
+    reason: '',
+  };
+  const rows = [
+    row,
+    { ...row, scopeId: 'retired', retired: true },
+    { ...row, scopeId: 'new', expectedVersion: 0 },
+  ];
+  expect(confirmedShares(rows, new Set())).toEqual([]);
+  const sent = confirmedShares(rows, new Set(['new']));
+  expect(sent.map((s) => s.scopeId)).toEqual(['new']);
+  sent[0]!.note = 'TEST mutate';
+  expect(rows[2]!.note).toBe('');
+  expect(confirmedShares(rows, new Set(['A']))[0]!.expectedVersion).toBe(1);
 });

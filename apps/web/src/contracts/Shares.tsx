@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { confirmedShares } from './drafts.js';
 import type {
   ContractEditorLookupsDto,
   ContractRegisterItemDto,
@@ -37,6 +38,7 @@ export function Shares({
       reason: s.internal.reason ?? '',
     })),
   );
+  const [confirmed, setConfirmed] = useState<Set<string>>(() => new Set());
   const projectIds =
     lookups.maintainedProjects.find((p) => p.direction === item.direction)
       ?.projectIds ?? [];
@@ -54,10 +56,25 @@ export function Shares({
       </p>
       {rows.map((r, i) => (
         <fieldset className="ct-line" key={r.scopeId}>
+          <label>
+            <input
+              type="checkbox"
+              checked={confirmed.has(r.scopeId)}
+              onChange={(e) =>
+                setConfirmed((old) => {
+                  const next = new Set(old);
+                  if (e.target.checked) next.add(r.scopeId);
+                  else next.delete(r.scopeId);
+                  return next;
+                })
+              }
+            />
+            {t('ctConfirmShares')}
+          </label>
           <div className="ct-grid">
             <Field title={t('ctShares')}>
               <select
-                disabled={r.expectedVersion > 0}
+                disabled={r.expectedVersion > 0 || !confirmed.has(r.scopeId)}
                 value={r.projectId}
                 onChange={(e) => update(i, 'projectId', e.target.value)}
               >
@@ -73,6 +90,7 @@ export function Shares({
             </Field>
             <Field title={t('ctQuantity')}>
               <select
+                disabled={!confirmed.has(r.scopeId)}
                 value={r.basis}
                 onChange={(e) => {
                   setRows((old) =>
@@ -99,6 +117,7 @@ export function Shares({
             {r.basis === 'QUANTITY' && (
               <Field title={t('ctQuantity') + ' · ' + line.unitRaw}>
                 <input
+                  disabled={!confirmed.has(r.scopeId)}
                   type="text"
                   inputMode="decimal"
                   value={r.quantity ?? ''}
@@ -108,18 +127,21 @@ export function Shares({
             )}
             <Field title={t('ctArea')}>
               <input
+                disabled={!confirmed.has(r.scopeId)}
                 value={r.area}
                 onChange={(e) => update(i, 'area', e.target.value)}
               />
             </Field>
             <Field title={t('ctNote')}>
               <textarea
+                disabled={!confirmed.has(r.scopeId)}
                 value={r.note}
                 onChange={(e) => update(i, 'note', e.target.value)}
               />
             </Field>
             <Field title={t('ctRetire')}>
               <input
+                disabled={!confirmed.has(r.scopeId)}
                 type="checkbox"
                 checked={r.retired}
                 onChange={(e) => update(i, 'retired', e.target.checked)}
@@ -127,6 +149,7 @@ export function Shares({
             </Field>
             <Field title={t('ctReason')}>
               <textarea
+                disabled={!confirmed.has(r.scopeId)}
                 value={r.reason}
                 onChange={(e) => update(i, 'reason', e.target.value)}
               />
@@ -137,11 +160,13 @@ export function Shares({
       <div className="ct-actions">
         <button
           type="button"
-          onClick={() =>
+          onClick={() => {
+            const scopeId = crypto.randomUUID();
+            setConfirmed((old) => new Set([...old, scopeId]));
             setRows([
               ...rows,
               {
-                scopeId: crypto.randomUUID(),
+                scopeId,
                 projectId: '',
                 expectedVersion: 0,
                 basis: 'NOTE',
@@ -151,8 +176,8 @@ export function Shares({
                 retired: false,
                 reason: '',
               },
-            ])
-          }
+            ]);
+          }}
         >
           {t('ctShareAdd')}
         </button>
@@ -162,14 +187,14 @@ export function Shares({
         <button
           type="button"
           className="primary"
-          disabled={!rows.length}
+          disabled={!confirmed.size}
           onClick={() =>
             send({
               contractId: item.id,
               lineId: line.id,
               expectedVersion: item.latest.n,
               clientMutationId: crypto.randomUUID(),
-              shares: structuredClone(rows),
+              shares: confirmedShares(rows, confirmed),
             })
           }
         >

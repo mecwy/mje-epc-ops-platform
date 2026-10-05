@@ -170,3 +170,10 @@ export async function currentShares(
   }
   return result;
 }
+
+/** d is a SourceDocument alias; $2 is the already authorized direction array. */
+export const eligibleContractSource = `(
+ EXISTS(SELECT 1 FROM "ContractRevisionSource" rs JOIN "Contract" ct ON ct."orgId"=rs."orgId" AND ct.id=rs."contractId"
+        WHERE rs."orgId"=d."orgId" AND rs."sourceDocumentId"=d.id AND ct.direction=ANY($2::text[]))
+ OR EXISTS(SELECT 1 FROM "ContractSourceIntake" si WHERE si."orgId"=d."orgId" AND si."sourceDocumentId"=d.id AND si.direction=ANY($2::text[]))
+)`;
