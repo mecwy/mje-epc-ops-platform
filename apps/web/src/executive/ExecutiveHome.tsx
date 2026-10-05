@@ -831,6 +831,11 @@ function StatusPage({
               </button>
             </div>
           )}
+          {!session.locked && session.unchangedForBusinessDay && (
+            <div className="banner" role="status">
+              {t('saved')}
+            </div>
+          )}
           {session.permissionLost && (
             <div className="banner err" role="alert">
               {t('execPermissionChanged')}
@@ -1169,6 +1174,7 @@ function StatusPage({
                 className="primary wide"
                 disabled={
                   session.locked ||
+                  session.unchangedForBusinessDay ||
                   !draft ||
                   requiredFields.length > 0 ||
                   draft.expectedN !== session.read.data.currentN

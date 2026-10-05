@@ -89,6 +89,7 @@ export class ProjectStatusSession {
   constructor(
     private readonly api: StatusApi,
     readonly projectId: string,
+    private readonly now: () => Date = () => new Date(),
   ) {
     this.read = new FieldSession(
       () => this.api.projectStatus(this.projectId),
@@ -269,9 +270,53 @@ export class ProjectStatusSession {
     return this.activePayload ?? (this.draft ? payloadFrom(this.draft) : null);
   }
 
+  get unchangedForBusinessDay(): boolean {
+    const draft = this.draft;
+    const history = this.read.data;
+    const latest = history?.updates[0];
+    if (
+      !draft ||
+      !history ||
+      !latest ||
+      draft.projectId !== history.projectId ||
+      draft.expectedN !== history.currentN ||
+      latest.n !== history.currentN
+    )
+      return false;
+    // This is a UI duplicate guard, not a substitute for server version checks.
+    // An unchanged declaration on a new site business day is still meaningful.
+    let today: string;
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: latest.siteTimezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(this.now());
+      const part = (type: string) =>
+        parts.find((value) => value.type === type)?.value;
+      today = `${part('year')}-${part('month')}-${part('day')}`;
+    } catch {
+      return false;
+    }
+    return (
+      latest.businessDate === today &&
+      draft.status === latest.status &&
+      JSON.stringify([...draft.areas].sort()) ===
+        JSON.stringify([...latest.areas].sort()) &&
+      draft.situation === latest.situation &&
+      draft.recovery === latest.recovery &&
+      draft.expectedRecoveryDate === latest.expectedRecoveryDate &&
+      draft.expectedRecoveryUnknown === latest.expectedRecoveryUnknown &&
+      draft.needsSupport === latest.needsSupport &&
+      draft.supportNote === latest.supportNote
+    );
+  }
+
   async publish() {
     const draft = this.draft;
     if (this.locked || !draft || draft.projectId !== this.projectId) return;
+    if (this.unchangedForBusinessDay) return;
     if (this.requiredFields.length > 0) {
       this.read.error = 'STATUS_FIELDS_REQUIRED';
       this.emit();

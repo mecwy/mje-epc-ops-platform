@@ -516,3 +516,218 @@ describe('ProjectStatusSession', () => {
     expect(session.commands.owned).toBe(false);
   });
 });
+
+const clock = () => new Date('2026-10-05T10:00:00Z');
+const projectId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+function fixture() {
+  const history: ProjectStatusHistoryDto = {
+    projectId,
+    currentN: 0,
+    updates: [],
+  };
+  const sent: DeclareStatusCommand[] = [];
+  const replay = new Map<string, StatusCommandResultDto>();
+  let loseNextAck = false;
+  let failReads = false;
+  let failAfterSave = false;
+  const api = {
+    projectStatus: async () => {
+      if (failReads) throw new ApiError('NETWORK', 0);
+      return structuredClone(history);
+    },
+    declareProjectStatus: async (command: DeclareStatusCommand) => {
+      sent.push(structuredClone(command));
+      const prior = replay.get(command.clientMutationId);
+      if (prior) return prior;
+      if (command.expectedN !== history.currentN)
+        throw new ApiError('VERSION_CONFLICT', 409);
+      const n = ++history.currentN;
+      const result = { projectId, n, statusUpdateId: `TEST-status-${n}` };
+      history.updates.unshift({
+        ...command,
+        id: result.statusUpdateId,
+        n,
+        declaredAt: '2026-10-05T10:00:00Z',
+        siteTimezone: 'Europe/Berlin',
+        businessDate: '2026-10-05',
+        declaredBy: 'TEST-account',
+        declaredByPersonId: 'TEST-person',
+        notes: [],
+      });
+      replay.set(command.clientMutationId, result);
+      if (failAfterSave) failReads = true;
+      if (loseNextAck) {
+        loseNextAck = false;
+        throw new ApiError('NETWORK', 0);
+      }
+      return result;
+    },
+  };
+  const session = new ProjectStatusSession(api, projectId, clock);
+  const start = async () => {
+    await session.load();
+    session.edit({ situation: 'TEST status repeat UAT' });
+  };
+  return {
+    session,
+    history,
+    sent,
+    api,
+    start,
+    loseAck: () => {
+      loseNextAck = true;
+    },
+    failAfterSave: () => {
+      failAfterSave = true;
+    },
+    failReads: (value: boolean) => {
+      failReads = value;
+    },
+  };
+}
+
+describe('Owner UAT: manager declaration repeat publishing', () => {
+  it('publishes a real edit once and refreshes its version', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    expect(f.history.currentN).toBe(1);
+    expect(f.session.draft?.expectedN).toBe(1);
+    expect(f.session.locked).toBe(false);
+  });
+  it('does not append unchanged content after a successful publish', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    await f.session.publish();
+    expect(f.history.currentN).toBe(1);
+  });
+  it('does not append unchanged content after reopening the form', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    const reopened = new ProjectStatusSession(f.api, projectId, clock);
+    await reopened.load();
+    await reopened.publish();
+    expect(f.history.currentN).toBe(1);
+  });
+  it('does not append after editing and restoring the original content', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    f.session.edit({ situation: 'TEST temporary' });
+    f.session.edit({ situation: 'TEST status repeat UAT' });
+    await f.session.publish();
+    expect(f.history.currentN).toBe(1);
+  });
+  it('coalesces simultaneous clicks while one publish is in flight', async () => {
+    const f = fixture();
+    await f.start();
+    await Promise.all([
+      f.session.publish(),
+      f.session.publish(),
+      f.session.publish(),
+    ]);
+    expect(f.history.currentN).toBe(1);
+    expect(f.sent).toHaveLength(1);
+  });
+  it('retries a lost acknowledgement with the original command and no extra append', async () => {
+    const f = fixture();
+    await f.start();
+    f.loseAck();
+    await f.session.publish();
+    expect(f.session.commands.owned).toBe(true);
+    expect(f.history.currentN).toBe(1);
+    await f.session.retry();
+    expect(f.history.currentN).toBe(1);
+    expect(f.sent[1]).toEqual(f.sent[0]);
+  });
+  it('does not append on repeated refresh and retains immutable older content', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    const first = structuredClone(f.history.updates[0]);
+    f.session.edit({ situation: 'TEST changed status' });
+    await f.session.publish();
+    await f.session.load();
+    await f.session.load();
+    expect(f.history.currentN).toBe(2);
+    expect(f.history.updates[1]).toEqual(first);
+  });
+  it('blocks an incomplete risk declaration without consuming a version', async () => {
+    const f = fixture();
+    await f.start();
+    f.session.edit({ status: 'AT_RISK' });
+    await f.session.publish();
+    expect(f.history.currentN).toBe(0);
+    expect(f.sent).toHaveLength(0);
+    expect(f.session.requiredFields.length).toBeGreaterThan(0);
+  });
+  it('preserves stale editor input and refuses to silently overwrite a newer declaration', async () => {
+    const f = fixture();
+    await f.start();
+    const other = new ProjectStatusSession(f.api, projectId, clock);
+    await other.load();
+    other.edit({ situation: 'TEST concurrent editor' });
+    await other.publish();
+    await f.session.publish();
+    expect(f.history.currentN).toBe(1);
+    expect(f.session.draft?.situation).toBe('TEST status repeat UAT');
+    expect(f.session.draft?.expectedN).toBe(0);
+  });
+  it('keeps publishing locked after save succeeds but its refresh fails', async () => {
+    const f = fixture();
+    await f.start();
+    f.failAfterSave();
+    await f.session.publish();
+    expect(f.history.currentN).toBe(1);
+    expect(f.session.savedNeedsRefresh).toBe(true);
+    await f.session.publish();
+    expect(f.history.currentN).toBe(1);
+    f.failReads(false);
+    await f.session.retry();
+    expect(f.session.savedNeedsRefresh).toBe(false);
+  });
+  it('permits unchanged confirmation on the next site business day', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    const nextDay = new ProjectStatusSession(
+      f.api,
+      projectId,
+      () => new Date('2026-10-06T10:00:00Z'),
+    );
+    await nextDay.load();
+    expect(nextDay.unchangedForBusinessDay).toBe(false);
+    await nextDay.publish();
+    expect(f.history.currentN).toBe(2);
+  });
+  it('uses the site business day rather than the UTC calendar day', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    const sameSiteDay = new ProjectStatusSession(
+      f.api,
+      projectId,
+      () => new Date('2026-10-04T22:30:00Z'),
+    );
+    await sameSiteDay.load();
+    expect(sameSiteDay.unchangedForBusinessDay).toBe(true);
+    const nextSiteDay = new ProjectStatusSession(
+      f.api,
+      projectId,
+      () => new Date('2026-10-05T22:30:00Z'),
+    );
+    await nextSiteDay.load();
+    expect(nextSiteDay.unchangedForBusinessDay).toBe(false);
+  });
+  it('does not classify a stale edited version as an unchanged current declaration', async () => {
+    const f = fixture();
+    await f.start();
+    await f.session.publish();
+    f.session.edit({ situation: 'TEST stale edit' });
+    f.history.currentN = 2;
+    await f.session.load();
+    expect(f.session.unchangedForBusinessDay).toBe(false);
+  });
+});
