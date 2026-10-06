@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { fillSectionForFocus } from './FillPage.js';
+import { describe, expect, it, vi } from 'vitest';
+import { fillSectionForFocus, resolveFillFocus } from './FillPage.js';
 
 describe('completion reminders reveal the existing entry field', () => {
   it.each([
@@ -19,4 +19,54 @@ describe('completion reminders reveal the existing entry field', () => {
       expect(fillSectionForFocus(id)).toBeNull();
     },
   );
+});
+
+describe('entry focus request lifecycle', () => {
+  it('drops an absent photo control after reveal so a later tab stays selected', () => {
+    let section: Parameters<typeof resolveFillFocus>[1] = 'people';
+    let request: string | null = 'ph-support';
+    const reveal = vi.fn((next: typeof section) => {
+      section = next;
+    });
+    const resolved = vi.fn(() => {
+      request = null;
+    });
+    const runEffect = () => {
+      if (request)
+        resolveFillFocus(request, section, {
+          reveal,
+          find: () => null,
+          resolved,
+        });
+    };
+    runEffect();
+    expect(section).toBe('progress');
+    expect(resolved).not.toHaveBeenCalled();
+    runEffect();
+    expect(request).toBeNull();
+    expect(resolved).toHaveBeenCalledOnce();
+    section = 'materials';
+    runEffect();
+    expect(section).toBe('materials');
+    expect(reveal).toHaveBeenCalledOnce();
+  });
+
+  it('reveals the hidden panel before resolving and focusing its existing input', () => {
+    const steps: string[] = [];
+    const ports = {
+      reveal: () => steps.push('reveal'),
+      find: () => {
+        steps.push('find');
+        return {
+          scrollIntoView: () => steps.push('scroll'),
+          focus: () => steps.push('focus'),
+        };
+      },
+      resolved: () => steps.push('resolved'),
+    };
+    resolveFillFocus('mat-steel', 'progress', ports);
+    expect(steps).toEqual(['reveal']);
+    resolveFillFocus('mat-steel', 'materials', ports);
+    expect(steps).toEqual(['reveal', 'find', 'scroll', 'focus', 'resolved']);
+  });
 });

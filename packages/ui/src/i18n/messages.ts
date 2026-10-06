@@ -413,9 +413,15 @@ export const MESSAGES = {
   allDetails: ['全部明细', 'All details', 'Svi detalji', 'Todos los detalles'],
   fillDayStatus: [
     '当天填报状态',
-    'Today’s report status',
-    'Today’s report status',
-    'Today’s report status',
+    'Report status',
+    'Report status',
+    'Report status',
+  ],
+  fillCheckGuidance: [
+    '填写检查说明',
+    'About entry checks',
+    'About entry checks',
+    'About entry checks',
   ],
   fillSections: [
     '填写日报分区',

@@ -562,6 +562,27 @@ export function fillSectionForFocus(id: string): FillSection | null {
   return null;
 }
 
+/** One request spans reveal + focus commits, then ends even if its control is absent. */
+export function resolveFillFocus(
+  id: string,
+  section: FillSection,
+  ports: {
+    reveal: (section: FillSection) => void;
+    find: (id: string) => Pick<HTMLElement, 'scrollIntoView' | 'focus'> | null;
+    resolved: () => void;
+  },
+) {
+  const target = fillSectionForFocus(id);
+  if (target !== null && target !== section) {
+    ports.reveal(target);
+    return;
+  }
+  const el = ports.find(id);
+  el?.scrollIntoView({ block: 'center' });
+  el?.focus();
+  ports.resolved();
+}
+
 export function FillPage({
   h,
   day,
@@ -599,18 +620,14 @@ export function FillPage({
   useEffect(() => {
     const id = requestedFocus ?? focus;
     if (!id) return;
-    const target = fillSectionForFocus(id);
-    if (target !== null && target !== section) {
-      setSection(target);
-      return;
-    }
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ block: 'center' });
-      (el as HTMLElement).focus();
-      setRequestedFocus(null);
-      if (focus) onFocused();
-    }
+    resolveFillFocus(id, section, {
+      reveal: setSection,
+      find: (targetId) => document.getElementById(targetId),
+      resolved: () => {
+        setRequestedFocus(null);
+        if (focus) onFocused();
+      },
+    });
   }, [focus, requestedFocus, section, onFocused]);
   const any = ROLE_KEYS.some((r) => dec(f.people[r]) !== null);
   const total = ROLE_KEYS.reduce((a, r) => a + (dec(f.people[r]) ?? 0n), 0n);
@@ -893,7 +910,7 @@ export function FillPage({
           </div>
           <aside className="checkpanel">
             <details className="fill-guidance">
-              <summary>{t('allDetails')}</summary>
+              <summary>{t('fillCheckGuidance')}</summary>
               <p className="entry-context">{t('entryCompletenessOnly')}</p>
             </details>
             <CheckList
