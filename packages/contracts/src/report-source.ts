@@ -1,5 +1,5 @@
 /** Source declarations, not verified evidence. Raw cells never feed operational totals. */
-import { InvalidReportInput, KEY, obj, oneOf, str } from './parse.js';
+import { InvalidReportInput, KEY, date, obj, oneOf, str } from './parse.js';
 
 export interface SourceCell {
   raw: string;
@@ -29,6 +29,16 @@ export interface SourceReportV1 {
   >;
 }
 
+/** A reported target is not an approved plan. Version 1 remains a distinct contract. */
+export interface SourceReportV2 extends Omit<SourceReportV1, 'schemaVersion'> {
+  schemaVersion: 2;
+  reportedNextPlan: {
+    targetBusinessDate: string;
+    quantities: Record<string, SourceCell>;
+  };
+}
+export type SourceReport = SourceReportV1 | SourceReportV2;
+
 /** Unknown keys are rejected without reflecting user-controlled key names in errors. */
 export function reportObject(
   v: unknown,
@@ -54,15 +64,23 @@ function integer(v: unknown, min: number, max: number, field: string): number {
   return v;
 }
 
-export function parseSourceReport(v: unknown): SourceReportV1 {
+export function parseSourceReport(v: unknown): SourceReport {
   const path = 'facts.sourceReport';
+  const schemaVersion = obj(v, path)['schemaVersion'];
+  if (schemaVersion !== 1 && schemaVersion !== 2)
+    throw new InvalidReportInput(`${path}.schemaVersion`);
   const o = reportObject(
     v,
-    ['schemaVersion', 'documents', 'peopleTotal', 'workPercent', 'materials'],
+    [
+      'schemaVersion',
+      'documents',
+      'peopleTotal',
+      'workPercent',
+      'materials',
+      ...(schemaVersion === 2 ? ['reportedNextPlan'] : []),
+    ],
     path,
   );
-  if (o['schemaVersion'] !== 1)
-    throw new InvalidReportInput(`${path}.schemaVersion`);
   const documents: SourceReportV1['documents'] = Object.fromEntries(
     entries(o['documents'], 4, `${path}.documents`).map(([key, v], index) => {
       const field = `${path}.documents[${index}]`;
@@ -165,12 +183,36 @@ export function parseSourceReport(v: unknown): SourceReportV1 {
       ];
     }),
   );
-  if (count === 0) throw new InvalidReportInput(path);
-  return {
-    schemaVersion: 1,
+  const common = {
     documents,
     ...(peopleTotal ? { peopleTotal } : {}),
     workPercent,
     materials,
   };
+  if (schemaVersion === 2) {
+    const field = `${path}.reportedNextPlan`;
+    const plan = reportObject(
+      o['reportedNextPlan'],
+      ['targetBusinessDate', 'quantities'],
+      field,
+    );
+    const targetBusinessDate = date(
+      plan['targetBusinessDate'],
+      `${field}.targetBusinessDate`,
+    );
+    const quantities = Object.fromEntries(
+      entries(plan['quantities'], 100, `${field}.quantities`).map(
+        ([key, v], i) => [key, cell(v, `${field}.quantities[${i}]`)],
+      ),
+    );
+    if (!Object.keys(quantities).length)
+      throw new InvalidReportInput(`${field}.quantities`);
+    return {
+      ...common,
+      schemaVersion: 2,
+      reportedNextPlan: { targetBusinessDate, quantities },
+    };
+  }
+  if (count === 0) throw new InvalidReportInput(path);
+  return { ...common, schemaVersion: 1 };
 }

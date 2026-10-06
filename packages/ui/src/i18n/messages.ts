@@ -2888,6 +2888,36 @@ export const MESSAGES = {
     'Koordinate izvora (od nule): tabela {table} / red {row} / ćelija {cell}',
     'Coordenadas originales (desde cero): tabla {table} / fila {row} / celda {cell}',
   ],
+  sourceApprovalUnknown: [
+    '批准状态：来源未提供；不代表已确认计划',
+    'Approval: not provided by the source; this is not a confirmed plan',
+    'Odobrenje: nije navedeno u izvoru; ovo nije potvrđen plan',
+    'Aprobación: no indicada en el original; no es un plan confirmado',
+  ],
+  sourceNextPlan: [
+    '原报明日计划',
+    'Reported next-day plan',
+    'Plan za naredni dan iz izvornog izveštaja',
+    'Plan del día siguiente según el original',
+  ],
+  sourceNextPlanMissing: [
+    '此版本未记录原报明日计划',
+    'No reported next-day plan recorded in this version',
+    'U ovoj verziji nije zabeležen izvorni plan za naredni dan',
+    'Esta versión no contiene el plan del día siguiente del original',
+  ],
+  sourceTargetDate: [
+    '对应日期',
+    'Target date',
+    'Ciljni datum',
+    'Fecha objetivo',
+  ],
+  sourceTargetQuantity: [
+    '原报目标数量',
+    'Reported target quantity',
+    'Izvorna ciljna količina',
+    'Cantidad objetivo del original',
+  ],
   sourceDifference: [
     '系统值 − 原报值：{value}（仅算术差异）',
     'System − original: {value} (arithmetic difference only)',

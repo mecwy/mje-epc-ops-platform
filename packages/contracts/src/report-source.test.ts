@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { InvalidReportInput } from './parse.js';
-import { parseSourceReport, type SourceReportV1 } from './report-source.js';
+import {
+  parseSourceReport,
+  type SourceReportV1,
+  type SourceReportV2,
+} from './report-source.js';
 
 function source(): SourceReportV1 {
   return {
@@ -25,6 +29,95 @@ function source(): SourceReportV1 {
   };
 }
 describe('strict source declarations', () => {
+  const nextSource = (): SourceReportV2 => ({
+    ...source(),
+    schemaVersion: 2,
+    reportedNextPlan: {
+      targetBusinessDate: '2028-02-29',
+      quantities: {
+        testWork: { ...source().peopleTotal!, raw: ' 23 ' },
+        blank: { ...source().peopleTotal!, raw: ' \n ', state: 'blank' },
+        zero: { ...source().peopleTotal!, raw: '0' },
+        unknown: { ...source().peopleTotal!, raw: '?', state: 'unknown' },
+        na: { ...source().peopleTotal!, raw: 'N/A', state: 'na' },
+      },
+    },
+  });
+  it('keeps V2 targets, raw states and coordinates without inventing plan approval', () => {
+    const v = nextSource();
+    const parsed = parseSourceReport(v);
+    expect(parsed).toEqual(v);
+    v.reportedNextPlan.quantities.testWork!.raw = '999';
+    expect(parsed.schemaVersion).toBe(2);
+    if (parsed.schemaVersion === 2)
+      expect(parsed.reportedNextPlan.quantities.testWork!.raw).toBe(' 23 ');
+    const onlyPlan = nextSource();
+    delete onlyPlan.peopleTotal;
+    expect(parseSourceReport(onlyPlan)).toEqual(onlyPlan);
+  });
+  it.each([
+    [
+      'bad date',
+      (v: SourceReportV2) => ({
+        ...v,
+        reportedNextPlan: {
+          ...v.reportedNextPlan,
+          targetBusinessDate: '2027-02-29',
+        },
+      }),
+    ],
+    [
+      'empty rows',
+      (v: SourceReportV2) => ({
+        ...v,
+        reportedNextPlan: { ...v.reportedNextPlan, quantities: {} },
+      }),
+    ],
+    ['null', (v: SourceReportV2) => ({ ...v, reportedNextPlan: null })],
+    [
+      'approval claim',
+      (v: SourceReportV2) => ({
+        ...v,
+        reportedNextPlan: { ...v.reportedNextPlan, approved: true },
+      }),
+    ],
+    ['V1 extra', (v: SourceReportV2) => ({ ...v, schemaVersion: 1 })],
+    ['unsupported schema', (v: SourceReportV2) => ({ ...v, schemaVersion: 3 })],
+    [
+      'too many rows',
+      (v: SourceReportV2) => ({
+        ...v,
+        reportedNextPlan: {
+          ...v.reportedNextPlan,
+          quantities: Object.fromEntries(
+            Array.from({ length: 101 }, (_, i) => [`w${i}`, v.peopleTotal]),
+          ),
+        },
+      }),
+    ],
+  ] as const)('rejects invalid V2 %s', (_name, change) => {
+    expect(() => parseSourceReport(change(nextSource()))).toThrow(
+      InvalidReportInput,
+    );
+  });
+  it('counts the added plan cells within the existing total source-cell limit', () => {
+    const v = nextSource();
+    v.materials = Object.fromEntries(
+      Array.from({ length: 100 }, (_, i) => [
+        `m${i}`,
+        {
+          cumulative: v.peopleTotal!,
+          percent: v.peopleTotal!,
+          unit: v.peopleTotal!,
+          note: v.peopleTotal!,
+        },
+      ]),
+    );
+    v.workPercent = Object.fromEntries(
+      Array.from({ length: 99 }, (_, i) => [`w${i}`, v.peopleTotal!]),
+    );
+    expect(() => parseSourceReport(v)).toThrow(InvalidReportInput);
+  });
   it('copies raw bytes, explicit states and physical coordinates without normalizing', () => {
     const s = source();
     s.workPercent = { testWork: { ...s.peopleTotal!, raw: ' 25% ' } };

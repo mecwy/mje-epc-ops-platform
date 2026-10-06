@@ -18,9 +18,14 @@ import {
 import {
   parseSourceReport,
   reportObject,
-  type SourceReportV1,
+  type SourceReport,
 } from './report-source.js';
-export type { SourceCell, SourceReportV1 } from './report-source.js';
+export type {
+  SourceCell,
+  SourceReport,
+  SourceReportV1,
+  SourceReportV2,
+} from './report-source.js';
 export { InvalidReportInput, isRealDate };
 export type Reported = string;
 export const REPORT_TOKENS = ['unknown', 'na'] as const;
@@ -46,7 +51,7 @@ export const ROLE_KEYS = [
 ] as const;
 
 export interface DayFactsDto {
-  sourceReport?: SourceReportV1;
+  sourceReport?: SourceReport;
   weather: string;
   temperature: string;
   qty: Record<string, Reported>;

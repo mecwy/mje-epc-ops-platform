@@ -3,7 +3,7 @@
  * Inputs are plain values; the store and the browser both call these so that
  * server-side enforcement and client-side previews cannot drift.
  */
-import { isRealTimestamp, type SourceReportV1 } from '@mje/contracts';
+import { isRealTimestamp, type SourceReport } from '@mje/contracts';
 
 export const TOKENS = ['unknown', 'na'] as const;
 export type Token = (typeof TOKENS)[number];
@@ -99,7 +99,7 @@ export interface MilestoneFact {
   note: string;
 }
 export interface DayFacts {
-  sourceReport?: SourceReportV1;
+  sourceReport?: SourceReport;
   weather: string;
   temperature: string;
   qty: Record<string, Reported>;
@@ -132,7 +132,9 @@ export function blankFacts(): DayFacts {
 export function hasFacts(f: DayFacts): boolean {
   return Boolean(
     (f.sourceReport &&
-      (f.sourceReport.peopleTotal ||
+      ((f.sourceReport.schemaVersion === 2 &&
+        Object.keys(f.sourceReport.reportedNextPlan.quantities).length) ||
+        f.sourceReport.peopleTotal ||
         Object.keys(f.sourceReport.workPercent).length ||
         Object.values(f.sourceReport.materials).some(
           (row) => Object.keys(row).length,

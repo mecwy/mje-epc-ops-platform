@@ -47,6 +47,19 @@ function OriginalComparison({ c }: { c: ReportContent }) {
     ...(source
       ? {
           source: {
+            ...(source.schemaVersion === 2
+              ? {
+                  reportedNextPlan: {
+                    targetBusinessDate:
+                      source.reportedNextPlan.targetBusinessDate,
+                    quantities: Object.fromEntries(
+                      Object.entries(source.reportedNextPlan.quantities).map(
+                        ([key, value]) => [key, cell(value)],
+                      ),
+                    ),
+                  },
+                }
+              : {}),
             ...(source.peopleTotal
               ? { peopleTotal: cell(source.peopleTotal) }
               : {}),
@@ -74,6 +87,7 @@ function OriginalComparison({ c }: { c: ReportContent }) {
     work: byKind(c.items, 'work').map((item) => ({
       key: item.key,
       label: label(item.label),
+      unit: label(item.unit),
       cumulative: c.facts.cumulative[item.key],
       design: item.designQty,
     })),
@@ -89,6 +103,11 @@ function OriginalComparison({ c }: { c: ReportContent }) {
     })),
   });
   const labels: SourceReportLabels = {
+    nextPlan: t('sourceNextPlan'),
+    nextPlanMissing: t('sourceNextPlanMissing'),
+    targetDate: t('sourceTargetDate'),
+    targetQuantity: t('sourceTargetQuantity'),
+    approvalUnknown: t('sourceApprovalUnknown'),
     title: t('sourceTitle'),
     missingVersion: t('sourceMissingVersion'),
     unverifiedSource: t('sourceUnverified'),

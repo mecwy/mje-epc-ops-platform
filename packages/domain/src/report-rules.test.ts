@@ -617,6 +617,30 @@ describe('carry-over between submitted days', () => {
 });
 
 describe('source declarations are facts, never operational quantities', () => {
+  it('recognizes an explicitly blank source-plan cell without making an operational plan or quantity', () => {
+    const f = blankFacts();
+    f.sourceReport = {
+      schemaVersion: 2,
+      documents: {
+        test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+      },
+      workPercent: {},
+      materials: {},
+      reportedNextPlan: {
+        targetBusinessDate: '2027-03-01',
+        quantities: {
+          test: {
+            raw: ' ',
+            state: 'blank',
+            at: { document: 'test', table: 0, row: 1, cell: 0 },
+          },
+        },
+      },
+    };
+    expect(hasFacts(f)).toBe(true);
+    expect(f.qty).toEqual({});
+    expect(f.cumulative).toEqual({});
+  });
   it('counts a recorded blank cell but not documents alone; leaves numeric rules unchanged', () => {
     const f = blankFacts();
     f.sourceReport = {

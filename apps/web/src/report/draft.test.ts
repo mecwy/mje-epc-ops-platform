@@ -43,50 +43,67 @@ const session = (date: string, s: ReturnType<typeof server>, version = 1) =>
   );
 
 describe('draft session', () => {
-  it('retains source cells through ordinary edits and byte-identical retry after a lost response', async () => {
-    const sourceReport = {
-      schemaVersion: 1,
-      documents: {
-        testDoc: {
-          sha256: 'a'.repeat(64),
-          label: 'TEST source',
-          format: 'docx',
+  it.each([1, 2] as const)(
+    'retains source cells through ordinary edits and byte-identical retry after a lost response (V%s)',
+    async (schemaVersion) => {
+      const sourceReport = {
+        documents: {
+          testDoc: {
+            sha256: 'a'.repeat(64),
+            label: 'TEST source',
+            format: 'docx',
+          },
         },
-      },
-      peopleTotal: {
-        raw: ' 7 ',
-        state: 'value',
-        at: { document: 'testDoc', table: 0, row: 1, cell: 2 },
-      },
-      workPercent: {},
-      materials: {},
-    } as const;
-    const original: DayFactsDto = { ...empty(), sourceReport };
-    const srv = server();
-    const s = new DraftSession(
-      'p',
-      '2025-03-10',
-      1,
-      original,
-      srv.write,
-      () => undefined,
-      () => `k${++id}`,
-    );
-    s.edit(setFact(original, 'weather', 'TEST cloudy'));
-    const first = s.flush();
-    await tick();
-    const sent = JSON.stringify(srv.calls[0]!.command);
-    expect(srv.calls[0]!.command.facts.sourceReport).toEqual(sourceReport);
-    srv.calls[0]!.settle(new ApiError('NETWORK', 0));
-    expect(await first).toBe('failed');
-    const retry = s.flush();
-    await tick();
-    expect(JSON.stringify(srv.calls[1]!.command)).toBe(sent);
-    srv.ok(1, 2);
-    await retry;
-    expect(s.facts.sourceReport).toEqual(sourceReport);
-    expect(original.weather).toBe('');
-  });
+        peopleTotal: {
+          raw: ' 7 ',
+          state: 'value',
+          at: { document: 'testDoc', table: 0, row: 1, cell: 2 },
+        },
+        workPercent: {},
+        materials: {},
+        ...(schemaVersion === 2
+          ? {
+              schemaVersion: 2 as const,
+              reportedNextPlan: {
+                targetBusinessDate: '2025-03-11',
+                quantities: {
+                  testWork: {
+                    raw: ' 23 ',
+                    state: 'value' as const,
+                    at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+                  },
+                },
+              },
+            }
+          : { schemaVersion: 1 as const }),
+      } as const;
+      const original: DayFactsDto = { ...empty(), sourceReport };
+      const srv = server();
+      const s = new DraftSession(
+        'p',
+        '2025-03-10',
+        1,
+        original,
+        srv.write,
+        () => undefined,
+        () => `k${++id}`,
+      );
+      s.edit(setFact(original, 'weather', 'TEST cloudy'));
+      const first = s.flush();
+      await tick();
+      const sent = JSON.stringify(srv.calls[0]!.command);
+      expect(srv.calls[0]!.command.facts.sourceReport).toEqual(sourceReport);
+      srv.calls[0]!.settle(new ApiError('NETWORK', 0));
+      expect(await first).toBe('failed');
+      const retry = s.flush();
+      await tick();
+      expect(JSON.stringify(srv.calls[1]!.command)).toBe(sent);
+      srv.ok(1, 2);
+      await retry;
+      expect(s.facts.sourceReport).toEqual(sourceReport);
+      expect(original.weather).toBe('');
+    },
+  );
 
   it("a save in flight for one day never writes another day's facts", async () => {
     const srv = server();

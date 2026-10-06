@@ -66,6 +66,11 @@ function input(): SourceReportDisplayInput {
   };
 }
 const captions = (language: string): SourceReportLabels => ({
+  nextPlan: `${language} source tomorrow plan`,
+  nextPlanMissing: `${language} no source tomorrow plan in this version`,
+  targetDate: `${language} target date`,
+  targetQuantity: `${language} source target`,
+  approvalUnknown: `${language} approval unknown`,
   title: `${language} original comparison`,
   missingVersion: `${language} no original in this version`,
   unverifiedSource: `${language} source claim, unverified`,
@@ -381,6 +386,18 @@ describe('original source comparison (presentation only)', () => {
 });
 
 describe('selected-version source adapter in the actual report body', () => {
+  it('keeps source targets in the selected work-item order after JSON object keys are reordered in storage', () => {
+    const value = input();
+    const source = {
+      ...value.source!,
+      reportedNextPlan: {
+        targetBusinessDate: '2025-03-11',
+        quantities: { aaa: cell(' ', 'blank'), test: cell('23') },
+      },
+    };
+    const model = sourceReportModel({ ...value, source });
+    expect(model.nextPlan?.rows.map((row) => row.key)).toEqual(['test', 'aaa']);
+  });
   const source: SourceReportV1 = {
     schemaVersion: 1,
     documents: {
@@ -484,4 +501,42 @@ describe('selected-version source adapter in the actual report body', () => {
     expect(html).not.toContain('c'.repeat(64));
     expect(html).not.toContain('TEST frozen source');
   });
+
+  it.each(['zh', 'en', 'sr', 'es'] as const)(
+    'shows only the selected source plan, date and unknown approval in %s',
+    (lang) => {
+      const old = content();
+      const current = content();
+      current.facts.sourceReport = {
+        ...source,
+        schemaVersion: 2,
+        reportedNextPlan: {
+          targetBusinessDate: '2025-03-11',
+          quantities: {
+            test: { ...source.peopleTotal!, raw: ' 23 ' },
+            unknownRow: { ...source.peopleTotal!, raw: ' ', state: 'blank' },
+          },
+        },
+      };
+      // A current confirmed operational plan must not replace the original source target.
+      current.nextPlan = {
+        status: 'confirmed',
+        n: 9,
+        rows: [{ item: 'test', target: '987' }],
+      };
+      const before = JSON.stringify(current);
+      const html = page(current, lang);
+      expect(html).toContain(translate(lang, 'sourceNextPlan'));
+      expect(html).toContain(translate(lang, 'sourceApprovalUnknown'));
+      expect(html).toContain('2025-03-11');
+      expect(html).toContain(' 23 ');
+      expect(html).toContain('TEST frozen work label');
+      expect(html).toContain(translate(lang, 'notFilled'));
+      expect(JSON.stringify(current)).toBe(before);
+      const olderHtml = page(old, lang);
+      expect(olderHtml).toContain(translate(lang, 'sourceNextPlanMissing'));
+      expect(olderHtml).not.toContain(' 23 ');
+      expect(olderHtml).not.toContain(translate(lang, 'sourceApprovalUnknown'));
+    },
+  );
 });

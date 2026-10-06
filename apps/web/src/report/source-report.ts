@@ -27,12 +27,17 @@ export interface SourceReportDisplayInput {
     readonly peopleTotal?: ReportedCellDisplay;
     readonly workPercent: Readonly<Record<string, ReportedCellDisplay>>;
     readonly materials: Readonly<Record<string, MaterialSourceDisplay>>;
+    readonly reportedNextPlan?: {
+      readonly targetBusinessDate: string;
+      readonly quantities: Readonly<Record<string, ReportedCellDisplay>>;
+    };
   };
   readonly people: Readonly<Partial<Record<RoleKey, string>>>;
   /** Quantities, labels and units must come from the same selected version as source. */
   readonly work: readonly {
     readonly key: string;
     readonly label: string;
+    readonly unit?: string;
     readonly cumulative: string | undefined;
     readonly design: string | undefined;
   }[];
@@ -97,6 +102,28 @@ export function sourceReportModel(input: SourceReportDisplayInput) {
   const peopleOriginal = source?.peopleTotal;
   return {
     recorded: source !== undefined,
+    nextPlan: source?.reportedNextPlan
+      ? {
+          targetBusinessDate: source.reportedNextPlan.targetBusinessDate,
+          rows: Object.entries(source.reportedNextPlan.quantities)
+            .sort(([a], [b]) => {
+              const index = (key: string) => {
+                const found = input.work.findIndex((row) => row.key === key);
+                return found < 0 ? input.work.length : found;
+              };
+              return index(a) - index(b);
+            })
+            .map(([key, quantity]) => {
+              const item = input.work.find((row) => row.key === key);
+              return {
+                key,
+                label: item?.label ?? key,
+                unit: item?.unit,
+                original: quantity,
+              };
+            }),
+        }
+      : null,
     people: {
       original: peopleOriginal,
       calculated: sum.value === null ? null : decText(sum.value),

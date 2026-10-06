@@ -2011,6 +2011,195 @@ try {
     );
 
     const noWorkDate = '2027-02-11';
+    // Reported next-day targets are source declarations, never plan confirmations.
+    const v2 = {
+      ...revised,
+      schemaVersion: 2,
+      reportedNextPlan: {
+        targetBusinessDate: '2027-02-11',
+        quantities: {
+          support: sourceCell(' 23 '),
+          rail: sourceCell(' ', 'blank'),
+        },
+      },
+    };
+    const v1Snapshot = JSON.stringify(await revision(2));
+    const planConfirmations = (
+      await owner.query(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='REPORT_PLAN_CONFIRM'`,
+      )
+    ).rows[0].n;
+    const beforeV2 = await read();
+    const correctingV2 = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: beforeV2.version,
+          reason: 'TEST reported tomorrow targets',
+        }),
+      ),
+      200,
+    );
+    const requestV2 = cmd({
+      businessDate: date,
+      expectedVersion: correctingV2.version,
+      facts: { ...beforeV2.facts, sourceReport: v2 },
+    });
+    let savedV2 = await expectStatus(call('/facts', pm, requestV2), 200);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, requestV2), 200),
+      savedV2,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v2);
+    assert.deepEqual((await read(exec)).facts.sourceReport, revised);
+    for (const badSource of [
+      revised,
+      {
+        ...v2,
+        reportedNextPlan: { ...v2.reportedNextPlan, targetBusinessDate: date },
+      },
+      {
+        ...v2,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          targetBusinessDate: '2027-02-12',
+        },
+      },
+      {
+        ...v2,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          quantities: { unregistered: sourceCell('3') },
+        },
+      },
+      {
+        ...v2,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          quantities: { crane: sourceCell('3') },
+        },
+      },
+      { ...v2, reportedNextPlan: { ...v2.reportedNextPlan, approved: true } },
+    ]) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedV2.version,
+            facts: { ...beforeV2.facts, sourceReport: badSource },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      const unchanged = await read();
+      assert.equal(unchanged.version, savedV2.version);
+      assert.deepEqual(unchanged.facts.sourceReport, v2);
+    }
+    const legacyFacts = { ...beforeV2.facts };
+    delete legacyFacts.sourceReport;
+    savedV2 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedV2.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v2);
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correctingV2.version,
+          facts: { ...legacyFacts, sourceReport: v2 },
+        }),
+      ),
+      409,
+      'VERSION_CONFLICT',
+    );
+    pass(
+      'V2 source plan dates/keys validated, explicit V1 downgrade atomic refusal, legacy omission preserves V2 and replay is idempotent',
+    );
+
+    const submitV2 = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: savedV2.version }),
+      ),
+      200,
+    );
+    assert.equal(submitV2.revisionNumber, 3);
+    const snapshotV2 = await revision(3);
+    assert.deepEqual(snapshotV2.snapshot.facts.sourceReport, v2);
+    assert.equal(JSON.stringify(await revision(2)), v1Snapshot);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v2);
+    assert.deepEqual((await read()).nextPlan, beforeV2.nextPlan);
+    assert.equal(
+      (
+        await owner.query(
+          `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='REPORT_PLAN_CONFIRM'`,
+        )
+      ).rows[0].n,
+      planConfirmations,
+    );
+    const nextCorrection = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submitV2.version,
+          reason: 'TEST revised reported target',
+        }),
+      ),
+      200,
+    );
+    const otherV2 = {
+      ...v2,
+      reportedNextPlan: {
+        ...v2.reportedNextPlan,
+        quantities: { support: sourceCell('29') },
+      },
+    };
+    const updatedV2 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: nextCorrection.version,
+          facts: { ...legacyFacts, sourceReport: otherV2 },
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v2);
+    await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: updatedV2.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v2);
+    assert.deepEqual(await revision(3), snapshotV2);
+    pass(
+      'V2 source plan remains unapproved, frozen old revisions remain exact, hidden correction and cancellation preserve selected source targets',
+    );
+
     const onlySource = {
       weather: '',
       temperature: '',

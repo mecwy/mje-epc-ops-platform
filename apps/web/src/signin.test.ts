@@ -140,33 +140,50 @@ describe('resume state', () => {
     drafts: [draft('2026-09-29')],
     savedAt: NOW,
   };
-  it('round-trips source cells through a sign-in resume without converting blank or raw text', () => {
-    const s = memoryStore();
-    const saved = draft('2025-03-10');
-    saved.facts.sourceReport = {
-      schemaVersion: 1,
-      documents: {
-        testDoc: {
-          sha256: 'b'.repeat(64),
-          label: 'TEST sign-in source',
-          format: 'docx',
+  it.each([1, 2] as const)(
+    'round-trips source cells through a sign-in resume without converting blank or raw text (V%s)',
+    (schemaVersion) => {
+      const s = memoryStore();
+      const saved = draft('2025-03-10');
+      saved.facts.sourceReport = {
+        documents: {
+          testDoc: {
+            sha256: 'b'.repeat(64),
+            label: 'TEST sign-in source',
+            format: 'docx',
+          },
         },
-      },
-      peopleTotal: {
-        raw: ' \n ',
-        state: 'blank',
-        at: { document: 'testDoc', table: 0, row: 0, cell: 0, gridSpan: 2 },
-      },
-      workPercent: {},
-      materials: {},
-    };
-    const withSource = { ...state, drafts: [saved] };
-    expect(saveResume(s, withSource)).toBe(true);
-    expect(readResume(s, NOW)).toEqual(withSource);
-    expect(
-      readResume(s, NOW)?.drafts[0]?.facts.sourceReport?.peopleTotal?.raw,
-    ).toBe(' \n ');
-  });
+        peopleTotal: {
+          raw: ' \n ',
+          state: 'blank',
+          at: { document: 'testDoc', table: 0, row: 0, cell: 0, gridSpan: 2 },
+        },
+        workPercent: {},
+        materials: {},
+        ...(schemaVersion === 2
+          ? {
+              schemaVersion: 2 as const,
+              reportedNextPlan: {
+                targetBusinessDate: '2025-03-11',
+                quantities: {
+                  testWork: {
+                    raw: ' 23 ',
+                    state: 'value' as const,
+                    at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+                  },
+                },
+              },
+            }
+          : { schemaVersion: 1 as const }),
+      };
+      const withSource = { ...state, drafts: [saved] };
+      expect(saveResume(s, withSource)).toBe(true);
+      expect(readResume(s, NOW)).toEqual(withSource);
+      expect(
+        readResume(s, NOW)?.drafts[0]?.facts.sourceReport?.peopleTotal?.raw,
+      ).toBe(' \n ');
+    },
+  );
   it('reads project, date, view and drafts without removing them', () => {
     const s = memoryStore();
     expect(saveResume(s, state)).toBe(true);

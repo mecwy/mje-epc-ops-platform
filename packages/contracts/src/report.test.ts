@@ -10,6 +10,30 @@ import {
 } from './report.js';
 
 const ID = '10000000-0000-4000-8000-00000000000';
+it('retains the V2 discriminant and source target through the normal facts boundary', () => {
+  const sourceReport = {
+    schemaVersion: 2,
+    documents: {
+      testDoc: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    reportedNextPlan: {
+      targetBusinessDate: '2027-03-01',
+      quantities: {
+        test: {
+          raw: '23',
+          state: 'value',
+          at: { document: 'testDoc', table: 0, row: 1, cell: 1 },
+        },
+      },
+    },
+  };
+  expect(parseFacts({ ...facts(), sourceReport }).sourceReport).toEqual(
+    sourceReport,
+  );
+  expect(parseFacts(facts())).not.toHaveProperty('sourceReport');
+});
 const facts = () => ({
   weather: '多云',
   temperature: '12–20℃',

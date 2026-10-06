@@ -6,6 +6,11 @@ import type {
 
 /** Every visible caption is supplied by the host's selected language. No API/i18n coupling. */
 export interface SourceReportLabels {
+  nextPlan: string;
+  nextPlanMissing: string;
+  targetDate: string;
+  targetQuantity: string;
+  approvalUnknown: string;
   title: string;
   missingVersion: string;
   unverifiedSource: string;
@@ -132,6 +137,35 @@ export function SourceReport({
       ) : (
         <>
           <p>{labels.unverifiedSource}</p>
+          <section aria-label={labels.nextPlan}>
+            <h3>{labels.nextPlan}</h3>
+            {model.nextPlan ? (
+              <>
+                <p>
+                  {labels.targetDate}:{' '}
+                  <time dateTime={model.nextPlan.targetBusinessDate}>
+                    {model.nextPlan.targetBusinessDate}
+                  </time>
+                </p>
+                <p>{labels.approvalUnknown}</p>
+                {model.nextPlan.rows.map((row) => (
+                  <article key={row.key}>
+                    <h4 style={rawStyle}>{row.label}</h4>
+                    <dl>
+                      <dt>{labels.targetQuantity}</dt>
+                      <dd>
+                        <SourceCell cell={row.original} labels={labels} />
+                      </dd>
+                      <dt>{labels.unit}</dt>
+                      <dd>{row.unit || labels.unknown}</dd>
+                    </dl>
+                  </article>
+                ))}
+              </>
+            ) : (
+              <p>{labels.nextPlanMissing}</p>
+            )}
+          </section>
           <section aria-label={labels.people}>
             <h3>{labels.people}</h3>
             <dl>
