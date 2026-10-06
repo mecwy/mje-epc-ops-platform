@@ -2524,3 +2524,175 @@ ul.plainlist:not(.card) {
   margin-inline-start: 1rem;
   overflow-wrap: anywhere;
 }
+
+/* Integrator-owned additive styles; reuse the approved report palette. */
+.personnel-metrics {
+  min-width: 0;
+  overflow-x: visible;
+}
+.personnel-metrics .personnel-summary {
+  min-width: 0;
+  color: var(--ink);
+  padding-block: 12px;
+}
+.personnel-metrics .personnel-summary-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 8px;
+}
+.personnel-metrics .personnel-summary h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.personnel-metrics .personnel-summary p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-period,
+.personnel-metrics .personnel-summary-coverage {
+  color: var(--muted);
+  font-size: 12px;
+}
+.personnel-metrics .personnel-summary-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.personnel-metrics .personnel-summary-values {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 13px;
+}
+.personnel-metrics .personnel-summary-values th,
+.personnel-metrics .personnel-summary-values td {
+  min-width: 0;
+  padding: 6px 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line-2);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-values thead th {
+  white-space: normal;
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+.personnel-metrics .personnel-summary-values th:first-child {
+  width: 44%;
+}
+.personnel-metrics .personnel-summary-values thead th:last-child {
+  text-align: end;
+}
+.personnel-metrics .personnel-summary-values tbody th {
+  font-weight: 500;
+}
+.personnel-metrics .personnel-summary-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 8px;
+}
+.personnel-metrics .personnel-summary-number {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-state {
+  color: var(--muted);
+  background: var(--line-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-state[data-state='partial'] {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.personnel-metrics .personnel-summary-state[data-state='complete'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.personnel-metrics .personnel-summary-totals,
+.personnel-metrics .personnel-summary-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.personnel-metrics .personnel-summary-totals > summary,
+.personnel-metrics .personnel-summary-details > summary {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 12px 0;
+  cursor: pointer;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-totals > summary:focus-visible,
+.personnel-metrics .personnel-summary-details > summary:focus-visible,
+.personnel-metrics .personnel-summary button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.personnel-metrics .personnel-summary h5 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+}
+.personnel-metrics .personnel-summary-category-coverage,
+.personnel-metrics .personnel-summary-days dl {
+  margin: 0;
+}
+.personnel-metrics .personnel-summary-category-coverage > div,
+.personnel-metrics .personnel-summary-days dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 8px;
+  margin-block: 4px;
+}
+.personnel-metrics .personnel-summary dt,
+.personnel-metrics .personnel-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-method {
+  padding: 0 8px 8px;
+  background: var(--line-2);
+  border-radius: 6px;
+}
+.personnel-metrics .personnel-summary-days {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.personnel-metrics .personnel-summary-days > li {
+  padding-block: 8px;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary button {
+  min-height: 44px;
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-unavailable {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 480px) {
+  .personnel-metrics .personnel-summary-values th,
+  .personnel-metrics .personnel-summary-values td {
+    padding: 8px 4px;
+  }
+}

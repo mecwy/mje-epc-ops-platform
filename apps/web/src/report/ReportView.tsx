@@ -41,6 +41,16 @@ function usePersonnelLabels(
   return {
     title: t(title),
     description: t('personnelDescription'),
+    cumulativeTitle: t('personnelShowSevenDayCounts'),
+    detailsTitle: t('personnelDetailsAndBasis'),
+    shortSubtotal: t('personnelCompactSubtotal'),
+    shortTotalStates: {
+      complete: t('personnelCompactComplete'),
+      partial: t('personnelCompactPartial'),
+      unknown: t('unknown'),
+      na: t('na'),
+      missing: t('personnelCompactMissing'),
+    },
     category: t('category'),
     knownSubtotal: t('personnelKnownSubtotal'),
     coverageTitle: t('personnelCoverageTitle'),
