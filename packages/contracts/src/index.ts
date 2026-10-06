@@ -10,6 +10,8 @@ export * from './photo.js';
 export * from './field.js';
 export * from './checkin.js';
 export * from './foreman.js';
+export * from './opportunity.js';
+export * from './opportunity-commands.js';
 
 export * from './project-status.js';
 export * from './project-master.js';

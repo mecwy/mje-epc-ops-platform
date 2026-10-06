@@ -86,11 +86,17 @@ enum RevisionState {
 }
 
 model Organization {
-  ContractLine_org          ContractLine[]          @relation("ContractLine_org")
-  ContractLineRevision_org  ContractLineRevision[]  @relation("ContractLineRevision_org")
-  ContractScopeVersion_org  ContractScopeVersion[]  @relation("ContractScopeVersion_org")
-  ContractAttention_org     ContractAttention[]     @relation("ContractAttention_org")
-  ContractAttentionRead_org ContractAttentionRead[] @relation("ContractAttentionRead_org")
+  OpportunityRecord_org          OpportunityRecord[]          @relation("OpportunityRecord_org")
+  OpportunityRecordPerson_org    OpportunityRecordPerson[]    @relation("OpportunityRecordPerson_org")
+  OpportunityRecordCompany_org   OpportunityRecordCompany[]   @relation("OpportunityRecordCompany_org")
+  OpportunityRecordSource_org    OpportunityRecordSource[]    @relation("OpportunityRecordSource_org")
+  OpportunityGrant_org           OpportunityGrant[]           @relation("OpportunityGrant_org")
+  OpportunityGrantRevocation_org OpportunityGrantRevocation[] @relation("OpportunityGrantRevocation_org")
+  ContractLine_org               ContractLine[]               @relation("ContractLine_org")
+  ContractLineRevision_org       ContractLineRevision[]       @relation("ContractLineRevision_org")
+  ContractScopeVersion_org       ContractScopeVersion[]       @relation("ContractScopeVersion_org")
+  ContractAttention_org          ContractAttention[]          @relation("ContractAttention_org")
+  ContractAttentionRead_org      ContractAttentionRead[]      @relation("ContractAttentionRead_org")
 
   ContractGrant_org            ContractGrant[]               @relation("ContractGrant_org")
   ContractGrantRevocation_org  ContractGrantRevocation[]     @relation("ContractGrantRevocation_org")
@@ -165,8 +171,9 @@ model Organization {
 }
 
 model Company {
-  ContractRevision_counterparty ContractRevision[] @relation("ContractRevision_counterparty")
-  ContractRevision_selfParty    ContractRevision[] @relation("ContractRevision_selfParty")
+  OpportunityRecordCompany_companyId OpportunityRecordCompany[] @relation("OpportunityRecordCompany_companyId")
+  ContractRevision_counterparty      ContractRevision[]         @relation("ContractRevision_counterparty")
+  ContractRevision_selfParty         ContractRevision[]         @relation("ContractRevision_selfParty")
 
   id                     String          @id @default(uuid()) @db.Uuid
   orgId                  String          @db.Uuid
@@ -202,20 +209,22 @@ model Customer {
 }
 
 model Opportunity {
-  id                             String             @id @default(uuid()) @db.Uuid
-  orgId                          String             @db.Uuid
-  org                            Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                      DateTime           @default(now()) @db.Timestamptz(6)
-  updatedAt                      DateTime           @updatedAt @db.Timestamptz(6)
-  updatedBy                      String             @db.Uuid
-  version                        Int                @default(1)
-  code                           String
-  stage                          String
-  customerId                     String?            @db.Uuid
-  customer                       Customer?          @relation("Opportunity_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  Project_opportunityId          Project[]          @relation("Project_opportunityId")
-  PersonAssignment_opportunityId PersonAssignment[] @relation("PersonAssignment_opportunityId")
-  DailyTask_opportunityId        DailyTask[]        @relation("DailyTask_opportunityId")
+  OpportunityRecord_opportunityId OpportunityRecord[] @relation("OpportunityRecord_opportunityId")
+  OpportunityGrant_opportunityId  OpportunityGrant[]  @relation("OpportunityGrant_opportunityId")
+  id                              String              @id @default(uuid()) @db.Uuid
+  orgId                           String              @db.Uuid
+  org                             Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                       DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt                       DateTime            @updatedAt @db.Timestamptz(6)
+  updatedBy                       String              @db.Uuid
+  version                         Int                 @default(1)
+  code                            String
+  stage                           String
+  customerId                      String?             @db.Uuid
+  customer                        Customer?           @relation("Opportunity_customerId", fields: [orgId, customerId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  Project_opportunityId           Project[]           @relation("Project_opportunityId")
+  PersonAssignment_opportunityId  PersonAssignment[]  @relation("PersonAssignment_opportunityId")
+  DailyTask_opportunityId         DailyTask[]         @relation("DailyTask_opportunityId")
 
   @@unique([orgId, id])
   @@unique([orgId, code])
@@ -385,9 +394,13 @@ model WorkPackage {
 }
 
 model Person {
-  ContractScopeVersion_actorPerson  ContractScopeVersion[]  @relation("ContractScopeVersion_actorPerson")
-  ContractAttention_causer          ContractAttention[]     @relation("ContractAttention_causer")
-  ContractAttentionRead_actorPerson ContractAttentionRead[] @relation("ContractAttentionRead_actorPerson")
+  OpportunityRecord_recordedByPersonId OpportunityRecord[]       @relation("OpportunityRecord_recordedByPersonId")
+  OpportunityRecordPerson_personId     OpportunityRecordPerson[] @relation("OpportunityRecordPerson_personId")
+  OpportunityGrant_personId            OpportunityGrant[]        @relation("OpportunityGrant_personId")
+  OpportunityGrant_representedPersonId OpportunityGrant[]        @relation("OpportunityGrant_representedPersonId")
+  ContractScopeVersion_actorPerson     ContractScopeVersion[]    @relation("ContractScopeVersion_actorPerson")
+  ContractAttention_causer             ContractAttention[]       @relation("ContractAttention_causer")
+  ContractAttentionRead_actorPerson    ContractAttentionRead[]   @relation("ContractAttentionRead_actorPerson")
 
   ContractGrant_person                  ContractGrant[]         @relation("ContractGrant_person")
   ContractGrant_represented             ContractGrant[]         @relation("ContractGrant_represented")
@@ -438,8 +451,12 @@ model Person {
 }
 
 model LoginAccount {
-  ContractScopeVersion_actor  ContractScopeVersion[]  @relation("ContractScopeVersion_actor")
-  ContractAttentionRead_actor ContractAttentionRead[] @relation("ContractAttentionRead_actor")
+  OpportunityRecord_recordedByAccountId OpportunityRecord[]          @relation("OpportunityRecord_recordedByAccountId")
+  OpportunityGrant_accountId            OpportunityGrant[]           @relation("OpportunityGrant_accountId")
+  OpportunityGrant_grantedBy            OpportunityGrant[]           @relation("OpportunityGrant_grantedBy")
+  OpportunityGrantRevocation_revokedBy  OpportunityGrantRevocation[] @relation("OpportunityGrantRevocation_revokedBy")
+  ContractScopeVersion_actor            ContractScopeVersion[]       @relation("ContractScopeVersion_actor")
+  ContractAttentionRead_actor           ContractAttentionRead[]      @relation("ContractAttentionRead_actor")
 
   ContractGrant_account           ContractGrant[]               @relation("ContractGrant_account")
   ContractGrant_grantor           ContractGrant[]               @relation("ContractGrant_grantor")
@@ -492,21 +509,22 @@ model LoginAccount {
 }
 
 model Membership {
-  ContractGrant_membership ContractGrant[] @relation("ContractGrant_membership")
-  id                       String          @id @default(uuid()) @db.Uuid
-  orgId                    String          @db.Uuid
-  org                      Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                DateTime        @default(now()) @db.Timestamptz(6)
-  updatedAt                DateTime        @updatedAt @db.Timestamptz(6)
-  updatedBy                String          @db.Uuid
-  version                  Int             @default(1)
-  role                     String
-  activeFrom               DateTime        @db.Timestamptz(6)
-  activeUntil              DateTime?       @db.Timestamptz(6)
-  accountId                String          @db.Uuid
-  account                  LoginAccount    @relation("Membership_accountId", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  projectId                String?         @db.Uuid
-  project                  Project?        @relation("Membership_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  OpportunityGrant_membershipId OpportunityGrant[] @relation("OpportunityGrant_membershipId")
+  ContractGrant_membership      ContractGrant[]    @relation("ContractGrant_membership")
+  id                            String             @id @default(uuid()) @db.Uuid
+  orgId                         String             @db.Uuid
+  org                           Organization       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                     DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt                     DateTime           @updatedAt @db.Timestamptz(6)
+  updatedBy                     String             @db.Uuid
+  version                       Int                @default(1)
+  role                          String
+  activeFrom                    DateTime           @db.Timestamptz(6)
+  activeUntil                   DateTime?          @db.Timestamptz(6)
+  accountId                     String             @db.Uuid
+  account                       LoginAccount       @relation("Membership_accountId", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId                     String?            @db.Uuid
+  project                       Project?           @relation("Membership_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([orgId, id])
 }
@@ -574,11 +592,12 @@ model WorkforcePlan {
 }
 
 model SourceDocument {
-  ContractLineRevision_document        ContractLineRevision[] @relation("ContractLineRevision_document")
-  ContractLineRevision_removalDocument ContractLineRevision[] @relation("ContractLineRevision_removalDocument")
-  ContractRevision_partiesSource       ContractRevision[]     @relation("ContractRevision_partiesSource")
-  ContractRevision_datesSource         ContractRevision[]     @relation("ContractRevision_datesSource")
-  ContractRevision_totalSource         ContractRevision[]     @relation("ContractRevision_totalSource")
+  OpportunityRecordSource_sourceDocumentId OpportunityRecordSource[] @relation("OpportunityRecordSource_sourceDocumentId")
+  ContractLineRevision_document            ContractLineRevision[]    @relation("ContractLineRevision_document")
+  ContractLineRevision_removalDocument     ContractLineRevision[]    @relation("ContractLineRevision_removalDocument")
+  ContractRevision_partiesSource           ContractRevision[]        @relation("ContractRevision_partiesSource")
+  ContractRevision_datesSource             ContractRevision[]        @relation("ContractRevision_datesSource")
+  ContractRevision_totalSource             ContractRevision[]        @relation("ContractRevision_totalSource")
 
   ContractRevisionSource_document  ContractRevisionSource[] @relation("ContractRevisionSource_document")
   id                               String                   @id @default(uuid()) @db.Uuid
@@ -2054,4 +2073,115 @@ model ContractAttentionRead {
 
   @@unique([orgId, id])
   @@unique([orgId, attentionId, byAccountId])
+}
+
+model OpportunityRecord {
+  OpportunityRecordPerson_recordId  OpportunityRecordPerson[]  @relation("OpportunityRecordPerson_recordId")
+  OpportunityRecordCompany_recordId OpportunityRecordCompany[] @relation("OpportunityRecordCompany_recordId")
+  OpportunityRecordSource_recordId  OpportunityRecordSource[]  @relation("OpportunityRecordSource_recordId")
+  id                                String                     @id @default(uuid()) @db.Uuid
+  orgId                             String                     @db.Uuid
+  org                               Organization               @relation("OpportunityRecord_org", fields: [orgId], references: [id], onDelete: Restrict)
+  opportunityId                     String                     @db.Uuid
+  opportunityId_ref                 Opportunity                @relation("OpportunityRecord_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  recordedByAccountId               String                     @db.Uuid
+  recordedByAccountId_ref           LoginAccount               @relation("OpportunityRecord_recordedByAccountId", fields: [orgId, recordedByAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  recordedByPersonId                String                     @db.Uuid
+  recordedByPersonId_ref            Person                     @relation("OpportunityRecord_recordedByPersonId", fields: [orgId, recordedByPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  n                                 Int
+  kind                              String
+  facts                             Json
+  payload                           Json
+  recordedAt                        DateTime                   @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+  @@unique([orgId, opportunityId, n])
+}
+
+model OpportunityRecordPerson {
+  id           String            @id @default(uuid()) @db.Uuid
+  orgId        String            @db.Uuid
+  org          Organization      @relation("OpportunityRecordPerson_org", fields: [orgId], references: [id], onDelete: Restrict)
+  recordId     String            @db.Uuid
+  recordId_ref OpportunityRecord @relation("OpportunityRecordPerson_recordId", fields: [orgId, recordId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId     String            @db.Uuid
+  personId_ref Person            @relation("OpportunityRecordPerson_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, recordId, personId])
+}
+
+model OpportunityRecordCompany {
+  id            String            @id @default(uuid()) @db.Uuid
+  orgId         String            @db.Uuid
+  org           Organization      @relation("OpportunityRecordCompany_org", fields: [orgId], references: [id], onDelete: Restrict)
+  recordId      String            @db.Uuid
+  recordId_ref  OpportunityRecord @relation("OpportunityRecordCompany_recordId", fields: [orgId, recordId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  companyId     String            @db.Uuid
+  companyId_ref Company           @relation("OpportunityRecordCompany_companyId", fields: [orgId, companyId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, recordId, companyId])
+}
+
+model OpportunityRecordSource {
+  id                   String            @id @default(uuid()) @db.Uuid
+  orgId                String            @db.Uuid
+  org                  Organization      @relation("OpportunityRecordSource_org", fields: [orgId], references: [id], onDelete: Restrict)
+  recordId             String            @db.Uuid
+  recordId_ref         OpportunityRecord @relation("OpportunityRecordSource_recordId", fields: [orgId, recordId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceDocumentId     String?           @db.Uuid
+  sourceDocumentId_ref SourceDocument?   @relation("OpportunityRecordSource_sourceDocumentId", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  reference            String
+  location             String
+
+  @@unique([orgId, id])
+}
+
+model OpportunityGrant {
+  OpportunityGrantRevocation_grantId OpportunityGrantRevocation[] @relation("OpportunityGrantRevocation_grantId")
+  id                                 String                       @id @default(uuid()) @db.Uuid
+  orgId                              String                       @db.Uuid
+  org                                Organization                 @relation("OpportunityGrant_org", fields: [orgId], references: [id], onDelete: Restrict)
+  membershipId                       String                       @db.Uuid
+  membershipId_ref                   Membership                   @relation("OpportunityGrant_membershipId", fields: [orgId, membershipId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  accountId                          String                       @db.Uuid
+  accountId_ref                      LoginAccount                 @relation("OpportunityGrant_accountId", fields: [orgId, accountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  personId                           String                       @db.Uuid
+  personId_ref                       Person                       @relation("OpportunityGrant_personId", fields: [orgId, personId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  capability                         String
+  scope                              String
+  businessLine                       String?
+  opportunityId                      String?                      @db.Uuid
+  opportunityId_ref                  Opportunity?                 @relation("OpportunityGrant_opportunityId", fields: [orgId, opportunityId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  validFrom                          DateTime                     @db.Timestamptz(6)
+  validUntil                         DateTime                     @db.Timestamptz(6)
+  basis                              String
+  source                             String
+  templateVersion                    String?
+  grantedBy                          String                       @db.Uuid
+  grantedBy_ref                      LoginAccount                 @relation("OpportunityGrant_grantedBy", fields: [orgId, grantedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  grantedAt                          DateTime                     @default(now()) @db.Timestamptz(6)
+  representedPersonId                String?                      @db.Uuid
+  representedPersonId_ref            Person?                      @relation("OpportunityGrant_representedPersonId", fields: [orgId, representedPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  delegationBasis                    String?
+  delegationFrom                     DateTime?                    @db.Timestamptz(6)
+  delegationUntil                    DateTime?                    @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+}
+
+model OpportunityGrantRevocation {
+  id            String           @id @default(uuid()) @db.Uuid
+  orgId         String           @db.Uuid
+  org           Organization     @relation("OpportunityGrantRevocation_org", fields: [orgId], references: [id], onDelete: Restrict)
+  grantId       String           @db.Uuid
+  grantId_ref   OpportunityGrant @relation("OpportunityGrantRevocation_grantId", fields: [orgId, grantId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  revokedBy     String           @db.Uuid
+  revokedBy_ref LoginAccount     @relation("OpportunityGrantRevocation_revokedBy", fields: [orgId, revokedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  reason        String
+  at            DateTime         @default(now()) @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+  @@unique([orgId, grantId])
 }

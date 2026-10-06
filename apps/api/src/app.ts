@@ -1,7 +1,11 @@
 import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
 import { ContractRegisterController } from './contract-register.controller.js';
+import { OpportunityController } from './opportunity.controller.js';
 import {
   ContractRegisterReader,
+  OpportunityCommands,
+  OpportunityReader,
+  OpportunityError,
   ContractRegisterError,
   ContractRegisterCommands,
 } from '@mje/domain';
@@ -112,6 +116,23 @@ class SafeErrorFilter implements ExceptionFilter {
     ) {
       status = 400;
       code = 'INVALID_INPUT';
+    } else if (error instanceof OpportunityError) {
+      code = error.code;
+      status =
+        code === 'NOT_FOUND'
+          ? 404
+          : code === 'FORBIDDEN'
+            ? 403
+            : [
+                  'VERSION_CONFLICT',
+                  'FIELD_CONFLICT',
+                  'STEP_CONFLICT',
+                  'REQUEST_CONFLICT',
+                  'DECISION_CONFLICT',
+                  'IDENTITY_EXISTS',
+                ].includes(code)
+              ? 409
+              : 400;
     } else if (error instanceof ContractRegisterError) {
       code = error.code;
       status =
@@ -196,6 +217,8 @@ export interface AlphaRuntime {
   projectStatusCommands?: ProjectStatusCommands;
   contractRegisterReader?: ContractRegisterReader;
   contractRegisterCommands?: ContractRegisterCommands;
+  opportunityCommands?: OpportunityCommands;
+  opportunityReader?: OpportunityReader;
   projectStatusReader?: ProjectStatusReader;
   projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
@@ -231,6 +254,9 @@ export async function createApp(
   @Module({
     controllers: [
       HealthController,
+      ...(alpha?.opportunityCommands && alpha.opportunityReader
+        ? [OpportunityController]
+        : []),
       ...(alpha?.contractRegisterReader ? [ContractRegisterController] : []),
       ...(alpha?.contractRegisterReader && alpha.contractRegisterCommands
         ? [ContractCommandsController]
@@ -262,6 +288,18 @@ export async function createApp(
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
+          ...(alpha.opportunityCommands && alpha.opportunityReader
+            ? [
+                {
+                  provide: OpportunityCommands,
+                  useValue: alpha.opportunityCommands,
+                },
+                {
+                  provide: OpportunityReader,
+                  useValue: alpha.opportunityReader,
+                },
+              ]
+            : []),
           ...(alpha.contractRegisterCommands
             ? [
                 {

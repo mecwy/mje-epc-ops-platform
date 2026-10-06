@@ -14,6 +14,9 @@ import type { Layer, ProjectorName } from './fields.js';
 
 /** ADR-0003 D1 transition table (report / issue / photo / field / device), plus outside-D1 names. */
 export type Capability =
+  | 'opportunity.view'
+  | 'opportunity.maintain'
+  | 'opportunity.decide'
   | 'contract.view'
   | 'contract.maintain'
   | 'contract.attention'
@@ -52,6 +55,7 @@ export type Concurrency =
 export type ScopeSource =
   | 'none'
   | 'explicit.contract-grants'
+  | 'explicit.opportunity-grants'
   | 'membership'
   | 'query.projectId'
   | 'body.projectId'
@@ -281,6 +285,84 @@ const DEVICE = {
 };
 
 const ENTRIES: readonly SurfaceEntry[] = [
+  ...(['list', 'detail', 'history', 'lookups', 'worklists'] as const).map(
+    (kind) =>
+      read(
+        'GET /api/opportunities' +
+          (kind === 'list'
+            ? ''
+            : kind === 'detail'
+              ? '/:id'
+              : kind === 'history'
+                ? '/:id/history'
+                : '/' + kind),
+        'account',
+        ['opportunity.view'],
+        'explicit.opportunity-grants',
+        {
+          'opportunity.view': {
+            temporal: 'live',
+            layers: [
+              'structure',
+              'public-text',
+              'opportunity-internal',
+              'opportunity-projected-field',
+            ],
+            projector: `opportunity.${kind}`,
+          },
+        },
+        { outsideD1: true },
+      ),
+  ),
+  ...(
+    [
+      {
+        entry: 'POST /api/opportunities',
+        command: 'OpportunityCommands.create',
+        cap: 'opportunity.maintain',
+        mode: 'create',
+        protects: ['Opportunity.identity'],
+      },
+      {
+        entry: 'POST /api/opportunities/:id/updates',
+        command: 'OpportunityCommands.update',
+        cap: 'opportunity.maintain',
+        mode: 'cas',
+        protects: ['Opportunity.version', 'Opportunity.nextStepId'],
+      },
+      {
+        entry: 'POST /api/opportunities/:id/requests',
+        command: 'OpportunityCommands.request',
+        cap: 'opportunity.maintain',
+        mode: 'cas',
+        protects: ['Opportunity.pendingRequestId'],
+      },
+      {
+        entry: 'POST /api/opportunities/:id/decisions',
+        command: 'OpportunityCommands.decide',
+        cap: 'opportunity.decide',
+        mode: 'cas',
+        protects: [
+          'Opportunity.decisionVersion',
+          'Opportunity.pendingRequestId',
+        ],
+      },
+    ] as const
+  ).map((x) =>
+    write(
+      x.entry,
+      'account',
+      x.cap,
+      'explicit.opportunity-grants',
+      x.command,
+      x.mode,
+      {
+        protects: [...x.protects],
+        advances: [...new Set(['Opportunity.version', ...x.protects])],
+      },
+      { outsideD1: true },
+    ),
+  ),
   {
     entry: 'GET /api/contracts/lookups',
     kind: 'read',

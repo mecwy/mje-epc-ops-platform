@@ -12,6 +12,14 @@ const D = 'packages/domain/src/';
 export const BOUNDARY = {
   /** Modules whose internals other modules reach only through their exits. */
   modules: {
+    opportunity: [
+      'commands.ts',
+      'data.ts',
+      'grants.ts',
+      'projection.ts',
+      'reader.ts',
+      'rules.ts',
+    ].map((f) => D + 'opportunity/' + f),
     'contract-register': [
       'grants.ts',
       'reader.ts',
@@ -47,6 +55,9 @@ export const BOUNDARY = {
   },
   /** Exit files and the names they export to other modules (null: every name). */
   exits: {
+    [`${D}opportunity/commands.ts`]: { only: ['OpportunityCommands'] },
+    [`${D}opportunity/reader.ts`]: { only: ['OpportunityReader'] },
+    [`${D}opportunity/rules.ts`]: { only: ['OpportunityError'] },
     [`${D}contract-register/commands.ts`]: {
       only: ['ContractRegisterCommands'],
     },
@@ -112,6 +123,9 @@ export const BOUNDARY = {
   },
   /** SQL owners and the home transaction composition root may import `pg`. */
   pg: [
+    ...['commands.ts', 'data.ts', 'grants.ts', 'reader.ts'].map(
+      (f) => D + 'opportunity/' + f,
+    ),
     D + 'contract-register/commands.ts',
     D + 'contract-register/data.ts',
     D + 'contract-register/grants.ts',
@@ -144,6 +158,9 @@ export const BOUNDARY = {
   ],
   /** Files that may import store-kit: SQL owners, cross-module transaction composition, and barrel. */
   storeKit: [
+    ...['commands.ts', 'grants.ts', 'reader.ts'].map(
+      (f) => D + 'opportunity/' + f,
+    ),
     D + 'contract-register/commands.ts',
     D + 'contract-register/grants.ts',
     D + 'contract-register/reader.ts',

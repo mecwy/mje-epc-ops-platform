@@ -78,7 +78,9 @@ describe('surface.ts', () => {
       (e) =>
         e.kind === 'read' &&
         e.capability.some((c) =>
-          /^(report|issue|contract|project\.(status|master))\./.test(c),
+          /^(report|issue|contract|opportunity|project\.(status|master))\./.test(
+            c,
+          ),
         ),
     );
     for (const e of layered)

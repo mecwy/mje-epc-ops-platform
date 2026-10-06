@@ -40,6 +40,14 @@ import type {
   PmProxyCheckInCommand,
   RosterDto,
   ContractRegisterItemDto,
+  OpportunityLookupsDto,
+  OpportunityWorklistsDto,
+  OpportunityHistoryDto,
+  OpportunityCommandResult,
+  CreateOpportunityCommand,
+  UpdateOpportunityCommand,
+  RequestOpportunityDecisionCommand,
+  RecordOpportunityDecisionCommand,
   ContractHistoryDto,
   ContractEditorDto,
   ContractEditorLookupsDto,
@@ -511,6 +519,70 @@ export function contractApi(token: () => Promise<string>) {
     read: (body: ReadContractAttentionCommand) =>
       post<ContractCommandResultDto>(
         '/' + body.contractId + '/attention/read',
+        body,
+      ),
+  };
+}
+
+export function opportunityApi(token: () => Promise<string>) {
+  const get = async <T>(path: string) =>
+    request<T>('/api/opportunities' + path, await token());
+  const post = async <T>(path: string, body: Command) =>
+    request<T>('/api/opportunities' + path, await token(), body);
+  return {
+    sendOwned: async (
+      ownerAccountId: string,
+      action:
+        | { kind: 'create'; body: CreateOpportunityCommand }
+        | { kind: 'update'; body: UpdateOpportunityCommand }
+        | { kind: 'request'; body: RequestOpportunityDecisionCommand }
+        | { kind: 'decide'; body: RecordOpportunityDecisionCommand },
+    ) => {
+      // Capture one credential for identity verification and the write; account switches
+      // between awaits cannot bind another account to this command's old draft and key.
+      const credential = await token();
+      const current = await request<OpportunityLookupsDto>(
+        '/api/opportunities/lookups',
+        credential,
+      );
+      if (current.accountId !== ownerAccountId)
+        throw new ApiError('FORBIDDEN', 403);
+      const suffix =
+        action.kind === 'create'
+          ? ''
+          : '/' +
+            action.body.opportunityId +
+            '/' +
+            (action.kind === 'update'
+              ? 'updates'
+              : action.kind === 'request'
+                ? 'requests'
+                : 'decisions');
+      return request<OpportunityCommandResult>(
+        '/api/opportunities' + suffix,
+        credential,
+        action.body,
+      );
+    },
+
+    lookups: () => get<OpportunityLookupsDto>('/lookups'),
+    worklists: () => get<OpportunityWorklistsDto>('/worklists'),
+    history: (id: string) => get<OpportunityHistoryDto>('/' + id + '/history'),
+    create: (body: CreateOpportunityCommand) =>
+      post<OpportunityCommandResult>('', body),
+    update: (body: UpdateOpportunityCommand) =>
+      post<OpportunityCommandResult>(
+        '/' + body.opportunityId + '/updates',
+        body,
+      ),
+    request: (body: RequestOpportunityDecisionCommand) =>
+      post<OpportunityCommandResult>(
+        '/' + body.opportunityId + '/requests',
+        body,
+      ),
+    decide: (body: RecordOpportunityDecisionCommand) =>
+      post<OpportunityCommandResult>(
+        '/' + body.opportunityId + '/decisions',
         body,
       ),
   };

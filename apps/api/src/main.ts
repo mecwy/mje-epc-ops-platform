@@ -1,6 +1,8 @@
 import type { Pool } from 'pg';
 import {
   ContractRegisterReader,
+  OpportunityCommands,
+  OpportunityReader,
   ContractRegisterCommands,
   AlphaStore,
   CheckInStore,
@@ -40,6 +42,8 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     store: new AlphaStore(pool),
     contractRegisterReader: new ContractRegisterReader(pool),
     contractRegisterCommands: new ContractRegisterCommands(pool),
+    opportunityCommands: new OpportunityCommands(pool),
+    opportunityReader: new OpportunityReader(pool),
     reportStore: new ReportStore(pool),
     projectStatusCommands: new ProjectStatusCommands(pool),
     projectStatusReader: new ProjectStatusReader(pool),

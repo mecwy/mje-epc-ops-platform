@@ -1,0 +1,29 @@
+# DG06 opportunity core
+
+A one-sentence lead can be saved before its owner, dates or scope are known. Facts and update records preserve blank, explicit zero, unknown, not applicable and not stated. The owner project and proposed scope remain separate; scale uses decimal strings with units and basis. Raw stage, probability and must-win wording are recorded without scoring or totals.
+
+`Opportunity` provides a stable tenant-scoped identity. `OpportunityRecord` appends CREATE, UPDATE, REQUEST and DECISION snapshots and their typed command payloads. Composite tenant foreign keys preserve referenced Person, Company and source metadata. Historical records, sources, grants and revocations cannot be updated or deleted. Field corrections preserve before/after, reason and basis. Only two distinct concrete expected-signing dates count as a reschedule; certainty changes are separate.
+
+Commands take the verified account lock, idempotency lock and opportunity lock in that order. Creation takes the account exclusively because its atomic system grants advance authorization version. An org/code advisory lock serializes competing identities. Aggregate version protects fact changes; stable next-step ID protects replacement or completion; pending request ID and effective decision version protect decisions. KEEP appends without replacing a changed step. Replays reauthorize before returning a stored result.
+
+Five explicit capabilities use org, business-line or exact-opportunity scope. Role, creator, information owner, collaborator and another account for the same Person confer no access. Creation grants only exact-opportunity maintain/internal to its account, atomically and revocably; view/amount are not inherited. Business-line changes check both old and new scopes. Ordinary protected text requires amount plus internal reading rights. Requests are a separate maintain operation whose explanation may become hidden after save; decide does not grant maintain. Proxy recording checks the actual Person's independent, currently valid decision capability while preserving the recording account, Person, basis and period. A narrow SQL function returns only that authorization boolean across account RLS.
+
+`OpportunityReader` explicitly projects each field into closed DTOs. Lists, detail, history and worklists use the same projection. Sources are metadata, never original downloads. Effective Continue/Pause/Exit is separate from pending requests; initial Continue is labeled as a default. Neither operation authorizes construction, signing, billing or payment.
+
+The `/opportunities` workspace provides list/detail, progressive updates, history, my next steps, weekly substantive changes and pending decisions in four languages. Drafts belong to the account. Shared command ownership and read fences retain an exact body/key/baseline after an unknown outcome; inputs are replaced by a read-only command snapshot until resolved. Conflict recovery requires explicit field and next-step choices. A known save with failed refresh remains locked until a fresh read applies.
+
+The slice excludes quote/award amounts, contract linking and signed totals, start authorization, exports, notifications and reports. Hidden-contract state noninterference and full award-revision CAS remain deferred; this core does not close them.
+
+## Verification and source boundaries
+
+Run `pnpm check`, `pnpm format:check`, `pnpm db:migrate`, `pnpm test:integration` and `pnpm test:opportunity`. The latter creates and removes only a local disposable `mje_dg06_` database and role, uses synthetic TEST fixtures, signed HTTP and PostgreSQL RLS, and writes its separate migration/foundation/preservation evidence under `/private/tmp`. It covers capability/scope projections, foreign references, same-Person accounts, field/step/decision conflicts, concurrent creation and code races, revoked proxy authority, expiry, replay and populated existing-domain snapshot preservation.
+
+The local browser fixture is synthetic and uses the existing verified token path. Its private, temporary token file is never committed. Browser layouts and transaction journeys require separate recorded evidence; a build or unit suite does not establish browser acceptance.
+
+Applicable requirements: MW-042 (relationship boundary), MW-043–048 and MW-050 (authorization, identity, drafts, concurrency, audit and persistence). AT01/66 linkage and cost conversion, AT67 attachment/export protection, AT68 independent review and AT69–72 full field-device journeys remain broader than this slice. DG06 exercises their applicable identity, real-API isolation, fixed replay, conflict and account-draft boundaries without declaring those complete scenarios passed. LR-20 / LC10 states that internally consistent reported collections do not establish financial verification. DG06 does not derive ledger, revenue or start authorization from such reports; the complete original LR-20 scenario remains untested. Original source documents and their hashes/coordinates remain in the controlled private archive.
+
+## Migration and rollback
+
+Append `202610130001_opportunity_core` and `202610130002_opportunity_proxy_check` after the existing contract baseline. Applied migrations are immutable. No backfill changes daily-close, submitted Revision, source assertions, design quantities or contract snapshots.
+
+Rollback first stops opportunity writes at the application entry, then chooses only an image compatible with the retained schema/data. Keep new tables, grants, RLS, functions, triggers, migrations, source references and audit. If an earlier image cannot safely consume the schema, keep writes closed and repair forward. Do not drop retained records or reset a non-disposable database. Parent contract changes still require their own review and release gates.

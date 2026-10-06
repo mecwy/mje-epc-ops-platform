@@ -39,6 +39,7 @@ import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
 import { ContractsWorkspace } from './contracts/ContractsWorkspace.js';
+import { OpportunitiesWorkspace } from './opportunities/OpportunitiesWorkspace.js';
 import {
   ResumeKeeper,
   renewal,
@@ -841,7 +842,11 @@ function Root() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => {
-    if (!session || window.location.pathname === '/contracts') return;
+    if (
+      !session ||
+      ['/contracts', '/opportunities'].includes(window.location.pathname)
+    )
+      return;
     reportApi(session.token)
       .projects()
       .then((r) => setProjects(r.projects))
@@ -873,6 +878,15 @@ function Root() {
         </button>
       </main>
     );
+  if (session && window.location.pathname === '/opportunities')
+    return (
+      <OpportunitiesWorkspace
+        token={session.token}
+        signOut={session.signOut}
+        renew={session.renew}
+        expired={state.expired}
+      />
+    );
   if (session && window.location.pathname === '/contracts')
     return (
       <ContractsWorkspace
@@ -888,7 +902,12 @@ function Root() {
         <div className="banner err">
           {failed === 'FORBIDDEN' ? t('noProject') : t('saveFail')}
         </div>
-        {session && <a href="/contracts">{t('ctTitle')}</a>}
+        {session && (
+          <>
+            <a href="/contracts">{t('ctTitle')}</a>
+            <a href="/opportunities">{t('opTitle')}</a>
+          </>
+        )}
       </main>
     );
   if (!session || !projects)

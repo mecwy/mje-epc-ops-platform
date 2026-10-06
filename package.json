@@ -40,7 +40,8 @@
     "test:alpha-lookups": "node --env-file=.env scripts/alpha-lookups-integration.mts",
     "test:project-status": "node --env-file=.env scripts/project-status-integration.mts",
     "test:project-master": "node --env-file=.env scripts/project-master-integration.mts",
-    "test:contract-register": "node --env-file=.env scripts/contract-register-integration.mts"
+    "test:contract-register": "node --env-file=.env scripts/contract-register-integration.mts",
+    "test:opportunity": "node --env-file=.env scripts/opportunity-integration.mts"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",

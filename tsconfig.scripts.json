@@ -23,6 +23,8 @@
     "scripts/alpha-lookups-integration.mts",
     "scripts/project-status-integration.mts",
     "scripts/project-master-integration.mts",
-    "scripts/contract-register-integration.mts"
+    "scripts/contract-register-integration.mts",
+    "scripts/opportunity-integration.mts",
+    "scripts/dev-opportunity-server.mts"
   ]
 }

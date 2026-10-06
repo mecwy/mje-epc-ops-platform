@@ -125,6 +125,8 @@ interface AccountRow {
   authzVersion: number;
 }
 export interface AccountAdmission {
+  /** Commands that atomically grant their own account rights must capture FOR UPDATE first. */
+  exclusiveAccount?: boolean;
   /** True when the memberships active at decidedAt let the account into this store at all. */
   admit: (memberships: { role: string; projectId: string | null }[]) => boolean;
   forbidden: () => Error;
@@ -185,7 +187,9 @@ export async function accountTransaction<T>(
       [identity.tenantId, identity.objectId],
     );
     const accounts = await client.query<AccountRow>(
-      'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity($1, $2) a',
+      admission.exclusiveAccount
+        ? 'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity_write($1, $2) a'
+        : 'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity($1, $2) a',
       [identity.tenantId, identity.objectId],
     );
     if (accounts.rows.length !== 1) throw admission.forbidden();

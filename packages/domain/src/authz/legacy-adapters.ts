@@ -6,6 +6,7 @@
  */
 
 export type ModuleName =
+  | 'opportunity'
   | 'contract-register'
   | 'platform'
   | 'authz'
@@ -29,6 +30,25 @@ export interface ModuleSpec {
 
 const D = 'packages/domain/src/';
 export const MODULES: Record<ModuleName, ModuleSpec> = {
+  opportunity: {
+    files: [
+      'commands.ts',
+      'data.ts',
+      'grants.ts',
+      'projection.ts',
+      'reader.ts',
+      'rules.ts',
+    ].map((f) => D + 'opportunity/' + f),
+    tables: [
+      'Opportunity',
+      'OpportunityRecord',
+      'OpportunityRecordPerson',
+      'OpportunityRecordCompany',
+      'OpportunityRecordSource',
+      'OpportunityGrant',
+      'OpportunityGrantRevocation',
+    ],
+  },
   'contract-register': {
     files: [
       'grants.ts',
@@ -166,6 +186,15 @@ export const KERNEL_USES: readonly {
   table: string;
   op: SqlOperation;
 }[] = [
+  // Reference-only tenant reads for the DG06 module; no master-data writes.
+  { file: D + 'opportunity/commands.ts', table: 'Person', op: 'read' },
+  { file: D + 'opportunity/commands.ts', table: 'Company', op: 'read' },
+  { file: D + 'opportunity/commands.ts', table: 'SourceDocument', op: 'read' },
+  { file: D + 'opportunity/reader.ts', table: 'Person', op: 'read' },
+  { file: D + 'opportunity/reader.ts', table: 'Company', op: 'read' },
+  { file: D + 'opportunity/reader.ts', table: 'SourceDocument', op: 'read' },
+  { file: D + 'opportunity/data.ts', table: 'SourceDocument', op: 'read' },
+  { file: D + 'opportunity/grants.ts', table: 'Membership', op: 'read' },
   { file: D + 'contract-register/reader.ts', table: 'Project', op: 'read' },
   { file: D + 'contract-register/reader.ts', table: 'Person', op: 'read' },
   { file: D + 'contract-register/data.ts', table: 'Person', op: 'read' },
