@@ -127,7 +127,7 @@ test('location flags reach the build-stage bundle and runtime template with defa
   assert.match(template, /param reportLocationEnabled bool = false/);
   assert.match(
     template,
-    /name: 'REPORT_LOCATION_ENABLED', value: string\(reportLocationEnabled\)/,
+    /name: 'REPORT_LOCATION_ENABLED', value: reportLocationEnabled \? 'true' : 'false'/,
   );
 });
 

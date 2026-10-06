@@ -153,7 +153,7 @@ export function PlanEditor({
             {!session.dirty && !error && plan.draft ? ` · ${t('saved')}` : ''}
           </Chip>
         )}
-        {status.status === 'none' && (
+        {status.status === 'none' && !session.dirty && (
           <Chip>
             {session.referenceOnly
               ? t('planPreviousReference')

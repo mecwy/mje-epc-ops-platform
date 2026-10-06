@@ -112,6 +112,41 @@ describe('plan editor date, quantity and permission presentation', () => {
 
 describe('explicit target-day adoption of previous reference', () => {
   afterEach(() => vi.unstubAllGlobals());
+  it('shows only an unsaved draft status while a previously unplanned day is edited', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => 'en' });
+    vi.stubGlobal('navigator', { languages: [] });
+    const f = fakeApi(row('500'));
+    const s = new PlanSession(
+      f.api as never,
+      'p',
+      '2026-10-07',
+      () => undefined,
+    );
+    await s.load();
+    s.edit(row('532'));
+    const html = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        children: createElement(PlanEditor, {
+          session: s,
+          day: {
+            businessDate: '2026-10-06',
+            items: [],
+            facts: { qty: {} },
+          } as unknown as DayView,
+          canWrite: true,
+          onChanged: () => undefined,
+        }),
+      }),
+    );
+    const status = html.slice(
+      html.indexOf('class="plan-h"'),
+      html.indexOf('<section'),
+    );
+    expect(status).toContain(translate('en', 'draft'));
+    expect(status).not.toContain(translate('en', 'notPlanned'));
+    expect(status).not.toContain(translate('en', 'planPreviousReference'));
+    expect(status).not.toContain(translate('en', 'saved'));
+  });
   it('offers explicit save but disables confirmation for an unadopted reference', async () => {
     vi.stubGlobal('localStorage', { getItem: () => 'en' });
     vi.stubGlobal('navigator', { languages: [] });
