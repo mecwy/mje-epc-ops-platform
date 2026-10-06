@@ -37,7 +37,10 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     auth,
     verifier,
     store: new AlphaStore(pool),
-    reportStore: new ReportStore(pool),
+    reportStore: new ReportStore(pool, {
+      weatherReferenceEnabled:
+        process.env['WEATHER_REFERENCE_ENABLED'] === 'true',
+    }),
     projectStatusCommands: new ProjectStatusCommands(pool),
     projectStatusReader: new ProjectStatusReader(pool),
     projectHomeReader: new ProjectHomeReader(pool),

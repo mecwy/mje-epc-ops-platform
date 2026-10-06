@@ -107,6 +107,67 @@ describe('C03 composes with the existing day lock', () => {
     expect(entry.session.pendingLocationKind).toBe('capture');
     expect(api.day).toHaveBeenCalledTimes(1);
   });
+  it.each(['VERSION_CONFLICT', 'LOCKED'])(
+    'settles %s after a lost response and retains manual inputs',
+    async (code) => {
+      const { api, store, entry } = setup();
+      await store.read(entry, false);
+      api.saveFacts
+        .mockRejectedValueOnce(new ApiError('NETWORK', 0))
+        .mockRejectedValueOnce(new ApiError(code, 409));
+      const fresh = day(3);
+      fresh.facts.weather = 'TEST another writer';
+      api.day.mockResolvedValueOnce(fresh);
+      expect(
+        store.editWeather(
+          entry,
+          { ...entry.session.facts, weather: 'TEST my manual input' },
+          capture,
+        ),
+      ).toBe(true);
+      expect(await store.flush(entry)).toBe('failed');
+      const first = JSON.stringify(api.saveFacts.mock.calls[0]![0]);
+      expect(await store.flush(entry)).toBe('conflict');
+      expect(JSON.stringify(api.saveFacts.mock.calls[1]![0])).toBe(first);
+      expect(entry.lock).toBeNull();
+      expect(entry.session.weatherUnknown).toBe(false);
+      expect(entry.session.pendingLocationKind).toBeNull();
+      expect(entry.session.facts.weather).toBe('TEST another writer');
+      expect(entry.session.retained).toContainEqual({
+        path: 'weather',
+        mine: 'TEST my manual input',
+      });
+      expect(store.edit(entry, 'temperature', '20')).toBe(true);
+      store.cancelAutosave();
+    },
+  );
+  it('retains manual inputs until refresh after the decisive conflict read fails', async () => {
+    const { api, store, entry } = setup();
+    await store.read(entry, false);
+    api.saveFacts
+      .mockRejectedValueOnce(new ApiError('NETWORK', 0))
+      .mockRejectedValueOnce(new ApiError('VERSION_CONFLICT', 409));
+    api.day.mockRejectedValueOnce(new ApiError('NETWORK', 0));
+    store.editWeather(
+      entry,
+      { ...entry.session.facts, weather: 'TEST retained input' },
+      capture,
+    );
+    expect(await store.flush(entry)).toBe('failed');
+    expect(await store.flush(entry)).toBe('conflict');
+    expect(entry.stale).toBe(true);
+    expect(entry.lock).not.toBeNull();
+    const fresh = day(3);
+    fresh.facts.weather = 'TEST current';
+    api.day.mockResolvedValueOnce(fresh);
+    expect(await store.reloadLocked(entry)).toBe(true);
+    expect(entry.lock).toBeNull();
+    expect(api.saveFacts).toHaveBeenCalledTimes(2);
+    expect(entry.session.retained).toContainEqual({
+      path: 'weather',
+      mine: 'TEST retained input',
+    });
+  });
   it('failed fresh read retains the saved operation and refresh unlocks without a resend', async () => {
     const { api, store, entry } = setup();
     await store.read(entry, false);

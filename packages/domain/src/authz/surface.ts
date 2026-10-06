@@ -51,6 +51,7 @@ export type ScopeSource =
   | 'membership'
   | 'query.projectId'
   | 'body.projectId'
+  | 'body.target.projectId'
   | 'body.issueId'
   | 'path.projectId'
   | 'path.issueId'
@@ -964,6 +965,33 @@ const ENTRIES: readonly SurfaceEntry[] = [
     'WeatherStore.request',
     'append',
     { advances: ['WeatherRequest.refreshGeneration'] },
+  ),
+
+  // Current field review needs writer access and explicit scoped review ports; roles alone grant nothing.
+  read(
+    'GET /api/report/manager-review',
+    'account',
+    ['report.view'],
+    'query.projectId',
+    {
+      'report.view': {
+        temporal: 'live',
+        layers: ALL,
+        projector: 'report.managerReview',
+      },
+    },
+  ),
+  write(
+    'POST /api/report/manager-review',
+    'account',
+    'report.write',
+    'body.target.projectId',
+    'ManagerReviewStore.write',
+    'cas',
+    {
+      protects: ['ForemanReportRevision.n', 'ManagerReviewEvent.version'],
+      advances: ['ManagerReviewEvent.version', 'FieldDay.seq'],
+    },
   ),
 
   // ---------- Worker / CLI ----------

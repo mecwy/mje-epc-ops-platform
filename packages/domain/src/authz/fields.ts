@@ -1,5 +1,6 @@
 import type {
   PeopleWindowSummaryDto,
+  ManagerReviewReadDto,
   SafeFrozenWeatherReference,
   ProjectStatusHistoryDto,
   ProjectManagerProjectionsDto,
@@ -189,6 +190,7 @@ export interface ProjectorDtos {
   'report.plan.reader': ReportPlanDto;
   'report.items': ReportItemDto[];
   'report.peopleWindow': PeopleWindowSummaryDto;
+  'report.managerReview': ManagerReviewReadDto;
   'report.weatherLocations': ReportWeatherLocationsDto;
   'report.weatherRequest': ReportWeatherRequestDto;
   'report.weatherSnapshot': ReportWeatherSnapshotDto;
@@ -346,6 +348,7 @@ const dayCommon = (content: Layer) =>
       },
     },
     weatherReferences: { layer: content, items: weatherReferenceFields },
+    managerReviewCut: sub(content),
     items: sub('structure'),
     planStatus: sub(content),
     baseline: sub('structure'),
@@ -567,6 +570,22 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
   'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.managerReview': {
+    fields: {
+      actorScopeKey: S,
+      target: sub('structure'),
+      revisionNumber: S,
+      reviewVersion: { layer: 'field-writer' },
+      declaredQty: { layer: 'field-writer' },
+      labels: sub('structure'),
+      unit: S,
+      scopeRef: S,
+      capability: sub('structure'),
+      evidence: sub('field-writer'),
+      state: sub('field-writer'),
+      judgment: sub('field-writer'),
+    },
+  },
   'report.weatherLocations': {
     items: {
       id: S,

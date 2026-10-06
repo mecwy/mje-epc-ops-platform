@@ -4,6 +4,7 @@ import {
   writeReportLocation,
   frozenWeatherReferences,
 } from './weather-store.js';
+import { managerReviewSnapshotCut } from './manager-review-reader.js';
 import { buildPersonnelWindow } from './personnel-metrics.js';
 import { InvalidReportInput } from '@mje/contracts';
 import type { Pool, PoolClient } from 'pg';
@@ -152,7 +153,10 @@ export const publicItem = (r: ItemRow): ReportItemDto => ({
 export type DayState = 'empty' | 'draft' | 'submitted' | 'correcting';
 
 export class ReportStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly options: { weatherReferenceEnabled?: boolean } = {},
+  ) {}
 
   private transaction<T>(
     identity: Identity,
@@ -258,6 +262,40 @@ export class ReportStore {
   async saveFacts(identity: Identity, command: SaveFactsCommand) {
     return this.transaction(identity, async (client, actor) => {
       const project = await this.writer(client, actor, command.projectId);
+      // Authorization still precedes replay. Default-off blocks new capture/adoption even
+      // for a successful old key; detachments and exact persisted metadata remain usable.
+      if (this.options.weatherReferenceEnabled !== true) {
+        if (command.reportLocationOperation?.kind === 'capture')
+          throw new ReportError('FEATURE_DISABLED');
+        const references = command.facts.weatherReferences ?? [];
+        if (references.some((ref) => !ref.referenceId))
+          throw new ReportError('FEATURE_DISABLED');
+        if (references.length) {
+          // This is a read only admission check, not a new lock ahead of idempotency:
+          // save's existing lock order and helper validation remain unchanged.
+          const existing = await dayRow(
+            client,
+            actor.orgId,
+            project.id,
+            command.businessDate,
+          );
+          const previous = existing
+            ? await draftFacts(client, actor.orgId, existing.id)
+            : null;
+          if (
+            references.some(
+              (ref) =>
+                !previous?.weatherReferences?.some(
+                  (old) =>
+                    old.referenceId === ref.referenceId &&
+                    old.snapshotId === ref.snapshotId &&
+                    old.locationVersionId === ref.locationVersionId,
+                ),
+            )
+          )
+            throw new ReportError('FEATURE_DISABLED');
+        }
+      }
       return this.idempotent(
         client,
         actor,
@@ -471,6 +509,15 @@ export class ReportStore {
       project.id,
       businessDate,
     );
+    // C04 events use nextSeq under this same gate. Freeze identity/basis only at the field cut;
+    // neither the C05 production adapter nor any retrospective snapshot rewrite is implied.
+    const managerReviewCut = await managerReviewSnapshotCut(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+      field.seqBoundary,
+    );
     const items = await itemRows(client, actor.orgId, project.id);
     const { snapshot, coverage: cov } = await daySnapshot(
       client,
@@ -535,6 +582,7 @@ export class ReportStore {
           ...snapshot,
           personnelSummary,
           weatherReferences,
+          managerReviewCut,
           primaryWorkItemKey: project.primaryWorkItemKey,
           milestones: items
             .filter((i) => i.kind === 'milestone')

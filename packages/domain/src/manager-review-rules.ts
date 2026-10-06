@@ -184,7 +184,12 @@ export function reviewAuthorityGrant(
   return { ok: true, value: grant.id };
 }
 
-function independent(c: CompletionReviewContext): ReviewRuleResult<null> {
+export function reviewIndependent(
+  c: Pick<
+    CompletionReviewContext,
+    'authority' | 'declaration' | 'independence'
+  >,
+): ReviewRuleResult<null> {
   const { authority: a, declaration: d, independence: i } = c;
   if (
     !a.identityResolved ||
@@ -253,7 +258,7 @@ export function planCompletionReview(
   if (!grant.ok) return grant;
   if (!sameCompletionTarget(r.target, d.target))
     return refused('TARGET_CHANGED');
-  const independence = independent(c);
+  const independence = reviewIndependent(c);
   if (!independence.ok) return independence;
   if (
     !validCounter(r.expectedRevision, 1) ||

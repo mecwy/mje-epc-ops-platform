@@ -183,20 +183,21 @@ async function run(): Promise<void> {
     const weather = new WeatherStore(appPool);
     app = await createApp({
       store: new AlphaStore(appPool),
-      reportStore: new ReportStore(appPool),
+      reportStore: new ReportStore(appPool, { weatherReferenceEnabled: true }),
       weatherStore: weather,
       verifier,
       auth,
     });
     await app.listen(0, '127.0.0.1');
     const base = await app.getUrl();
+    let requestBase = base;
     const call = async (
       path: string,
       bearer: string | null,
       body?: object,
     ): Promise<{ status: number; body: Json }> => {
       const command = body as { clientMutationId?: string } | undefined;
-      const response = await fetch(base + path, {
+      const response = await fetch(requestBase + path, {
         method: body ? 'POST' : 'GET',
         headers: {
           ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
@@ -720,6 +721,81 @@ async function run(): Promise<void> {
     assert.deepEqual(await inspect(), stable);
     await privacy();
     pass();
+    begin(
+      'default-off actual HTTP refuses capture and adoption but manual save and detachment remain usable',
+    );
+    const beforeDisabled = await inspect();
+    const disabledApp = await createApp({
+      store: new AlphaStore(appPool),
+      reportStore: new ReportStore(appPool),
+      verifier,
+      auth,
+    });
+    try {
+      await disabledApp.listen(0, '127.0.0.1');
+      requestBase = await disabledApp.getUrl();
+      await expect(
+        call('/api/report/facts', pm, command(beforeDisabled.facts, capture)),
+        403,
+        'FEATURE_DISABLED',
+      );
+      await expect(
+        call(
+          '/api/report/facts',
+          pm,
+          command({
+            ...beforeDisabled.facts,
+            weatherReferences: [
+              { locationVersionId: location.id, snapshotId: snapshot1 },
+            ],
+          }),
+        ),
+        403,
+        'FEATURE_DISABLED',
+      );
+      assert.deepEqual(await inspect(), beforeDisabled);
+      const saved = await expect(
+        call(
+          '/api/report/facts',
+          pm,
+          command({
+            ...beforeDisabled.facts,
+            weather: 'TEST manual while capture disabled',
+          }),
+        ),
+        200,
+      );
+      version = integer(saved['version']);
+      const retained = await inspect();
+      assert.equal(
+        retained.facts.weather,
+        'TEST manual while capture disabled',
+      );
+      assert.equal(retained.positions, beforeDisabled.positions);
+      assert.equal(retained.adoptions, beforeDisabled.adoptions);
+      const detached = await expect(
+        call(
+          '/api/report/facts',
+          pm,
+          command(
+            { ...retained.facts, weatherReferences: [] },
+            { kind: 'clear' },
+          ),
+        ),
+        200,
+      );
+      version = integer(detached['version']);
+      const afterDetached = await inspect();
+      assert.deepEqual(afterDetached.facts.weatherReferences, []);
+      assert.equal(afterDetached.facts.reportLocationRef, null);
+      assert.equal(afterDetached.positions, beforeDisabled.positions);
+      assert.equal(afterDetached.adoptions, beforeDisabled.adoptions);
+      await privacy();
+      pass();
+    } finally {
+      requestBase = base;
+      await disabledApp.close();
+    }
   } finally {
     try {
       await app?.close();

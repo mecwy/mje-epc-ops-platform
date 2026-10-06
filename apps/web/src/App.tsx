@@ -849,7 +849,8 @@ function Workspace({
           />
           {task === 'fill' ? (
             <>
-              {(canWrite || weatherEntry.session.weatherNeedsSave) && (
+              {((weatherPorts !== undefined && canWrite) ||
+                weatherEntry.session.weatherNeedsSave) && (
                 <WeatherLocation
                   session={weatherSession}
                   savedSnapshotIds={

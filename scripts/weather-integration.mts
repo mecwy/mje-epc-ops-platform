@@ -80,10 +80,12 @@ const identity = { tenantId, objectId },
   readerIdentity = { tenantId, objectId: readerObject };
 const role = 'mje_c03_test_app_' + randomBytes(4).toString('hex'),
   password = randomBytes(24).toString('hex');
+let roleCreated = false;
 try {
   await owner.query(
     `CREATE ROLE "${role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${password}'`,
   );
+  roleCreated = true;
   await owner.query(`GRANT mje_alpha_app TO "${role}"`);
   const appUrl = new URL(source);
   appUrl.username = role;
@@ -127,7 +129,7 @@ try {
       [randomUUID(), org, seed, roleName, id, project],
     );
   const stores = new WeatherStore(appPool);
-  const reports = new ReportStore(appPool);
+  const reports = new ReportStore(appPool, { weatherReferenceEnabled: true });
   const businessDate = (
     await owner.query<{ day: string }>(
       `SELECT ((clock_timestamp() AT TIME ZONE 'Europe/Belgrade')::date-1)::text AS day`,
@@ -887,5 +889,9 @@ try {
 } finally {
   await app?.close();
   await appPool?.end();
-  await owner.end();
+  try {
+    if (roleCreated) await owner.query(`DROP ROLE "${role}"`);
+  } finally {
+    await owner.end();
+  }
 }

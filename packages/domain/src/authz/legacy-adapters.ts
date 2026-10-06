@@ -113,6 +113,8 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}checkin-rules.ts`,
       `${D}foreman-store.ts`,
       `${D}manager-review-rules.ts`,
+      `${D}manager-review-store.ts`,
+      `${D}manager-review-reader.ts`,
     ],
     tables: [
       'Crew',
@@ -135,6 +137,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'ForemanReport',
       'ForemanReportRevision',
       'ForemanAdoption',
+      'ManagerReviewEvent',
     ],
   },
   /** HTTP and process entries: no SQL of their own. */

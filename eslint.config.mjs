@@ -119,6 +119,8 @@ export const BOUNDARY = {
     D + 'project-home/reader.ts',
     ...[
       'store-kit.ts',
+      'manager-review-store.ts',
+      'manager-review-reader.ts',
       'weather-store.ts',
       'weather-jobs.ts',
       'alpha-store.ts',
@@ -148,6 +150,8 @@ export const BOUNDARY = {
     ),
     ...[
       'weather-store.ts',
+      'manager-review-store.ts',
+      'manager-review-reader.ts',
       // A7-0b: the alpha store runs on the shared account transaction (ADR-0003 D5).
       'alpha-store.ts',
       'report-store.ts',

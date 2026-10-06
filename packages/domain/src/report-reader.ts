@@ -11,6 +11,7 @@
 import type {
   ForemanDayDto,
   PeopleWindowSummaryDto,
+  ManagerReviewScopeDto,
   SafeFrozenWeatherReference,
   PhotoAsOfDto,
   PlanRowDto,
@@ -36,6 +37,7 @@ import {
   ReportError,
   WRITE_ROLES,
   projectAccess,
+  lockReportDay,
   type Access,
   type Actor,
   type ReportProjectRow,
@@ -47,6 +49,15 @@ import {
   readReportLocationCoordinates,
   frozenWeatherReferences,
 } from './weather-store.js';
+import {
+  managerReviewReader,
+  type ManagerReviewSnapshotCut,
+} from './manager-review-reader.js';
+import {
+  DENY_REVIEW_PORTS,
+  type ReviewServerPorts,
+} from './manager-review-store.js';
+import { parseManagerReviewScope } from '@mje/contracts';
 import { buildPersonnelWindow } from './personnel-metrics.js';
 import { parsePeopleWindowSummary } from '@mje/contracts';
 import type { IssueAsOf } from './issue-store.js';
@@ -91,6 +102,7 @@ export const REPORT_PROJECTORS = [
   'report.plan.reader',
   'report.items',
   'report.peopleWindow',
+  'report.managerReview',
   'report.weatherLocations',
   'report.weatherRequest',
   'report.weatherSnapshot',
@@ -170,6 +182,7 @@ interface SubmittedSnapshot {
   photos?: PhotoAsOfDto[];
 }
 export interface ReaderContent {
+  managerReviewCut?: ManagerReviewSnapshotCut;
   weatherReferences?: SafeFrozenWeatherReference[];
   state: 'empty' | 'submitted';
   facts: DayFacts;
@@ -214,6 +227,13 @@ export function readerContent(
   const baseline = s.baseline ?? null;
   return {
     state: 'submitted',
+    ...(Object.hasOwn(snapshot, 'managerReviewCut')
+      ? {
+          managerReviewCut: snapshot[
+            'managerReviewCut'
+          ] as ManagerReviewSnapshotCut,
+        }
+      : {}),
     ...(Object.hasOwn(s, 'weatherReferences')
       ? { weatherReferences: s.weatherReferences ?? [] }
       : {}),
@@ -668,6 +688,23 @@ async function revision(
     : projected('report.revision.writer', { ...head, snapshot: r.snapshot });
 }
 
+async function managerReview(
+  { client, actor }: Opened,
+  input: ManagerReviewScopeDto,
+  ports: ReviewServerPorts,
+) {
+  const scope = parseManagerReviewScope(input);
+  // Authorization precedes even an empty source and the original day gate. The helper checks
+  // the current scoped READ_REVIEW grant; a project role alone never grants that capability.
+  const { access } = await projectAccess(client, actor, scope.projectId);
+  if (access !== 'write') throw new ReportError('READ_ONLY');
+  await lockReportDay(client, actor.orgId, scope.projectId, scope.businessDate);
+  return projected(
+    'report.managerReview',
+    await managerReviewReader.read(client, actor, scope, ports),
+  );
+}
+
 async function weatherWriter(open: Opened, projectId: string) {
   const { access } = await projectAccess(open.client, open.actor, projectId);
   if (access !== 'write') throw new ReportError('READ_ONLY');
@@ -852,6 +889,10 @@ export const reportReader = {
       plan: async (projectId: string, targetBusinessDate: string) =>
         plan(open(), projectId, targetBusinessDate),
       items: async (projectId: string) => items(open(), projectId),
+      managerReview: async (
+        scope: ManagerReviewScopeDto,
+        ports: ReviewServerPorts = DENY_REVIEW_PORTS,
+      ) => managerReview(open(), scope, ports),
       weatherLocations: async (projectId: string) =>
         weatherLocations(open(), projectId),
       weatherRequest: async (projectId: string, requestId: string) =>
@@ -900,3 +941,5 @@ export type ReportWeatherSnapshotDto = Awaited<
 export type ReportLocationCoordinatesDto = Awaited<
   ReturnType<typeof reportLocationCoordinates>
 >;
+
+export type ReportManagerReviewDto = Awaited<ReturnType<typeof managerReview>>;

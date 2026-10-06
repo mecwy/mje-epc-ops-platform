@@ -20,6 +20,7 @@ import {
   ProjectStatusReader,
   ProjectHomeReader,
   WeatherStore,
+  ManagerReviewStore,
   reportReader,
   type ReportReadContext,
 } from '@mje/domain';
@@ -43,6 +44,9 @@ function runtime(): AlphaRuntime {
     store: Object.create(AlphaStore.prototype) as AlphaStore,
     reportStore,
     weatherStore: Object.create(WeatherStore.prototype) as WeatherStore,
+    managerReviewStore: Object.create(
+      ManagerReviewStore.prototype,
+    ) as ManagerReviewStore,
     projectStatusCommands: Object.create(
       ProjectStatusCommands.prototype,
     ) as ProjectStatusCommands,
@@ -280,6 +284,10 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
     'GET /api/report/day': [
       'day',
       `?projectId=${PROJECT}&businessDate=2026-09-01`,
+    ],
+    'GET /api/report/manager-review': [
+      'managerReview',
+      `?projectId=${PROJECT}&businessDate=2026-09-01&crewId=${PROJECT}&itemKey=installation`,
     ],
     'GET /api/report/people-window': [
       'peopleWindow',

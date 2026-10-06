@@ -110,6 +110,7 @@ const DAY_KEYS = [
   'coverage',
   'revisions',
   // Frozen approved site-query provenance; personal point remains a writer-only exit.
+  'managerReviewCut',
   'weatherReferences',
   'weatherReferences[].adapterVersion',
   'weatherReferences[].adoptedAt',

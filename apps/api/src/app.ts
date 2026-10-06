@@ -31,6 +31,9 @@ import {
   reportReader,
   WeatherStore,
   WeatherStoreError,
+  ManagerReviewStore,
+  DENY_REVIEW_PORTS,
+  type ReviewServerPorts,
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
@@ -44,6 +47,11 @@ import {
   type WeatherApiPort,
 } from './weather.controller.js';
 import { ReportController } from './report.controller.js';
+import {
+  ManagerReviewController,
+  MANAGER_REVIEW_SERVICE,
+  type ManagerReviewService,
+} from './manager-review.controller.js';
 import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
 import { FieldController, FieldTokenGuard } from './field.controller.js';
@@ -134,7 +142,9 @@ export class SafeErrorFilter implements ExceptionFilter {
     } else if (error instanceof AlphaError || error instanceof ReportError) {
       code = error.code;
       status =
-        code === 'FORBIDDEN' || code === 'READ_ONLY'
+        code === 'FORBIDDEN' ||
+        code === 'READ_ONLY' ||
+        code === 'FEATURE_DISABLED'
           ? 403
           : code === 'NOT_FOUND'
             ? 404
@@ -190,6 +200,9 @@ export interface AlphaRuntime {
   reportStore?: ReportStore;
   /** TEST-enabled C03 runtime; absence keeps the weather routes disabled. */
   weatherStore?: WeatherStore;
+  /** No title-based rights or fallback evidence; actual transaction adapters are explicit. */
+  managerReviewStore?: ManagerReviewStore;
+  managerReviewPorts?: ReviewServerPorts;
   projectStatusCommands?: ProjectStatusCommands;
   projectStatusReader?: ProjectStatusReader;
   projectHomeReader?: ProjectHomeReader;
@@ -207,6 +220,22 @@ export interface AlphaRuntime {
   auth: TokenConfiguration;
 }
 export async function createApp(alpha?: AlphaRuntime) {
+  const managerReviewService: ManagerReviewService | null =
+    alpha?.reportStore && alpha.managerReviewStore
+      ? {
+          read: (identity, scope) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader
+                .forContext(ctx)
+                .managerReview(
+                  scope,
+                  alpha.managerReviewPorts ?? DENY_REVIEW_PORTS,
+                ),
+            ),
+          write: (identity, command) =>
+            alpha.managerReviewStore!.write(identity, command),
+        }
+      : null;
   const weatherApi: WeatherApiPort | null =
     alpha?.reportStore && alpha.weatherStore
       ? {
@@ -256,6 +285,7 @@ export async function createApp(alpha?: AlphaRuntime) {
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
       ...(weatherApi ? [WeatherController] : []),
+      ...(managerReviewService ? [ManagerReviewController] : []),
       ...(alpha?.projectStatusCommands && alpha.projectStatusReader
         ? [ProjectStatusController]
         : []),
@@ -280,6 +310,14 @@ export async function createApp(alpha?: AlphaRuntime) {
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
+          ...(managerReviewService
+            ? [
+                {
+                  provide: MANAGER_REVIEW_SERVICE,
+                  useValue: managerReviewService,
+                },
+              ]
+            : []),
           ...(weatherApi
             ? [{ provide: 'C03_WEATHER_API', useValue: weatherApi }]
             : []),

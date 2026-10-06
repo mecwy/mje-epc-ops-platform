@@ -314,20 +314,22 @@ export class DraftSession {
         this.pending = null;
       } catch (error) {
         const code = error instanceof ApiError ? error.code : 'REQUEST_FAILED';
+        // The server checks successful replay before CAS/day-state refusal. These two
+        // answers therefore settle the original key even after a lost response.
+        if (code === 'VERSION_CONFLICT' || code === 'LOCKED') {
+          this.pending = null;
+          this.set('conflict');
+          return 'conflict';
+        }
         if (
           this.weatherIntent &&
           (this.weatherHadUnknown ||
             (error instanceof ApiError && error.afterLostAttempt))
         ) {
-          // Permission is checked before replay: a later refusal cannot settle an earlier unanswered attempt.
+          // Identity/permission and other pre-replay refusals cannot settle the earlier send.
           this.weatherHadUnknown = true;
           this.set('failed');
           return 'failed';
-        }
-        if (code === 'VERSION_CONFLICT' || code === 'LOCKED') {
-          this.pending = null;
-          this.set('conflict');
-          return 'conflict';
         }
         if (PERMANENT.has(code)) {
           this.pending = null;

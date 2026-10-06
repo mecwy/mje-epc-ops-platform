@@ -156,6 +156,7 @@ model Organization {
   weatherSnapshots WeatherSnapshot[]
   weatherReferences WeatherReportReference[]
   reportLocations ReportLocationRecord[]
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_org")
 }
 
 model Company {
@@ -263,6 +264,7 @@ model Project {
   @@unique([orgId, id])
   @@unique([orgId, code])
   weatherLocations WeatherLocationVersion[]
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_project")
 }
 
 model Site {
@@ -415,6 +417,7 @@ model Person {
   weatherRequests WeatherRequest[] @relation("WeatherRequest_person")
   weatherReferences WeatherReportReference[] @relation("WeatherReference_person")
   reportLocations ReportLocationRecord[] @relation("ReportLocation_person")
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_actorPerson")
 }
 
 model LoginAccount {
@@ -465,6 +468,7 @@ model LoginAccount {
   weatherRequests WeatherRequest[] @relation("WeatherRequest_account")
   weatherReferences WeatherReportReference[] @relation("WeatherReference_account")
   reportLocations ReportLocationRecord[] @relation("ReportLocation_account")
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_actorAccount")
 }
 
 model Membership {
@@ -1328,6 +1332,7 @@ model Crew {
   @@unique([orgId, id])
   @@unique([orgId, projectId, id])
   @@unique([orgId, projectId, code])
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_crew")
 }
 
 model ProjectRoster {
@@ -1679,6 +1684,8 @@ model ForemanReport {
 
   @@unique([orgId, projectId, id])
   @@unique([orgId, projectId, businessDate, crewId])
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_report")
+  @@unique([orgId, projectId, businessDate, crewId, id], map: "foreman_report_review_scope")
 }
 
 /// A foreman's claim of quantities (insert-only); rows [{itemKey, qty}], no hours.
@@ -1702,6 +1709,8 @@ model ForemanReportRevision {
   daySeq       BigInt
 
   @@unique([orgId, reportId, n])
+  managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_revision")
+  @@unique([orgId, projectId, reportId, id], map: "foreman_revision_review_scope")
 }
 
 /// The PM's explicit adoption of a COMPLETE foreman total, with its exact basis (append-only).
@@ -1921,4 +1930,45 @@ model ReportLocationRecord {
   @@unique([orgId,id])
   @@unique([orgId,projectId,businessDate,siteTimezone,dailyCloseId,id])
   @@unique([orgId,dailyCloseId,clientMutationId])
+}
+
+/// Append-only judgment of an exact declaration revision; original quantity remains in its source.
+model ManagerReviewEvent {
+ id String @id @db.Uuid
+ orgId String @db.Uuid
+ org Organization @relation("ManagerReviewEvent_org", fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+ projectId String @db.Uuid
+ project Project @relation("ManagerReviewEvent_project", fields: [orgId,projectId], references: [orgId,id], onDelete: Restrict, onUpdate: NoAction)
+ crewId String @db.Uuid
+ crew Crew @relation("ManagerReviewEvent_crew", fields: [orgId,projectId,crewId], references: [orgId,projectId,id], onDelete: Restrict, onUpdate: NoAction)
+ foremanReportId String @db.Uuid
+ report ForemanReport @relation("ManagerReviewEvent_report", fields: [orgId,projectId,businessDate,crewId,foremanReportId], references: [orgId,projectId,businessDate,crewId,id], onDelete: Restrict, onUpdate: NoAction, map: "review_event_scope_fk")
+ foremanRevisionId String @db.Uuid
+ revision ForemanReportRevision @relation("ManagerReviewEvent_revision", fields: [orgId,projectId,foremanReportId,foremanRevisionId], references: [orgId,projectId,reportId,id], onDelete: Restrict, onUpdate: NoAction, map: "review_event_revision_fk")
+ itemKey String
+ businessDate DateTime @db.Date
+ siteTimezone String
+ version Int
+ decision String
+ coverageKind String?
+ confirmedQty Decimal? @db.Decimal(20,6)
+ unit String?
+ scopeRef String? @db.Uuid
+ evidenceBasis Json?
+ reason String
+ method String
+ limitations String
+ authorityGrantId String @db.Uuid
+ authorityPolicyRef String @db.Uuid
+ independencePolicyRef String @db.Uuid
+ actorAccountId String @db.Uuid
+ actorAccount LoginAccount @relation("ManagerReviewEvent_actorAccount", fields: [orgId,actorAccountId], references: [orgId,id], onDelete: Restrict, onUpdate: NoAction)
+ actorPersonId String @db.Uuid
+ actorPerson Person @relation("ManagerReviewEvent_actorPerson", fields: [orgId,actorPersonId], references: [orgId,id], onDelete: Restrict, onUpdate: NoAction)
+ clientMutationId String @db.Uuid
+ createdAt DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+ daySeq BigInt
+ @@unique([orgId,projectId,foremanRevisionId,itemKey,version], map: "review_event_sequence")
+ @@unique([orgId,clientMutationId], map: "review_event_mutation")
+ @@index([orgId,projectId,businessDate,daySeq], map: "manager_review_day_cut")
 }

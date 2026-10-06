@@ -76,3 +76,10 @@ export type {
   WeatherJobFailure,
   WeatherSnapshotMetadata,
 } from './weather-jobs.js';
+
+export {
+  ManagerReviewStore,
+  DENY_REVIEW_PORTS,
+} from './manager-review-store.js';
+export type { ReviewServerPorts } from './manager-review-store.js';
+export { ManagerReviewError } from './manager-review-reader.js';
