@@ -416,6 +416,13 @@ export const MESSAGES = {
     'Izmena je odbijena i nije sačuvana, a dan nije mogao ponovo da se učita. Izmene čekaju dok se ne učita.',
     'El cambio fue rechazado y no se guardó, y el día no se pudo volver a leer. La edición espera hasta que se lea.',
   ],
+  // sr/es intentionally use explicit English fallback; deferred language batch 2026-10-06.
+  dayCommandCheckLatest: [
+    '这次操作的答复不确定。请核对最新日报状态；若页面提示未能读取，请先刷新。',
+    'The operation’s outcome is uncertain. Check the latest report state; if it could not be read, refresh first.',
+    'The operation’s outcome is uncertain. Check the latest report state; if it could not be read, refresh first.',
+    'The operation’s outcome is uncertain. Check the latest report state; if it could not be read, refresh first.',
+  ],
   dayRereadFailedUnknown: [
     '不确定这次修改是否已保存，这一天也没能重新读取。重新读取成功前不能编辑。',
     'It is not known whether the change was saved, and the day could not be read again. Editing waits until it has been read.',

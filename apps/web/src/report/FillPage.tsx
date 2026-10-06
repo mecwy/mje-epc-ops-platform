@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import type { ReportItemDto } from '@mje/contracts';
 import { ROLE_KEYS, dec, decText, type Coverage } from '@mje/domain/rules';
 import type { DayView } from '../api.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
 import { NumInput, TokenChips } from '../ui.js';
+import { outcomeKey, UNKNOWN_OUTCOME } from '../field/errors.js';
 import { CHECKED_NO_ISSUES, narrativeText, type MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
-import { CheckInsBeside } from './CheckInsBeside.js';
+import { CheckInsBeside, PmFieldContext } from './CheckInsBeside.js';
 import { ForemanLine } from './ForemanLine.js';
 import {
   activeWork,
@@ -30,6 +31,16 @@ const ROLE_LABEL = {
   subManager: 'role_subManager',
   installer: 'role_installer',
 } as const satisfies Record<(typeof ROLE_KEYS)[number], MessageKey>;
+
+/** Notice for a day action after its mandatory fresh read; it has no owned Retry button. */
+export function dayCommandNotice(code: string, uncertain: boolean): MessageKey {
+  const key = outcomeKey(code, { write: true, uncertain });
+  // DayStore has already attempted a fresh read. Unlike owned field commands this surface
+  // cannot promise an unchanged Retry; ask the user to inspect the authoritative readback.
+  return Object.values(UNKNOWN_OUTCOME).some((value) => value === key)
+    ? 'dayCommandCheckLatest'
+    : key;
+}
 
 export function SaveBadge({ save }: { save: SaveState }) {
   const { t } = useI18n();
@@ -243,6 +254,23 @@ function QtyRow({
   );
 }
 
+/** Entry visibility only; never copies a crew claim into the manager's facts. */
+export function entryWork(
+  content: Parameters<typeof activeWork>[0],
+  foreman: import('../api.js').ForemanDayView | null,
+) {
+  const { active, others } = activeWork(content);
+  const expected = others.filter((item) =>
+    Object.values(foreman?.items[item.key]?.crews ?? {}).some(
+      (crew) => crew.expected,
+    ),
+  );
+  return {
+    active: [...active, ...expected],
+    others: others.filter((item) => !expected.includes(item)),
+  };
+}
+
 export function WorkRows({
   h,
   day,
@@ -256,7 +284,11 @@ export function WorkRows({
 }) {
   const { t } = useI18n();
   const [showOthers, setShowOthers] = useState(false);
-  const { active, others } = activeWork({ ...day, facts: h.facts! });
+  const pm = useContext(PmFieldContext);
+  const { active, others } = entryWork(
+    { ...day, facts: h.facts! },
+    pm?.foreman ?? null,
+  );
   if (!active.length && !others.length)
     return <p className="muted">{t('noItems')}</p>;
   return (

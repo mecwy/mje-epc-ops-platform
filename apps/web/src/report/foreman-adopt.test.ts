@@ -1,3 +1,6 @@
+import { blankFacts } from '@mje/domain/rules';
+import type { DayFactsDto } from '@mje/contracts';
+import { dayCommandNotice, entryWork } from './FillPage.js';
 import { describe, expect, it } from 'vitest';
 import type { ForemanAdoptCommand, ForemanBasisDto } from '@mje/contracts';
 import { ApiError, type ForemanDayView } from '../api.js';
@@ -198,5 +201,59 @@ describe('the PM adopts exactly the total seen (AdoptFlow)', () => {
       (await h.flow.adopt('support', { basis: basis(1), value: '10' })).kind,
     ).toBe('failed');
     expect(h.sent).toHaveLength(0);
+  });
+});
+
+describe('entry exposes expected crew work without adopting quantities', () => {
+  const content = () => ({
+    items: ['support', 'other'].map((key) => ({
+      kind: 'work' as const,
+      key,
+      label: 'TEST ' + key,
+      unit: 'set',
+      designQty: '100',
+      openingCumulative: '0',
+      sortOrder: 0,
+      active: true,
+    })),
+    baseline: null,
+    facts: blankFacts() as DayFactsDto,
+  });
+  it.each(['COMPLETE', 'PARTIAL', 'ALL_NA', 'OVERFLOW'] as const)(
+    'shows expected item even when manager has not typed a quantity: %s',
+    (status) => {
+      const c = content();
+      const result = entryWork(
+        c,
+        view(status, status === 'COMPLETE' ? '10' : null),
+      );
+      expect(result.active.map((i) => i.key)).toEqual(['support']);
+      expect(result.others.map((i) => i.key)).toEqual(['other']);
+      expect(c.facts.qty).toEqual({});
+    },
+  );
+  it('does not infer a claim, expose inactive items, or promote unexpected crews', () => {
+    const c = content();
+    expect(entryWork(c, null).active).toEqual([]);
+    const v = view('COMPLETE', '0');
+    for (const crew of Object.values(v.items.support!.crews))
+      crew.expected = false;
+    expect(entryWork(c, v).active).toEqual([]);
+    c.items[0]!.active = false;
+    expect(entryWork(c, view('COMPLETE', '10')).active).toEqual([]);
+  });
+});
+
+describe('day action outcome after transport uncertainty', () => {
+  it.each(['NETWORK', 'REQUEST_FAILED', 'RETRY', 'RATE_LIMITED'])(
+    'never reports confirmed failure or promises a new retry for %s',
+    (code) => {
+      expect(dayCommandNotice(code, false)).toBe('dayCommandCheckLatest');
+    },
+  );
+  it('preserves a possible earlier commit when permission rejection follows a lost response', () => {
+    expect(dayCommandNotice('FORBIDDEN', true)).toBe('fe_accessMaybeRecorded');
+    expect(dayCommandNotice('READ_ONLY', true)).toBe('fe_accessMaybeRecorded');
+    expect(dayCommandNotice('NUMBER_INVALID', false)).toBe('numberInvalid');
   });
 });

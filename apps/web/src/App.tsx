@@ -15,6 +15,7 @@ import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
 import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
+import { dayCommandNotice } from './report/FillPage.js';
 import {
   liveCoverage,
   byKind,
@@ -304,6 +305,15 @@ function Workspace({
     );
   };
 
+  useEffect(() => {
+    // A command reply may be lost even when the fresh read confirms a submitted day.
+    // Leave its editing/check screen based on that read, without claiming our send succeeded.
+    if (h.day?.state === 'submitted' && task !== null) {
+      setTask(null);
+      setView('report');
+    }
+  }, [h.day?.state, task]);
+
   const day = h.day;
   const liveContent = day && h.facts ? { ...day, facts: h.facts } : null;
   const cov = liveContent
@@ -357,13 +367,11 @@ function Workspace({
             ? e.code
             : 'REQUEST_FAILED';
       if (code === 'VERSION_CONFLICT' || code === 'LOCKED') return false;
-      say(
-        code === 'NUMBER_INVALID'
-          ? t('numberInvalid')
-          : code === 'FORBIDDEN' || code === 'READ_ONLY'
-            ? t('forbidden')
-            : t('saveFail'),
+      const notice = dayCommandNotice(
+        code,
+        e instanceof ApiError && e.afterLostAttempt,
       );
+      say(t(notice));
       return false;
     } finally {
       setBusy(false);
