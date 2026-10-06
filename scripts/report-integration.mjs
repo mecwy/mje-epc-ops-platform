@@ -2589,6 +2589,129 @@ try {
       'V4 cancelled correction preserves recorder declaration, actor identity boundary and prior snapshot',
     );
 
+    const frozenV4 = await revision(5);
+    const priorV5 = await read();
+    const v5 = {
+      ...v4,
+      schemaVersion: 5,
+      reportedDuration: {
+        contract: sourceCell(' 120 days '),
+        elapsed: sourceCell(' ', 'blank'),
+      },
+      workAreas: {
+        support: sourceCell('TEST area'),
+        rail: {
+          ...sourceCell(' ', 'blank'),
+          at: { ...sourceCell(' ').at, verticalMerge: 'continue' },
+        },
+      },
+    };
+    const startV5 = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: priorV5.version,
+          reason: 'TEST original noncommercial source cells',
+        }),
+      ),
+      200,
+    );
+    const v5Command = cmd({
+      businessDate: date,
+      expectedVersion: startV5.version,
+      facts: { ...priorV5.facts, sourceReport: v5 },
+    });
+    const savedV5 = await expectStatus(call('/facts', pm, v5Command), 200);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, v5Command), 200),
+      savedV5,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v4);
+    const invalidV5 = [
+      v4,
+      { ...v5, workAreas: { unknown: sourceCell('TEST') } },
+      { ...v5, workAreas: { crane: sourceCell('TEST') } },
+      { ...v5, workAreas: { support: v5.workAreas.support } },
+      { ...v5, reportedDuration: { contract: v5.reportedDuration.contract } },
+      { ...v5, commercial: { amount: 'TEST' } },
+    ];
+    for (const name of ['workAreas', 'reportedDuration']) {
+      const dropped = { ...v5 };
+      delete dropped[name];
+      invalidV5.push(dropped);
+    }
+    const beforeV5Audit = (
+      await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')
+    ).rows[0].n;
+    for (const sourceReport of invalidV5) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedV5.version,
+            facts: { ...priorV5.facts, sourceReport },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      assert.equal((await read()).version, savedV5.version);
+      assert.deepEqual((await read()).facts.sourceReport, v5);
+    }
+    assert.equal(
+      (await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')).rows[0]
+        .n,
+      beforeV5Audit,
+    );
+    await expectStatus(
+      call('/facts', pmB, { ...v5Command, clientMutationId: randomUUID() }),
+      403,
+      'FORBIDDEN',
+    );
+    await expectStatus(
+      call('/facts', exec, { ...v5Command, clientMutationId: randomUUID() }),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      call('/facts', pm, { ...v5Command, clientMutationId: randomUUID() }),
+      409,
+      'VERSION_CONFLICT',
+    );
+    const omittedV5 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedV5.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v5);
+    const submittedV5 = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: omittedV5.version }),
+      ),
+      200,
+    );
+    assert.equal(submittedV5.revisionNumber, 6);
+    assert.deepEqual((await revision(6)).snapshot.facts.sourceReport, v5);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v5);
+    assert.deepEqual(await revision(5), frozenV4);
+    assert.deepEqual((await read()).nextPlan, priorV5.nextPlan);
+    pass(
+      'V5 noncommercial source round-trip, group/entry drops, wrong project/kind/role, CAS/replay and immutable prior revision',
+    );
+
     const onlySource = {
       weather: '',
       temperature: '',

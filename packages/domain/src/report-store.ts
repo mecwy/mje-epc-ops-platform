@@ -288,6 +288,21 @@ export class ReportStore {
               )
                 throw new InvalidReportInput('facts.sourceReport.materials');
             }
+            if (
+              previousSource?.schemaVersion === 5 &&
+              source.schemaVersion === 5
+            ) {
+              for (const group of ['reportedDuration', 'workAreas'] as const) {
+                const prior = previousSource[group];
+                const next = source[group];
+                if (
+                  prior &&
+                  (!next ||
+                    Object.keys(prior).some((key) => !Object.hasOwn(next, key)))
+                )
+                  throw new InvalidReportInput(`facts.sourceReport.${group}`);
+              }
+            }
             // Explicit source replacement cannot silently lose an already stored extension.
             for (const extension of [
               'reportedNextPlan',
@@ -295,6 +310,8 @@ export class ReportStore {
               'machinery',
               'personnelRemarks',
               'reportedRecorder',
+              'reportedDuration',
+              'workAreas',
             ] as const) {
               if (
                 before?.sourceReport &&
@@ -317,6 +334,9 @@ export class ReportStore {
                 'work',
                 [
                   ...Object.keys(source.workPercent),
+                  ...(source.schemaVersion === 5
+                    ? Object.keys(source.workAreas ?? {})
+                    : []),
                   ...(source.schemaVersion !== 1 && source.reportedNextPlan
                     ? Object.keys(source.reportedNextPlan.quantities)
                     : []),
@@ -325,7 +345,7 @@ export class ReportStore {
               ['material', Object.keys(source.materials)],
               [
                 'machinery',
-                source.schemaVersion === 4
+                source.schemaVersion === 4 || source.schemaVersion === 5
                   ? Object.keys(source.machinery ?? {})
                   : [],
               ],

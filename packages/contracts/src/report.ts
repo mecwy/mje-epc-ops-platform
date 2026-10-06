@@ -27,6 +27,7 @@ export type {
   SourceReportV2,
   SourceReportV3,
   SourceReportV4,
+  SourceReportV5,
 } from './report-source.js';
 export { InvalidReportInput, isRealDate };
 export type Reported = string;
@@ -272,7 +273,8 @@ export function parseFacts(v: unknown): DayFactsDto {
     ? parseSourceReport(o['sourceReport'])
     : undefined;
   if (
-    sourceReport?.schemaVersion === 4 &&
+    sourceReport &&
+    'personnelRemarks' in sourceReport &&
     Object.keys(sourceReport.personnelRemarks ?? {}).some(
       (key) => !(ROLE_KEYS as readonly string[]).includes(key),
     )

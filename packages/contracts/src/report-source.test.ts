@@ -495,3 +495,58 @@ describe('V4 resource source boundaries', () => {
     expect(() => parseSourceReport(v)).toThrow(InvalidReportInput);
   });
 });
+
+describe('V5 noncommercial duration and area declarations', () => {
+  const make = () => ({
+    ...source(),
+    schemaVersion: 5,
+    reportedDuration: {
+      contract: { ...source().peopleTotal!, raw: ' 120 days ' },
+      elapsed: { ...source().peopleTotal!, raw: ' ', state: 'blank' },
+    },
+    workAreas: {
+      testWork: {
+        ...source().peopleTotal!,
+        raw: 'TEST area <x>',
+        at: { ...source().peopleTotal!.at, verticalMerge: 'continue' },
+      },
+    },
+  });
+  it('preserves raw cells, units, blanks and merge coordinates without deriving dates or assignment', () => {
+    const input = make();
+    expect(parseSourceReport(input)).toEqual(input);
+    expect(
+      parseSourceReport({
+        ...source(),
+        schemaVersion: 5,
+        workAreas: make().workAreas,
+      }),
+    ).toEqual({ ...source(), schemaVersion: 5, workAreas: make().workAreas });
+  });
+  it.each([
+    () => ({ ...make(), schemaVersion: 4 }),
+    () => ({ ...make(), commercial: { amount: 'TEST' } }),
+    () => ({ ...make(), reportedDuration: { amount: source().peopleTotal } }),
+    () => ({ ...make(), reportedDuration: {} }),
+    () => ({ ...make(), workAreas: {} }),
+    () => ({ ...source(), schemaVersion: 5 }),
+    () => ({
+      ...make(),
+      workAreas: { test: { ...source().peopleTotal!, projectId: 'TEST' } },
+    }),
+    () => ({
+      ...make(),
+      workAreas: {
+        test: {
+          ...source().peopleTotal!,
+          at: { ...source().peopleTotal!.at, document: 'missing' },
+        },
+      },
+    }),
+  ])(
+    'rejects extra semantics, empty extensions and invalid references',
+    (input) => {
+      expect(() => parseSourceReport(input())).toThrow(InvalidReportInput);
+    },
+  );
+});

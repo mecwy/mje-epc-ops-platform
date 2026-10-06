@@ -512,6 +512,135 @@ describe('selected-version source adapter in the actual report body', () => {
       expect(JSON.stringify(c)).toBe(before);
     },
   );
+  it.each(['zh', 'en', 'sr', 'es'] as const)(
+    'shows V5 duration and area as unchanged source cells and retains V4 fields in %s',
+    (lang) => {
+      const c = content();
+      c.items.push({
+        kind: 'machinery',
+        key: 'testRetired',
+        label: 'TEST retired V5 equipment',
+        unit: '',
+        active: false,
+        designQty: '0',
+        openingCumulative: '',
+        sortOrder: 10,
+      });
+      const mergedBlank = {
+        ...source.peopleTotal!,
+        raw: '  ',
+        state: 'blank' as const,
+        at: {
+          ...source.peopleTotal!.at,
+          gridSpan: 2,
+          verticalMerge: 'continue' as const,
+        },
+      };
+      c.facts.sourceReport = parseFacts({
+        ...c.facts,
+        sourceReport: {
+          ...source,
+          schemaVersion: 5,
+          reportedDuration: {
+            contract: {
+              ...source.peopleTotal!,
+              raw: '  TEST 090 <script>duration</script> days  ',
+            },
+            elapsed: mergedBlank,
+          },
+          workAreas: {
+            test: {
+              ...mergedBlank,
+              raw: ' TEST <img src=x> area ',
+              state: 'value',
+            },
+          },
+          machinery: {
+            testRetired: {
+              note: { ...source.peopleTotal!, raw: 'TEST V5 machine note' },
+            },
+          },
+          personnelRemarks: {
+            installer: {
+              ...source.peopleTotal!,
+              raw: 'TEST V5 personnel remark',
+            },
+          },
+          reportedRecorder: {
+            line: { ...source.peopleTotal!, raw: 'TEST V5 recorder: ' },
+            nameState: 'blank',
+          },
+        },
+      }).sourceReport!;
+      const before = JSON.stringify(c);
+      const html = page(c, lang);
+      const duration = html
+        .split('class="card report-duration"')[1]!
+        .split('</section>')[0]!;
+      expect(duration).toContain(
+        '  TEST 090 &lt;script&gt;duration&lt;/script&gt; days  ',
+      );
+      expect(duration).toContain('<span>  </span>');
+      expect(duration).toContain('class="source-empty"');
+      expect(duration).toContain('class="source-merge"');
+      expect(duration).toContain('class="source-references"');
+      expect(duration).toContain('c'.repeat(64));
+      expect(duration).toContain(translate(lang, 'sourceDurationNotPlan'));
+      expect(html).toContain(' TEST &lt;img src=x&gt; area ');
+      expect(html).toContain(translate(lang, 'sourceReportedArea'));
+      expect(html).toContain(translate(lang, 'sourceAreaUnconfirmed'));
+      expect(html).toContain(translate(lang, 'sourceGridSpan', { value: 2 }));
+      expect(html).toContain('TEST V5 machine note');
+      expect(html).toContain('TEST V5 personnel remark');
+      expect(html).toContain('TEST V5 recorder: ');
+      expect(html).toContain(translate(lang, 'sourceRecorderBlank'));
+      expect(html).not.toContain('<script>duration</script>');
+      expect(html).not.toContain('<img src=x>');
+      expect(JSON.stringify(c)).toBe(before);
+      if (c.facts.sourceReport?.schemaVersion !== 5)
+        throw new Error('TEST expected V5');
+      c.facts.sourceReport.workAreas = { test: mergedBlank };
+      const blankHtml = page(c, lang);
+      const progress = blankHtml
+        .split('class="report-business-panel"')[1]!
+        .split('</table>')[0]!;
+      expect(progress).toContain('<span>  </span>');
+      expect(progress).toContain('class="source-merge"');
+    },
+  );
+  it.each([1, 2, 3, 4] as const)(
+    'does not synthesize V5 source values for V%s',
+    (schemaVersion) => {
+      const c = content();
+      c.facts.sourceReport = parseFacts({
+        ...c.facts,
+        sourceReport: {
+          ...source,
+          schemaVersion,
+          ...(schemaVersion === 2
+            ? {
+                reportedNextPlan: {
+                  targetBusinessDate: '2025-03-11',
+                  quantities: { test: source.peopleTotal! },
+                },
+              }
+            : {}),
+          ...(schemaVersion === 3
+            ? { milestones: { testMilestone: { note: source.peopleTotal! } } }
+            : {}),
+          ...(schemaVersion === 4
+            ? { personnelRemarks: { installer: source.peopleTotal! } }
+            : {}),
+        },
+      }).sourceReport!;
+      const before = JSON.stringify(c);
+      const html = page(c, 'en');
+      expect(html).not.toContain('class="card report-duration"');
+      expect(html).not.toContain(translate('en', 'sourceReportedArea'));
+      expect(html).not.toContain(translate('en', 'sourceDurationNotPlan'));
+      expect(JSON.stringify(c)).toBe(before);
+    },
+  );
   it('retains source references for inactive machinery without changing the snapshot', () => {
     const c = content();
     c.items.push({

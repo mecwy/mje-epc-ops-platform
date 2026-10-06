@@ -63,8 +63,18 @@ export interface SourceReportV4 extends Omit<SourceReportV1, 'schemaVersion'> {
     nameState: 'blank' | 'reported' | 'unknown';
   };
 }
+/** Noncommercial original duration/area cells; never approved schedule or assignment. */
+export interface SourceReportV5 extends Omit<SourceReportV4, 'schemaVersion'> {
+  schemaVersion: 5;
+  reportedDuration?: { contract?: SourceCell; elapsed?: SourceCell };
+  workAreas?: Record<string, SourceCell>;
+}
 export type SourceReport =
-  SourceReportV1 | SourceReportV2 | SourceReportV3 | SourceReportV4;
+  | SourceReportV1
+  | SourceReportV2
+  | SourceReportV3
+  | SourceReportV4
+  | SourceReportV5;
 
 /** Unknown keys are rejected without reflecting user-controlled key names in errors. */
 export function reportObject(
@@ -98,7 +108,8 @@ export function parseSourceReport(v: unknown): SourceReport {
     schemaVersion !== 1 &&
     schemaVersion !== 2 &&
     schemaVersion !== 3 &&
-    schemaVersion !== 4
+    schemaVersion !== 4 &&
+    schemaVersion !== 5
   )
     throw new InvalidReportInput(`${path}.schemaVersion`);
   const o = reportObject(
@@ -111,9 +122,10 @@ export function parseSourceReport(v: unknown): SourceReport {
       'materials',
       ...(schemaVersion !== 1 ? ['reportedNextPlan'] : []),
       ...(schemaVersion >= 3 ? ['milestones'] : []),
-      ...(schemaVersion === 4
+      ...(schemaVersion >= 4
         ? ['machinery', 'personnelRemarks', 'reportedRecorder']
         : []),
+      ...(schemaVersion === 5 ? ['reportedDuration', 'workAreas'] : []),
     ],
     path,
   );
@@ -252,7 +264,7 @@ export function parseSourceReport(v: unknown): SourceReport {
   let milestones: SourceReportV3['milestones'] | undefined;
   if (
     schemaVersion === 3 ||
-    (schemaVersion === 4 && Object.hasOwn(o, 'milestones'))
+    (schemaVersion >= 4 && Object.hasOwn(o, 'milestones'))
   ) {
     milestones = Object.fromEntries(
       entries(o['milestones'], 100, `${path}.milestones`).map(
@@ -286,7 +298,7 @@ export function parseSourceReport(v: unknown): SourceReport {
         ...(reportedNextPlan ? { reportedNextPlan } : {}),
       };
   }
-  if (schemaVersion === 4) {
+  if (schemaVersion === 4 || schemaVersion === 5) {
     const beforeNewGroups = count;
     const machinery = Object.hasOwn(o, 'machinery')
       ? Object.fromEntries(
@@ -336,11 +348,56 @@ export function parseSourceReport(v: unknown): SourceReport {
       };
     }
     if (
-      count === beforeNewGroups ||
+      (schemaVersion === 4 && count === beforeNewGroups) ||
       (machinery && !Object.keys(machinery).length) ||
       (personnelRemarks && !Object.keys(personnelRemarks).length)
     )
       throw new InvalidReportInput(path);
+    const resources = {
+      ...(reportedNextPlan ? { reportedNextPlan } : {}),
+      ...(milestones ? { milestones } : {}),
+      ...(machinery ? { machinery } : {}),
+      ...(personnelRemarks ? { personnelRemarks } : {}),
+      ...(reportedRecorder ? { reportedRecorder } : {}),
+    };
+    if (schemaVersion === 5) {
+      const beforeV5 = count;
+      let reportedDuration: SourceReportV5['reportedDuration'];
+      if (Object.hasOwn(o, 'reportedDuration')) {
+        const field = `${path}.reportedDuration`;
+        const duration = reportObject(
+          o['reportedDuration'],
+          ['contract', 'elapsed'],
+          field,
+        );
+        if (!Object.keys(duration).length) throw new InvalidReportInput(field);
+        reportedDuration = Object.fromEntries(
+          Object.entries(duration).map(([key, value]) => [
+            key,
+            cell(value, `${field}.${key}`),
+          ]),
+        );
+      }
+      const workAreas = Object.hasOwn(o, 'workAreas')
+        ? Object.fromEntries(
+            entries(o['workAreas'], 100, `${path}.workAreas`).map(
+              ([key, value], i) => [
+                key,
+                cell(value, `${path}.workAreas[${i}]`),
+              ],
+            ),
+          )
+        : undefined;
+      if (count === beforeV5 || (workAreas && !Object.keys(workAreas).length))
+        throw new InvalidReportInput(path);
+      return {
+        ...common,
+        ...resources,
+        schemaVersion: 5,
+        ...(reportedDuration ? { reportedDuration } : {}),
+        ...(workAreas ? { workAreas } : {}),
+      };
+    }
     return {
       ...common,
       schemaVersion: 4,

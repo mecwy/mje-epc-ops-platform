@@ -520,7 +520,14 @@ function BusinessSections({
 }) {
   const { t, label, locale } = useI18n();
   const source = c.facts.sourceReport;
-  const extra = source?.schemaVersion === 4 ? source : undefined;
+  const extra =
+    source?.schemaVersion === 4 || source?.schemaVersion === 5
+      ? source
+      : undefined;
+  const workAreas = source?.schemaVersion === 5 ? source.workAreas : undefined;
+  const workRows = c.items.filter(
+    (item) => item.kind === 'work' && (item.active || workAreas?.[item.key]),
+  );
   // Retiring an entry must not hide cells already captured in this report version.
   const machineryRows = c.items.filter(
     (item) =>
@@ -592,17 +599,19 @@ function BusinessSections({
         {table(
           [
             t('progress'),
+            ...(workAreas ? [t('sourceReportedArea')] : []),
             t('today'),
             `${t('cumulative')} · ${t('sourceCalculatedPercent')}`,
             t('design'),
           ],
-          byKind(c.items, 'work').map((it) => {
+          workRows.map((it) => {
             const completion = pct(
               dec(c.facts.cumulative[it.key]),
               dec(it.designQty),
             );
             return [
               label(it.label),
+              ...(workAreas ? [raw(workAreas[it.key])] : []),
               <Val key="qty" raw={c.facts.qty[it.key]} />,
               <span key="cum" className="report-completion">
                 <Val raw={c.facts.cumulative[it.key]} />
@@ -623,6 +632,18 @@ function BusinessSections({
               `${fmtNum(it.designQty, locale)} ${unitOf(label, it)}`,
             ];
           }),
+        )}
+        {workAreas && (
+          <>
+            <p className="report-muted">{t('sourceAreaUnconfirmed')}</p>
+            <SourceReferences
+              labels={sourceLabels}
+              rows={workRows.map((it) => ({
+                label: `${label(it.label)} · ${t('sourceReportedArea')}`,
+                cells: [sourceCellDisplay(source, workAreas[it.key])],
+              }))}
+            />
+          </>
         )}
       </div>
       <div hidden={selected !== 'materials'} className="report-business-panel">
@@ -709,12 +730,52 @@ function BusinessSections({
   );
 }
 
+function OriginalDuration({ c }: { c: ReportContent }) {
+  const { t } = useI18n();
+  const labels = useSourceLabels();
+  const source = c.facts.sourceReport;
+  const duration =
+    source?.schemaVersion === 5 ? source.reportedDuration : undefined;
+  if (!duration) return null;
+  const rows = [
+    { label: t('sourceContractDuration'), value: duration.contract },
+    { label: t('sourceElapsedDuration'), value: duration.elapsed },
+  ].filter((row) => row.value !== undefined);
+  return (
+    <section
+      className="card report-duration"
+      aria-label={t('sourceReportedDuration')}
+    >
+      <h2>{t('sourceReportedDuration')}</h2>
+      {rows.map((row) => (
+        <div key={row.label}>
+          <strong>{row.label}</strong>
+          <SourceValue
+            cell={sourceCellDisplay(source, row.value)}
+            labels={labels}
+          />
+        </div>
+      ))}
+      <p className="report-muted">{t('sourceDurationNotPlan')}</p>
+      <SourceReferences
+        labels={labels}
+        rows={rows.map((row) => ({
+          label: row.label,
+          cells: [sourceCellDisplay(source, row.value)],
+        }))}
+      />
+    </section>
+  );
+}
+
 function OriginalRecorder({ c }: { c: ReportContent }) {
   const { t } = useI18n();
   const labels = useSourceLabels();
   const source = c.facts.sourceReport;
   const recorder =
-    source?.schemaVersion === 4 ? source.reportedRecorder : undefined;
+    source?.schemaVersion === 4 || source?.schemaVersion === 5
+      ? source.reportedRecorder
+      : undefined;
   if (!recorder) return null;
   const cell = sourceCellDisplay(source, recorder.line);
   return (
@@ -851,6 +912,7 @@ export function ReportBody({
           )}
         </div>
       )}
+      <OriginalDuration c={c} />
       {weather && (
         <section className="card report-weather" aria-label={t('weather')}>
           <div>

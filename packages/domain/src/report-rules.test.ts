@@ -719,3 +719,27 @@ it('V4 source-only blank category note is a fact without implying people or labo
   expect(f.people).toEqual({});
   expect(f.presence).toEqual({});
 });
+
+it('V5 blank source area or duration is a fact without assigning work or deriving progress', () => {
+  const cell = {
+    raw: ' ',
+    state: 'blank' as const,
+    at: { document: 'test', table: 2, row: 1, cell: 1 },
+  };
+  const f = blankFacts();
+  f.sourceReport = {
+    schemaVersion: 5,
+    documents: {
+      test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    workAreas: { testWork: cell },
+  };
+  expect(hasFacts(f)).toBe(true);
+  delete f.sourceReport.workAreas;
+  f.sourceReport.reportedDuration = { elapsed: cell };
+  expect(hasFacts(f)).toBe(true);
+  expect(f.qty).toEqual({});
+  expect(f.cumulative).toEqual({});
+});
