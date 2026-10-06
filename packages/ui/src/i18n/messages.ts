@@ -2906,6 +2906,36 @@ export const MESSAGES = {
     'Ova verzija nema zabeležene izvorne ćelije prekretnica',
     'Esta versión no contiene celdas originales de hitos',
   ],
+  sourceLocation: [
+    '原报设备位置',
+    'Original equipment location',
+    'Izvorna lokacija opreme',
+    'Ubicación original del equipo',
+  ],
+  sourcePersonnelRemarks: [
+    '原报人员备注',
+    'Original personnel remarks',
+    'Izvorne napomene o osoblju',
+    'Observaciones originales del personal',
+  ],
+  sourceRecorder: [
+    '原报记录人声明',
+    'Original recorder declaration',
+    'Izvorna izjava zapisničara',
+    'Declaración original del autor',
+  ],
+  sourceRecorderNotIdentity: [
+    '仅为原报声明，不代表系统登录身份',
+    'Source declaration only; not the signed-in identity',
+    'Samo izvorna izjava; nije identitet prijavljenog korisnika',
+    'Solo declaración de origen; no es la identidad de sesión',
+  ],
+  sourceRecorderBlank: [
+    '原报未填写记录人姓名',
+    'Recorder name was left blank',
+    'Ime zapisničara nije popunjeno',
+    'Nombre del autor sin completar',
+  ],
   sourcePlannedFinish: [
     '原报计划完成日期',
     'Originally reported planned finish',

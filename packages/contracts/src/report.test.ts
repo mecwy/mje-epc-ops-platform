@@ -258,3 +258,29 @@ describe('source-report compatibility at the facts boundary', () => {
     ).toThrow('command.extra');
   });
 });
+
+it('V4 accepts category remarks but rejects invented personnel role keys', () => {
+  const cell = {
+    raw: ' ',
+    state: 'blank',
+    at: { document: 'testDoc', table: 3, row: 1, cell: 4 },
+  };
+  const sourceReport = {
+    schemaVersion: 4,
+    documents: {
+      testDoc: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    personnelRemarks: { installer: cell },
+  };
+  expect(parseFacts({ ...facts(), sourceReport }).sourceReport).toEqual(
+    sourceReport,
+  );
+  expect(() =>
+    parseFacts({
+      ...facts(),
+      sourceReport: { ...sourceReport, personnelRemarks: { employee: cell } },
+    }),
+  ).toThrow('facts.sourceReport.personnelRemarks');
+});

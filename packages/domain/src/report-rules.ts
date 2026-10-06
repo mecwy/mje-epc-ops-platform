@@ -135,8 +135,13 @@ export function hasFacts(f: DayFacts): boolean {
       ((f.sourceReport.schemaVersion !== 1 &&
         f.sourceReport.reportedNextPlan &&
         Object.keys(f.sourceReport.reportedNextPlan.quantities).length) ||
-        (f.sourceReport.schemaVersion === 3 &&
+        ('milestones' in f.sourceReport &&
+          f.sourceReport.milestones &&
           Object.keys(f.sourceReport.milestones).length) ||
+        (f.sourceReport.schemaVersion === 4 &&
+          (f.sourceReport.reportedRecorder ||
+            Object.keys(f.sourceReport.machinery ?? {}).length ||
+            Object.keys(f.sourceReport.personnelRemarks ?? {}).length)) ||
         f.sourceReport.peopleTotal ||
         Object.keys(f.sourceReport.workPercent).length ||
         Object.values(f.sourceReport.materials).some(

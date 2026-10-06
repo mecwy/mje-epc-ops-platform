@@ -26,6 +26,7 @@ export type {
   SourceReportV1,
   SourceReportV2,
   SourceReportV3,
+  SourceReportV4,
 } from './report-source.js';
 export { InvalidReportInput, isRealDate };
 export type Reported = string;
@@ -267,10 +268,18 @@ export function parseFacts(v: unknown): DayFactsDto {
   for (const k of Object.keys(people))
     if (!(ROLE_KEYS as readonly string[]).includes(k))
       throw new InvalidReportInput(`facts.people.${k}`);
+  const sourceReport = Object.hasOwn(o, 'sourceReport')
+    ? parseSourceReport(o['sourceReport'])
+    : undefined;
+  if (
+    sourceReport?.schemaVersion === 4 &&
+    Object.keys(sourceReport.personnelRemarks ?? {}).some(
+      (key) => !(ROLE_KEYS as readonly string[]).includes(key),
+    )
+  )
+    throw new InvalidReportInput('facts.sourceReport.personnelRemarks');
   return {
-    ...(Object.hasOwn(o, 'sourceReport')
-      ? { sourceReport: parseSourceReport(o['sourceReport']) }
-      : {}),
+    ...(sourceReport ? { sourceReport } : {}),
     weather: str(o['weather'] ?? '', 'facts.weather', 100),
     temperature: str(o['temperature'] ?? '', 'facts.temperature', 40),
     qty: reportedMap(o['qty'], 'facts.qty'),

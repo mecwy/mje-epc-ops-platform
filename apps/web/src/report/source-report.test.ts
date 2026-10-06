@@ -143,7 +143,7 @@ describe('original source comparison (presentation only)', () => {
     const html = render(data);
     expect(html).toContain('partial classified sum');
     const peopleSection = html
-      .split('<section aria-label="TEST-en people">')[1]
+      .split('aria-label="TEST-en people">')[1]
       ?.split('</section>')[0];
     expect(peopleSection).toBeDefined();
     expect(peopleSection).not.toContain('arithmetic difference');
@@ -494,6 +494,60 @@ describe('selected-version source adapter in the actual report body', () => {
       expect(html).not.toContain('<img src=x>');
       expect(html).toContain('c'.repeat(64));
       expect(JSON.stringify(c)).toBe(before);
+    },
+  );
+  it.each(['zh', 'en', 'sr', 'es'] as const)(
+    'integrates V4 into corresponding sections and keeps old versions clean in %s',
+    (lang) => {
+      const c = content(),
+        before = content();
+      c.items.push({
+        kind: 'machinery',
+        key: 'testCrane',
+        label: 'TEST crane',
+        unit: '',
+        active: true,
+        designQty: '0',
+        openingCumulative: '',
+        sortOrder: 10,
+      });
+      c.facts.sourceReport = parseFacts({
+        ...c.facts,
+        sourceReport: {
+          ...source,
+          schemaVersion: 4,
+          machinery: {
+            testCrane: {
+              location: {
+                ...source.peopleTotal!,
+                raw: ' ',
+                state: 'blank',
+                at: { ...source.peopleTotal!.at, verticalMerge: 'continue' },
+              },
+              note: { ...source.peopleTotal!, raw: 'TEST equipment remark' },
+            },
+          },
+          personnelRemarks: {
+            installer: { ...source.peopleTotal!, raw: 'TEST category remark' },
+          },
+          reportedRecorder: {
+            line: { ...source.peopleTotal!, raw: 'TEST recorder:  ' },
+            nameState: 'blank',
+          },
+        },
+      }).sourceReport!;
+      const original = JSON.stringify(c),
+        html = page(c, lang);
+      expect(html).toContain('TEST equipment remark');
+      expect(html).toContain('TEST category remark');
+      expect(html).toContain(translate(lang, 'sourceRecorderBlank'));
+      expect(html).toContain(translate(lang, 'sourceRecorderNotIdentity'));
+      expect(html).toContain('class="source-disclosure"');
+      expect(html).not.toContain('class="source-disclosure" open');
+      expect(html).toContain('aria-pressed="true"');
+      expect(JSON.stringify(c)).toBe(original);
+      expect(page(before, lang)).not.toContain('TEST equipment remark');
+      expect(page(before, lang)).not.toContain('TEST recorder:');
     },
   );
   it('keeps absent source on an old version instead of displaying a newer source', () => {

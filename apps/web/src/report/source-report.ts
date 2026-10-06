@@ -1,3 +1,4 @@
+import type { SourceCell, SourceReport } from '@mje/contracts';
 import { dec, decText, pct, ROLE_KEYS, type RoleKey } from '@mje/domain/rules';
 
 /** Presentation input only. The caller resolves citations from the selected report version.
@@ -14,6 +15,29 @@ export interface ReportedCellDisplay {
     readonly gridSpan?: number;
     readonly verticalMerge?: 'restart' | 'continue';
   } | null;
+}
+/** Resolve against the selected snapshot only; never consult newest source documents. */
+export function sourceCellDisplay(
+  source: SourceReport | undefined,
+  value: SourceCell | undefined,
+): ReportedCellDisplay | undefined {
+  if (!value) return undefined;
+  const document = source?.documents[value.at.document];
+  const { table, row, cell, gridSpan, verticalMerge } = value.at;
+  return {
+    raw: value.raw,
+    state: value.state,
+    citation: document
+      ? {
+          ...document,
+          table,
+          row,
+          cell,
+          ...(gridSpan !== undefined ? { gridSpan } : {}),
+          ...(verticalMerge !== undefined ? { verticalMerge } : {}),
+        }
+      : null,
+  };
 }
 export interface MaterialSourceDisplay {
   readonly cumulative?: ReportedCellDisplay;

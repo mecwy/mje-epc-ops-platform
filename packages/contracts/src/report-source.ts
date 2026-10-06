@@ -51,7 +51,20 @@ export interface SourceReportV3 extends Omit<SourceReportV1, 'schemaVersion'> {
     }
   >;
 }
-export type SourceReport = SourceReportV1 | SourceReportV2 | SourceReportV3;
+/** Original resource notes and recorder declaration are not operational identity or allocation. */
+export interface SourceReportV4 extends Omit<SourceReportV1, 'schemaVersion'> {
+  schemaVersion: 4;
+  reportedNextPlan?: SourceReportV2['reportedNextPlan'];
+  milestones?: SourceReportV3['milestones'];
+  machinery?: Record<string, { location?: SourceCell; note?: SourceCell }>;
+  personnelRemarks?: Record<string, SourceCell>;
+  reportedRecorder?: {
+    line: SourceCell;
+    nameState: 'blank' | 'reported' | 'unknown';
+  };
+}
+export type SourceReport =
+  SourceReportV1 | SourceReportV2 | SourceReportV3 | SourceReportV4;
 
 /** Unknown keys are rejected without reflecting user-controlled key names in errors. */
 export function reportObject(
@@ -81,7 +94,12 @@ function integer(v: unknown, min: number, max: number, field: string): number {
 export function parseSourceReport(v: unknown): SourceReport {
   const path = 'facts.sourceReport';
   const schemaVersion = obj(v, path)['schemaVersion'];
-  if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3)
+  if (
+    schemaVersion !== 1 &&
+    schemaVersion !== 2 &&
+    schemaVersion !== 3 &&
+    schemaVersion !== 4
+  )
     throw new InvalidReportInput(`${path}.schemaVersion`);
   const o = reportObject(
     v,
@@ -92,7 +110,10 @@ export function parseSourceReport(v: unknown): SourceReport {
       'workPercent',
       'materials',
       ...(schemaVersion !== 1 ? ['reportedNextPlan'] : []),
-      ...(schemaVersion === 3 ? ['milestones'] : []),
+      ...(schemaVersion >= 3 ? ['milestones'] : []),
+      ...(schemaVersion === 4
+        ? ['machinery', 'personnelRemarks', 'reportedRecorder']
+        : []),
     ],
     path,
   );
@@ -207,7 +228,7 @@ export function parseSourceReport(v: unknown): SourceReport {
   let reportedNextPlan: SourceReportV2['reportedNextPlan'] | undefined;
   if (
     schemaVersion === 2 ||
-    (schemaVersion === 3 && Object.hasOwn(o, 'reportedNextPlan'))
+    (schemaVersion >= 3 && Object.hasOwn(o, 'reportedNextPlan'))
   ) {
     const field = `${path}.reportedNextPlan`;
     const plan = reportObject(
@@ -228,8 +249,12 @@ export function parseSourceReport(v: unknown): SourceReport {
       throw new InvalidReportInput(`${field}.quantities`);
     reportedNextPlan = { targetBusinessDate, quantities };
   }
-  if (schemaVersion === 3) {
-    const milestones = Object.fromEntries(
+  let milestones: SourceReportV3['milestones'] | undefined;
+  if (
+    schemaVersion === 3 ||
+    (schemaVersion === 4 && Object.hasOwn(o, 'milestones'))
+  ) {
+    milestones = Object.fromEntries(
       entries(o['milestones'], 100, `${path}.milestones`).map(
         ([key, value], i) => {
           const field = `${path}.milestones[${i}]`;
@@ -253,11 +278,77 @@ export function parseSourceReport(v: unknown): SourceReport {
     );
     if (!Object.keys(milestones).length)
       throw new InvalidReportInput(`${path}.milestones`);
+    if (schemaVersion === 3)
+      return {
+        ...common,
+        schemaVersion: 3,
+        milestones,
+        ...(reportedNextPlan ? { reportedNextPlan } : {}),
+      };
+  }
+  if (schemaVersion === 4) {
+    const beforeNewGroups = count;
+    const machinery = Object.hasOwn(o, 'machinery')
+      ? Object.fromEntries(
+          entries(o['machinery'], 100, `${path}.machinery`).map(
+            ([key, value], i) => {
+              const field = `${path}.machinery[${i}]`;
+              const row = reportObject(value, ['location', 'note'], field);
+              if (!Object.keys(row).length) throw new InvalidReportInput(field);
+              return [
+                key,
+                Object.fromEntries(
+                  Object.entries(row).map(([k, v]) => [
+                    k,
+                    cell(v, `${field}.${k}`),
+                  ]),
+                ),
+              ];
+            },
+          ),
+        )
+      : undefined;
+    const personnelRemarks = Object.hasOwn(o, 'personnelRemarks')
+      ? Object.fromEntries(
+          entries(o['personnelRemarks'], 5, `${path}.personnelRemarks`).map(
+            ([key, value], i) => [
+              key,
+              cell(value, `${path}.personnelRemarks[${i}]`),
+            ],
+          ),
+        )
+      : undefined;
+    let reportedRecorder: SourceReportV4['reportedRecorder'];
+    if (Object.hasOwn(o, 'reportedRecorder')) {
+      const field = `${path}.reportedRecorder`;
+      const record = reportObject(
+        o['reportedRecorder'],
+        ['line', 'nameState'],
+        field,
+      );
+      reportedRecorder = {
+        line: cell(record['line'], `${field}.line`),
+        nameState: oneOf(
+          record['nameState'],
+          ['blank', 'reported', 'unknown'] as const,
+          `${field}.nameState`,
+        ),
+      };
+    }
+    if (
+      count === beforeNewGroups ||
+      (machinery && !Object.keys(machinery).length) ||
+      (personnelRemarks && !Object.keys(personnelRemarks).length)
+    )
+      throw new InvalidReportInput(path);
     return {
       ...common,
-      schemaVersion: 3,
-      milestones,
+      schemaVersion: 4,
       ...(reportedNextPlan ? { reportedNextPlan } : {}),
+      ...(milestones ? { milestones } : {}),
+      ...(machinery ? { machinery } : {}),
+      ...(personnelRemarks ? { personnelRemarks } : {}),
+      ...(reportedRecorder ? { reportedRecorder } : {}),
     };
   }
   if (schemaVersion === 2 && reportedNextPlan)

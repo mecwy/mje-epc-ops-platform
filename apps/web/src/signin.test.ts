@@ -141,7 +141,7 @@ describe('resume state', () => {
     drafts: [draft('2026-09-29')],
     savedAt: NOW,
   };
-  it.each([1, 2, 3] as const)(
+  it.each([1, 2, 3, 4] as const)(
     'round-trips source cells through a sign-in resume without converting blank or raw text (V%s)',
     (schemaVersion) => {
       const s = memoryStore();
@@ -166,7 +166,23 @@ describe('resume state', () => {
           ...(schemaVersion !== 1
             ? {
                 schemaVersion,
-                ...(schemaVersion === 3
+                ...(schemaVersion === 4
+                  ? {
+                      personnelRemarks: {
+                        installer: {
+                          raw: ' ',
+                          state: 'blank',
+                          at: {
+                            document: 'testDoc',
+                            table: 3,
+                            row: 1,
+                            cell: 4,
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                ...(schemaVersion >= 3
                   ? {
                       milestones: {
                         testMilestone: {

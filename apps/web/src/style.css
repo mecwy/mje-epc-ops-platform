@@ -2028,3 +2028,287 @@ ul.plainlist:not(.card) {
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
+
+/* Approved report reading direction. Scoped to the report; no shared navigation changes. */
+.report-redesign {
+  --ink: #233143;
+  --ink-2: #405267;
+  --muted: #72808e;
+  --line: #e5e9ee;
+  --line-2: #eff1f4;
+  --accent: #398780;
+  --accent-soft: #edf5f2;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  min-width: 0;
+}
+.report-redesign .card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 20px;
+  margin-bottom: 18px;
+  min-width: 0;
+}
+.report-redesign .status-row {
+  margin: 0 0 16px;
+  font-size: 12px;
+}
+.report-redesign .blk {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+.report-redesign .kv {
+  padding: 12px 0;
+}
+.report-redesign .prog-name {
+  font-size: 15px;
+}
+.report-redesign .prog-val {
+  color: var(--ink);
+}
+.report-redesign .para {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.report-redesign .report-weather {
+  display: flex;
+  flex-direction: row;
+  gap: 40px;
+  align-items: center;
+  padding: 22px 24px;
+}
+.report-redesign .report-weather strong {
+  display: block;
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -1px;
+  margin-top: 6px;
+}
+.report-redesign .report-weather p {
+  margin: 6px 0;
+  font-size: 15px;
+}
+.report-redesign .report-eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-redesign .rgrid {
+  gap: 20px;
+  align-items: start;
+}
+.report-redesign .report-business {
+  padding: 0;
+  overflow: hidden;
+}
+.report-redesign .report-section-tabs {
+  display: flex;
+  gap: 24px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.report-redesign .report-section-tabs button {
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 16px 0;
+  min-height: 48px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+}
+.report-redesign .report-section-tabs button[aria-pressed='true'] {
+  color: var(--ink);
+  border-color: var(--accent);
+  font-weight: 650;
+}
+.report-redesign .report-business-panel > .card {
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+.report-redesign .report-business-panel > .card > .blk {
+  display: none;
+}
+.report-redesign .report-table-scroll,
+.report-redesign .source-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.report-redesign table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.report-redesign th,
+.report-redesign td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.6;
+}
+.report-redesign thead th {
+  color: var(--muted);
+  font-weight: 500;
+  background: #f8fafb;
+  white-space: nowrap;
+}
+.report-redesign tbody th {
+  font-weight: 600;
+  min-width: 100px;
+}
+.report-redesign tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.report-redesign .report-muted {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.report-redesign .source-report {
+  padding: 0;
+}
+.report-redesign .source-disclosure > summary {
+  padding: 18px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.report-redesign .source-disclosure > summary small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 12px;
+}
+.report-redesign .source-sections {
+  border-top: 1px solid var(--line);
+}
+.report-redesign .source-section {
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.report-redesign .source-section:last-child {
+  border: 0;
+}
+.report-redesign .source-section h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.report-redesign .source-context {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-redesign .source-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-redesign .source-value {
+  font-variant-numeric: tabular-nums;
+}
+.report-redesign .source-merge {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.report-redesign .source-references {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.report-redesign .source-references summary {
+  cursor: pointer;
+  padding: 7px 0;
+}
+.report-redesign .source-references > div {
+  padding: 10px;
+  border-left: 2px solid var(--line);
+}
+.report-redesign .source-reference {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0;
+}
+.report-redesign .source-reference code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.report-redesign .source-section td .muted {
+  font-size: 11px;
+  margin: 0;
+}
+.report-redesign .linkrow {
+  border: 1px solid var(--line);
+  background: white;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+@media (min-width: 1100px) {
+  .report-redesign .rgrid {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+}
+@media (max-width: 719px) {
+  .report-redesign .card {
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .report-redesign .report-business,
+  .report-redesign .source-report {
+    padding: 0;
+  }
+  .report-redesign .report-weather {
+    gap: 24px;
+    padding: 18px;
+  }
+  .report-redesign .report-weather strong {
+    font-size: 26px;
+  }
+  .report-redesign .source-section {
+    padding: 14px;
+  }
+  .report-redesign .source-table-scroll table {
+    min-width: 510px;
+  }
+  .report-redesign .source-disclosure > summary small {
+    display: block;
+    margin: 6px 0 0 16px;
+  }
+  .report-redesign .report-section-tabs {
+    gap: 22px;
+    padding: 0 16px;
+  }
+}
+
+.report-redesign .report-business-panel > .source-references {
+  padding: 12px 16px;
+}
+.report-redesign .report-completion {
+  display: block;
+  min-width: 90px;
+}
+.report-redesign .report-completion .report-muted {
+  display: inline;
+  margin-left: 8px;
+}
+.report-redesign .report-completion .bar-track {
+  display: block;
+  height: 4px;
+  margin-top: 7px;
+}
+.report-redesign .report-completion .bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.report-redesign .rcol {
+  min-width: 0;
+  width: 100%;
+}

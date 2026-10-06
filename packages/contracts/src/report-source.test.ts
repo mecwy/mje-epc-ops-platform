@@ -399,3 +399,99 @@ describe('V3 original milestones', () => {
     expect(parseSourceReport(v)).toEqual(v);
   });
 });
+
+describe('V4 resource source boundaries', () => {
+  const make = () => ({
+    ...source(),
+    schemaVersion: 4,
+    machinery: {
+      testMachine: {
+        location: {
+          ...source().peopleTotal!,
+          raw: '',
+          state: 'blank',
+          at: { ...source().peopleTotal!.at, verticalMerge: 'continue' },
+        },
+      },
+    },
+    personnelRemarks: {
+      installer: { ...source().peopleTotal!, raw: ' ', state: 'blank' },
+    },
+    reportedRecorder: {
+      line: { ...source().peopleTotal!, raw: 'TEST recorder:  ' },
+      nameState: 'blank',
+    },
+  });
+  it('retains blank merge continuations, recorder line and independent name state', () => {
+    const v = make();
+    expect(parseSourceReport(v)).toEqual(v);
+    const named = make();
+    named.reportedRecorder.line.raw = 'TEST recorder: Example';
+    named.reportedRecorder.nameState = 'reported';
+    expect(parseSourceReport(named)).toEqual(named);
+  });
+  it.each([
+    ['no new cell', { ...source(), schemaVersion: 4 }],
+    ['empty machinery', { ...make(), machinery: {} }],
+    [
+      'unsupported row field',
+      {
+        ...make(),
+        machinery: { testMachine: { personId: source().peopleTotal } },
+      },
+    ],
+    [
+      'recorder identity',
+      {
+        ...make(),
+        reportedRecorder: { ...make().reportedRecorder, accountId: 'TEST' },
+      },
+    ],
+    [
+      'bad name state',
+      {
+        ...make(),
+        reportedRecorder: { ...make().reportedRecorder, nameState: 'verified' },
+      },
+    ],
+    [
+      'too many roles',
+      {
+        ...make(),
+        personnelRemarks: Object.fromEntries(
+          Array.from({ length: 6 }, (_, i) => ['r' + i, source().peopleTotal]),
+        ),
+      },
+    ],
+    [
+      'missing citation',
+      {
+        ...make(),
+        personnelRemarks: {
+          installer: {
+            ...source().peopleTotal!,
+            at: { ...source().peopleTotal!.at, document: 'missing' },
+          },
+        },
+      },
+    ],
+  ])('rejects %s', (_name, value) =>
+    expect(() => parseSourceReport(value)).toThrow(InvalidReportInput),
+  );
+  it('rejects aggregate over 500 cells across old and new groups', () => {
+    const c = source().peopleTotal!;
+    const v = {
+      ...make(),
+      workPercent: Object.fromEntries(
+        Array.from({ length: 100 }, (_, i) => ['w' + i, c]),
+      ),
+      materials: Object.fromEntries(
+        Array.from({ length: 100 }, (_, i) => [
+          'm' + i,
+          { cumulative: c, percent: c, note: c, unit: c },
+        ]),
+      ),
+    };
+    expect(() => parseSourceReport(v)).toThrow(InvalidReportInput);
+  });
+});

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type {
   Comparison,
   ReportedCellDisplay,
@@ -51,40 +52,125 @@ export interface SourceReportLabels {
 }
 const rawStyle = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } as const;
 
-function SourceCell({
+export function SourceCell({
   cell,
   labels,
 }: {
   cell: ReportedCellDisplay | undefined;
   labels: SourceReportLabels;
 }) {
-  if (!cell) return <span>{labels.absent}</span>;
-  const citation = cell.citation;
+  if (!cell) return <span className="source-empty">{labels.absent}</span>;
   return (
-    <>
-      {cell.state !== 'value' && <span>{labels[cell.state]} · </span>}
-      <span style={rawStyle}>{cell.raw}</span>
-      <details>
-        <summary>{labels.unverifiedSource}</summary>
-        {citation ? (
-          <div style={rawStyle}>
-            <p>{citation.label}</p>
-            <p>SHA-256: {citation.sha256}</p>
-            <p>
-              {labels.coordinates(citation.table, citation.row, citation.cell)}
-            </p>
-            {citation.gridSpan !== undefined && (
-              <p>{labels.gridSpan(citation.gridSpan)}</p>
-            )}
-            {citation.verticalMerge !== undefined && (
-              <p>{labels.verticalMerge(citation.verticalMerge)}</p>
-            )}
-          </div>
-        ) : (
-          <p>{labels.sourceUnavailable}</p>
-        )}
-      </details>
-    </>
+    <span
+      className={cell.state === 'value' ? 'source-value' : 'source-empty'}
+      style={rawStyle}
+    >
+      {cell.state !== 'value' && (
+        <span>
+          {labels[cell.state]}
+          {cell.raw.trim() ? ' · ' : ''}
+        </span>
+      )}
+      <span>{cell.raw}</span>
+      {cell.citation?.verticalMerge && (
+        <small className="source-merge">
+          {labels.verticalMerge(cell.citation.verticalMerge)}
+        </small>
+      )}
+    </span>
+  );
+}
+export function SourceReferences({
+  rows,
+  labels,
+}: {
+  rows: { label: string; cells: (ReportedCellDisplay | undefined)[] }[];
+  labels: SourceReportLabels;
+}) {
+  return (
+    <details className="source-references">
+      <summary>{labels.unverifiedSource}</summary>
+      {rows.map((row, i) => (
+        <div key={i}>
+          <strong>{row.label}</strong>
+          {row.cells.filter(Boolean).map((cell, n) => {
+            const citation = cell!.citation;
+            return (
+              <div key={n} className="source-reference" style={rawStyle}>
+                {citation ? (
+                  <>
+                    <span>{citation.label}</span>
+                    <code>SHA-256: {citation.sha256}</code>
+                    <span>
+                      {labels.coordinates(
+                        citation.table,
+                        citation.row,
+                        citation.cell,
+                      )}
+                    </span>
+                    {citation.gridSpan !== undefined && (
+                      <span>{labels.gridSpan(citation.gridSpan)}</span>
+                    )}
+                    {citation.verticalMerge && (
+                      <span>
+                        {labels.verticalMerge(citation.verticalMerge)}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  labels.sourceUnavailable
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </details>
+  );
+}
+function SourceTable({
+  headers,
+  rows,
+  label,
+}: {
+  headers: string[];
+  rows: ReactNode[][];
+  label: string;
+}) {
+  return (
+    <div
+      className="source-table-scroll"
+      tabIndex={0}
+      role="group"
+      aria-label={label}
+    >
+      <table>
+        <thead>
+          <tr>
+            {headers.map((h, i) => (
+              <th key={i} scope="col">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((value, n) =>
+                n === 0 ? (
+                  <th key={n} scope="row">
+                    {value}
+                  </th>
+                ) : (
+                  <td key={n}>{value}</td>
+                ),
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 function ComparisonNote({
@@ -134,180 +220,214 @@ export function SourceReport({
   model: SourceReportDisplayModel;
   labels: SourceReportLabels;
 }) {
+  const value = (cell: ReportedCellDisplay | undefined) => (
+    <SourceCell cell={cell} labels={labels} />
+  );
   return (
-    <section className="card" aria-label={labels.title}>
-      <h2>{labels.title}</h2>
-      {!model.recorded ? (
-        <p>{labels.missingVersion}</p>
-      ) : (
-        <>
-          <p>{labels.unverifiedSource}</p>
-          <section aria-label={labels.nextPlan}>
-            <h3>{labels.nextPlan}</h3>
-            {model.nextPlan ? (
-              <>
-                <p>
-                  {labels.targetDate}:{' '}
-                  <time dateTime={model.nextPlan.targetBusinessDate}>
-                    {model.nextPlan.targetBusinessDate}
-                  </time>
-                </p>
-                <p>{labels.approvalUnknown}</p>
-                {model.nextPlan.rows.map((row) => (
-                  <article key={row.key}>
-                    <h4 style={rawStyle}>{row.label}</h4>
-                    <dl>
-                      <dt>{labels.targetQuantity}</dt>
-                      <dd>
-                        <SourceCell cell={row.original} labels={labels} />
-                      </dd>
-                      <dt>{labels.unit}</dt>
-                      <dd>{row.unit || labels.unknown}</dd>
-                    </dl>
-                  </article>
-                ))}
-              </>
-            ) : (
-              <p>{labels.nextPlanMissing}</p>
-            )}
-          </section>
-          <section aria-label={labels.milestones}>
-            <h3>{labels.milestones}</h3>
-            {model.milestones ? (
-              model.milestones.map((row) => (
-                <article key={row.key}>
-                  <h4 style={rawStyle}>{row.label}</h4>
-                  <dl>
-                    {(
-                      [
-                        'plannedFinish',
-                        'actualFinish',
-                        'reportedDelayDays',
-                        'note',
-                      ] as const
-                    ).map((field) => (
-                      <div key={field}>
-                        <dt>
-                          {field === 'note'
-                            ? labels.originalNote
-                            : labels[field]}
-                        </dt>
-                        <dd>
-                          <SourceCell
-                            cell={row.original[field]}
-                            labels={labels}
-                          />
-                          {row.original[field]?.citation?.verticalMerge && (
-                            <p className="muted">
-                              {labels.verticalMerge(
-                                row.original[field].citation.verticalMerge,
-                              )}
-                            </p>
-                          )}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </article>
-              ))
-            ) : (
-              <p>{labels.milestonesMissing}</p>
-            )}
-          </section>
-          <section aria-label={labels.people}>
-            <h3>{labels.people}</h3>
-            <dl>
-              <dt>{labels.original}</dt>
-              <dd>
-                <SourceCell cell={model.people.original} labels={labels} />
-              </dd>
-              <dt>
-                {model.people.complete
-                  ? labels.classifiedTotal
-                  : labels.partialClassifiedTotal}
-              </dt>
-              <dd>
-                <CurrentValue value={model.people.calculated} labels={labels} />
-              </dd>
-            </dl>
-            <ComparisonNote
-              comparison={model.people.comparison}
-              labels={labels}
-            />
-          </section>
-          {model.work.length > 0 && (
-            <section aria-label={labels.workPercent}>
-              <h3>{labels.workPercent}</h3>
-              {model.work.map((row) => (
-                <article key={row.key}>
-                  <h4 style={rawStyle}>{row.label}</h4>
-                  <dl>
-                    <dt>{labels.original}</dt>
-                    <dd>
-                      <SourceCell cell={row.original} labels={labels} />
-                    </dd>
-                    <dt>{labels.calculatedPercent}</dt>
-                    <dd>
-                      {row.calculated === null
-                        ? labels.unknown
-                        : `${row.calculated}%`}
-                    </dd>
-                  </dl>
-                  <ComparisonNote comparison={row.comparison} labels={labels} />
-                </article>
-              ))}
+    <section className="card source-report" aria-label={labels.title}>
+      <details className="source-disclosure">
+        <summary>
+          <span>{labels.title}</span>
+          <small>{labels.unverifiedSource}</small>
+        </summary>
+        {!model.recorded ? (
+          <p className="source-section">{labels.missingVersion}</p>
+        ) : (
+          <div className="source-sections">
+            <section className="source-section" aria-label={labels.nextPlan}>
+              <h3>{labels.nextPlan}</h3>
+              {model.nextPlan ? (
+                <>
+                  <p className="source-context">
+                    {labels.targetDate}:{' '}
+                    <time dateTime={model.nextPlan.targetBusinessDate}>
+                      {model.nextPlan.targetBusinessDate}
+                    </time>{' '}
+                    · {labels.approvalUnknown}
+                  </p>
+                  <SourceTable
+                    label={labels.nextPlan}
+                    headers={[
+                      labels.nextPlan,
+                      labels.targetQuantity,
+                      labels.unit,
+                    ]}
+                    rows={model.nextPlan.rows.map((row) => [
+                      row.label,
+                      value(row.original),
+                      row.unit || labels.unknown,
+                    ])}
+                  />
+                  <SourceReferences
+                    labels={labels}
+                    rows={model.nextPlan.rows.map((row) => ({
+                      label: row.label,
+                      cells: [row.original],
+                    }))}
+                  />
+                </>
+              ) : (
+                <p>{labels.nextPlanMissing}</p>
+              )}
             </section>
-          )}
-          {model.materials.length > 0 && (
-            <section aria-label={labels.materials}>
-              <h3>{labels.materials}</h3>
-              {model.materials.map((row) => (
-                <article key={row.key}>
-                  <h4 style={rawStyle}>{row.label}</h4>
-                  <dl>
-                    <dt>{labels.today}</dt>
-                    <dd>
-                      <CurrentValue value={row.today} labels={labels} />
-                    </dd>
-                    <dt>{labels.unit}</dt>
-                    <dd>
-                      <CurrentValue value={row.unit} labels={labels} />
-                    </dd>
-                    <dt>{labels.originalCumulative}</dt>
-                    <dd>
-                      <SourceCell
-                        cell={row.original.cumulative}
+            <section className="source-section" aria-label={labels.milestones}>
+              <h3>{labels.milestones}</h3>
+              {model.milestones ? (
+                <>
+                  <SourceTable
+                    label={labels.milestones}
+                    headers={[
+                      labels.milestones,
+                      labels.plannedFinish,
+                      labels.actualFinish,
+                      labels.reportedDelayDays,
+                      labels.originalNote,
+                    ]}
+                    rows={model.milestones.map((row) => [
+                      row.label,
+                      value(row.original.plannedFinish),
+                      value(row.original.actualFinish),
+                      value(row.original.reportedDelayDays),
+                      value(row.original.note),
+                    ])}
+                  />
+                  <SourceReferences
+                    labels={labels}
+                    rows={model.milestones.map((row) => ({
+                      label: row.label,
+                      cells: Object.values(row.original),
+                    }))}
+                  />
+                </>
+              ) : (
+                <p>{labels.milestonesMissing}</p>
+              )}
+            </section>
+            <section className="source-section" aria-label={labels.people}>
+              <h3>{labels.people}</h3>
+              <SourceTable
+                label={labels.people}
+                headers={[
+                  labels.original,
+                  model.people.complete
+                    ? labels.classifiedTotal
+                    : labels.partialClassifiedTotal,
+                ]}
+                rows={[
+                  [
+                    value(model.people.original),
+                    <CurrentValue
+                      key="people"
+                      value={model.people.calculated}
+                      labels={labels}
+                    />,
+                  ],
+                ]}
+              />
+              <ComparisonNote
+                comparison={model.people.comparison}
+                labels={labels}
+              />
+              <SourceReferences
+                labels={labels}
+                rows={[
+                  { label: labels.people, cells: [model.people.original] },
+                ]}
+              />
+            </section>
+            {model.work.length > 0 && (
+              <section
+                className="source-section"
+                aria-label={labels.workPercent}
+              >
+                <h3>{labels.workPercent}</h3>
+                <SourceTable
+                  label={labels.workPercent}
+                  headers={[
+                    labels.workPercent,
+                    labels.original,
+                    labels.calculatedPercent,
+                    labels.title,
+                  ]}
+                  rows={model.work.map((row) => [
+                    row.label,
+                    value(row.original),
+                    row.calculated === null
+                      ? labels.unknown
+                      : `${row.calculated}%`,
+                    <ComparisonNote
+                      key={row.key}
+                      comparison={row.comparison}
+                      labels={labels}
+                    />,
+                  ])}
+                />
+                <SourceReferences
+                  labels={labels}
+                  rows={model.work.map((row) => ({
+                    label: row.label,
+                    cells: [row.original],
+                  }))}
+                />
+              </section>
+            )}
+            {model.materials.length > 0 && (
+              <section className="source-section" aria-label={labels.materials}>
+                <h3>{labels.materials}</h3>
+                <SourceTable
+                  label={labels.materials}
+                  headers={[
+                    labels.materials,
+                    labels.today,
+                    labels.unit,
+                    labels.originalCumulative,
+                    labels.originalPercent,
+                    labels.originalUnit,
+                    labels.originalNote,
+                    labels.systemCumulative,
+                  ]}
+                  rows={model.materials.map((row) => [
+                    row.label,
+                    <CurrentValue
+                      key="today"
+                      value={row.today}
+                      labels={labels}
+                    />,
+                    <CurrentValue
+                      key="unit"
+                      value={row.unit}
+                      labels={labels}
+                    />,
+                    value(row.original.cumulative),
+                    value(row.original.percent),
+                    value(row.original.unit),
+                    value(row.original.note),
+                    <div key="system">
+                      <small>
+                        {row.complete
+                          ? labels.systemCumulative
+                          : labels.partialSystemCumulative}
+                      </small>
+                      <CurrentValue value={row.calculated} labels={labels} />
+                      <ComparisonNote
+                        comparison={row.comparison}
                         labels={labels}
                       />
-                    </dd>
-                    <dt>{labels.originalPercent}</dt>
-                    <dd>
-                      <SourceCell cell={row.original.percent} labels={labels} />
-                    </dd>
-                    <dt>{labels.originalUnit}</dt>
-                    <dd>
-                      <SourceCell cell={row.original.unit} labels={labels} />
-                    </dd>
-                    <dt>{labels.originalNote}</dt>
-                    <dd>
-                      <SourceCell cell={row.original.note} labels={labels} />
-                    </dd>
-                    <dt>
-                      {row.complete
-                        ? labels.systemCumulative
-                        : labels.partialSystemCumulative}
-                    </dt>
-                    <dd>
-                      <CurrentValue value={row.calculated} labels={labels} />
-                    </dd>
-                  </dl>
-                  <ComparisonNote comparison={row.comparison} labels={labels} />
-                </article>
-              ))}
-            </section>
-          )}
-        </>
-      )}
+                    </div>,
+                  ])}
+                />
+                <SourceReferences
+                  labels={labels}
+                  rows={model.materials.map((row) => ({
+                    label: row.label,
+                    cells: Object.values(row.original),
+                  }))}
+                />
+              </section>
+            )}
+          </div>
+        )}
+      </details>
     </section>
   );
 }

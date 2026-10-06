@@ -268,15 +268,21 @@ export class ReportStore {
               source.schemaVersion < before.sourceReport.schemaVersion
             )
               throw new InvalidReportInput('facts.sourceReport.schemaVersion');
-            if (
-              before?.sourceReport &&
-              before.sourceReport.schemaVersion !== 1 &&
-              before.sourceReport.reportedNextPlan &&
-              (source.schemaVersion === 1 || !source.reportedNextPlan)
-            )
-              throw new InvalidReportInput(
-                'facts.sourceReport.reportedNextPlan',
-              );
+            // Explicit source replacement cannot silently lose an already stored extension.
+            for (const extension of [
+              'reportedNextPlan',
+              'milestones',
+              'machinery',
+              'personnelRemarks',
+              'reportedRecorder',
+            ] as const) {
+              if (
+                before?.sourceReport &&
+                Object.hasOwn(before.sourceReport, extension) &&
+                !Object.hasOwn(source, extension)
+              )
+                throw new InvalidReportInput(`facts.sourceReport.${extension}`);
+            }
             if (
               source.schemaVersion !== 1 &&
               source.reportedNextPlan &&
@@ -298,8 +304,14 @@ export class ReportStore {
               ],
               ['material', Object.keys(source.materials)],
               [
+                'machinery',
+                source.schemaVersion === 4
+                  ? Object.keys(source.machinery ?? {})
+                  : [],
+              ],
+              [
                 'milestone',
-                source.schemaVersion === 3
+                'milestones' in source && source.milestones
                   ? Object.keys(source.milestones)
                   : [],
               ],

@@ -697,3 +697,25 @@ describe('source declarations are facts, never operational quantities', () => {
     expect(f.materials).toEqual({});
   });
 });
+
+it('V4 source-only blank category note is a fact without implying people or labor', () => {
+  const f = blankFacts();
+  f.sourceReport = {
+    schemaVersion: 4,
+    documents: {
+      test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    personnelRemarks: {
+      installer: {
+        raw: ' ',
+        state: 'blank',
+        at: { document: 'test', table: 3, row: 1, cell: 4 },
+      },
+    },
+  };
+  expect(hasFacts(f)).toBe(true);
+  expect(f.people).toEqual({});
+  expect(f.presence).toEqual({});
+});

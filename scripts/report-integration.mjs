@@ -2419,6 +2419,168 @@ try {
       'V3 immutable correction, original merge continuation blank, reader snapshot, cancellation and previous V1/V2 history preserved',
     );
 
+    const frozenV3 = await revision(4);
+    const beforeV4 = await read();
+    const v4 = {
+      ...v3,
+      schemaVersion: 4,
+      machinery: {
+        crane: {
+          location: {
+            ...sourceCell(' ', 'blank'),
+            at: { ...sourceCell(' ').at, verticalMerge: 'continue' },
+          },
+          note: sourceCell('TEST equipment note'),
+        },
+      },
+      personnelRemarks: { installer: sourceCell(' ', 'blank') },
+      reportedRecorder: {
+        line: sourceCell('TEST recorder:  '),
+        nameState: 'blank',
+      },
+    };
+    const correctionV4 = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: beforeV4.version,
+          reason: 'TEST resource source upgrade',
+        }),
+      ),
+      200,
+    );
+    const saveV4Command = cmd({
+      businessDate: date,
+      expectedVersion: correctionV4.version,
+      facts: { ...beforeV4.facts, sourceReport: v4 },
+    });
+    const savedV4 = await expectStatus(call('/facts', pm, saveV4Command), 200);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, saveV4Command), 200),
+      savedV4,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v3);
+    const auditV4 = (
+      await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')
+    ).rows[0].n;
+    const invalidV4 = [
+      v3,
+      { ...v4, machinery: { support: v4.machinery.crane } },
+      { ...v4, machinery: { unknownProjectMachine: v4.machinery.crane } },
+      { ...v4, personnelRemarks: { notARole: sourceCell('TEST') } },
+    ];
+    for (const name of [
+      'reportedNextPlan',
+      'milestones',
+      'machinery',
+      'personnelRemarks',
+      'reportedRecorder',
+    ]) {
+      const dropped = { ...v4 };
+      delete dropped[name];
+      invalidV4.push(dropped);
+    }
+    for (const invalid of invalidV4) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedV4.version,
+            facts: { ...beforeV4.facts, sourceReport: invalid },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      assert.equal((await read()).version, savedV4.version);
+      assert.deepEqual((await read()).facts.sourceReport, v4);
+    }
+    assert.equal(
+      (await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')).rows[0]
+        .n,
+      auditV4,
+    );
+    const omittedV4 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedV4.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v4);
+    const submitV4 = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: omittedV4.version }),
+      ),
+      200,
+    );
+    assert.equal(submitV4.revisionNumber, 5);
+    assert.deepEqual((await revision(5)).snapshot.facts.sourceReport, v4);
+    assert.deepEqual(await revision(4), frozenV3);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v4);
+    assert.deepEqual((await read()).nextPlan, beforeV4.nextPlan);
+    pass(
+      'V4 exact source fields, same-key retry, wrong-role/kind/project rejection, atomic extension preservation and selected immutable history',
+    );
+    const cancelV4Start = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submitV4.version,
+          reason: 'TEST V4 cancelled edit',
+        }),
+      ),
+      200,
+    );
+    const cancelV4Save = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: cancelV4Start.version,
+          facts: {
+            ...beforeV4.facts,
+            sourceReport: {
+              ...v4,
+              reportedRecorder: {
+                line: sourceCell('TEST changed recorder'),
+                nameState: 'reported',
+              },
+            },
+          },
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v4);
+    await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: cancelV4Save.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v4);
+    assert.deepEqual((await revision(5)).snapshot.facts.sourceReport, v4);
+    pass(
+      'V4 cancelled correction preserves recorder declaration, actor identity boundary and prior snapshot',
+    );
+
     const onlySource = {
       weather: '',
       temperature: '',

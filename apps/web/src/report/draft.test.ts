@@ -44,7 +44,7 @@ const session = (date: string, s: ReturnType<typeof server>, version = 1) =>
   );
 
 describe('draft session', () => {
-  it.each([1, 2, 3] as const)(
+  it.each([1, 2, 3, 4] as const)(
     'retains source cells through ordinary edits and byte-identical retry after a lost response (V%s)',
     async (schemaVersion) => {
       const sourceReport = parseFacts({
@@ -67,7 +67,23 @@ describe('draft session', () => {
           ...(schemaVersion !== 1
             ? {
                 schemaVersion,
-                ...(schemaVersion === 3
+                ...(schemaVersion === 4
+                  ? {
+                      personnelRemarks: {
+                        installer: {
+                          raw: ' ',
+                          state: 'blank',
+                          at: {
+                            document: 'testDoc',
+                            table: 3,
+                            row: 1,
+                            cell: 4,
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                ...(schemaVersion >= 3
                   ? {
                       milestones: {
                         testMilestone: {

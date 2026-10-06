@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { PhotoAsOfDto, ReportItemDto, SourceCell } from '@mje/contracts';
 import { ROLE_GROUP, ROLE_KEYS, dec, decText, pct } from '@mje/domain/rules';
 import type {
@@ -15,15 +15,21 @@ import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, photoPlacement, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
 import { PhotoStrip, ReportPhotos } from './Photos.js';
-import { SourceReport, type SourceReportLabels } from './SourceReport.js';
+import {
+  SourceReport,
+  SourceCell as SourceValue,
+  SourceReferences,
+  type SourceReportLabels,
+} from './SourceReport.js';
 import {
   sourceReportModel,
+  sourceCellDisplay,
   type ReportedCellDisplay,
 } from './source-report.js';
 
 /** Resolve every value and citation from the selected content, including old revisions. */
 function OriginalComparison({ c }: { c: ReportContent }) {
-  const { t, label } = useI18n();
+  const { label } = useI18n();
   const source = c.facts.sourceReport;
   const cell = (value: SourceCell): ReportedCellDisplay => {
     const document = source?.documents[value.at.document];
@@ -60,7 +66,7 @@ function OriginalComparison({ c }: { c: ReportContent }) {
                   },
                 }
               : {}),
-            ...(source.schemaVersion === 3
+            ...('milestones' in source && source.milestones
               ? {
                   milestones: Object.fromEntries(
                     Object.entries(source.milestones).map(([key, row]) => [
@@ -121,6 +127,12 @@ function OriginalComparison({ c }: { c: ReportContent }) {
       },
     })),
   });
+  const labels = useSourceLabels();
+  return <SourceReport model={model} labels={labels} />;
+}
+
+function useSourceLabels(): SourceReportLabels {
+  const { t } = useI18n();
   const labels: SourceReportLabels = {
     milestones: t('sourceMilestones'),
     milestonesMissing: t('sourceMilestonesMissing'),
@@ -167,7 +179,7 @@ function OriginalComparison({ c }: { c: ReportContent }) {
     verticalMerge: (value) =>
       value === 'restart' ? t('sourceMergeRestart') : t('sourceMergeContinue'),
   };
-  return <SourceReport model={model} labels={labels} />;
+  return labels;
 }
 
 function Val({ raw }: { raw: string | undefined }) {
@@ -408,6 +420,218 @@ function Issues({
   );
 }
 
+function BusinessSections({
+  c,
+  photos,
+  photoOnly,
+}: {
+  c: ReportContent;
+  photos: PhotoAsOfDto[];
+  photoOnly: ReportItemDto[];
+}) {
+  const { t, label, locale } = useI18n();
+  const source = c.facts.sourceReport;
+  const extra = source?.schemaVersion === 4 ? source : undefined;
+  const sourceLabels = useSourceLabels();
+  const raw = (value: SourceCell | undefined) => (
+    <SourceValue
+      cell={sourceCellDisplay(source, value)}
+      labels={sourceLabels}
+    />
+  );
+  const [selected, setSelected] = useState<
+    'progress' | 'materials' | 'people' | 'machinery'
+  >('progress');
+  const table = (heads: string[], rows: ReactNode[][]) => (
+    <div className="report-table-scroll" tabIndex={0}>
+      <table>
+        <thead>
+          <tr>
+            {heads.map((head, i) => (
+              <th key={i} scope="col">
+                {head}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((cell, n) =>
+                n === 0 ? (
+                  <th key={n} scope="row">
+                    {cell}
+                  </th>
+                ) : (
+                  <td key={n}>{cell}</td>
+                ),
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+  return (
+    <section className="card report-business">
+      <div
+        className="report-section-tabs"
+        role="group"
+        aria-label={t('allDetails')}
+      >
+        {(['progress', 'materials', 'people', 'machinery'] as const).map(
+          (key) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={selected === key}
+              onClick={() => setSelected(key)}
+            >
+              {t(key)}
+            </button>
+          ),
+        )}
+      </div>
+      <div hidden={selected !== 'progress'} className="report-business-panel">
+        <Progress c={c} photos={photos} photoOnly={photoOnly} />
+        {table(
+          [t('progress'), t('today'), t('cumulative'), t('design')],
+          byKind(c.items, 'work').map((it) => {
+            const completion = pct(
+              dec(c.facts.cumulative[it.key]),
+              dec(it.designQty),
+            );
+            return [
+              label(it.label),
+              <Val key="qty" raw={c.facts.qty[it.key]} />,
+              <span key="cum" className="report-completion">
+                <Val raw={c.facts.cumulative[it.key]} />
+                {completion !== null && (
+                  <>
+                    <span className="report-muted">{completion}%</span>
+                    <span className="bar-track">
+                      <span
+                        className="bar-fill"
+                        style={{
+                          width: `${Math.min(100, Number(completion))}%`,
+                        }}
+                      />
+                    </span>
+                  </>
+                )}
+              </span>,
+              `${fmtNum(it.designQty, locale)} ${unitOf(label, it)}`,
+            ];
+          }),
+        )}
+      </div>
+      <div hidden={selected !== 'materials'} className="report-business-panel">
+        {table(
+          [
+            t('materials'),
+            t('sourceToday'),
+            t('sourceSystemUnit'),
+            t('sourceSystemCumulative'),
+            t('sourceOriginalCumulative'),
+            t('sourceOriginalPercent'),
+          ],
+          byKind(c.items, 'material').map((it) => [
+            label(it.label),
+            <Val key="today" raw={c.facts.materials[it.key]} />,
+            unitOf(label, it),
+            <span key="cum">
+              {c.materialsCumulative[it.key]?.value == null ? (
+                t('unknown')
+              ) : (
+                <Val raw={c.materialsCumulative[it.key]?.value ?? undefined} />
+              )}
+              {!c.materialsCumulative[it.key]?.complete && (
+                <small className="report-muted">
+                  {t('sourcePartialSystemCumulative')}
+                </small>
+              )}
+            </span>,
+            raw(source?.materials[it.key]?.cumulative),
+            raw(source?.materials[it.key]?.percent),
+          ]),
+        )}
+      </div>
+      <div hidden={selected !== 'people'} className="report-business-panel">
+        {table(
+          [t('people'), t('persons'), t('sourcePersonnelRemarks')],
+          ROLE_KEYS.map((key) => [
+            label(`role_${key}`),
+            <Val key={key} raw={c.facts.people[key]} />,
+            raw(extra?.personnelRemarks?.[key]),
+          ]),
+        )}
+        {extra?.personnelRemarks && (
+          <SourceReferences
+            labels={sourceLabels}
+            rows={ROLE_KEYS.map((key) => ({
+              label: label(`role_${key}`),
+              cells: [sourceCellDisplay(source, extra.personnelRemarks?.[key])],
+            }))}
+          />
+        )}
+      </div>
+      <div hidden={selected !== 'machinery'} className="report-business-panel">
+        {table(
+          [
+            t('machinery'),
+            t('today'),
+            t('sourceLocation'),
+            t('sourceOriginalNote'),
+          ],
+          byKind(c.items, 'machinery').map((it) => [
+            label(it.label),
+            <Val key={it.key} raw={c.facts.machinery[it.key]} />,
+            raw(extra?.machinery?.[it.key]?.location),
+            raw(extra?.machinery?.[it.key]?.note),
+          ]),
+        )}
+        {extra?.machinery && (
+          <SourceReferences
+            labels={sourceLabels}
+            rows={byKind(c.items, 'machinery').map((it) => ({
+              label: label(it.label),
+              cells: [
+                sourceCellDisplay(source, extra.machinery?.[it.key]?.location),
+                sourceCellDisplay(source, extra.machinery?.[it.key]?.note),
+              ],
+            }))}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OriginalRecorder({ c }: { c: ReportContent }) {
+  const { t } = useI18n();
+  const labels = useSourceLabels();
+  const source = c.facts.sourceReport;
+  const recorder =
+    source?.schemaVersion === 4 ? source.reportedRecorder : undefined;
+  if (!recorder) return null;
+  const cell = sourceCellDisplay(source, recorder.line);
+  return (
+    <section className="card report-recorder" aria-label={t('sourceRecorder')}>
+      <strong>{t('sourceRecorder')}</strong>
+      <SourceValue cell={cell} labels={labels} />
+      {recorder.nameState === 'blank' && (
+        <small>{t('sourceRecorderBlank')}</small>
+      )}
+      {recorder.nameState === 'unknown' && <small>{t('unknown')}</small>}
+      <small className="report-muted">{t('sourceRecorderNotIdentity')}</small>
+      <SourceReferences
+        labels={labels}
+        rows={[{ label: t('sourceRecorder'), cells: [cell] }]}
+      />
+    </section>
+  );
+}
+
 function Details({ c }: { c: ReportContent }) {
   const { t, label, locale } = useI18n();
   const [open, setOpen] = useState(false);
@@ -512,7 +736,7 @@ export function ReportBody({
   const weather = [f.weather, f.temperature].filter(Boolean).join(' · ');
   const placed = photoPlacement(c, photos);
   return (
-    <>
+    <div className="report-redesign">
       {(version || weather) && (
         <div className="status-row">
           {version && (
@@ -523,8 +747,19 @@ export function ReportBody({
           {version && version.n > 1 && (
             <Chip tone="warn">{t('corrected', { n: version.n })}</Chip>
           )}
-          {weather && <span className="muted">{weather}</span>}
         </div>
+      )}
+      {weather && (
+        <section className="card report-weather" aria-label={t('weather')}>
+          <div>
+            <span className="report-eyebrow">{t('weather')}</span>
+            <strong>{f.temperature || t('notFilled')}</strong>
+          </div>
+          <div>
+            <span className="report-eyebrow">{t('sourceOriginal')}</span>
+            <p>{f.weather || t('notFilled')}</p>
+          </div>
+        </section>
       )}
       <Attention issues={c.issues ?? []} onReply={onReply ?? null} />
       <div className="rgrid">
@@ -539,7 +774,11 @@ export function ReportBody({
               </p>
             </section>
           ) : (
-            <Progress c={c} photos={photos} photoOnly={placed.photoOnlyItems} />
+            <BusinessSections
+              c={c}
+              photos={photos}
+              photoOnly={placed.photoOnlyItems}
+            />
           )}
         </div>
         <div className="rcol">
@@ -554,8 +793,9 @@ export function ReportBody({
         </div>
       </div>
       <Details c={c} />
+      <OriginalRecorder c={c} />
       <OriginalComparison c={c} />
-    </>
+    </div>
   );
 }
 
