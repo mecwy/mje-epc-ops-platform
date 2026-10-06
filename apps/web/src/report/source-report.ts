@@ -21,9 +21,16 @@ export interface MaterialSourceDisplay {
   readonly note?: ReportedCellDisplay;
   readonly unit?: ReportedCellDisplay;
 }
+export interface MilestoneSourceDisplay {
+  readonly plannedFinish?: ReportedCellDisplay;
+  readonly actualFinish?: ReportedCellDisplay;
+  readonly reportedDelayDays?: ReportedCellDisplay;
+  readonly note?: ReportedCellDisplay;
+}
 export interface SourceReportDisplayInput {
   /** Absent in an older version is different from a recorded blank cell. */
   readonly source?: {
+    readonly milestones?: Readonly<Record<string, MilestoneSourceDisplay>>;
     readonly peopleTotal?: ReportedCellDisplay;
     readonly workPercent: Readonly<Record<string, ReportedCellDisplay>>;
     readonly materials: Readonly<Record<string, MaterialSourceDisplay>>;
@@ -32,6 +39,10 @@ export interface SourceReportDisplayInput {
       readonly quantities: Readonly<Record<string, ReportedCellDisplay>>;
     };
   };
+  readonly milestones?: readonly {
+    readonly key: string;
+    readonly label: string;
+  }[];
   readonly people: Readonly<Partial<Record<RoleKey, string>>>;
   /** Quantities, labels and units must come from the same selected version as source. */
   readonly work: readonly {
@@ -102,6 +113,23 @@ export function sourceReportModel(input: SourceReportDisplayInput) {
   const peopleOriginal = source?.peopleTotal;
   return {
     recorded: source !== undefined,
+    milestones: source?.milestones
+      ? Object.entries(source.milestones)
+          .sort(([a], [b]) => {
+            const rows = input.milestones ?? [];
+            const index = (key: string) => {
+              const found = rows.findIndex((row) => row.key === key);
+              return found < 0 ? rows.length : found;
+            };
+            return index(a) - index(b);
+          })
+          .map(([key, original]) => ({
+            key,
+            label:
+              input.milestones?.find((row) => row.key === key)?.label ?? key,
+            original,
+          }))
+      : null,
     nextPlan: source?.reportedNextPlan
       ? {
           targetBusinessDate: source.reportedNextPlan.targetBusinessDate,

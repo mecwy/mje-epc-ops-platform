@@ -264,12 +264,22 @@ export class ReportStore {
             const items = await itemRows(client, actor.orgId, project.id);
             const source = command.facts.sourceReport;
             if (
-              before?.sourceReport?.schemaVersion === 2 &&
-              source.schemaVersion === 1
+              before?.sourceReport &&
+              source.schemaVersion < before.sourceReport.schemaVersion
             )
               throw new InvalidReportInput('facts.sourceReport.schemaVersion');
             if (
-              source.schemaVersion === 2 &&
+              before?.sourceReport &&
+              before.sourceReport.schemaVersion !== 1 &&
+              before.sourceReport.reportedNextPlan &&
+              (source.schemaVersion === 1 || !source.reportedNextPlan)
+            )
+              throw new InvalidReportInput(
+                'facts.sourceReport.reportedNextPlan',
+              );
+            if (
+              source.schemaVersion !== 1 &&
+              source.reportedNextPlan &&
               source.reportedNextPlan.targetBusinessDate !==
                 shiftDate(command.businessDate, 1)
             )
@@ -281,12 +291,18 @@ export class ReportStore {
                 'work',
                 [
                   ...Object.keys(source.workPercent),
-                  ...(source.schemaVersion === 2
+                  ...(source.schemaVersion !== 1 && source.reportedNextPlan
                     ? Object.keys(source.reportedNextPlan.quantities)
                     : []),
                 ],
               ],
               ['material', Object.keys(source.materials)],
+              [
+                'milestone',
+                source.schemaVersion === 3
+                  ? Object.keys(source.milestones)
+                  : [],
+              ],
             ] as const) {
               if (
                 keys.some(

@@ -2894,6 +2894,36 @@ export const MESSAGES = {
     'Odobrenje: nije navedeno u izvoru; ovo nije potvrđen plan',
     'Aprobación: no indicada en el original; no es un plan confirmado',
   ],
+  sourceMilestones: [
+    '原报节点信息',
+    'Original reported milestones',
+    'Prekretnice izvornog izveštaja',
+    'Hitos del informe original',
+  ],
+  sourceMilestonesMissing: [
+    '此版本未记录原报节点信息',
+    'This version has no original milestone cells recorded',
+    'Ova verzija nema zabeležene izvorne ćelije prekretnica',
+    'Esta versión no contiene celdas originales de hitos',
+  ],
+  sourcePlannedFinish: [
+    '原报计划完成日期',
+    'Originally reported planned finish',
+    'Izvorno prijavljen planirani završetak',
+    'Fecha de finalización prevista del original',
+  ],
+  sourceActualFinish: [
+    '原报实际完成日期',
+    'Originally reported actual finish',
+    'Izvorno prijavljen stvarni završetak',
+    'Fecha de finalización real del original',
+  ],
+  sourceReportedDelayDays: [
+    '原报延期天数',
+    'Originally reported delay (days)',
+    'Izvorno prijavljeno kašnjenje (dani)',
+    'Días de retraso del original',
+  ],
   sourceNextPlan: [
     '原报明日计划',
     'Reported next-day plan',

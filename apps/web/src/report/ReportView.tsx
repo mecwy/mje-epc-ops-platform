@@ -47,7 +47,7 @@ function OriginalComparison({ c }: { c: ReportContent }) {
     ...(source
       ? {
           source: {
-            ...(source.schemaVersion === 2
+            ...(source.schemaVersion !== 1 && source.reportedNextPlan
               ? {
                   reportedNextPlan: {
                     targetBusinessDate:
@@ -58,6 +58,21 @@ function OriginalComparison({ c }: { c: ReportContent }) {
                       ),
                     ),
                   },
+                }
+              : {}),
+            ...(source.schemaVersion === 3
+              ? {
+                  milestones: Object.fromEntries(
+                    Object.entries(source.milestones).map(([key, row]) => [
+                      key,
+                      Object.fromEntries(
+                        Object.entries(row).map(([field, value]) => [
+                          field,
+                          cell(value),
+                        ]),
+                      ),
+                    ]),
+                  ),
                 }
               : {}),
             ...(source.peopleTotal
@@ -83,6 +98,10 @@ function OriginalComparison({ c }: { c: ReportContent }) {
           },
         }
       : {}),
+    milestones: byKind(c.items, 'milestone').map((item) => ({
+      key: item.key,
+      label: label(item.label),
+    })),
     people: c.facts.people,
     work: byKind(c.items, 'work').map((item) => ({
       key: item.key,
@@ -103,6 +122,11 @@ function OriginalComparison({ c }: { c: ReportContent }) {
     })),
   });
   const labels: SourceReportLabels = {
+    milestones: t('sourceMilestones'),
+    milestonesMissing: t('sourceMilestonesMissing'),
+    plannedFinish: t('sourcePlannedFinish'),
+    actualFinish: t('sourceActualFinish'),
+    reportedDelayDays: t('sourceReportedDelayDays'),
     nextPlan: t('sourceNextPlan'),
     nextPlanMissing: t('sourceNextPlanMissing'),
     targetDate: t('sourceTargetDate'),

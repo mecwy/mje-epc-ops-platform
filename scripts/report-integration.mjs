@@ -2200,6 +2200,225 @@ try {
       'V2 source plan remains unapproved, frozen old revisions remain exact, hidden correction and cancellation preserve selected source targets',
     );
 
+    // TEST V3 milestones use existing project milestone keys and retain V2 targets.
+    await expectStatus(
+      call('/items', pm, {
+        projectId: projectA,
+        clientMutationId: randomUUID(),
+        items: [
+          {
+            kind: 'milestone',
+            key: 'testMilestone',
+            label: 'TEST milestone',
+            active: false,
+          },
+          {
+            kind: 'milestone',
+            key: 'testContinuation',
+            label: 'TEST continuation',
+          },
+        ],
+      }),
+      200,
+    );
+    const priorV3 = await read();
+    const v3 = {
+      ...v2,
+      schemaVersion: 3,
+      milestones: {
+        testMilestone: {
+          plannedFinish: sourceCell('TEST original date'),
+          actualFinish: sourceCell(' ', 'blank'),
+          reportedDelayDays: sourceCell('', 'blank'),
+          note: sourceCell('TEST merged note'),
+        },
+        testContinuation: {
+          note: {
+            ...sourceCell(' ', 'blank'),
+            at: { ...sourceCell('').at, row: 2, verticalMerge: 'continue' },
+          },
+        },
+      },
+    };
+    let milestoneDraft = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: priorV3.version,
+          reason: 'TEST original milestone cells',
+        }),
+      ),
+      200,
+    );
+    const milestoneRequest = cmd({
+      businessDate: date,
+      expectedVersion: milestoneDraft.version,
+      facts: { ...priorV3.facts, sourceReport: v3 },
+    });
+    const savedMilestones = await expectStatus(
+      call('/facts', pm, milestoneRequest),
+      200,
+    );
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, milestoneRequest), 200),
+      savedMilestones,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v3);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v2);
+    await expectStatus(
+      call('/facts', pmB, {
+        ...milestoneRequest,
+        clientMutationId: randomUUID(),
+      }),
+      403,
+      'FORBIDDEN',
+    );
+    await expectStatus(
+      call('/facts', exec, {
+        ...milestoneRequest,
+        clientMutationId: randomUUID(),
+      }),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      call('/facts', pm, {
+        ...milestoneRequest,
+        clientMutationId: randomUUID(),
+      }),
+      409,
+      'VERSION_CONFLICT',
+    );
+    const invalidSources = [
+      sourceReport,
+      v2,
+      { ...v3, reportedNextPlan: undefined },
+      {
+        ...v3,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          targetBusinessDate: '2027-02-12',
+        },
+      },
+      {
+        ...v3,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          quantities: { testMilestone: sourceCell('2') },
+        },
+      },
+      { ...v3, milestones: { support: v3.milestones.testMilestone } },
+      { ...v3, milestones: { unregistered: v3.milestones.testMilestone } },
+      { ...v3, milestones: { testMilestone: { note: null } } },
+      { ...v3, milestones: { testMilestone: { verified: true } } },
+    ];
+    const auditsBeforeRefusal = (
+      await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')
+    ).rows[0].n;
+    for (const invalid of invalidSources) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedMilestones.version,
+            facts: { ...priorV3.facts, sourceReport: invalid },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      const unchanged = await read();
+      assert.equal(unchanged.version, savedMilestones.version);
+      assert.deepEqual(unchanged.facts.sourceReport, v3);
+    }
+    assert.equal(
+      (await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')).rows[0]
+        .n,
+      auditsBeforeRefusal,
+    );
+    milestoneDraft = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedMilestones.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v3);
+    pass(
+      'V3 source preserves raw milestones and V2 targets; downgrade/lost plan/wrong kind invalid writes refuse atomically; omission/retry/CAS/identity remain protected',
+    );
+    const submittedMilestones = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: milestoneDraft.version }),
+      ),
+      200,
+    );
+    assert.equal(submittedMilestones.revisionNumber, 4);
+    assert.deepEqual((await revision(4)).snapshot.facts.sourceReport, v3);
+    assert.deepEqual(await revision(3), snapshotV2);
+    assert.equal(JSON.stringify(await revision(2)), v1Snapshot);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v3);
+    assert.deepEqual((await read()).nextPlan, priorV3.nextPlan);
+    const startV3Cancel = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submittedMilestones.version,
+          reason: 'TEST V3 cancel',
+        }),
+      ),
+      200,
+    );
+    const changedV3 = {
+      ...v3,
+      milestones: {
+        ...v3.milestones,
+        testMilestone: {
+          ...v3.milestones.testMilestone,
+          note: sourceCell('TEST edited'),
+        },
+      },
+    };
+    const saveV3Cancel = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: startV3Cancel.version,
+          facts: { ...priorV3.facts, sourceReport: changedV3 },
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v3);
+    await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saveV3Cancel.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v3);
+    assert.deepEqual((await revision(4)).snapshot.facts.sourceReport, v3);
+    pass(
+      'V3 immutable correction, original merge continuation blank, reader snapshot, cancellation and previous V1/V2 history preserved',
+    );
+
     const onlySource = {
       weather: '',
       temperature: '',
@@ -2214,10 +2433,13 @@ try {
       narrative: { construction: '', quality: '', safety: '' },
       noWork: null,
       sourceReport: {
-        ...sourceReport,
-        peopleTotal: sourceCell('  ', 'blank'),
+        documents: sourceReport.documents,
+        schemaVersion: 3,
         workPercent: {},
         materials: {},
+        milestones: {
+          testMilestone: { reportedDelayDays: sourceCell('  ', 'blank') },
+        },
       },
     };
     const sourceOnlySave = await expectStatus(

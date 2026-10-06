@@ -25,6 +25,7 @@ export type {
   SourceReport,
   SourceReportV1,
   SourceReportV2,
+  SourceReportV3,
 } from './report-source.js';
 export { InvalidReportInput, isRealDate };
 export type Reported = string;

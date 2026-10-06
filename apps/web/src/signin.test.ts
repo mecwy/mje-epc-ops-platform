@@ -1,3 +1,4 @@
+import { parseFacts } from '@mje/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
 import { DraftSession } from './report/draft.js';
@@ -140,42 +141,63 @@ describe('resume state', () => {
     drafts: [draft('2026-09-29')],
     savedAt: NOW,
   };
-  it.each([1, 2] as const)(
+  it.each([1, 2, 3] as const)(
     'round-trips source cells through a sign-in resume without converting blank or raw text (V%s)',
     (schemaVersion) => {
       const s = memoryStore();
       const saved = draft('2025-03-10');
-      saved.facts.sourceReport = {
-        documents: {
-          testDoc: {
-            sha256: 'b'.repeat(64),
-            label: 'TEST sign-in source',
-            format: 'docx',
+      saved.facts.sourceReport = parseFacts({
+        ...saved.facts,
+        sourceReport: {
+          documents: {
+            testDoc: {
+              sha256: 'b'.repeat(64),
+              label: 'TEST sign-in source',
+              format: 'docx',
+            },
           },
-        },
-        peopleTotal: {
-          raw: ' \n ',
-          state: 'blank',
-          at: { document: 'testDoc', table: 0, row: 0, cell: 0, gridSpan: 2 },
-        },
-        workPercent: {},
-        materials: {},
-        ...(schemaVersion === 2
-          ? {
-              schemaVersion: 2 as const,
-              reportedNextPlan: {
-                targetBusinessDate: '2025-03-11',
-                quantities: {
-                  testWork: {
-                    raw: ' 23 ',
-                    state: 'value' as const,
-                    at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+          peopleTotal: {
+            raw: ' \n ',
+            state: 'blank',
+            at: { document: 'testDoc', table: 0, row: 0, cell: 0, gridSpan: 2 },
+          },
+          workPercent: {},
+          materials: {},
+          ...(schemaVersion !== 1
+            ? {
+                schemaVersion,
+                ...(schemaVersion === 3
+                  ? {
+                      milestones: {
+                        testMilestone: {
+                          reportedDelayDays: {
+                            raw: ' ',
+                            state: 'blank' as const,
+                            at: {
+                              document: 'testDoc',
+                              table: 1,
+                              row: 1,
+                              cell: 3,
+                            },
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                reportedNextPlan: {
+                  targetBusinessDate: '2025-03-11',
+                  quantities: {
+                    testWork: {
+                      raw: ' 23 ',
+                      state: 'value' as const,
+                      at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+                    },
                   },
                 },
-              },
-            }
-          : { schemaVersion: 1 as const }),
-      };
+              }
+            : { schemaVersion: 1 as const }),
+        },
+      }).sourceReport!;
       const withSource = { ...state, drafts: [saved] };
       expect(saveResume(s, withSource)).toBe(true);
       expect(readResume(s, NOW)).toEqual(withSource);

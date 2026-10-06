@@ -617,6 +617,30 @@ describe('carry-over between submitted days', () => {
 });
 
 describe('source declarations are facts, never operational quantities', () => {
+  it('recognizes milestone-only blank source without quantity, plan or completion', () => {
+    const f = blankFacts();
+    f.sourceReport = {
+      schemaVersion: 3,
+      documents: {
+        test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+      },
+      workPercent: {},
+      materials: {},
+      milestones: {
+        testMilestone: {
+          reportedDelayDays: {
+            raw: ' ',
+            state: 'blank',
+            at: { document: 'test', table: 1, row: 1, cell: 3 },
+          },
+        },
+      },
+    };
+    expect(hasFacts(f)).toBe(true);
+    expect(f.qty).toEqual({});
+    expect(f.milestones).toEqual({});
+    expect(f.sourceReport).not.toHaveProperty('reportedNextPlan');
+  });
   it('recognizes an explicitly blank source-plan cell without making an operational plan or quantity', () => {
     const f = blankFacts();
     f.sourceReport = {

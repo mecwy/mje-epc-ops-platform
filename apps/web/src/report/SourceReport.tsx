@@ -6,6 +6,11 @@ import type {
 
 /** Every visible caption is supplied by the host's selected language. No API/i18n coupling. */
 export interface SourceReportLabels {
+  milestones: string;
+  milestonesMissing: string;
+  plannedFinish: string;
+  actualFinish: string;
+  reportedDelayDays: string;
   nextPlan: string;
   nextPlanMissing: string;
   targetDate: string;
@@ -164,6 +169,49 @@ export function SourceReport({
               </>
             ) : (
               <p>{labels.nextPlanMissing}</p>
+            )}
+          </section>
+          <section aria-label={labels.milestones}>
+            <h3>{labels.milestones}</h3>
+            {model.milestones ? (
+              model.milestones.map((row) => (
+                <article key={row.key}>
+                  <h4 style={rawStyle}>{row.label}</h4>
+                  <dl>
+                    {(
+                      [
+                        'plannedFinish',
+                        'actualFinish',
+                        'reportedDelayDays',
+                        'note',
+                      ] as const
+                    ).map((field) => (
+                      <div key={field}>
+                        <dt>
+                          {field === 'note'
+                            ? labels.originalNote
+                            : labels[field]}
+                        </dt>
+                        <dd>
+                          <SourceCell
+                            cell={row.original[field]}
+                            labels={labels}
+                          />
+                          {row.original[field]?.citation?.verticalMerge && (
+                            <p className="muted">
+                              {labels.verticalMerge(
+                                row.original[field].citation.verticalMerge,
+                              )}
+                            </p>
+                          )}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </article>
+              ))
+            ) : (
+              <p>{labels.milestonesMissing}</p>
             )}
           </section>
           <section aria-label={labels.people}>

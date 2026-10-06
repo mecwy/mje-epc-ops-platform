@@ -1,3 +1,4 @@
+import { parseFacts } from '@mje/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import { blankFacts } from '@mje/domain/rules';
 import { translate, type Lang } from '@mje/ui';
@@ -66,6 +67,11 @@ function input(): SourceReportDisplayInput {
   };
 }
 const captions = (language: string): SourceReportLabels => ({
+  milestones: `${language} source milestones`,
+  milestonesMissing: `${language} no source milestones`,
+  plannedFinish: `${language} source planned finish`,
+  actualFinish: `${language} source actual finish`,
+  reportedDelayDays: `${language} source delay`,
   nextPlan: `${language} source tomorrow plan`,
   nextPlanMissing: `${language} no source tomorrow plan in this version`,
   targetDate: `${language} target date`,
@@ -502,22 +508,50 @@ describe('selected-version source adapter in the actual report body', () => {
     expect(html).not.toContain('TEST frozen source');
   });
 
-  it.each(['zh', 'en', 'sr', 'es'] as const)(
-    'shows only the selected source plan, date and unknown approval in %s',
-    (lang) => {
+  it.each(
+    (['zh', 'en', 'sr', 'es'] as const).flatMap((lang) =>
+      ([2, 3] as const).map((version) => ({ lang, version })),
+    ),
+  )(
+    'shows selected source plan and milestones in $lang schema $version',
+    ({ lang, version }) => {
       const old = content();
       const current = content();
-      current.facts.sourceReport = {
-        ...source,
-        schemaVersion: 2,
-        reportedNextPlan: {
-          targetBusinessDate: '2025-03-11',
-          quantities: {
-            test: { ...source.peopleTotal!, raw: ' 23 ' },
-            unknownRow: { ...source.peopleTotal!, raw: ' ', state: 'blank' },
+      current.facts.sourceReport = parseFacts({
+        ...current.facts,
+        sourceReport: {
+          ...source,
+          schemaVersion: version,
+          ...(version === 3
+            ? {
+                milestones: {
+                  testMilestone: {
+                    plannedFinish: {
+                      ...source.peopleTotal!,
+                      raw: 'TEST original date',
+                    },
+                    reportedDelayDays: {
+                      ...source.peopleTotal!,
+                      raw: ' ',
+                      state: 'blank' as const,
+                    },
+                    note: {
+                      ...source.peopleTotal!,
+                      raw: 'TEST merged milestone note',
+                    },
+                  },
+                },
+              }
+            : {}),
+          reportedNextPlan: {
+            targetBusinessDate: '2025-03-11',
+            quantities: {
+              test: { ...source.peopleTotal!, raw: ' 23 ' },
+              unknownRow: { ...source.peopleTotal!, raw: ' ', state: 'blank' },
+            },
           },
         },
-      };
+      }).sourceReport!;
       // A current confirmed operational plan must not replace the original source target.
       current.nextPlan = {
         status: 'confirmed',
@@ -532,11 +566,44 @@ describe('selected-version source adapter in the actual report body', () => {
       expect(html).toContain(' 23 ');
       expect(html).toContain('TEST frozen work label');
       expect(html).toContain(translate(lang, 'notFilled'));
+      if (version === 3) {
+        expect(html).toContain(translate(lang, 'sourceMilestones'));
+        expect(html).toContain('TEST original date');
+        expect(html).toContain(translate(lang, 'sourceReportedDelayDays'));
+        expect(html).toContain('TEST merged milestone note');
+      }
       expect(JSON.stringify(current)).toBe(before);
       const olderHtml = page(old, lang);
+      expect(olderHtml).toContain(translate(lang, 'sourceMilestonesMissing'));
+      expect(olderHtml).not.toContain('TEST merged milestone note');
       expect(olderHtml).toContain(translate(lang, 'sourceNextPlanMissing'));
       expect(olderHtml).not.toContain(' 23 ');
       expect(olderHtml).not.toContain(translate(lang, 'sourceApprovalUnknown'));
     },
   );
+});
+
+it('keeps physical merge continuation blank and orders original milestones by frozen items', () => {
+  const start = cell('TEST merged note');
+  const continuation = cell(' ', 'blank');
+  const v = input();
+  const model = sourceReportModel({
+    ...v,
+    milestones: [
+      { key: 'z', label: 'TEST frozen first' },
+      { key: 'a', label: 'TEST frozen second' },
+    ],
+    source: {
+      ...v.source!,
+      milestones: { a: { note: continuation }, z: { note: start } },
+    },
+  });
+  expect(model.milestones?.map((row) => row.key)).toEqual(['z', 'a']);
+  expect(model.milestones?.[1]?.original.note?.raw).toBe(' ');
+  const html = renderToStaticMarkup(
+    createElement(SourceReport, { model, labels: captions('en') }),
+  );
+  expect(html.match(/TEST merged note/g)).toHaveLength(1);
+  expect(html).toContain('TEST frozen first');
+  expect(html).toContain(captions('en').verticalMerge('continue'));
 });

@@ -37,7 +37,21 @@ export interface SourceReportV2 extends Omit<SourceReportV1, 'schemaVersion'> {
     quantities: Record<string, SourceCell>;
   };
 }
-export type SourceReport = SourceReportV1 | SourceReportV2;
+/** Original milestone declarations retain physical source cells, not approved dates. */
+export interface SourceReportV3 extends Omit<SourceReportV1, 'schemaVersion'> {
+  schemaVersion: 3;
+  reportedNextPlan?: SourceReportV2['reportedNextPlan'];
+  milestones: Record<
+    string,
+    {
+      plannedFinish?: SourceCell;
+      actualFinish?: SourceCell;
+      reportedDelayDays?: SourceCell;
+      note?: SourceCell;
+    }
+  >;
+}
+export type SourceReport = SourceReportV1 | SourceReportV2 | SourceReportV3;
 
 /** Unknown keys are rejected without reflecting user-controlled key names in errors. */
 export function reportObject(
@@ -67,7 +81,7 @@ function integer(v: unknown, min: number, max: number, field: string): number {
 export function parseSourceReport(v: unknown): SourceReport {
   const path = 'facts.sourceReport';
   const schemaVersion = obj(v, path)['schemaVersion'];
-  if (schemaVersion !== 1 && schemaVersion !== 2)
+  if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3)
     throw new InvalidReportInput(`${path}.schemaVersion`);
   const o = reportObject(
     v,
@@ -77,7 +91,8 @@ export function parseSourceReport(v: unknown): SourceReport {
       'peopleTotal',
       'workPercent',
       'materials',
-      ...(schemaVersion === 2 ? ['reportedNextPlan'] : []),
+      ...(schemaVersion !== 1 ? ['reportedNextPlan'] : []),
+      ...(schemaVersion === 3 ? ['milestones'] : []),
     ],
     path,
   );
@@ -189,7 +204,11 @@ export function parseSourceReport(v: unknown): SourceReport {
     workPercent,
     materials,
   };
-  if (schemaVersion === 2) {
+  let reportedNextPlan: SourceReportV2['reportedNextPlan'] | undefined;
+  if (
+    schemaVersion === 2 ||
+    (schemaVersion === 3 && Object.hasOwn(o, 'reportedNextPlan'))
+  ) {
     const field = `${path}.reportedNextPlan`;
     const plan = reportObject(
       o['reportedNextPlan'],
@@ -207,12 +226,42 @@ export function parseSourceReport(v: unknown): SourceReport {
     );
     if (!Object.keys(quantities).length)
       throw new InvalidReportInput(`${field}.quantities`);
+    reportedNextPlan = { targetBusinessDate, quantities };
+  }
+  if (schemaVersion === 3) {
+    const milestones = Object.fromEntries(
+      entries(o['milestones'], 100, `${path}.milestones`).map(
+        ([key, value], i) => {
+          const field = `${path}.milestones[${i}]`;
+          const row = reportObject(
+            value,
+            ['plannedFinish', 'actualFinish', 'reportedDelayDays', 'note'],
+            field,
+          );
+          if (!Object.keys(row).length) throw new InvalidReportInput(field);
+          return [
+            key,
+            Object.fromEntries(
+              Object.entries(row).map(([k, v]) => [
+                k,
+                cell(v, `${field}.${k}`),
+              ]),
+            ),
+          ];
+        },
+      ),
+    );
+    if (!Object.keys(milestones).length)
+      throw new InvalidReportInput(`${path}.milestones`);
     return {
       ...common,
-      schemaVersion: 2,
-      reportedNextPlan: { targetBusinessDate, quantities },
+      schemaVersion: 3,
+      milestones,
+      ...(reportedNextPlan ? { reportedNextPlan } : {}),
     };
   }
+  if (schemaVersion === 2 && reportedNextPlan)
+    return { ...common, schemaVersion: 2, reportedNextPlan };
   if (count === 0) throw new InvalidReportInput(path);
   return { ...common, schemaVersion: 1 };
 }

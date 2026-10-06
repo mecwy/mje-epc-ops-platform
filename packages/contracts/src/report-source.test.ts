@@ -4,6 +4,7 @@ import {
   parseSourceReport,
   type SourceReportV1,
   type SourceReportV2,
+  type SourceReportV3,
 } from './report-source.js';
 
 function source(): SourceReportV1 {
@@ -82,7 +83,7 @@ describe('strict source declarations', () => {
       }),
     ],
     ['V1 extra', (v: SourceReportV2) => ({ ...v, schemaVersion: 1 })],
-    ['unsupported schema', (v: SourceReportV2) => ({ ...v, schemaVersion: 3 })],
+    ['unsupported schema', (v: SourceReportV2) => ({ ...v, schemaVersion: 4 })],
     [
       'too many rows',
       (v: SourceReportV2) => ({
@@ -289,5 +290,112 @@ describe('strict source declarations', () => {
         workPercent: { [hostile]: source().peopleTotal },
       }),
     ).toThrow('facts.sourceReport.workPercent[0]');
+  });
+});
+
+const milestoneSource = (): SourceReportV3 => ({
+  ...source(),
+  schemaVersion: 3,
+  milestones: {
+    testMilestone: {
+      plannedFinish: { ...source().peopleTotal!, raw: 'TEST original date' },
+      actualFinish: { ...source().peopleTotal!, raw: ' ', state: 'blank' },
+      reportedDelayDays: { ...source().peopleTotal!, raw: '0' },
+      note: { ...source().peopleTotal!, raw: 'TEST merged note' },
+    },
+    next: {
+      note: {
+        ...source().peopleTotal!,
+        raw: '',
+        state: 'blank',
+        at: { ...source().peopleTotal!.at, row: 2, verticalMerge: 'continue' },
+      },
+    },
+    unknown: {
+      actualFinish: { ...source().peopleTotal!, raw: '?', state: 'unknown' },
+    },
+    na: { actualFinish: { ...source().peopleTotal!, raw: 'N/A', state: 'na' } },
+  },
+});
+describe('V3 original milestones', () => {
+  it('retains dates verbatim, blank/zero/unknown/na and merge provenance, with no invented next plan', () => {
+    const v = milestoneSource();
+    const parsed = parseSourceReport(v);
+    expect(parsed).toEqual(v);
+    expect(parsed).not.toHaveProperty('reportedNextPlan');
+    v.milestones.testMilestone!.note!.raw = 'edited';
+    if (parsed.schemaVersion === 3)
+      expect(parsed.milestones.testMilestone!.note!.raw).toBe(
+        'TEST merged note',
+      );
+  });
+  it('retains optional V2 next plan on V3 without changing V2 contract', () => {
+    const v = {
+      ...milestoneSource(),
+      reportedNextPlan: {
+        targetBusinessDate: '2028-02-29',
+        quantities: { testWork: source().peopleTotal! },
+      },
+    };
+    expect(parseSourceReport(v)).toEqual(v);
+    expect(() => parseSourceReport({ ...v, schemaVersion: 2 })).toThrow(
+      InvalidReportInput,
+    );
+  });
+  it.each([
+    ['empty', { milestones: {} }],
+    ['null', { milestones: null }],
+    ['row empty', { milestones: { test: {} } }],
+    ['row null', { milestones: { test: null } }],
+    ['approval', { milestones: { test: { approved: true } } }],
+    ['cell null', { milestones: { test: { actualFinish: null } } }],
+    ['plan null', { reportedNextPlan: null }],
+    [
+      'invalid plan',
+      {
+        reportedNextPlan: {
+          targetBusinessDate: '2027-02-29',
+          quantities: { test: source().peopleTotal },
+        },
+      },
+    ],
+    [
+      'too many rows',
+      {
+        milestones: Object.fromEntries(
+          Array.from({ length: 101 }, (_, i) => [
+            `test${i}`,
+            { note: source().peopleTotal },
+          ]),
+        ),
+      },
+    ],
+  ])('rejects %s', (_name, patch) =>
+    expect(() => parseSourceReport({ ...milestoneSource(), ...patch })).toThrow(
+      InvalidReportInput,
+    ),
+  );
+  it('includes milestone cells in the shared 500-cell budget', () => {
+    const v = milestoneSource();
+    v.materials = Object.fromEntries(
+      Array.from({ length: 100 }, (_, i) => [
+        `test${i}`,
+        {
+          note: v.peopleTotal!,
+          cumulative: v.peopleTotal!,
+          unit: v.peopleTotal!,
+          percent: v.peopleTotal!,
+        },
+      ]),
+    );
+    v.milestones = Object.fromEntries(
+      Array.from({ length: 100 }, (_, i) => [
+        `test${i}`,
+        { actualFinish: v.peopleTotal! },
+      ]),
+    );
+    expect(() => parseSourceReport(v)).toThrow(InvalidReportInput);
+    delete v.peopleTotal;
+    expect(parseSourceReport(v)).toEqual(v);
   });
 });

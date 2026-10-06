@@ -1,3 +1,4 @@
+import { parseFacts } from '@mje/contracts';
 import { describe, expect, it } from 'vitest';
 import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
 import { blankFacts } from '@mje/domain/rules';
@@ -43,40 +44,61 @@ const session = (date: string, s: ReturnType<typeof server>, version = 1) =>
   );
 
 describe('draft session', () => {
-  it.each([1, 2] as const)(
+  it.each([1, 2, 3] as const)(
     'retains source cells through ordinary edits and byte-identical retry after a lost response (V%s)',
     async (schemaVersion) => {
-      const sourceReport = {
-        documents: {
-          testDoc: {
-            sha256: 'a'.repeat(64),
-            label: 'TEST source',
-            format: 'docx',
+      const sourceReport = parseFacts({
+        ...blankFacts(),
+        sourceReport: {
+          documents: {
+            testDoc: {
+              sha256: 'a'.repeat(64),
+              label: 'TEST source',
+              format: 'docx',
+            },
           },
-        },
-        peopleTotal: {
-          raw: ' 7 ',
-          state: 'value',
-          at: { document: 'testDoc', table: 0, row: 1, cell: 2 },
-        },
-        workPercent: {},
-        materials: {},
-        ...(schemaVersion === 2
-          ? {
-              schemaVersion: 2 as const,
-              reportedNextPlan: {
-                targetBusinessDate: '2025-03-11',
-                quantities: {
-                  testWork: {
-                    raw: ' 23 ',
-                    state: 'value' as const,
-                    at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+          peopleTotal: {
+            raw: ' 7 ',
+            state: 'value',
+            at: { document: 'testDoc', table: 0, row: 1, cell: 2 },
+          },
+          workPercent: {},
+          materials: {},
+          ...(schemaVersion !== 1
+            ? {
+                schemaVersion,
+                ...(schemaVersion === 3
+                  ? {
+                      milestones: {
+                        testMilestone: {
+                          reportedDelayDays: {
+                            raw: ' ',
+                            state: 'blank' as const,
+                            at: {
+                              document: 'testDoc',
+                              table: 1,
+                              row: 1,
+                              cell: 3,
+                            },
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                reportedNextPlan: {
+                  targetBusinessDate: '2025-03-11',
+                  quantities: {
+                    testWork: {
+                      raw: ' 23 ',
+                      state: 'value' as const,
+                      at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+                    },
                   },
                 },
-              },
-            }
-          : { schemaVersion: 1 as const }),
-      } as const;
+              }
+            : { schemaVersion: 1 as const }),
+        },
+      }).sourceReport!;
       const original: DayFactsDto = { ...empty(), sourceReport };
       const srv = server();
       const s = new DraftSession(

@@ -32,6 +32,20 @@ it('retains the V2 discriminant and source target through the normal facts bound
   expect(parseFacts({ ...facts(), sourceReport }).sourceReport).toEqual(
     sourceReport,
   );
+  const v3 = {
+    ...sourceReport,
+    schemaVersion: 3,
+    milestones: {
+      testMilestone: {
+        reportedDelayDays: {
+          ...sourceReport.reportedNextPlan.quantities.test,
+          raw: ' ',
+          state: 'blank',
+        },
+      },
+    },
+  };
+  expect(parseFacts({ ...facts(), sourceReport: v3 }).sourceReport).toEqual(v3);
   expect(parseFacts(facts())).not.toHaveProperty('sourceReport');
 });
 const facts = () => ({

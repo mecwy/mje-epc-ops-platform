@@ -132,8 +132,11 @@ export function blankFacts(): DayFacts {
 export function hasFacts(f: DayFacts): boolean {
   return Boolean(
     (f.sourceReport &&
-      ((f.sourceReport.schemaVersion === 2 &&
+      ((f.sourceReport.schemaVersion !== 1 &&
+        f.sourceReport.reportedNextPlan &&
         Object.keys(f.sourceReport.reportedNextPlan.quantities).length) ||
+        (f.sourceReport.schemaVersion === 3 &&
+          Object.keys(f.sourceReport.milestones).length) ||
         f.sourceReport.peopleTotal ||
         Object.keys(f.sourceReport.workPercent).length ||
         Object.values(f.sourceReport.materials).some(
