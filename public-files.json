@@ -25,6 +25,8 @@
   "apps/api/src/auth/token-verifier.test.ts",
   "apps/api/src/auth/token-verifier.ts",
   "apps/api/src/authz-surface.test.ts",
+  "apps/api/src/business-entry.test.ts",
+  "apps/api/src/business-entry.ts",
   "apps/api/src/business-evidence.controller.ts",
   "apps/api/src/checkin.controller.ts",
   "apps/api/src/cleanup-selfies.test.ts",
