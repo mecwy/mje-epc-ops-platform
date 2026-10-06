@@ -2345,6 +2345,56 @@ ul.plainlist:not(.card) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-bottom: 1px solid var(--line);
 }
+.fill-quantity-trigger {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 48px;
+  padding: 4px 0;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.fill-quantity-sheet {
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+.fill-quantity-sheet:not([open]) {
+  display: none;
+}
+.fill-quantity-sheet .sheet-h h2 {
+  overflow-wrap: anywhere;
+}
+.fill-quantity-value {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.fill-quantity-value .num {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  width: 100%;
+}
+.fill-quantity-sheet .chips {
+  gap: 8px;
+}
+.fill-quantity-sheet .pill {
+  min-height: 48px;
+}
+.fill-quantity-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 20px;
+}
+.fill-quantity-actions button {
+  min-height: 48px;
+}
 .fill-workbench .fill-section-tabs button {
   min-width: 0;
   border: 0;

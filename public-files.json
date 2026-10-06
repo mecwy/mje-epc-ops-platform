@@ -123,6 +123,8 @@
   "apps/web/src/report/PersonnelMetrics.tsx",
   "apps/web/src/report/Photos.tsx",
   "apps/web/src/report/PlanEditor.tsx",
+  "apps/web/src/report/QuantityEntrySheet.test.ts",
+  "apps/web/src/report/QuantityEntrySheet.tsx",
   "apps/web/src/report/ReportView.tsx",
   "apps/web/src/report/Sheets.tsx",
   "apps/web/src/report/SourceReport.tsx",
