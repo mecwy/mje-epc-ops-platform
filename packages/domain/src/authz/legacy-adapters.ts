@@ -102,6 +102,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}checkin-store.ts`,
       `${D}checkin-rules.ts`,
       `${D}foreman-store.ts`,
+      `${D}manager-review-rules.ts`,
     ],
     tables: [
       'Crew',
