@@ -43,6 +43,94 @@ const config: DeployConfig = {
 };
 const sha = 'a'.repeat(40);
 
+test('location deployment flags accept only explicit booleans', () => {
+  for (const ui of [false, true])
+    for (const save of [false, true]) {
+      const raw = {
+        ...config,
+        reportLocationUiEnabled: ui,
+        reportLocationSaveEnabled: save,
+      };
+      assert.deepEqual(validateConfig(raw), raw);
+    }
+  for (const key of ['reportLocationUiEnabled', 'reportLocationSaveEnabled'])
+    for (const value of [undefined, null, 0, 1, 'false', 'true'])
+      assert.throws(
+        () => validateConfig({ ...config, [key]: value }),
+        DeployStop,
+      );
+});
+
+test('omitted location flags explicitly stay off in app build and runtime', () => {
+  assert.ok(
+    buildImage(config, 'mje-app', sha, '/tmp/src').includes(
+      'VITE_REPORT_LOCATION_ENABLED=false',
+    ),
+  );
+  assert.ok(
+    deployApp(config, sha, '/tmp/src', 'TEST-image').includes(
+      'reportLocationEnabled=false',
+    ),
+  );
+});
+
+for (const ui of [false, true])
+  for (const save of [false, true])
+    test(`location UI/save flags remain independent: ${ui}/${save}`, () => {
+      const options = {
+        ...config,
+        reportLocationUiEnabled: ui,
+        reportLocationSaveEnabled: save,
+      };
+      const build = buildImage(options, 'mje-app', sha, '/tmp/src');
+      assert.ok(build.includes(`VITE_REPORT_LOCATION_ENABLED=${ui}`));
+      assert.ok(build.includes(`SOURCE_REVISION=${sha}`));
+      const app = deployApp(options, sha, '/tmp/src', 'TEST-image');
+      assert.ok(app.includes(`reportLocationEnabled=${save}`));
+      const migration = buildImage(options, 'mje-migrate', sha, '/tmp/src');
+      assert.equal(
+        migration.some((arg) => arg.includes('VITE_REPORT_LOCATION_ENABLED')),
+        false,
+      );
+      assert.equal(
+        deployMigrationJob(options, sha, '/tmp/src', 'TEST-image').some((arg) =>
+          arg.includes('reportLocationEnabled'),
+        ),
+        false,
+      );
+      assert.equal(
+        [...build, ...app].some((arg) =>
+          arg.includes('WEATHER_REFERENCE_ENABLED'),
+        ),
+        false,
+      );
+    });
+
+test('location flags reach the build-stage bundle and runtime template with default off', () => {
+  const docker = readFileSync(
+    new URL('../Dockerfile', import.meta.url),
+    'utf8',
+  );
+  assert.match(docker, /ARG VITE_REPORT_LOCATION_ENABLED=false/);
+  assert.match(
+    docker,
+    /ENV VITE_REPORT_LOCATION_ENABLED=\$VITE_REPORT_LOCATION_ENABLED/,
+  );
+  assert.ok(
+    docker.indexOf('ENV VITE_REPORT_LOCATION_ENABLED=') <
+      docker.indexOf('pnpm build'),
+  );
+  const template = readFileSync(
+    new URL('../infra/bicep/dev-owner-app.bicep', import.meta.url),
+    'utf8',
+  );
+  assert.match(template, /param reportLocationEnabled bool = false/);
+  assert.match(
+    template,
+    /name: 'REPORT_LOCATION_ENABLED', value: reportLocationEnabled \? 'true' : 'false'/,
+  );
+});
+
 test('arguments: a command, then known options only', () => {
   assert.deepEqual(parseArgs(['all']), {
     command: 'all',

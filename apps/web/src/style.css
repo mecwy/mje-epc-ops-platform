@@ -2360,7 +2360,6 @@ ul.plainlist:not(.card) {
 }
 .fill-quantity-sheet {
   max-height: calc(100dvh - 24px);
-  overflow-y: auto;
 }
 .fill-quantity-sheet:not([open]) {
   display: none;
@@ -2824,4 +2823,37 @@ ul.plainlist:not(.card) {
   .personnel-metrics .personnel-summary-values td {
     padding: 8px 4px;
   }
+}
+
+/* Draft declarations shown during the existing whole-report confirmation. */
+.review-facts dl {
+  margin: 0;
+}
+.review-facts-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.review-facts-row:last-child {
+  border-bottom: 0;
+}
+.review-facts dt,
+.review-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.review-facts dd {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.review-facts dd small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+}
+.review-facts p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
