@@ -512,6 +512,52 @@ describe('selected-version source adapter in the actual report body', () => {
       expect(JSON.stringify(c)).toBe(before);
     },
   );
+  it('retains source references for inactive machinery without changing the snapshot', () => {
+    const c = content();
+    c.items.push({
+      kind: 'machinery',
+      key: 'testRetired',
+      label: 'TEST retired equipment',
+      unit: '',
+      active: false,
+      designQty: '0',
+      openingCumulative: '',
+      sortOrder: 10,
+    });
+    c.facts.sourceReport = {
+      ...source,
+      schemaVersion: 4,
+      machinery: {
+        testRetired: {
+          note: {
+            ...source.peopleTotal!,
+            raw: 'TEST preserved equipment source',
+          },
+        },
+      },
+    };
+    const before = JSON.stringify(c);
+    const html = page(c, 'en');
+    expect(html).toContain('TEST retired equipment');
+    expect(html).toContain('TEST preserved equipment source');
+    expect(html).toContain('source-disclosure');
+    expect(JSON.stringify(c)).toBe(before);
+  });
+  it.each(['zh', 'en'] as const)(
+    'labels editable weather neutrally in %s',
+    (lang) => {
+      const c = content();
+      c.facts.weather = 'TEST weather';
+      c.facts.temperature = 'TEST temperature';
+      const html = page(c, lang);
+      const weather = html
+        .split('class="card report-weather"')[1]!
+        .split('</section>')[0]!;
+      expect(weather).toContain(translate(lang, 'temperature'));
+      expect(weather).toContain(translate(lang, 'weather'));
+      expect(weather).not.toContain(translate(lang, 'sourceOriginal'));
+    },
+  );
   it.each(['zh', 'en', 'sr', 'es'] as const)(
     'integrates V4 into corresponding sections and keeps old versions clean in %s',
     (lang) => {

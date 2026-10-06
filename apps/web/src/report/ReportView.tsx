@@ -521,6 +521,12 @@ function BusinessSections({
   const { t, label, locale } = useI18n();
   const source = c.facts.sourceReport;
   const extra = source?.schemaVersion === 4 ? source : undefined;
+  // Retiring an entry must not hide cells already captured in this report version.
+  const machineryRows = c.items.filter(
+    (item) =>
+      item.kind === 'machinery' &&
+      (item.active || extra?.machinery?.[item.key]),
+  );
   const sourceLabels = useSourceLabels();
   const raw = (value: SourceCell | undefined) => (
     <SourceValue
@@ -679,7 +685,7 @@ function BusinessSections({
             t('sourceLocation'),
             t('sourceOriginalNote'),
           ],
-          byKind(c.items, 'machinery').map((it) => [
+          machineryRows.map((it) => [
             label(it.label),
             <Val key={it.key} raw={c.facts.machinery[it.key]} />,
             raw(extra?.machinery?.[it.key]?.location),
@@ -689,7 +695,7 @@ function BusinessSections({
         {extra?.machinery && (
           <SourceReferences
             labels={sourceLabels}
-            rows={byKind(c.items, 'machinery').map((it) => ({
+            rows={machineryRows.map((it) => ({
               label: label(it.label),
               cells: [
                 sourceCellDisplay(source, extra.machinery?.[it.key]?.location),
@@ -848,11 +854,11 @@ export function ReportBody({
       {weather && (
         <section className="card report-weather" aria-label={t('weather')}>
           <div>
-            <span className="report-eyebrow">{t('weather')}</span>
+            <span className="report-eyebrow">{t('temperature')}</span>
             <strong>{f.temperature || t('notFilled')}</strong>
           </div>
           <div>
-            <span className="report-eyebrow">{t('sourceOriginal')}</span>
+            <span className="report-eyebrow">{t('weather')}</span>
             <p>{f.weather || t('notFilled')}</p>
           </div>
         </section>
