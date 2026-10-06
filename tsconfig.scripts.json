@@ -21,6 +21,12 @@
     "scripts/report-lookups-integration.mts",
     "scripts/alpha-lookups-integration.mts",
     "scripts/project-status-integration.mts",
-    "scripts/project-master-integration.mts"
+    "scripts/project-master-integration.mts",
+    "scripts/weather-integration.mts",
+    "scripts/check-migration-history.mts",
+    "scripts/check-migration-history.test.mts",
+    "scripts/report-weather-integration.mts",
+    "scripts/manager-review-integration.mts",
+    "scripts/business-evidence-integration.mts"
   ]
 }

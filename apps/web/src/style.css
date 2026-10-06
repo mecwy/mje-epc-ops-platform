@@ -2028,3 +2028,671 @@ ul.plainlist:not(.card) {
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
+
+/* Approved report reading direction. Scoped to the report; no shared navigation changes. */
+.report-redesign {
+  --ink: #233143;
+  --ink-2: #405267;
+  --muted: #72808e;
+  --line: #e5e9ee;
+  --line-2: #eff1f4;
+  --accent: #398780;
+  --accent-soft: #edf5f2;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  min-width: 0;
+}
+.report-redesign .card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 20px;
+  margin-bottom: 18px;
+  min-width: 0;
+}
+.report-redesign .status-row {
+  margin: 0 0 16px;
+  font-size: 12px;
+}
+.report-redesign .blk {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+.report-redesign .kv {
+  padding: 12px 0;
+}
+.report-redesign .prog-name {
+  font-size: 15px;
+}
+.report-redesign .prog-val {
+  color: var(--ink);
+}
+.report-redesign .para {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.report-redesign .report-weather {
+  display: flex;
+  flex-direction: row;
+  gap: 40px;
+  align-items: center;
+  padding: 22px 24px;
+}
+.report-redesign .report-weather strong {
+  display: block;
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -1px;
+  margin-top: 6px;
+}
+.report-redesign .report-weather p {
+  margin: 6px 0;
+  font-size: 15px;
+}
+.report-redesign .report-eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-redesign .rgrid {
+  gap: 20px;
+  align-items: start;
+}
+.report-redesign .report-business {
+  padding: 0;
+  overflow: hidden;
+}
+.report-redesign .report-section-tabs {
+  display: flex;
+  gap: 24px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.report-redesign .report-section-tabs button {
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 16px 0;
+  min-height: 48px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+}
+.report-redesign .report-section-tabs button[aria-pressed='true'] {
+  color: var(--ink);
+  border-color: var(--accent);
+  font-weight: 650;
+}
+.report-redesign .report-business-panel > .card {
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+.report-redesign .report-business-panel > .card > .blk {
+  display: none;
+}
+.report-redesign .report-table-scroll,
+.report-redesign .source-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.report-redesign table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.report-redesign th,
+.report-redesign td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.6;
+}
+.report-redesign thead th {
+  color: var(--muted);
+  font-weight: 500;
+  background: #f8fafb;
+  white-space: nowrap;
+}
+.report-redesign tbody th {
+  font-weight: 600;
+  min-width: 100px;
+}
+.report-redesign tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.report-redesign .report-muted {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.report-redesign .source-report {
+  padding: 0;
+}
+.report-redesign .source-disclosure > summary {
+  padding: 18px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.report-redesign .source-disclosure > summary small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 12px;
+}
+.report-redesign .source-sections {
+  border-top: 1px solid var(--line);
+}
+.report-redesign .source-section {
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.report-redesign .source-section:last-child {
+  border: 0;
+}
+.report-redesign .source-section h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.report-redesign .source-context {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-redesign .source-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-redesign .source-value {
+  font-variant-numeric: tabular-nums;
+}
+.report-redesign .source-merge {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.report-redesign .source-references {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.report-redesign .source-references summary {
+  cursor: pointer;
+  padding: 7px 0;
+}
+.report-redesign .source-references > div {
+  padding: 10px;
+  border-left: 2px solid var(--line);
+}
+.report-redesign .source-reference {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0;
+}
+.report-redesign .source-reference code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.report-redesign .source-section td .muted {
+  font-size: 11px;
+  margin: 0;
+}
+.report-redesign .linkrow {
+  border: 1px solid var(--line);
+  background: white;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+@media (min-width: 1100px) {
+  .report-redesign .rgrid {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+}
+@media (max-width: 719px) {
+  .report-redesign .card {
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .report-redesign .report-business,
+  .report-redesign .source-report {
+    padding: 0;
+  }
+  .report-redesign .report-weather {
+    gap: 24px;
+    padding: 18px;
+  }
+  .report-redesign .report-weather strong {
+    font-size: 26px;
+  }
+  .report-redesign .source-section {
+    padding: 14px;
+  }
+  .report-redesign .source-table-scroll table {
+    min-width: 510px;
+  }
+  .report-redesign .source-disclosure > summary small {
+    display: block;
+    margin: 6px 0 0 16px;
+  }
+  .report-redesign .report-section-tabs {
+    gap: 22px;
+    padding: 0 16px;
+  }
+}
+
+.report-redesign .report-business-panel > .source-references {
+  padding: 12px 16px;
+}
+.report-redesign .report-completion {
+  display: block;
+  min-width: 90px;
+}
+.report-redesign .report-completion .report-muted {
+  display: inline;
+  margin-left: 8px;
+}
+.report-redesign .report-completion .bar-track {
+  display: block;
+  height: 4px;
+  margin-top: 7px;
+}
+.report-redesign .report-completion .bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.report-redesign .rcol {
+  min-width: 0;
+  width: 100%;
+}
+
+/* Workspace integration: all selectors stay inside the new shell/entry roots. */
+.workspace-root,
+.entry-workspace {
+  --ink: #233143;
+  --ink-2: #405267;
+  --muted: #72808e;
+  --line: #e5e9ee;
+  --accent: #398780;
+  --accent-soft: #edf5f2;
+  --surface: #fff;
+  --radius: 12px;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.workspace-root {
+  min-height: 100vh;
+  background: #f4f5f7;
+}
+.workspace-shell .workspace-brand {
+  display: none;
+}
+.workspace-shell .bar {
+  border-color: var(--line);
+  background: #fff;
+}
+.workspace-shell .bar-sub {
+  color: var(--ink-2);
+}
+.workspace-root .card,
+.entry-workspace .card {
+  border-radius: 12px;
+  border-color: var(--line);
+  box-shadow: none;
+}
+.workspace-root .workspace-page {
+  max-width: 1380px;
+}
+.workspace-root .workspace-header {
+  min-height: 64px;
+}
+.workspace-root .workspace-header .bar-date {
+  font-size: 17px;
+}
+.workspace-root .workspace-header .bar-sub {
+  font-size: 13px;
+}
+.workspace-root .primary,
+.entry-workspace .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.workspace-root .workspace-header .icon {
+  border-radius: 8px;
+}
+.entry-workspace {
+  min-width: 0;
+}
+.entry-workspace .entry-context,
+.entry-adoption .entry-context {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 12px 14px;
+  background: #f6f8fa;
+  border-radius: 8px;
+}
+.entry-workspace .qline {
+  border-color: var(--line);
+  padding: 16px 14px;
+}
+.entry-workspace .qline .num {
+  background: #fff;
+  border-radius: 8px;
+}
+.entry-workspace .blk-row {
+  gap: 12px;
+}
+.entry-workspace .field textarea {
+  border-radius: 8px;
+}
+.entry-workspace .field {
+  gap: 8px;
+}
+.entry-adoption {
+  background: #f6f8fa;
+  border: 1px solid #e5e9ee;
+  border-radius: 8px;
+  margin-top: 12px;
+}
+.entry-adoption .entry-context {
+  margin: 0;
+}
+.entry-workspace.entry-crew > .entry-context {
+  margin: 0 0 12px;
+}
+@media (min-width: 720px) {
+  .workspace-shell .tabs {
+    width: 208px;
+    top: 64px;
+    background: #182536;
+    border: 0;
+    padding: 16px 12px;
+    grid-auto-rows: 52px;
+    gap: 8px;
+  }
+  .workspace-shell .tabs button {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 0 16px;
+    color: #bfcad6;
+    border-radius: 8px;
+  }
+  .workspace-shell .tabs button.on {
+    color: #fff;
+    background: #2b4353;
+  }
+  .workspace-shell .workspace-brand {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 208px;
+    height: 64px;
+    z-index: 30;
+    padding: 16px 24px;
+    background: #182536;
+    color: #fff;
+    font-weight: 650;
+  }
+  .workspace-shell .workspace-brand span {
+    background: #398780;
+    padding: 3px 8px;
+    border-radius: 5px;
+  }
+  .workspace-shell .workspace-content {
+    margin-left: 208px;
+  }
+  .workspace-shell .foot {
+    left: 208px;
+  }
+  .entry-workspace .fmain > .card {
+    padding: 20px;
+  }
+}
+@media (max-width: 719px) {
+  .workspace-shell .tabs {
+    background: #fff;
+    border-color: #e5e9ee;
+  }
+  .workspace-shell .tabs button.on {
+    color: #27766f;
+    background: #edf5f2;
+  }
+  .workspace-root .workspace-page {
+    padding: 16px 16px 100px;
+  }
+  .workspace-root .workspace-header {
+    min-height: 60px;
+    padding: 8px 16px;
+  }
+  .workspace-root .workspace-header .bar-sub {
+    max-width: 200px;
+  }
+  .entry-workspace .qline {
+    padding: 14px 10px;
+  }
+  .entry-workspace .entry-context,
+  .entry-adoption .entry-context {
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Entry owns its existing header/main; the shell only supplies the shared navigation. */
+.workspace-root .workspace-entry .workspace-page {
+  padding: 0;
+  max-width: none;
+  margin: 0;
+}
+@media (max-width: 719px) {
+  .workspace-entry .tabs {
+    display: none;
+  }
+}
+
+.personnel-metrics {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-block: 1rem;
+}
+.personnel-metrics section + section {
+  margin-block-start: 1.5rem;
+  border-block-start: 1px solid var(--line, #d6dce4);
+  padding-block-start: 1rem;
+}
+.personnel-metrics table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.personnel-metrics th,
+.personnel-metrics td {
+  padding: 0.5rem;
+  text-align: start;
+  vertical-align: top;
+}
+.personnel-metrics dd {
+  margin-inline-start: 1rem;
+  overflow-wrap: anywhere;
+}
+
+/* Integrator-owned additive styles; reuse the approved report palette. */
+.personnel-metrics {
+  min-width: 0;
+  overflow-x: visible;
+}
+.personnel-metrics .personnel-summary {
+  min-width: 0;
+  color: var(--ink);
+  padding-block: 12px;
+}
+.personnel-metrics .personnel-summary-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 8px;
+}
+.personnel-metrics .personnel-summary h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.personnel-metrics .personnel-summary p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-period,
+.personnel-metrics .personnel-summary-coverage {
+  color: var(--muted);
+  font-size: 12px;
+}
+.personnel-metrics .personnel-summary-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.personnel-metrics .personnel-summary-values {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 13px;
+}
+.personnel-metrics .personnel-summary-values th,
+.personnel-metrics .personnel-summary-values td {
+  min-width: 0;
+  padding: 6px 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line-2);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-values thead th {
+  white-space: normal;
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+.personnel-metrics .personnel-summary-values th:first-child {
+  width: 44%;
+}
+.personnel-metrics .personnel-summary-values thead th:last-child {
+  text-align: end;
+}
+.personnel-metrics .personnel-summary-values tbody th {
+  font-weight: 500;
+}
+.personnel-metrics .personnel-summary-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 8px;
+}
+.personnel-metrics .personnel-summary-number {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-state {
+  color: var(--muted);
+  background: var(--line-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-state[data-state='partial'] {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.personnel-metrics .personnel-summary-state[data-state='complete'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.personnel-metrics .personnel-summary-totals,
+.personnel-metrics .personnel-summary-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.personnel-metrics .personnel-summary-totals > summary,
+.personnel-metrics .personnel-summary-details > summary {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 12px 0;
+  cursor: pointer;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-totals > summary:focus-visible,
+.personnel-metrics .personnel-summary-details > summary:focus-visible,
+.personnel-metrics .personnel-summary button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.personnel-metrics .personnel-summary h5 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+}
+.personnel-metrics .personnel-summary-category-coverage,
+.personnel-metrics .personnel-summary-days dl {
+  margin: 0;
+}
+.personnel-metrics .personnel-summary-category-coverage > div,
+.personnel-metrics .personnel-summary-days dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 8px;
+  margin-block: 4px;
+}
+.personnel-metrics .personnel-summary dt,
+.personnel-metrics .personnel-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-method {
+  padding: 0 8px 8px;
+  background: var(--line-2);
+  border-radius: 6px;
+}
+.personnel-metrics .personnel-summary-days {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.personnel-metrics .personnel-summary-days > li {
+  padding-block: 8px;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary button {
+  min-height: 44px;
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.personnel-metrics .personnel-summary-unavailable {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 480px) {
+  .personnel-metrics .personnel-summary-values th,
+  .personnel-metrics .personnel-summary-values td {
+    padding: 8px 4px;
+  }
+}

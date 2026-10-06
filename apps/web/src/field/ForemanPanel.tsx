@@ -673,7 +673,8 @@ export function ReportForm({
     onSend(reportPayload(data, check.rows, note.trim()));
   };
   return (
-    <>
+    <section className="entry-workspace entry-crew">
+      <p className="entry-context">{t('entryQuantityOnce')}</p>
       <p className="muted small">
         {data.n > 0 && data.receivedAt
           ? t('fm_revision', {
@@ -746,7 +747,7 @@ export function ReportForm({
       >
         {t('fm_send')}
       </button>
-    </>
+    </section>
   );
 }
 

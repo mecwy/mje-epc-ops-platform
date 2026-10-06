@@ -254,6 +254,7 @@ export class ResumeKeeper {
   /** What storage holds now: the stash read at load, or the latest snapshot saved. */
   private stored: ResumeState | null;
   private snapshotSaved = false;
+  private writableProjects: Set<string> | null = null;
 
   constructor(
     private readonly storage: Store | null,
@@ -264,15 +265,23 @@ export class ResumeKeeper {
     for (const d of this.state?.drafts ?? []) this.pending.set(draftKey(d), d);
   }
 
-  /** The workspace opened on `projectId`: the view is restored; other projects' drafts go. */
-  opened(projectId: string) {
-    for (const [k, d] of this.pending)
-      if (d.projectId !== projectId) this.pending.delete(k);
+  /** Drop inaccessible/read-only projects only after the actual authorised project read. */
+  retainWritableProjects(projectIds: readonly string[]) {
+    this.writableProjects = new Set(projectIds);
+    for (const [key, draft] of this.pending)
+      if (!this.writableProjects.has(draft.projectId)) this.pending.delete(key);
     if (this.stored)
       this.write({
         ...this.stored,
-        drafts: this.stored.drafts.filter((d) => d.projectId === projectId),
+        drafts: this.stored.drafts.filter((d) =>
+          this.writableProjects!.has(d.projectId),
+        ),
       });
+  }
+
+  /** Opening another mounted workspace must not discard other authorised drafts. */
+  opened() {
+    if (this.stored && this.stored.drafts.length === 0) this.write(this.stored);
   }
   get pendingCount() {
     return this.pending.size;
@@ -314,7 +323,9 @@ export class ResumeKeeper {
       this.state.savedAt <= now &&
       now - this.state.savedAt <= RESUME_LIMITS.maxAgeMs;
     const drafts = new Map(fresh ? this.pending : []);
-    for (const d of unsaved) drafts.set(draftKey(d), d);
+    for (const d of unsaved)
+      if (!this.writableProjects || this.writableProjects.has(d.projectId))
+        drafts.set(draftKey(d), d);
     const next = { ...place, drafts: [...drafts.values()], savedAt: now };
     if (!saveResume(this.storage, next)) return false;
     this.stored = next;

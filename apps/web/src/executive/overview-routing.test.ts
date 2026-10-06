@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   executiveHref,
+  reportHref,
+  parseReportRoute,
   parseExecutiveRoute,
   type ExecutiveRoute,
 } from './overview-routing.js';
@@ -36,5 +38,63 @@ describe('executive deep links', () => {
     expect(() =>
       executiveHref({ kind: 'overview', projectId: '../' }),
     ).toThrow();
+  });
+});
+
+describe('report project and business-date navigation', () => {
+  it('roundtrips the exact target day without substituting today or newest revision', () => {
+    const route = { projectId, businessDate: '2028-02-29' };
+    const href = reportHref(route);
+    expect(parseReportRoute(href)).toEqual(route);
+    expect(
+      parseReportRoute(href.replace(projectId, projectId.toUpperCase())),
+    ).toEqual(route);
+    expect(parseExecutiveRoute(href)).toBeNull();
+    expect(
+      parseReportRoute(executiveHref({ kind: 'overview', projectId })),
+    ).toBeNull();
+  });
+  it.each([
+    '2027-02-29',
+    '2028-04-31',
+    '2028-00-10',
+    '2028-01-00',
+    'today',
+    '2028-2-9',
+  ])(
+    'rejects invalid date %s instead of silently selecting another day',
+    (businessDate) => {
+      expect(
+        parseReportRoute(`#/projects/${projectId}/report/${businessDate}`),
+      ).toBeNull();
+      expect(() => reportHref({ projectId, businessDate })).toThrow(
+        'Invalid report route',
+      );
+    },
+  );
+  it.each([
+    '?role=manager',
+    '?orgId=TEST',
+    '/revision/5',
+    '/../overview',
+    '?token=TEST',
+    '#more',
+  ])(
+    'does not accept authority, version, or extra data suffix %s',
+    (suffix) => {
+      expect(
+        parseReportRoute(`#/projects/${projectId}/report/2028-02-29${suffix}`),
+      ).toBeNull();
+    },
+  );
+  it('rejects malformed and encoded path identifiers', () => {
+    for (const invalid of ['..', 'TEST', '%2e%2e', 'javascript:alert(1)']) {
+      expect(
+        parseReportRoute(`#/projects/${invalid}/report/2028-02-29`),
+      ).toBeNull();
+      expect(() =>
+        reportHref({ projectId: invalid, businessDate: '2028-02-29' }),
+      ).toThrow();
+    }
   });
 });

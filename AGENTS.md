@@ -1,12 +1,14 @@
 # MJE EPC public code development
 
-先读 README.md、CODEX_START_HERE.md（私有档案，本仓库外）和本文件。
+先读本仓库 README.md、CODEX_START_HERE.md 和本文件；当前任务与授权再核对仓库外私有档案中的 PM 接手页。
 
-## 当前状态（会变；以此段为准，历史在 git log）
+## 当前任务与审核入口
 
-- Merged main: Site Daily Close, issue/photo workflows, field check-in and foreman declarations, offline command handling, protected module readers, and project status declarations/replies. Executive multi-project home remains pending. Figures are declarations, not verification.
-- Verification: local/CI synthetic TEST checks and previously recorded Dev health evidence. New merged slices are not yet deployed; real Entra sign-in, phones, cloud persistence and private-source AT/LR application acceptance remain unverified.
+- 当前任务、候选 SHA、文件租约、审核与部署证据以私有档案中的 PM 接手页／状态板为准；本地 checkout 不自动等于最新 main。历史实现说明不代替当前状态。
+- 代码测试、私有来源回归、现场事实核实和部署验收分别记录；申报数字不能自动视为已核实。
 - Each PR uses the assigned independent V2 reviewer (currently Claude CLI Opus 5.5 high), fixes or records remaining nits, and requires successful CI on its reviewed head before normal merge. No auto-merge.
+
+治理规则由 PM 统一分发并落到任务卡；委员提供规则、证据和整改建议，不独立向 writer 派工。Codex Sol 为日常实施主力；跨域归属、身份权限、并发协议、数据迁移方案或已定位仍无法解决的复杂缺陷先由 Astra high 收敛设计，再由 Sol 实施。模型与具体投入由任务卡确定，不因文件数量自动升级。现有独立 Claude 审核使用 [.github/independent-review-template.md](.github/independent-review-template.md)，在同一份报告回答 M1–M6；不增加第二道全 PR 治理审批。
 
 ## 持续规则
 
@@ -40,6 +42,8 @@ Node 24 LTS 与 pnpm 10 按版本文件/锁文件安装。金额 Decimal(20,4)�
 所有租户外键带 orgId；API 从验证后的会员关系建立授权上下文，不信任客户端 orgId/role。Azure部署使用托管身份，Actions用OIDC，禁止长期Azure密钥。生产无假登录旁路，不把原始人像/身份资料写入日志或公网。
 
 ## 测试、迁移、提交
+
+CI 用事件的明确基准提交与受测提交运行 `pnpm check:migrations`，禁止改写、删除或重命名基准中已有的迁移文件，允许追加普通文件。PR 检查受测合并提交；本地使用 `pnpm check:migrations --base <BASE> --head <HEAD>`，基准须为候选的祖先。该检查只核 Git 历史，不证明迁移可执行或数据可恢复；修改数据库仍需迁移与集成验证。
 
 每PR写明 MW/AT/LR 编号、最终行为、测试命令与结果、未测项、迁移和回退。真实日志回归以两份原 DOCX 的 SHA-256 与表格坐标为依据，合成跨项目样本单独标TEST。测试通过不等于现场事实已核实；Phase0来源检查不等于 AT/LR 应用验收通过。
 

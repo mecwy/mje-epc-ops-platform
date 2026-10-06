@@ -10,6 +10,7 @@ import {
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
+  WeatherStore,
 } from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
 import { TokenVerifier } from './auth/token-verifier.js';
@@ -36,7 +37,10 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     auth,
     verifier,
     store: new AlphaStore(pool),
-    reportStore: new ReportStore(pool),
+    reportStore: new ReportStore(pool, {
+      weatherReferenceEnabled:
+        process.env['WEATHER_REFERENCE_ENABLED'] === 'true',
+    }),
     projectStatusCommands: new ProjectStatusCommands(pool),
     projectStatusReader: new ProjectStatusReader(pool),
     projectHomeReader: new ProjectHomeReader(pool),
@@ -44,6 +48,9 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     fieldStore: new FieldStore(pool),
     foremanStore: new ForemanStore(pool),
   };
+  // Explicit opt-in after the weather migrations; transport and device capture stay separate.
+  if (process.env['WEATHER_REFERENCE_ENABLED'] === 'true')
+    runtime.weatherStore = new WeatherStore(pool);
   const blobs = await photoBlobsFromEnv();
   if (blobs) runtime.photoStore = new PhotoStore(pool, blobs);
   // Without a blob store check-ins still work; selfie upload answers FEATURE_OFF.

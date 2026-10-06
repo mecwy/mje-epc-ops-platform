@@ -1,4 +1,8 @@
-import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
+import type {
+  DayFactsDto,
+  SaveFactsCommand,
+  ReportLocationOperation,
+} from '@mje/contracts';
 import { ApiError, type WriteResult } from '../api.js';
 import { savable, setFact } from './model.js';
 
@@ -83,6 +87,10 @@ export class DraftSession {
   retained: Retained[] = [];
   private acked: DayFactsDto;
   private pending: SaveFactsCommand | null = null;
+  private locationOperation: ReportLocationOperation | undefined;
+  private weatherIntent = false;
+  private weatherWritten = false;
+  private weatherHadUnknown = false;
   private running: Promise<FlushOutcome> | null = null;
   private blocked = false;
   private generation = 0;
@@ -105,7 +113,40 @@ export class DraftSession {
   }
 
   get dirty(): boolean {
-    return this.facts !== this.acked || this.pending !== null;
+    return (
+      this.facts !== this.acked ||
+      this.pending !== null ||
+      (this.weatherIntent && !this.weatherWritten)
+    );
+  }
+  get weatherNeedsSave(): boolean {
+    return this.weatherIntent;
+  }
+  get weatherAwaitingRead(): boolean {
+    return this.weatherWritten;
+  }
+  get weatherUnknown(): boolean {
+    return (
+      this.weatherIntent && this.pending !== null && this.state === 'failed'
+    );
+  }
+  get pendingLocationKind(): ReportLocationOperation['kind'] | null {
+    return this.locationOperation?.kind ?? null;
+  }
+  /** Same draft queue and command as manual facts; raw location never enters facts. */
+  editWeather(
+    facts: DayFactsDto,
+    operation?: ReportLocationOperation,
+  ): boolean {
+    if (this.frozen || this.pending || this.running || this.weatherWritten)
+      return false;
+    if (!this.edit(structuredClone(facts))) return false;
+    this.locationOperation =
+      operation === undefined
+        ? this.locationOperation
+        : structuredClone(operation);
+    this.weatherIntent = true;
+    return true;
   }
   get editGeneration(): number {
     return this.generation;
@@ -160,6 +201,10 @@ export class DraftSession {
     this.facts = facts;
     this.acked = facts;
     this.pending = null;
+    this.locationOperation = undefined;
+    this.weatherIntent = false;
+    this.weatherWritten = false;
+    this.weatherHadUnknown = false;
     this.blocked = false;
     this.set('idle');
   }
@@ -230,7 +275,10 @@ export class DraftSession {
     for (let writes = 0; writes < 20; writes++) {
       let command = this.pending;
       if (!command) {
-        if (this.facts === this.acked) {
+        if (
+          this.facts === this.acked &&
+          (!this.weatherIntent || this.weatherWritten)
+        ) {
           if (this.state === 'saving') this.set('saved');
           return 'ok';
         }
@@ -244,7 +292,14 @@ export class DraftSession {
           businessDate: this.businessDate,
           expectedVersion: this.version,
           clientMutationId: this.newId(),
-          facts: this.facts,
+          facts: this.weatherIntent ? structuredClone(this.facts) : this.facts,
+          ...(this.locationOperation === undefined
+            ? {}
+            : {
+                reportLocationOperation: structuredClone(
+                  this.locationOperation,
+                ),
+              }),
         };
         this.pending = command;
       }
@@ -253,18 +308,33 @@ export class DraftSession {
         const result = await this.write(command);
         this.version = result.version;
         this.acked = command.facts;
+        if (this.weatherIntent) this.weatherWritten = true;
+        // No edit was accepted while a C03 command holds the day.
+        if (this.weatherIntent) this.facts = command.facts;
         this.pending = null;
       } catch (error) {
         const code = error instanceof ApiError ? error.code : 'REQUEST_FAILED';
+        // The server checks successful replay before CAS/day-state refusal. These two
+        // answers therefore settle the original key even after a lost response.
         if (code === 'VERSION_CONFLICT' || code === 'LOCKED') {
           this.pending = null;
           this.set('conflict');
           return 'conflict';
         }
+        if (
+          this.weatherIntent &&
+          (this.weatherHadUnknown ||
+            (error instanceof ApiError && error.afterLostAttempt))
+        ) {
+          // Identity/permission and other pre-replay refusals cannot settle the earlier send.
+          this.weatherHadUnknown = true;
+          this.set('failed');
+          return 'failed';
+        }
         if (PERMANENT.has(code)) {
           this.pending = null;
           this.blocked = true;
-        }
+        } else if (this.weatherIntent) this.weatherHadUnknown = true;
         // Otherwise the outcome is unknown: keep the command and its key for the next attempt.
         this.set('failed');
         return 'failed';

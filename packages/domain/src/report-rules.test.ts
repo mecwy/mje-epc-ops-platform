@@ -615,3 +615,131 @@ describe('carry-over between submitted days', () => {
     ).toEqual({ value: null, complete: false });
   });
 });
+
+describe('source declarations are facts, never operational quantities', () => {
+  it('recognizes milestone-only blank source without quantity, plan or completion', () => {
+    const f = blankFacts();
+    f.sourceReport = {
+      schemaVersion: 3,
+      documents: {
+        test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+      },
+      workPercent: {},
+      materials: {},
+      milestones: {
+        testMilestone: {
+          reportedDelayDays: {
+            raw: ' ',
+            state: 'blank',
+            at: { document: 'test', table: 1, row: 1, cell: 3 },
+          },
+        },
+      },
+    };
+    expect(hasFacts(f)).toBe(true);
+    expect(f.qty).toEqual({});
+    expect(f.milestones).toEqual({});
+    expect(f.sourceReport).not.toHaveProperty('reportedNextPlan');
+  });
+  it('recognizes an explicitly blank source-plan cell without making an operational plan or quantity', () => {
+    const f = blankFacts();
+    f.sourceReport = {
+      schemaVersion: 2,
+      documents: {
+        test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+      },
+      workPercent: {},
+      materials: {},
+      reportedNextPlan: {
+        targetBusinessDate: '2027-03-01',
+        quantities: {
+          test: {
+            raw: ' ',
+            state: 'blank',
+            at: { document: 'test', table: 0, row: 1, cell: 0 },
+          },
+        },
+      },
+    };
+    expect(hasFacts(f)).toBe(true);
+    expect(f.qty).toEqual({});
+    expect(f.cumulative).toEqual({});
+  });
+  it('counts a recorded blank cell but not documents alone; leaves numeric rules unchanged', () => {
+    const f = blankFacts();
+    f.sourceReport = {
+      schemaVersion: 1,
+      documents: {
+        testDoc: {
+          sha256: 'a'.repeat(64),
+          label: 'TEST source',
+          format: 'docx',
+        },
+      },
+      workPercent: {},
+      materials: {},
+    };
+    expect(hasFacts(f)).toBe(false);
+    f.sourceReport.peopleTotal = {
+      raw: '  ',
+      state: 'blank',
+      at: { document: 'testDoc', table: 0, row: 0, cell: 0 },
+    };
+    expect(hasFacts(f)).toBe(true);
+    expect(peopleTotal(f.people)).toBeNull();
+    f.sourceReport.peopleTotal = {
+      ...f.sourceReport.peopleTotal,
+      raw: '999',
+      state: 'value',
+    };
+    expect(peopleTotal(f.people)).toBeNull();
+    expect(f.qty).toEqual({});
+    expect(f.materials).toEqual({});
+  });
+});
+
+it('V4 source-only blank category note is a fact without implying people or labor', () => {
+  const f = blankFacts();
+  f.sourceReport = {
+    schemaVersion: 4,
+    documents: {
+      test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    personnelRemarks: {
+      installer: {
+        raw: ' ',
+        state: 'blank',
+        at: { document: 'test', table: 3, row: 1, cell: 4 },
+      },
+    },
+  };
+  expect(hasFacts(f)).toBe(true);
+  expect(f.people).toEqual({});
+  expect(f.presence).toEqual({});
+});
+
+it('V5 blank source area or duration is a fact without assigning work or deriving progress', () => {
+  const cell = {
+    raw: ' ',
+    state: 'blank' as const,
+    at: { document: 'test', table: 2, row: 1, cell: 1 },
+  };
+  const f = blankFacts();
+  f.sourceReport = {
+    schemaVersion: 5,
+    documents: {
+      test: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    workAreas: { testWork: cell },
+  };
+  expect(hasFacts(f)).toBe(true);
+  delete f.sourceReport.workAreas;
+  f.sourceReport.reportedDuration = { elapsed: cell };
+  expect(hasFacts(f)).toBe(true);
+  expect(f.qty).toEqual({});
+  expect(f.cumulative).toEqual({});
+});

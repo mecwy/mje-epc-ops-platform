@@ -10,6 +10,9 @@
  */
 import type {
   ForemanDayDto,
+  PeopleWindowSummaryDto,
+  ManagerReviewScopeDto,
+  SafeFrozenWeatherReference,
   PhotoAsOfDto,
   PlanRowDto,
   ReportItemDto,
@@ -34,10 +37,29 @@ import {
   ReportError,
   WRITE_ROLES,
   projectAccess,
+  lockReportDay,
   type Access,
   type Actor,
   type ReportProjectRow,
 } from './store-kit.js';
+import {
+  readWeatherLocations,
+  readWeatherRequest,
+  readWeatherSnapshot,
+  readReportLocationCoordinates,
+  frozenWeatherReferences,
+} from './weather-store.js';
+import {
+  managerReviewReader,
+  type ManagerReviewSnapshotCut,
+} from './manager-review-reader.js';
+import {
+  DENY_REVIEW_PORTS,
+  type ReviewServerPorts,
+} from './manager-review-store.js';
+import { parseManagerReviewScope } from '@mje/contracts';
+import { buildPersonnelWindow } from './personnel-metrics.js';
+import { parsePeopleWindowSummary } from '@mje/contracts';
 import type { IssueAsOf } from './issue-store.js';
 import { rosterLock } from './field-kit.js';
 import { frozenPhotos } from './photo-store.js';
@@ -55,6 +77,7 @@ import {
   planStateOf,
   publicItem,
   revisionRows,
+  personnelRevisionInputs,
   type DayRow,
   type DayState,
 } from './report-store.js';
@@ -78,6 +101,12 @@ export const REPORT_PROJECTORS = [
   'report.plan.writer',
   'report.plan.reader',
   'report.items',
+  'report.peopleWindow',
+  'report.managerReview',
+  'report.weatherLocations',
+  'report.weatherRequest',
+  'report.weatherSnapshot',
+  'report.reportLocationCoordinates',
   'report.lagHistory',
 ] as const;
 export type ReportProjector = (typeof REPORT_PROJECTORS)[number];
@@ -134,6 +163,7 @@ export function readerNextPlan<T>(nextPlan: T): T {
 
 /** The fields of a submitted revision snapshot a day view is built from. */
 interface SubmittedSnapshot {
+  weatherReferences?: SafeFrozenWeatherReference[];
   facts: DayFacts;
   items: ReportItemDto[];
   baseline: { n: number; rows: PlanRowDto[] } | null;
@@ -152,6 +182,8 @@ interface SubmittedSnapshot {
   photos?: PhotoAsOfDto[];
 }
 export interface ReaderContent {
+  managerReviewCut?: ManagerReviewSnapshotCut;
+  weatherReferences?: SafeFrozenWeatherReference[];
   state: 'empty' | 'submitted';
   facts: DayFacts;
   items: ReportItemDto[];
@@ -195,6 +227,16 @@ export function readerContent(
   const baseline = s.baseline ?? null;
   return {
     state: 'submitted',
+    ...(Object.hasOwn(snapshot, 'managerReviewCut')
+      ? {
+          managerReviewCut: snapshot[
+            'managerReviewCut'
+          ] as ManagerReviewSnapshotCut,
+        }
+      : {}),
+    ...(Object.hasOwn(s, 'weatherReferences')
+      ? { weatherReferences: s.weatherReferences ?? [] }
+      : {}),
     facts: s.facts,
     items: s.items,
     // The day's plan status as the submission saw it: its frozen baseline, never a draft.
@@ -231,6 +273,10 @@ export function readerSnapshot(
   }
   const nextPlan = readerNextPlan(snapshot['nextPlan']);
   if (nextPlan !== snapshot['nextPlan']) own()['nextPlan'] = nextPlan;
+  if (snapshot['personnelSummary'] != null)
+    own()['personnelSummary'] = parsePeopleWindowSummary(
+      snapshot['personnelSummary'],
+    );
   const photos = rest['photos'];
   if (!Array.isArray(photos)) return rest;
   return {
@@ -478,6 +524,20 @@ async function writerDay(
     currentRevisionNumber: day?.currentRevisionNumber ?? 0,
     correctionReason: day?.correctionReason ?? null,
     facts: facts ?? blankFacts(),
+    weatherReferences:
+      day && facts?.weatherReferences?.length
+        ? await frozenWeatherReferences(
+            client,
+            actor,
+            {
+              projectId,
+              dailyCloseId: day.id,
+              businessDate,
+              siteTimezone: day.siteTimezone,
+            },
+            { weatherReferences: facts.weatherReferences },
+          )
+        : [],
     items: snapshot.items,
     planStatus: planStatus(today.state),
     baseline: snapshot.baseline,
@@ -569,6 +629,9 @@ async function readerDay(
     currentRevisionNumber: latest ? latest.revisionNumber : 0,
     correctionReason: null,
     facts: content.facts,
+    ...(content.weatherReferences === undefined
+      ? {}
+      : { weatherReferences: content.weatherReferences }),
     items: content.items,
     planStatus: content.planStatus,
     baseline: content.baseline,
@@ -610,6 +673,7 @@ async function revision(
   );
   if (!r) throw new ReportError('NOT_FOUND');
   const head = {
+    reportRevisionId: r.id,
     n: r.revisionNumber,
     at: r.submittedAt.toISOString(),
     by: r.updatedBy,
@@ -622,6 +686,97 @@ async function revision(
         snapshot: readerSnapshot(r.snapshot),
       })
     : projected('report.revision.writer', { ...head, snapshot: r.snapshot });
+}
+
+async function managerReview(
+  { client, actor }: Opened,
+  input: ManagerReviewScopeDto,
+  ports: ReviewServerPorts,
+) {
+  const scope = parseManagerReviewScope(input);
+  // Authorization precedes even an empty source and the original day gate. The helper checks
+  // the current scoped READ_REVIEW grant; a project role alone never grants that capability.
+  const { access } = await projectAccess(client, actor, scope.projectId);
+  if (access !== 'write') throw new ReportError('READ_ONLY');
+  await lockReportDay(client, actor.orgId, scope.projectId, scope.businessDate);
+  return projected(
+    'report.managerReview',
+    await managerReviewReader.read(client, actor, scope, ports),
+  );
+}
+
+async function weatherWriter(open: Opened, projectId: string) {
+  const { access } = await projectAccess(open.client, open.actor, projectId);
+  if (access !== 'write') throw new ReportError('READ_ONLY');
+}
+async function weatherLocations(open: Opened, projectId: string) {
+  await weatherWriter(open, projectId);
+  return projected(
+    'report.weatherLocations',
+    await readWeatherLocations(open.client, open.actor, projectId),
+  );
+}
+async function weatherRequest(
+  open: Opened,
+  projectId: string,
+  requestId: string,
+) {
+  await weatherWriter(open, projectId);
+  return projected(
+    'report.weatherRequest',
+    await readWeatherRequest(open.client, open.actor, projectId, requestId),
+  );
+}
+async function weatherSnapshot(
+  open: Opened,
+  projectId: string,
+  snapshotId: string,
+) {
+  await weatherWriter(open, projectId);
+  return projected(
+    'report.weatherSnapshot',
+    await readWeatherSnapshot(open.client, open.actor, projectId, snapshotId),
+  );
+}
+async function reportLocationCoordinates(
+  open: Opened,
+  projectId: string,
+  recordId: string,
+) {
+  await weatherWriter(open, projectId);
+  return projected(
+    'report.reportLocationCoordinates',
+    await readReportLocationCoordinates(
+      open.client,
+      open.actor,
+      projectId,
+      recordId,
+    ),
+  );
+}
+
+async function peopleWindow(
+  { client, actor }: Opened,
+  projectId: string,
+  toBusinessDate: string,
+): Promise<PeopleWindowSummaryDto> {
+  // Check both membership and tenant-owned project before inspecting even an empty window.
+  await projectAccess(client, actor, projectId);
+  const revisions = await personnelRevisionInputs(
+    client,
+    actor.orgId,
+    projectId,
+    toBusinessDate,
+  );
+  return projected(
+    'report.peopleWindow',
+    buildPersonnelWindow({
+      projectId,
+      toBusinessDate,
+      selectedAtUTC: new Date(actor.decidedAt).toISOString(),
+      revisions,
+    }),
+  );
 }
 
 async function plan(
@@ -734,6 +889,20 @@ export const reportReader = {
       plan: async (projectId: string, targetBusinessDate: string) =>
         plan(open(), projectId, targetBusinessDate),
       items: async (projectId: string) => items(open(), projectId),
+      managerReview: async (
+        scope: ManagerReviewScopeDto,
+        ports: ReviewServerPorts = DENY_REVIEW_PORTS,
+      ) => managerReview(open(), scope, ports),
+      weatherLocations: async (projectId: string) =>
+        weatherLocations(open(), projectId),
+      weatherRequest: async (projectId: string, requestId: string) =>
+        weatherRequest(open(), projectId, requestId),
+      weatherSnapshot: async (projectId: string, snapshotId: string) =>
+        weatherSnapshot(open(), projectId, snapshotId),
+      reportLocationCoordinates: async (projectId: string, recordId: string) =>
+        reportLocationCoordinates(open(), projectId, recordId),
+      peopleWindow: async (projectId: string, businessDate: string) =>
+        peopleWindow(open(), projectId, businessDate),
     };
   },
   /**
@@ -759,3 +928,18 @@ export type ReportDayReaderDto = Awaited<ReturnType<typeof readerDay>>;
 export type ReportRevisionDto = Awaited<ReturnType<typeof revision>>;
 export type ReportPlanDto = Awaited<ReturnType<typeof plan>>;
 export type ReportLagDayDto = LagDay;
+
+export type ReportWeatherLocationsDto = Awaited<
+  ReturnType<typeof weatherLocations>
+>;
+export type ReportWeatherRequestDto = Awaited<
+  ReturnType<typeof weatherRequest>
+>;
+export type ReportWeatherSnapshotDto = Awaited<
+  ReturnType<typeof weatherSnapshot>
+>;
+export type ReportLocationCoordinatesDto = Awaited<
+  ReturnType<typeof reportLocationCoordinates>
+>;
+
+export type ReportManagerReviewDto = Awaited<ReturnType<typeof managerReview>>;

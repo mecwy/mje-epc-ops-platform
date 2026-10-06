@@ -1,6 +1,6 @@
 # MJE EPC operations platform
 
-**Current state (see AGENTS.md for the maintained summary):** Site Daily Close, issue/photo workflows, field check-in and foreman declarations, offline command handling, protected module readers, and project status declarations/replies are merged. Every figure is a declaration, not a verification. The executive multi-project home is pending. Newer merged slices are not yet deployed to Dev; real Entra sign-in, real phones, cloud persistence and private-source application acceptance remain unverified. This is not an employee-ready or production-ready application.
+**Current delivery:** use the PM-maintained handover and status board in the separately controlled archive for the assigned task, exact code revision, review and deployment evidence. This checkout may be an isolated candidate. Historical implementation descriptions below are not a live release status. Figures are declarations, not verification; synthetic checks do not establish field acceptance or production readiness.
 
 The selected stack is TypeScript strict, React/Vite, NestJS, a Node worker, PostgreSQL/Prisma and Azure Blob, with Azure Container Apps as the intended application runtime. The first business scope is Site Daily Close. CRM, costing and payments currently have schema placeholders only.
 

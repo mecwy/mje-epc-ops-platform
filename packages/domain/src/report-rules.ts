@@ -3,7 +3,11 @@
  * Inputs are plain values; the store and the browser both call these so that
  * server-side enforcement and client-side previews cannot drift.
  */
-import { isRealTimestamp } from '@mje/contracts';
+import {
+  isRealTimestamp,
+  type SourceReport,
+  type WeatherFactsExtension,
+} from '@mje/contracts';
 
 export const TOKENS = ['unknown', 'na'] as const;
 export type Token = (typeof TOKENS)[number];
@@ -98,7 +102,8 @@ export interface MilestoneFact {
   actual: string;
   note: string;
 }
-export interface DayFacts {
+export interface DayFacts extends WeatherFactsExtension {
+  sourceReport?: SourceReport;
   weather: string;
   temperature: string;
   qty: Record<string, Reported>;
@@ -130,6 +135,28 @@ export function blankFacts(): DayFacts {
 }
 export function hasFacts(f: DayFacts): boolean {
   return Boolean(
+    f.weatherReferences?.length ||
+    f.reportLocationRef ||
+    (f.sourceReport &&
+      ((f.sourceReport.schemaVersion !== 1 &&
+        f.sourceReport.reportedNextPlan &&
+        Object.keys(f.sourceReport.reportedNextPlan.quantities).length) ||
+        ('milestones' in f.sourceReport &&
+          f.sourceReport.milestones &&
+          Object.keys(f.sourceReport.milestones).length) ||
+        ((f.sourceReport.schemaVersion === 4 ||
+          f.sourceReport.schemaVersion === 5) &&
+          (f.sourceReport.reportedRecorder ||
+            Object.keys(f.sourceReport.machinery ?? {}).length ||
+            Object.keys(f.sourceReport.personnelRemarks ?? {}).length)) ||
+        (f.sourceReport.schemaVersion === 5 &&
+          (f.sourceReport.reportedDuration ||
+            Object.keys(f.sourceReport.workAreas ?? {}).length)) ||
+        f.sourceReport.peopleTotal ||
+        Object.keys(f.sourceReport.workPercent).length ||
+        Object.values(f.sourceReport.materials).some(
+          (row) => Object.keys(row).length,
+        ))) ||
     f.noWork ||
     f.weather ||
     f.temperature ||

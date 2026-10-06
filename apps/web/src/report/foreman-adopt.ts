@@ -112,6 +112,10 @@ export interface AdoptContext {
     owner: string,
     outcome: 'saved' | 'refused' | 'unknown',
   ) => Promise<boolean>;
+  /** Retry only the post-write read, never the adoption command. */
+  refresh?: (owner: string) => Promise<boolean>;
+  /** Whether the original day still holds this owner (an external refresh may free it). */
+  held?: (owner: string) => boolean;
   /** Free the lock held by `owner` when nothing was sent under it. */
   abandon: (owner: string) => void;
 }
@@ -129,6 +133,8 @@ export type AdoptResult =
  */
 export class AdoptFlow {
   readonly owned: OwnedCommands<null, AdoptAction>;
+  /** The workspace owns recovery controls; the item row still displays this same flow. */
+  workspaceRecovery = false;
   /** item → the total the PM saw when it changed under them. */
   changed: Record<string, string | null> = {};
   /**
@@ -137,6 +143,25 @@ export class AdoptFlow {
    * and the day stays read-only until the refresh has landed.
    */
   phase: { item: string; value: string } | null = null;
+  private settlement: {
+    item: string;
+    value: string;
+    outcome: 'saved' | 'refused' | 'unknown';
+  } | null = null;
+  refreshing = false;
+  /** An answered/given-up command still owns its day until the editable read lands. */
+  get settling() {
+    if (this.token && this.ctx.held?.(this.token) === false) {
+      this.token = null;
+      this.settlement = null;
+    }
+    return this.settlement;
+  }
+  get stage(): 'running' | 'unresolved' | 'settling' | null {
+    if (this.settling) return 'settling';
+    if (this.owned.session.busy || this.phase) return 'running';
+    return this.owned.unresolved ? 'unresolved' : null;
+  }
 
   constructor(
     private readonly ctx: AdoptContext,
@@ -150,11 +175,11 @@ export class AdoptFlow {
   }
   /** A new adoption may start only when nothing is running, unresolved or settling. */
   get canStart(): boolean {
-    return this.owned.canStart && this.phase === null;
+    return this.owned.canStart && this.phase === null && this.settling === null;
   }
   /** The item and total being adopted (any stage), if any. */
   get active(): { item: string; value: string } | null {
-    return this.owned.current ?? this.phase;
+    return this.owned.current ?? this.phase ?? this.settling;
   }
   private setPhase(p: { item: string; value: string } | null) {
     this.phase = p;
@@ -216,8 +241,40 @@ export class AdoptFlow {
   private token: string | null = null;
   private async releaseDay(outcome: 'saved' | 'refused' | 'unknown') {
     const t = this.token;
-    this.token = null;
-    if (t) await this.ctx.release(t, outcome);
+    if (!t) return;
+    const a = this.active;
+    if (a) this.settlement = { ...a, outcome };
+    this.refreshing = true;
+    this.notify();
+    try {
+      if (await this.ctx.release(t, outcome)) {
+        this.token = null;
+        this.settlement = null;
+      }
+    } finally {
+      this.refreshing = false;
+      this.notify();
+    }
+  }
+  /** Refresh the original day under its original owner; no command is resent. */
+  async refresh(): Promise<void> {
+    const s = this.settling;
+    const t = this.token;
+    if (!s || !t || this.refreshing) return;
+    this.refreshing = true;
+    this.notify();
+    try {
+      const fresh = this.ctx.refresh
+        ? await this.ctx.refresh(t)
+        : await this.ctx.release(t, s.outcome);
+      if (fresh) {
+        this.token = null;
+        this.settlement = null;
+      }
+    } finally {
+      this.refreshing = false;
+      this.notify();
+    }
   }
   private async send(
     item: string,

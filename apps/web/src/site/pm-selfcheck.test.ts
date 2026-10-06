@@ -19,6 +19,8 @@ import {
 } from '../api.js';
 import { I18nProvider } from '../i18n.js';
 import { AdoptFlow } from '../report/foreman-adopt.js';
+import { dayServer, open, workspace } from './pm-day.fixture.js';
+import { PmOwnerRegistry, pmDayBinding } from './pm-owners.js';
 import { ForemanLine, PmFieldContext } from '../report/ForemanLine.js';
 import { ProxySheet } from './CheckIns.js';
 import { PmOwnedBar } from './OwnedBar.js';
@@ -648,4 +650,222 @@ describe('#40 round 1 P5: a backdated PM proxy is owned by the day it is for', (
     );
     expect(bar).toMatch(/PM check-in for TEST worker \(Thu 1 October\)/);
   });
+});
+
+describe('C04-W1: workspace adoption recovery', () => {
+  it('a writer on another view sees the original project/date without business payload', async () => {
+    const a = pmApi();
+    const x = await surface('adopt', a);
+    a.plan.push(err('NETWORK'));
+    await x.start();
+    const bar = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners: { site: x.sessions, adoptDays: () => [[DAY, x.flow]] },
+      itemLabel: () => 'TEST private item',
+      canWrite: true,
+      projectLabel: 'TEST project A',
+    });
+    expect(bar.html).toContain('TEST project A');
+    expect(bar.html).toContain('Fri 2 October');
+    expect(bar.html).not.toContain('TEST private item');
+    expect(bar.html).not.toContain('TEST A');
+    expect(bar.buttons.filter((b) => b.text === 'Retry')).toHaveLength(1);
+    await click(bar.buttons, /^Retry$/);
+    expect(a.log).toHaveLength(2);
+    expect(a.log[1]).toBe(a.log[0]);
+    expect(x.flow.active).toBeNull();
+  });
+
+  it('answered adoption keeps its original owner visible until the editable read lands', async () => {
+    const sv = dayServer();
+    const w = workspace(sv);
+    await w.load();
+    const flow = w.flow();
+    sv.readPlan.push(err('NETWORK'));
+    await flow.adopt('support', { basis: view('10').basis, value: '10' });
+    expect(flow.active).toMatchObject({ item: 'support' });
+    expect(flow.canStart).toBe(false);
+    expect(w.type('7')).toBe(false);
+    const bar = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners: w.render(P),
+      itemLabel: () => 'TEST private item',
+      canWrite: true,
+      projectLabel: 'TEST project A',
+    });
+    expect(bar.html).toMatch(/could not be read again/i);
+    expect(bar.buttons.filter((b) => b.text === 'Retry')).toHaveLength(0);
+    expect(bar.buttons.filter((b) => b.text === 'Give up')).toHaveLength(0);
+    sv.read.hold = true;
+    const refresh = click(bar.buttons, /^Refresh$/);
+    await tick();
+    expect(flow.canStart).toBe(false);
+    expect(w.type('7')).toBe(false);
+    open(sv.read);
+    await refresh;
+    expect(flow.active).toBeNull();
+    expect(flow.canStart).toBe(true);
+    expect(w.type('7')).toBe(true);
+    expect(sv.adoptLog).toHaveLength(1);
+  });
+});
+
+describe('C04-W1: one workspace owner across dates, projects and authority changes', () => {
+  it('the row keeps the same owner but the workspace has the only recovery buttons', async () => {
+    const a = pmApi();
+    const x = await surface('adopt', a);
+    x.flow.workspaceRecovery = true;
+    a.plan.push(err('NETWORK'));
+    await x.start();
+    expect(x.render()).toMatch(/Using 10 got no answer/);
+    expect(x.render()).not.toMatch(/>Retry<|>Give up</);
+    const bar = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners: { site: x.sessions, adoptDays: () => [[DAY, x.flow]] },
+      itemLabel: () => 'TEST private item',
+      projectLabel: 'TEST project A',
+      canWrite: true,
+      adoptionOnly: true,
+    });
+    expect(bar.buttons.filter((b) => b.text === 'Retry')).toHaveLength(1);
+    a.plan.push(err('READ_ONLY'));
+    await click(bar.buttons, /^Retry$/);
+    expect(a.log[1]).toBe(a.log[0]);
+    const after = wrap(
+      createElement(PmOwnedBar, {
+        owners: { site: x.sessions, adoptDays: () => [[DAY, x.flow]] } as never,
+        itemLabel: () => 'TEST private item',
+        projectLabel: 'TEST project A',
+        canWrite: false,
+        adoptionOnly: true,
+      }),
+    );
+    expect(after).toMatch(MAYBE.READ_ONLY!);
+    expect(after).not.toContain('TEST private item');
+    expect(after).not.toMatch(FORBIDDEN_WORDING);
+    expect(after).not.toMatch(/>Retry<|>Give up</);
+  });
+
+  it('leaving a running command reveals scope and status without a second send', async () => {
+    const sv = dayServer();
+    const w = workspace(sv);
+    await w.load();
+    const owners = w.render(P);
+    owners.adoptFor(DAY).workspaceRecovery = true;
+    sv.adopt.hold = true;
+    const running = owners
+      .adoptFor(DAY)
+      .adopt('support', { basis: view('10').basis, value: '10' });
+    await tick();
+    const bar = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners,
+      itemLabel: () => 'TEST private item',
+      canWrite: true,
+      projectLabel: 'TEST project A',
+      adoptionOnly: true,
+    });
+    expect(bar.html).toContain('TEST project A');
+    expect(bar.html).toContain('Fri 2 October');
+    expect(bar.html).toMatch(/Saving/);
+    expect(bar.buttons).toHaveLength(0);
+    open(sv.adopt);
+    await running;
+    expect(sv.adoptLog).toHaveLength(1);
+  });
+
+  it('another project/date never rebinds a retry or frees the original day before its read', async () => {
+    const sv = dayServer();
+    const w = workspace(sv);
+    const registry = new PmOwnerRegistry(sv.api as never);
+    const owners = registry.get(P);
+    owners.day = pmDayBinding(w.store, P);
+    await w.load();
+    const flow = owners.adoptFor(DAY);
+    sv.adoptPlan.push(err('NETWORK'));
+    await flow.adopt('support', { basis: view('10').basis, value: '10' });
+    const owner = w.entry().lock;
+    const original = JSON.stringify(sv.adoptLog[0]);
+    const otherProject = '22222222-2222-4222-8222-222222222222';
+    await w.load(otherProject);
+    const otherDate = '2026-10-03';
+    await w.store.read(w.store.entry(P, otherDate), false);
+    registry.get(otherProject).adoptFor(otherDate);
+    expect(registry.get(P).adoptFor(DAY)).toBe(flow);
+    expect(registry.all()).toContain(owners);
+    expect(w.entry().lock).toBe(owner);
+    let notifications = 0;
+    const unsubscribe = registry.subscribe(() => notifications++);
+    sv.readPlan.push(err('NETWORK'));
+    const bar = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners,
+      itemLabel: () => 'TEST private item',
+      canWrite: true,
+      projectLabel: 'TEST project A',
+      adoptionOnly: true,
+    });
+    await click(bar.buttons, /^Retry$/);
+    expect(JSON.stringify(sv.adoptLog[1])).toBe(original);
+    expect(w.entry().lock).toBe(owner);
+    expect(w.store.entry(P, otherDate).lock).toBeNull();
+    expect(w.entry(otherProject).lock).toBeNull();
+    expect(notifications).toBeGreaterThan(0);
+    const refreshed = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+      owners,
+      itemLabel: () => '',
+      canWrite: false,
+      projectLabel: 'TEST project A',
+      adoptionOnly: true,
+    });
+    await click(refreshed.buttons, /^Refresh$/);
+    expect(w.entry().lock).toBeNull();
+    expect(sv.adoptLog).toHaveLength(2);
+    expect(flow.canStart).toBe(true);
+    unsubscribe();
+  });
+});
+
+describe('C04-W1: unknown settlement after giving up or losing authority', () => {
+  it.each(['give up', 'READ_ONLY'] as const)(
+    '%s keeps the original lock while readback fails',
+    async (answer) => {
+      const sv = dayServer();
+      const w = workspace(sv);
+      await w.load();
+      const owners = w.render(P);
+      const flow = owners.adoptFor(DAY);
+      sv.adoptPlan.push('lost');
+      await flow.adopt('support', { basis: view('10').basis, value: '10' });
+      const token = w.entry().lock;
+      sv.readPlan.push(err('NETWORK'));
+      const before = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+        owners,
+        itemLabel: () => 'TEST private item',
+        canWrite: false,
+        projectLabel: 'TEST project A',
+        adoptionOnly: true,
+      });
+      if (answer === 'READ_ONLY') {
+        sv.adoptPlan.push(err('READ_ONLY'));
+        await click(before.buttons, /^Retry$/);
+        expect(JSON.stringify(sv.adoptLog[1])).toBe(
+          JSON.stringify(sv.adoptLog[0]),
+        );
+      } else await click(before.buttons, /^Give up$/);
+      expect(flow.settling?.outcome).toBe('unknown');
+      expect(flow.canStart).toBe(false);
+      expect(w.entry().lock).toBe(token);
+      const after = buttonsOf(PmOwnedBar as FunctionComponent<never>, {
+        owners,
+        itemLabel: () => 'TEST private item',
+        canWrite: false,
+        projectLabel: 'TEST project A',
+        adoptionOnly: true,
+      });
+      expect(after.html).not.toContain('TEST private item');
+      expect(after.html).not.toMatch(FORBIDDEN_WORDING);
+      expect(after.buttons.map((b) => b.text)).toEqual(['Refresh']);
+      await click(after.buttons, /^Refresh$/);
+      expect(w.entry().lock).toBeNull();
+      expect(w.entry().session.facts.qty.support).toBe('10');
+      expect(flow.canStart).toBe(true);
+      expect(sv.adoptLog).toHaveLength(answer === 'READ_ONLY' ? 2 : 1);
+    },
+  );
 });
