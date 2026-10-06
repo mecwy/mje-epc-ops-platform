@@ -13,6 +13,8 @@ interface Row {
   uncertain: boolean;
   retry: () => void;
   giveUp: () => void;
+  settling?: 'saved' | 'refused' | 'unknown' | null;
+  refresh?: () => void;
 }
 
 /** A row for an owner's attempt: running or unresolved, or else its last refusal. */
@@ -36,16 +38,25 @@ function ownedRow<D, A>(
 }
 
 /**
- * The PM's owned attempts while this account cannot write to the project (write access was
- * lost while an attempt was running or unresolved): each keeps Retry / Give up and its result,
- * and the server decides whether a retry is still allowed. Nothing is dropped silently.
+ * Workspace adoption recovery on every view, plus the existing lost-write-access site bar.
+ * Commands stay with their original flows; Retry/Give up share their settlement path and
+ * Refresh only reads the original day. Workspace rows reveal scope without business payload.
  */
 export function PmOwnedBar({
   owners,
   itemLabel,
+  canWrite = false,
+  projectLabel,
+  adoptionOnly = false,
+  includeAdoptions = true,
 }: {
   owners: PmOwners;
   itemLabel: (key: string) => string;
+  canWrite?: boolean;
+  /** Workspace recovery shows only scope, never personnel/quantity/item payload. */
+  projectLabel?: string;
+  adoptionOnly?: boolean;
+  includeAdoptions?: boolean;
 }) {
   const { t, locale } = useI18n();
   const s = owners.site;
@@ -53,62 +64,67 @@ export function PmOwnedBar({
     s.roster.data?.assignments.find((a) => a.personId === personId)
       ?.displayName ?? '—';
   const rows: Row[] = [];
-  const dev = s.devices;
-  const devAction = dev.current ?? dev.refused;
-  const devKey =
-    devAction?.kind === 'confirm'
-      ? 'fm_actConfirm'
-      : devAction?.kind === 'reject'
-        ? 'pm_actReject'
-        : 'pm_actRevoke';
-  if (devAction && (dev.current || dev.refusal))
-    rows.push({
-      key: 'devices',
-      what: t(devKey, { name: devAction.device.displayName }),
-      running: dev.current !== null && dev.session.busy,
-      unresolved: dev.unresolved !== null,
-      code: dev.current ? dev.session.error : dev.refusal,
-      uncertain: dev.current ? true : dev.refusalUncertain,
-      retry: () => void dev.retry(),
-      giveUp: () => dev.discard(),
-    });
-  const site = ownedRow('site', s.siteSave, () => t('pm_actSite'));
-  if (site) rows.push(site);
-  const settings = ownedRow('settings', s.settingsSave, () =>
-    t('pm_actSettings'),
-  );
-  if (settings) rows.push(settings);
-  if (s.entry.pending)
-    rows.push({
-      key: 'entry',
-      what: t('pm_actRotate'),
-      running: s.entry.busy,
-      unresolved: !s.entry.busy,
-      code: s.entry.error,
-      uncertain: true,
-      retry: () => void s.entry.retry(),
-      giveUp: () => s.entry.discard(),
-    });
-  // The QR change's result once answered (a refusal after an unanswered attempt may still
-  // have been recorded): kept as a row, never dropped when the command settles.
-  else if (s.entry.error && s.entry.error !== 'STALE')
-    rows.push({
-      key: 'entry',
-      what: t('pm_actRotate'),
-      running: false,
-      unresolved: false,
-      code: s.entry.error,
-      uncertain: s.entry.errorUncertain,
-      retry: () => {},
-      giveUp: () => {},
-    });
-  for (const [day, d] of s.proxyDays()) {
-    const r = ownedRow(`proxy:${day}`, d.proxy, (a) =>
-      t('pm_actProxy', { name: nameOf(a.personId), day: fmtDay(day, locale) }),
+  if (!canWrite && !adoptionOnly) {
+    const dev = s.devices;
+    const devAction = dev.current ?? dev.refused;
+    const devKey =
+      devAction?.kind === 'confirm'
+        ? 'fm_actConfirm'
+        : devAction?.kind === 'reject'
+          ? 'pm_actReject'
+          : 'pm_actRevoke';
+    if (devAction && (dev.current || dev.refusal))
+      rows.push({
+        key: 'devices',
+        what: t(devKey, { name: devAction.device.displayName }),
+        running: dev.current !== null && dev.session.busy,
+        unresolved: dev.unresolved !== null,
+        code: dev.current ? dev.session.error : dev.refusal,
+        uncertain: dev.current ? true : dev.refusalUncertain,
+        retry: () => void dev.retry(),
+        giveUp: () => dev.discard(),
+      });
+    const site = ownedRow('site', s.siteSave, () => t('pm_actSite'));
+    if (site) rows.push(site);
+    const settings = ownedRow('settings', s.settingsSave, () =>
+      t('pm_actSettings'),
     );
-    if (r) rows.push(r);
+    if (settings) rows.push(settings);
+    if (s.entry.pending)
+      rows.push({
+        key: 'entry',
+        what: t('pm_actRotate'),
+        running: s.entry.busy,
+        unresolved: !s.entry.busy,
+        code: s.entry.error,
+        uncertain: true,
+        retry: () => void s.entry.retry(),
+        giveUp: () => s.entry.discard(),
+      });
+    // The QR change's result once answered (a refusal after an unanswered attempt may still
+    // have been recorded): kept as a row, never dropped when the command settles.
+    else if (s.entry.error && s.entry.error !== 'STALE')
+      rows.push({
+        key: 'entry',
+        what: t('pm_actRotate'),
+        running: false,
+        unresolved: false,
+        code: s.entry.error,
+        uncertain: s.entry.errorUncertain,
+        retry: () => {},
+        giveUp: () => {},
+      });
+    for (const [day, d] of s.proxyDays()) {
+      const r = ownedRow(`proxy:${day}`, d.proxy, (a) =>
+        t('pm_actProxy', {
+          name: nameOf(a.personId),
+          day: fmtDay(day, locale),
+        }),
+      );
+      if (r) rows.push(r);
+    }
   }
-  for (const [day, flow] of owners.adoptDays()) {
+  for (const [day, flow] of includeAdoptions ? owners.adoptDays() : []) {
     const o = flow.owned;
     const a = flow.active ?? (o.refusal ? o.refused : null);
     if (!a) continue;
@@ -117,22 +133,26 @@ export function PmOwnedBar({
     rows.push({
       key: `adopt:${day}`,
       what: t('pm_actAdopt', {
-        item: itemLabel(a.item),
+        item: projectLabel ?? itemLabel(a.item),
         day: fmtDay(day, locale),
       }),
-      running: flow.active !== null && (o.session.busy || !o.current),
+      running: flow.stage === 'running' || flow.refreshing,
       unresolved: o.unresolved !== null,
       code: o.current ? o.session.error : flow.active ? null : o.refusal,
       uncertain: o.current ? true : o.refusalUncertain,
       retry: () => void flow.retry(),
       giveUp: () => void flow.discard(),
+      settling: flow.settling?.outcome ?? null,
+      refresh: () => void flow.refresh(),
     });
   }
   if (rows.length === 0) return null;
   return (
     <section className="card">
       <h2 className="blk">{t('fm_unresolvedTitle')}</h2>
-      <p className="muted small">{t('pm_ownedRoleNote')}</p>
+      {!canWrite && !adoptionOnly && (
+        <p className="muted small">{t('pm_ownedRoleNote')}</p>
+      )}
       <ul className="plainlist">
         {rows.map((r) => (
           <li key={r.key} className="devrow">
@@ -140,12 +160,34 @@ export function PmOwnedBar({
               <b>{r.what}</b>
               <span className="warn-t small" role="alert">
                 {r.running ? (
-                  t('saving')
+                  r.settling ? (
+                    t('loading')
+                  ) : (
+                    t('saving')
+                  )
+                ) : r.settling ? (
+                  r.settling === 'saved' ? (
+                    t('dayRereadFailed')
+                  ) : r.settling === 'refused' ? (
+                    t('dayRereadFailedRefused')
+                  ) : (
+                    t('dayRereadFailedUnknown')
+                  )
                 ) : r.code ? (
                   <ErrorText code={r.code} write uncertain={r.uncertain} />
                 ) : null}
               </span>
             </span>
+            {r.settling && (
+              <button
+                type="button"
+                className="pill"
+                disabled={r.running}
+                onClick={r.refresh}
+              >
+                {t('pm_reload')}
+              </button>
+            )}
             {r.unresolved && (
               <span className="chips">
                 <button

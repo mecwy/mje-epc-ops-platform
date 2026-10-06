@@ -156,7 +156,7 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
           )}
         </div>
       )}
-      {flow && active && unresolved && (
+      {flow && active && unresolved && !flow.workspaceRecovery && (
         <span className="chips">
           <button
             type="button"

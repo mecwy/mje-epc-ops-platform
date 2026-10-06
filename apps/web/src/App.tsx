@@ -178,6 +178,7 @@ function Workspace({
   signin,
   resume,
   recoveryWorkspaces,
+  pmRegistry,
   onExecutiveHome,
   requestedDate,
   onDateChange,
@@ -193,6 +194,7 @@ function Workspace({
   /** What was put aside before a sign-in redirect. */
   resume: ResumeKeeper;
   recoveryWorkspaces: Map<string, WorkspaceDrafts>;
+  pmRegistry: PmOwnerRegistry;
 }) {
   const { t, label, locale } = useI18n();
   const [toast, setToast] = useState<string | null>(null);
@@ -285,7 +287,6 @@ function Workspace({
   // The PM command owners (People page sessions and adoption flows) live as long as the
   // workspace, one set per project (AGENTS.md): leaving a tab, losing write access or
   // switching projects and back keeps an unresolved command, its key and its payload.
-  const [pmRegistry] = useState(() => new PmOwnerRegistry(api));
   const pm = pmRegistry.get(project.id);
   const siteSessions = pm.site;
   useSessions(siteSessions);
@@ -297,6 +298,7 @@ function Workspace({
   // is made once per project against the workspace's day store: every lock and read goes to
   // that project's own day entry, never to whatever day the page shows later.
   pm.day ??= pmDayBinding(h.store, project.id);
+  pm.adoptFor(date).workspaceRecovery = true;
   const pmField: PmField | null =
     canWrite && h.day
       ? {
@@ -700,7 +702,9 @@ function Workspace({
           entry
         >
           {/* The Fill and Check views too: a locked day's recovery is never hidden. */}
-          <DayRecovery h={h} />
+          <DayRecovery
+            h={{ ...h, stale: h.stale && !pm.adoptFor(date).settling }}
+          />
           {task === 'fill' ? (
             <FillPage
               h={h}
@@ -804,11 +808,14 @@ function Workspace({
           </>
         }
       >
-        <DayRecovery h={h} />
+        <DayRecovery
+          h={{ ...h, stale: h.stale && !pm.adoptFor(date).settling }}
+        />
         {!canWrite && (
           // Write access went away while a PM attempt was owned: its Retry / Give up stay.
           <PmOwnedBar
             owners={pm}
+            includeAdoptions={false}
             itemLabel={(k) => {
               const it = day?.items.find((i) => i.key === k);
               return it ? label(it.label) : k;
@@ -948,6 +955,13 @@ function Root() {
     () => (session ? reportApi(session.token) : null),
     [session],
   );
+  // Adopt owners survive project/tab/date switches; one workspace-level recovery surface.
+  const pmRegistry = useMemo(
+    () => (executiveApi ? new PmOwnerRegistry(executiveApi) : null),
+    [executiveApi],
+  );
+  const [, ownedChanged] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => pmRegistry?.subscribe(ownedChanged), [pmRegistry]);
   const statusSessions = useMemo(
     () => new Map<string, ProjectStatusSession>(),
     [session],
@@ -1033,6 +1047,26 @@ function Root() {
     reportRoute?.projectId,
     reportRoute?.businessDate,
   ]);
+  const ownedBars = pmRegistry
+    ?.all()
+    .map((owners) => (
+      <PmOwnedBar
+        key={owners.projectId}
+        owners={owners}
+        canWrite={
+          projects?.some(
+            (p) => p.id === owners.projectId && p.access === 'write',
+          ) ?? false
+        }
+        projectLabel={
+          projects?.find((p) => p.id === owners.projectId)?.name ??
+          owners.projectId
+        }
+        itemLabel={() => ''}
+        adoptionOnly
+      />
+    ));
+
   // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
   const renewing = Boolean(session?.renew && state.expired && !projects);
   if (needLogin || renewing)
@@ -1060,18 +1094,30 @@ function Root() {
   if (error || failed)
     return (
       <main className="page">
+        {ownedBars}
         <div className="banner err">
           {failed === 'FORBIDDEN' ? t('noProject') : t('saveFail')}
         </div>
       </main>
     );
   if (!session || !projects || projectsOwner !== session)
-    return <main className="page muted">{t('loading')}</main>;
+    return (
+      <main className="page muted">
+        {ownedBars}
+        {t('loading')}
+      </main>
+    );
   const project =
     projects.find(
       (p) => p.id === (reportRoute?.projectId ?? selectedProjectId),
     ) ?? projects[0];
-  if (!project) return <main className="page">{t('noProject')}</main>;
+  if (!project)
+    return (
+      <main className="page">
+        {ownedBars}
+        {t('noProject')}
+      </main>
+    );
   const routedProject =
     route && 'projectId' in route
       ? projects.find((p) => p.id === route.projectId)
@@ -1082,6 +1128,7 @@ function Root() {
     (hash.includes('/report/') && !reportRoute);
   return (
     <div className="workspace-root">
+      {ownedBars}
       {projects
         .filter((p) => visited.includes(p.id) || p.id === project.id)
         .map((p) => (
@@ -1100,6 +1147,7 @@ function Root() {
               signin={state}
               resume={resume}
               recoveryWorkspaces={recoveryWorkspaces}
+              pmRegistry={pmRegistry!}
               {...(reportRoute?.projectId === p.id
                 ? { requestedDate: reportRoute.businessDate }
                 : {})}
