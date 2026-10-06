@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useState, type ReactNode } from 'react';
 import type { ReportItemDto } from '@mje/contracts';
 import { ROLE_KEYS, dec, decText, type Coverage } from '@mje/domain/rules';
 import type { DayView } from '../api.js';
@@ -597,6 +597,8 @@ export function FillPage({
   tomorrowText,
   issues,
   canWrite,
+  weatherControls,
+  weatherControlsPending,
 }: {
   h: DayHandle;
   day: DayView;
@@ -611,6 +613,8 @@ export function FillPage({
   tomorrowText: string;
   issues: IssuesHandle;
   canWrite: boolean;
+  weatherControls?: ReactNode;
+  weatherControlsPending?: boolean;
 }) {
   const { t, label, locale, lang } = useI18n();
   const [section, setSection] = useState<FillSection>('progress');
@@ -760,6 +764,15 @@ export function FillPage({
                     />
                   </label>
                 </div>
+                {weatherControls && (
+                  <details
+                    className="fill-guidance"
+                    open={weatherControlsPending || undefined}
+                  >
+                    <summary>{t('weatherLocation_position')}</summary>
+                    {weatherControls}
+                  </details>
+                )}
               </section>
               <section className="card fill-sections">
                 <div

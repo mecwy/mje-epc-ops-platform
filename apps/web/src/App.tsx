@@ -849,41 +849,47 @@ function Workspace({
           />
           {task === 'fill' ? (
             <>
-              {((weatherPorts !== undefined && canWrite) ||
-                weatherEntry.session.weatherNeedsSave) && (
-                <WeatherLocation
-                  session={weatherSession}
-                  savedSnapshotIds={
-                    h.facts.weatherReferences?.map((ref) => ref.snapshotId) ??
-                    []
-                  }
-                  savedLocation={h.facts.reportLocationRef ?? null}
-                  pendingLocationKind={weatherEntry.session.pendingLocationKind}
-                  pendingSave={weatherEntry.session.weatherUnknown}
-                  onRetrySave={() => void h.flush()}
-                  onClearLocation={() => {
-                    h.store.editWeather(
-                      weatherEntry,
-                      weatherEntry.session.facts,
-                      { kind: 'clear' },
-                    );
-                  }}
-                  {...(h.facts.weatherReferences?.length
-                    ? {
-                        onDetachWeather: () => {
-                          h.store.editWeather(weatherEntry, {
-                            ...weatherEntry.session.facts,
-                            weatherReferences: [],
-                          });
-                        },
-                      }
-                    : {})}
-                />
-              )}
               <FrozenWeatherReferences
                 references={h.read?.weatherReferences ?? []}
               />
               <FillPage
+                weatherControlsPending={weatherEntry.session.weatherNeedsSave}
+                weatherControls={
+                  ((weatherPorts !== undefined && canWrite) ||
+                    weatherEntry.session.weatherNeedsSave) && (
+                    <WeatherLocation
+                      session={weatherSession}
+                      savedSnapshotIds={
+                        h.facts.weatherReferences?.map(
+                          (ref) => ref.snapshotId,
+                        ) ?? []
+                      }
+                      savedLocation={h.facts.reportLocationRef ?? null}
+                      pendingLocationKind={
+                        weatherEntry.session.pendingLocationKind
+                      }
+                      pendingSave={weatherEntry.session.weatherUnknown}
+                      onRetrySave={() => void h.flush()}
+                      onClearLocation={() => {
+                        h.store.editWeather(
+                          weatherEntry,
+                          weatherEntry.session.facts,
+                          { kind: 'clear' },
+                        );
+                      }}
+                      {...(h.facts.weatherReferences?.length
+                        ? {
+                            onDetachWeather: () => {
+                              h.store.editWeather(weatherEntry, {
+                                ...weatherEntry.session.facts,
+                                weatherReferences: [],
+                              });
+                            },
+                          }
+                        : {})}
+                    />
+                  )
+                }
                 h={h}
                 day={day}
                 cov={cov}
