@@ -94,6 +94,79 @@ describe('plans', () => {
     const rows = planRows(undefined, plan([['support', '300']]));
     expect(rows).toEqual([{ item: 'support', target: '300' }]);
   });
+  it.each(['missing', 'empty'])(
+    'cannot confirm previous-day reference with %s own-day state',
+    (state) => {
+      const previous = plan([['support', '300']]);
+      const original = structuredClone(previous);
+      const own: PlanState | undefined =
+        state === 'missing' ? undefined : { versions: [], draft: null };
+      expect(planRows(own, previous)).toEqual([
+        { item: 'support', target: '300' },
+      ]);
+      expect(confirmPlan(own, previous, 'TEST-T')).toEqual({
+        ok: false,
+        reason: 'emptyPlan',
+      });
+      expect(previous).toEqual(original);
+      if (own) expect(own).toEqual({ versions: [], draft: null });
+    },
+  );
+  it('does not fall back when own-day draft is empty, blank or invalid', () => {
+    const previous = plan([['support', '300']]);
+    for (const draft of [[], [{ item: 'support', target: '' }]])
+      expect(confirmPlan({ versions: [], draft }, previous, 'TEST-T')).toEqual({
+        ok: false,
+        reason: 'emptyPlan',
+      });
+    expect(
+      confirmPlan(
+        { versions: [], draft: [{ item: 'support', target: 'unknown' }] },
+        previous,
+        'TEST-T',
+      ),
+    ).toEqual({ ok: false, reason: 'numberInvalid' });
+  });
+  it.each(['0', '300'])(
+    'can explicitly confirm saved own-day target %s, including unchanged reference and zero',
+    (target) => {
+      const previous = plan([['support', '300']]);
+      const own: PlanState = {
+        versions: [],
+        draft: [{ item: 'support', target }],
+      };
+      const result = confirmPlan(own, previous, 'TEST-T');
+      expect(result).toEqual({
+        ok: true,
+        version: { n: 1, rows: [{ item: 'support', target }], at: 'TEST-T' },
+      });
+      expect(previous.versions[0]!.rows).toEqual([
+        { item: 'support', target: '300' },
+      ]);
+      own.draft![0]!.target = '999';
+      if (result.ok) expect(result.version.rows[0]!.target).toBe(target);
+    },
+  );
+  it('requires a new own-day draft for v2 and keeps v1 unchanged even with previous reference', () => {
+    const own = plan([['support', '400']]);
+    const original = structuredClone(own.versions);
+    const previous = plan([['support', '900']]);
+    expect(confirmPlan(own, previous, 'TEST-T2')).toEqual({
+      ok: false,
+      reason: 'noChange',
+    });
+    own.draft = [{ item: 'support', target: '500' }];
+    const result = confirmPlan(own, previous, 'TEST-T2');
+    expect(result).toEqual({
+      ok: true,
+      version: {
+        n: 2,
+        rows: [{ item: 'support', target: '500' }],
+        at: 'TEST-T2',
+      },
+    });
+    expect(own.versions).toEqual(original);
+  });
   it('a confirmed version is a copy: later draft edits do not reach it', () => {
     const draft = [{ item: 'support', target: '300' }];
     const outcome = confirmPlan({ versions: [], draft }, undefined, 'T');

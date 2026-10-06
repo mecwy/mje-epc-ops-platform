@@ -14,6 +14,12 @@ export const LOCALES: Record<Lang, string> = {
   es: 'es-ES',
 };
 export const MESSAGES = {
+  planPreviousReference: [
+    '前日参考',
+    'Previous-day reference',
+    'Referenca prethodnog dana',
+    'Referencia del día anterior',
+  ],
   weatherLocation_title: [
     '工地位置与天气参考',
     'Site location and weather reference',
@@ -33,10 +39,10 @@ export const MESSAGES = {
     'Discard location',
   ],
   weatherLocation_confirm: [
-    '确认本次位置',
-    'Confirm this location',
-    'Confirm this location',
-    'Confirm this location',
+    '确认我本次定位',
+    'Confirm my current location',
+    'Potvrdi moju trenutnu lokaciju',
+    'Confirmar mi ubicación actual',
   ],
   weatherLocation_fetching: [
     '正在获取天气参考',
@@ -216,10 +222,34 @@ export const MESSAGES = {
     'Weather reference does not verify onsite conditions, downtime or work permission.',
   ],
   weatherLocation_positionNote: [
-    '记录本次填报位置；补录时不能作为过去日期的位置。',
-    'This is the reporting location now; it cannot establish a past-day location.',
-    'This is the reporting location now; it cannot establish a past-day location.',
-    'This is the reporting location now; it cannot establish a past-day location.',
+    '点击后采集本次位置，确认后随日报保存。',
+    'Your location is captured only on request, then saved with the report after you confirm.',
+    'Lokacija se preuzima tek kada to zatražite; nakon vaše potvrde čuva se uz dnevni izveštaj.',
+    'Tu ubicación solo se obtiene cuando la solicitas y se guarda con el informe después de que la confirmes.',
+  ],
+  weatherLocation_positionPrivacy: [
+    '谁能查看、如何保留',
+    'Who can view it and how it is retained',
+    'Ko može da vidi lokaciju i kako se čuva',
+    'Quién puede verla y cómo se conserva',
+  ],
+  weatherLocation_positionPurpose: [
+    '仅用于本次填报位置；补录时不证明过去日期的到场、考勤或工时。',
+    'This records your location when reporting; it does not establish attendance or hours on a past reporting date.',
+    'Ovo beleži lokaciju u trenutku popunjavanja; ne dokazuje dolazak, prisustvo niti radne sate za raniji datum.',
+    'Registra tu ubicación al informar; no demuestra presencia ni horas trabajadas en una fecha anterior.',
+  ],
+  weatherLocation_positionAccess: [
+    '本项目有填报权限的人员可通过受限接口查看精确坐标；其他有日报阅读权限者只见精度、时间等摘要。',
+    'People with reporting access to this project can view exact coordinates through restricted access. Other authorized report readers see only details such as accuracy and times.',
+    'Osobe sa pravom unosa izveštaja za ovaj projekat mogu da vide tačne koordinate putem ograničenog pristupa. Ostali ovlašćeni čitaoci vide samo sažetak, poput preciznosti i vremena.',
+    'Las personas con permiso para completar informes de este proyecto pueden consultar las coordenadas exactas mediante acceso restringido. Los demás lectores autorizados solo ven un resumen, como precisión y horas.',
+  ],
+  weatherLocation_positionRetention: [
+    '清除仅取消当前日报引用，已保存坐标和历史记录仍保留。当前功能未设置自动删除期限。',
+    'Clearing removes only the current report reference. Saved coordinates and history remain; this feature has no automatic deletion period.',
+    'Brisanje uklanja samo vezu sa trenutnim dnevnim izveštajem. Sačuvane koordinate i istorija ostaju; ova funkcija nema rok za automatsko brisanje.',
+    'Borrar solo elimina la referencia del informe actual. Las coordenadas guardadas y el historial permanecen; esta función no tiene un plazo de eliminación automática.',
   ],
   weatherLocation_clear: [
     '清除草稿位置关联',

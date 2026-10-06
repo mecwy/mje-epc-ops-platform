@@ -42,6 +42,10 @@ const TEXT_KEYS = {
   temperature: 'weatherLocation_temperature',
   note: 'weatherLocation_note',
   positionNote: 'weatherLocation_positionNote',
+  positionPrivacy: 'weatherLocation_positionPrivacy',
+  positionPurpose: 'weatherLocation_positionPurpose',
+  positionAccess: 'weatherLocation_positionAccess',
+  positionRetention: 'weatherLocation_positionRetention',
   clear: 'weatherLocation_clear',
   detach: 'weatherLocation_detach',
   cleared: 'weatherLocation_cleared',
@@ -190,6 +194,13 @@ export function WeatherLocation({
         {context.businessDate} · {context.timezone} ·{' '}
         {context.locationVersionId ?? t.not_configured}
       </p>
+      <p className="muted small">{t.positionNote}</p>
+      <details>
+        <summary>{t.positionPrivacy}</summary>
+        <p>{t.positionPurpose}</p>
+        <p>{t.positionAccess}</p>
+        <p>{t.positionRetention}</p>
+      </details>
       {state.writable && (
         <div>
           <button
@@ -236,7 +247,6 @@ export function WeatherLocation({
           </button>
         </div>
       )}
-      <p className="muted small">{t.positionNote}</p>
       {savedLocation && (
         <p>
           {t.savedLocation} · {t.accuracy}: {savedLocation.accuracyM} m ·{' '}

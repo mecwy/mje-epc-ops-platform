@@ -918,6 +918,7 @@ function Workspace({
             </>
           ) : (
             <CheckPage
+              projectName={project.name}
               h={h}
               day={day}
               cov={cov}

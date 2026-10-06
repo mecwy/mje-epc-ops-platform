@@ -9,6 +9,7 @@ import { outcomeKey, UNKNOWN_OUTCOME } from '../field/errors.js';
 import { CHECKED_NO_ISSUES, narrativeText, type MessageKey } from '@mje/ui';
 import { fmtNum, fmtShort } from './format.js';
 import { CheckInsBeside, PmFieldContext } from './CheckInsBeside.js';
+import { ReviewFacts } from './ReviewFacts.js';
 import { ForemanLine } from './ForemanLine.js';
 import {
   activeWork,
@@ -183,19 +184,29 @@ function QtyRow({
     <div className="qrow">
       <div className="qline">
         <div className="grow">
-          <button
-            type="button"
-            className="fill-quantity-trigger"
-            disabled={locked}
-            onClick={() => quantityEntry.current?.open()}
-          >
-            <span className="qname">{label(it.label)}</span>
-            {b && (
-              <span className="muted small">
-                {t('baselineN', { n: fmtNum(b, locale) })}
-              </span>
-            )}
-          </button>
+          {locked ? (
+            <div className="fill-quantity-trigger">
+              <span className="qname">{label(it.label)}</span>
+              {b && (
+                <span className="muted small">
+                  {t('baselineN', { n: fmtNum(b, locale) })}
+                </span>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="fill-quantity-trigger"
+              onClick={() => quantityEntry.current?.open()}
+            >
+              <span className="qname">{label(it.label)}</span>
+              {b && (
+                <span className="muted small">
+                  {t('baselineN', { n: fmtNum(b, locale) })}
+                </span>
+              )}
+            </button>
+          )}
         </div>
         <NumInput
           id={`q-${it.key}`}
@@ -989,6 +1000,7 @@ export function FillPage({
 }
 
 export function CheckPage({
+  projectName,
   h,
   day,
   cov,
@@ -998,6 +1010,7 @@ export function CheckPage({
   busy,
   photos,
 }: {
+  projectName: string;
   h: DayHandle;
   day: DayView;
   cov: Coverage;
@@ -1009,9 +1022,6 @@ export function CheckPage({
 }) {
   const { t, locale } = useI18n();
   const f = h.facts!;
-  const withQty = byKind(day.items, 'work').filter(
-    (i) => dec(f.qty[i.key]) !== null,
-  ).length;
   return (
     <div className="entry-workspace entry-manager">
       <header className="bar task">
@@ -1029,7 +1039,15 @@ export function CheckPage({
         <SaveBadge save={h.save} />
       </header>
       <main className="page">
-        <p className="entry-context">{t('entryCompletenessOnly')}</p>
+        <ReviewFacts
+          facts={f}
+          items={day.items}
+          projectName={projectName}
+          roles={ROLE_KEYS.map((key) => {
+            const roleLabel = ROLE_LABEL[key];
+            return { key, label: t(roleLabel) };
+          })}
+        />
         <CheckList
           cov={cov}
           h={h}
@@ -1038,26 +1056,20 @@ export function CheckPage({
           onSubmit={onSubmit}
           onFocus={onFocus}
         />
-        <section className="card">
-          <div className="crow">
-            <Icon.check />
-            <span className="grow">{t('progress')}</span>
-            <span className="muted">{t('itemsWithQty', { n: withQty })}</span>
-          </div>
-          {photos.photos && (
+        {photos.counts && photos.counts.total > 0 && (
+          <section className="card">
             <div className="crow">
               <Icon.camera />
               <span className="grow">{t('photos')}</span>
               <span className="muted">
-                {/* Counted only from a complete list (PhotoSession.counts). */}
-                {photos.counts ? photos.counts.total : ''}
+                {photos.counts.total}
                 {photos.unlinked
                   ? ` · ${t('unlinkedN', { n: photos.unlinked })}`
                   : ''}
               </span>
             </div>
-          )}
-        </section>
+          </section>
+        )}
       </main>
       <div className="foot row2">
         <button type="button" className="ghost" onClick={onBack}>
