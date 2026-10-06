@@ -157,6 +157,8 @@ model Organization {
   weatherReferences WeatherReportReference[]
   reportLocations ReportLocationRecord[]
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_org")
+  businessEvidenceSets BusinessEvidenceSet[] @relation("BusinessEvidenceSet_org")
+  businessEvidenceVersions BusinessEvidenceVersion[] @relation("BusinessEvidenceVersion_org")
 }
 
 model Company {
@@ -265,6 +267,8 @@ model Project {
   @@unique([orgId, code])
   weatherLocations WeatherLocationVersion[]
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_project")
+  businessEvidenceSets BusinessEvidenceSet[] @relation("BusinessEvidenceSet_project")
+  businessEvidenceVersions BusinessEvidenceVersion[] @relation("BusinessEvidenceVersion_project")
 }
 
 model Site {
@@ -418,6 +422,7 @@ model Person {
   weatherReferences WeatherReportReference[] @relation("WeatherReference_person")
   reportLocations ReportLocationRecord[] @relation("ReportLocation_person")
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_actorPerson")
+  businessEvidenceVersions BusinessEvidenceVersion[] @relation("BusinessEvidenceVersion_actorPerson")
 }
 
 model LoginAccount {
@@ -469,6 +474,7 @@ model LoginAccount {
   weatherReferences WeatherReportReference[] @relation("WeatherReference_account")
   reportLocations ReportLocationRecord[] @relation("ReportLocation_account")
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_actorAccount")
+  businessEvidenceVersions BusinessEvidenceVersion[] @relation("BusinessEvidenceVersion_actorAccount")
 }
 
 model Membership {
@@ -1333,6 +1339,7 @@ model Crew {
   @@unique([orgId, projectId, id])
   @@unique([orgId, projectId, code])
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_crew")
+  businessEvidenceSets BusinessEvidenceSet[] @relation("BusinessEvidenceSet_crew")
 }
 
 model ProjectRoster {
@@ -1686,6 +1693,7 @@ model ForemanReport {
   @@unique([orgId, projectId, businessDate, crewId])
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_report")
   @@unique([orgId, projectId, businessDate, crewId, id], map: "foreman_report_review_scope")
+  businessEvidenceSets BusinessEvidenceSet[] @relation("BusinessEvidenceSet_report")
 }
 
 /// A foreman's claim of quantities (insert-only); rows [{itemKey, qty}], no hours.
@@ -1711,6 +1719,7 @@ model ForemanReportRevision {
   @@unique([orgId, reportId, n])
   managerReviewEvents ManagerReviewEvent[] @relation("ManagerReviewEvent_revision")
   @@unique([orgId, projectId, reportId, id], map: "foreman_revision_review_scope")
+  businessEvidenceSets BusinessEvidenceSet[] @relation("BusinessEvidenceSet_revision")
 }
 
 /// The PM's explicit adoption of a COMPLETE foreman total, with its exact basis (append-only).
@@ -1971,4 +1980,56 @@ model ManagerReviewEvent {
  @@unique([orgId,projectId,foremanRevisionId,itemKey,version], map: "review_event_sequence")
  @@unique([orgId,clientMutationId], map: "review_event_mutation")
  @@index([orgId,projectId,businessDate,daySeq], map: "manager_review_day_cut")
+}
+
+
+/// Stable exact immutable declaration identity. Never a second quantity source.
+model BusinessEvidenceSet {
+  id String @id @db.Uuid
+  orgId String @db.Uuid
+  org Organization @relation("BusinessEvidenceSet_org", fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_set_org_fk")
+  projectId String @db.Uuid
+  project Project @relation("BusinessEvidenceSet_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_set_project_fk")
+  businessDate DateTime @db.Date
+  crewId String @db.Uuid
+  crew Crew @relation("BusinessEvidenceSet_crew", fields: [orgId, projectId, crewId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_set_crew_fk")
+  foremanReportId String @db.Uuid
+  report ForemanReport @relation("BusinessEvidenceSet_report", fields: [orgId, projectId, businessDate, crewId, foremanReportId], references: [orgId, projectId, businessDate, crewId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_set_report_fk")
+  foremanRevisionId String @db.Uuid
+  revision ForemanReportRevision @relation("BusinessEvidenceSet_revision", fields: [orgId, projectId, foremanReportId, foremanRevisionId], references: [orgId, projectId, reportId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_set_revision_fk")
+  itemKey String
+  versions BusinessEvidenceVersion[] @relation("BusinessEvidenceVersion_set")
+
+  @@unique([orgId, projectId, id])
+  @@unique([orgId, projectId, businessDate, crewId, foremanRevisionId, itemKey], map: "business_evidence_target_key")
+  @@index([orgId, projectId, businessDate], map: "business_evidence_day_idx")
+}
+
+/// Append-only safe association manifest. Photos/coverage are declarations, not verified completion.
+model BusinessEvidenceVersion {
+  id String @id @db.Uuid
+  orgId String @db.Uuid
+  org Organization @relation("BusinessEvidenceVersion_org", fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_version_org_fk")
+  projectId String @db.Uuid
+  project Project @relation("BusinessEvidenceVersion_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_version_project_fk")
+  setId String @db.Uuid
+  set BusinessEvidenceSet @relation("BusinessEvidenceVersion_set", fields: [orgId, projectId, setId], references: [orgId, projectId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_version_set_fk")
+  version Int
+  coverageJson Json
+  photosJson Json
+  state String
+  daySeq BigInt
+  clientMutationId String @db.Uuid
+  commandJson Json
+  actorAccountId String @db.Uuid
+  actorAccount LoginAccount @relation("BusinessEvidenceVersion_actorAccount", fields: [orgId, actorAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_version_account_fk")
+  actorPersonId String @db.Uuid
+  actorPerson Person @relation("BusinessEvidenceVersion_actorPerson", fields: [orgId, actorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction, map: "business_evidence_version_person_fk")
+  createdAt DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, id])
+  @@unique([orgId, setId, version])
+  @@unique([orgId, clientMutationId])
+  @@index([orgId, setId, daySeq], map: "business_evidence_cut_idx")
 }
