@@ -40,7 +40,13 @@ export interface DeployConfig {
   apiClientId: string;
   spaClientId: string;
   storageAccountName: string;
+  reportLocationUiEnabled?: boolean;
+  reportLocationSaveEnabled?: boolean;
 }
+const LOCATION_FLAGS = [
+  'reportLocationUiEnabled',
+  'reportLocationSaveEnabled',
+] as const;
 export type Command = 'migrate' | 'app' | 'all';
 export interface Options {
   command: Command;
@@ -93,7 +99,10 @@ export function parseArgs(argv: readonly string[]): Options {
 export function validateConfig(raw: unknown): DeployConfig {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
     throw new DeployStop('the deploy config is not a JSON object');
-  const shapes: Record<keyof DeployConfig, RegExp> = {
+  const shapes: Record<
+    Exclude<keyof DeployConfig, (typeof LOCATION_FLAGS)[number]>,
+    RegExp
+  > = {
     tenantId: GUID,
     subscriptionName: /^[A-Za-z0-9 _.-]{1,64}$/,
     resourceGroup: AZURE_NAME,
@@ -105,8 +114,14 @@ export function validateConfig(raw: unknown): DeployConfig {
   };
   const record = raw as Record<string, unknown>;
   for (const key of Object.keys(record))
-    if (!Object.hasOwn(shapes, key))
+    if (
+      !Object.hasOwn(shapes, key) &&
+      !LOCATION_FLAGS.some((flag) => flag === key)
+    )
       throw new DeployStop(`unknown deploy config key ${key}`);
+  for (const key of LOCATION_FLAGS)
+    if (Object.hasOwn(record, key) && typeof record[key] !== 'boolean')
+      throw new DeployStop(`deploy config ${key} must be a boolean`);
   for (const [key, shape] of Object.entries(shapes)) {
     const v = record[key];
     if (typeof v !== 'string' || !shape.test(v))
@@ -133,6 +148,12 @@ export function buildImage(
     repository === 'mje-migrate' ? 'Dockerfile.migrate' : 'Dockerfile',
     '--platform',
     'linux/amd64',
+    ...(repository === 'mje-app'
+      ? [
+          '--build-arg',
+          `VITE_REPORT_LOCATION_ENABLED=${c.reportLocationUiEnabled === true}`,
+        ]
+      : []),
     '--build-arg',
     `SOURCE_REVISION=${sha}`,
     source,
@@ -212,6 +233,7 @@ export function deployApp(
     `imageReference=${image}`,
     `sourceRevision=${sha}`,
     `storageAccountName=${c.storageAccountName}`,
+    `reportLocationEnabled=${c.reportLocationSaveEnabled === true}`,
     '--query',
     'properties.outputs.url.value',
     '-o',

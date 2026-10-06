@@ -413,6 +413,16 @@ try {
   );
   assert.equal(view.baseline, null);
   assert.deepEqual(view.planStatus, { status: 'draft', n: null });
+  const freshlyReadDraft = await expectStatus(
+    call(`/plan?projectId=${projectA}&targetBusinessDate=${D1}`, pm),
+    200,
+  );
+  assert.deepEqual(freshlyReadDraft.draft, [
+    { item: 'support', target: '300' },
+    { item: 'rail', target: '' },
+  ]);
+  assert.deepEqual(freshlyReadDraft.status, { status: 'draft', n: null });
+  assert.deepEqual(freshlyReadDraft.versions, []);
   const confirmed = await expectStatus(
     call('/plan/confirm', pm, {
       ...planTarget,
@@ -429,6 +439,52 @@ try {
     }),
     409,
     'PLAN_NO_CHANGE',
+  );
+  // Yesterday's version is readable as a suggestion, but it is not a saved own-day draft.
+  const referenceBefore = await expectStatus(
+    call(`/plan?projectId=${projectA}&targetBusinessDate=${D2}`, pm),
+    200,
+  );
+  assert.deepEqual(referenceBefore.status, { status: 'none', n: null });
+  assert.equal(referenceBefore.draft, null);
+  assert.deepEqual(referenceBefore.versions, []);
+  assert.deepEqual(referenceBefore.rows, [{ item: 'support', target: '300' }]);
+  const absentDraftConfirmation = randomUUID();
+  await expectStatus(
+    call('/plan/confirm', pm, {
+      projectId: projectA,
+      targetBusinessDate: D2,
+      clientMutationId: absentDraftConfirmation,
+    }),
+    409,
+    'PLAN_EMPTY',
+  );
+  for (const table of ['PlanVersion', 'PlanDraft'])
+    assert.equal(
+      (
+        await owner.query(
+          `SELECT count(*)::int AS n FROM "${table}" WHERE "orgId"=$1 AND "projectId"=$2 AND "targetBusinessDate"=$3::date`,
+          [orgA, projectA, D2],
+        )
+      ).rows[0].n,
+      0,
+    );
+  assert.equal(
+    (
+      await owner.query(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE "orgId"=$1 AND action='REPORT_PLAN_CONFIRM' AND "correlationId"=$2`,
+        [orgA, absentDraftConfirmation],
+      )
+    ).rows[0].n,
+    0,
+  );
+  const referenceAfter = await expectStatus(
+    call(`/plan?projectId=${projectA}&targetBusinessDate=${D2}`, pm),
+    200,
+  );
+  assert.deepEqual(referenceAfter, referenceBefore);
+  pass(
+    'previous-day reference cannot confirm without an own-day draft; no version, draft or confirm audit is written',
   );
   await expectStatus(
     call('/plan/draft', pm, {

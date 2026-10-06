@@ -14,6 +14,8 @@ param imageReference string
 param sourceRevision string
 @description('The foundation\'s storage account; the app identity holds Storage Blob Data Contributor on its private "evidence" container only.')
 param storageAccountName string
+@description('Explicit opt-in for confirmed report location saves; independent of weather. Frontend entry is separately enabled at image build time.')
+param reportLocationEnabled bool = false
 
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
@@ -61,6 +63,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'WEB_ROOT', value: '/app/web' }
           { name: 'SOURCE_REVISION', value: sourceRevision }
           { name: 'ALPHA_ENABLED', value: 'true' }
+            { name: 'REPORT_LOCATION_ENABLED', value: reportLocationEnabled ? 'true' : 'false' }
           { name: 'ENTRA_TENANT_ID', value: tenantId }
           { name: 'ENTRA_API_CLIENT_ID', value: apiClientId }
           { name: 'ENTRA_SPA_CLIENT_ID', value: spaClientId }

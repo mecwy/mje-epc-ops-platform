@@ -6,6 +6,62 @@ type PlanApi = Pick<ReportApi, 'plan' | 'savePlanDraft' | 'confirmPlan'>;
 const valid = (rows: PlanRowDto[]) =>
   rows.every((r) => r.target === '' || dec(r.target) !== null);
 
+type QuantityContext = {
+  owner: object;
+  item: string;
+  unit: string;
+  value: string;
+  present: boolean;
+  locked: boolean;
+};
+
+/** A temporary target entry; opening and cancelling never edit the plan. */
+export class PlanQuantityEntry {
+  private base: QuantityContext | null = null;
+  value = '';
+
+  open(context: QuantityContext): boolean {
+    if (context.locked) return false;
+    this.base = { ...context };
+    this.value = context.value;
+    return true;
+  }
+
+  edit(value: string) {
+    if (this.base) this.value = value;
+  }
+
+  cancel() {
+    this.base = null;
+  }
+
+  current(context: QuantityContext): boolean {
+    return Boolean(
+      this.base &&
+      !context.locked &&
+      this.base.owner === context.owner &&
+      this.base.item === context.item &&
+      this.base.unit === context.unit &&
+      this.base.value === context.value &&
+      this.base.present === context.present,
+    );
+  }
+
+  complete(
+    context: QuantityContext,
+  ): { kind: 'apply'; value: string } | { kind: 'invalid' | 'dismiss' } {
+    if (!this.current(context)) {
+      this.cancel();
+      return { kind: 'dismiss' };
+    }
+    if (this.value !== '' && dec(this.value) === null)
+      return { kind: 'invalid' };
+    const value = this.value;
+    this.cancel();
+    return { kind: 'apply', value };
+  }
+}
+
 /**
  * Tomorrow's plan for one project and target date, kept for the life of the workspace so a
  * pending save survives the editor unmounting. Draft writes and the confirmation run through
@@ -35,6 +91,28 @@ export class PlanSession {
 
   get dirty() {
     return this.saved !== null && this.rows !== this.saved;
+  }
+
+  get referenceOnly() {
+    return (
+      this.plan !== null &&
+      this.plan.draft === null &&
+      this.plan.versions.length === 0 &&
+      !this.dirty &&
+      this.rows.length > 0
+    );
+  }
+
+  get hasOwnDraft() {
+    return this.plan !== null && this.plan.draft !== null;
+  }
+
+  /** Adopt unchanged reference rows only through an explicit target-day save action. */
+  saveReferenceDraft(): Promise<void> {
+    if (this.confirming || !this.referenceOnly || !valid(this.rows))
+      return Promise.resolve();
+    this.edit(this.rows.map((row) => ({ ...row })));
+    return this.save();
   }
 
   /**
@@ -109,6 +187,7 @@ export class PlanSession {
     try {
       if (!valid(this.rows)) throw new ApiError('NUMBER_INVALID', 409);
       await this.save();
+      if (!this.hasOwnDraft) throw new ApiError('PLAN_EMPTY', 409);
       await this.enqueue(() =>
         this.api.confirmPlan({
           projectId: this.projectId,

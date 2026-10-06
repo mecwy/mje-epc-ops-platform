@@ -143,6 +143,8 @@
   "apps/web/src/report/QuantityEntrySheet.test.ts",
   "apps/web/src/report/QuantityEntrySheet.tsx",
   "apps/web/src/report/ReportView.tsx",
+  "apps/web/src/report/ReviewFacts.test.ts",
+  "apps/web/src/report/ReviewFacts.tsx",
   "apps/web/src/report/Sheets.tsx",
   "apps/web/src/report/SourceReport.tsx",
   "apps/web/src/report/WeatherLocation.tsx",

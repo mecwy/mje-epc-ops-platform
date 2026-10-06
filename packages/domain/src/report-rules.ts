@@ -213,15 +213,15 @@ export function planRows(
 export type ConfirmOutcome =
   | { ok: true; version: PlanVersion }
   | { ok: false; reason: 'noChange' | 'emptyPlan' | 'numberInvalid' };
-/** Confirming without a new draft is a no-op: no duplicate versions. */
+/** Only an own-day draft can be confirmed; previous-day rows remain a read-only suggestion. */
 export function confirmPlan(
   plan: PlanState | undefined,
-  previousDayPlan: PlanState | undefined,
+  _previousDayPlan: PlanState | undefined,
   at: string,
 ): ConfirmOutcome {
   if (plan?.versions.length && !plan.draft)
     return { ok: false, reason: 'noChange' };
-  const rows = planRows(plan, previousDayPlan).filter(
+  const rows = (plan?.draft ?? []).filter(
     (r) => String(r.target ?? '').trim() !== '',
   );
   if (!rows.length) return { ok: false, reason: 'emptyPlan' };
