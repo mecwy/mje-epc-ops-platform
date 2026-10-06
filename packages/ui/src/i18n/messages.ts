@@ -14,6 +14,7 @@ export const LOCALES: Record<Lang, string> = {
   es: 'es-ES',
 };
 export const MESSAGES = {
+  siteLocation: ['施工地点', 'Site location', 'Site location', 'Site location'],
   planPreviousReference: [
     '前日参考',
     'Previous-day reference',

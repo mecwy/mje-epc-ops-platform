@@ -121,6 +121,7 @@ function RetainedCard({
         return `${t('presence')} · ${key}`;
       case 'weather':
       case 'temperature':
+      case 'siteLocation':
         return t(head);
       default:
         return path;
@@ -782,6 +783,18 @@ export function FillPage({
               </strong>
             </section>
             <div className="fill-business">
+              <section className="card" aria-label={t('siteLocation')}>
+                <label className="field">
+                  <span>{t('siteLocation')}</span>
+                  <input
+                    id="f-site-location"
+                    maxLength={500}
+                    value={f.siteLocation ?? ''}
+                    disabled={locked || h.busy}
+                    onChange={(e) => h.edit('siteLocation', e.target.value)}
+                  />
+                </label>
+              </section>
               <section className="card fill-manual-weather">
                 <h2 className="blk">{t('weather')}</h2>
                 <div className="row2">

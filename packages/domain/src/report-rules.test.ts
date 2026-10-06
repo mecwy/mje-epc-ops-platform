@@ -33,6 +33,17 @@ import {
 } from './report-rules.js';
 
 const ITEMS = ['support', 'rail', 'modules'];
+it('treats only a nonblank entered site text as draft content without inventing work', () => {
+  const f = blankFacts();
+  expect(f).not.toHaveProperty('siteLocation');
+  expect(hasFacts({ ...f, siteLocation: '' })).toBe(false);
+  expect(hasFacts({ ...f, siteLocation: '  ' })).toBe(false);
+  const location = { ...f, siteLocation: '  TEST address / work area  ' };
+  expect(hasFacts(location)).toBe(true);
+  expect(location.qty).toEqual({});
+  expect(location.people).toEqual({});
+  expect(location.siteLocation).toBe('  TEST address / work area  ');
+});
 const MACH = ['boomLift', 'crane', 'truck'];
 const MATS = ['support', 'rail'];
 const plan = (rows: [string, string][], draft = false): PlanState => ({

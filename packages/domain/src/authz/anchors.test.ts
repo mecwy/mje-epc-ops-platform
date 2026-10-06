@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { decide, type TestContext } from './interpret.js';
 import { SURFACE, type Capability } from './surface.js';
+import { FIELDS } from './fields.js';
 
 const entry = (name: string) => {
   const e = SURFACE.find((x) => x.entry === name);
@@ -84,6 +85,7 @@ const DAY_KEYS = [
   'facts',
   'facts.weather',
   'facts.temperature',
+  'facts.siteLocation',
   'facts.qty',
   'facts.cumulative',
   'facts.narrative',
@@ -143,6 +145,14 @@ const DAY_KEYS = [
 const sorted = (keys: string[]) => [...keys].sort();
 
 describe('ADR-0003 anchors (hand-written)', () => {
+  it('maps site text to draft for writers and submitted facts for readers', () => {
+    expect(
+      FIELDS['report.day.writer'].fields.facts.fields.siteLocation.layer,
+    ).toBe('draft');
+    expect(
+      FIELDS['report.day.reader'].fields.facts.fields.siteLocation.layer,
+    ).toBe('submitted');
+  });
   const cases: {
     name: string;
     entry: string;
