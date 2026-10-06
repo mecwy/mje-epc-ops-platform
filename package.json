@@ -16,7 +16,7 @@
     "lint": "eslint apps packages scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test scripts/publication-policy.test.mjs scripts/cloud-migrate.test.mjs scripts/i18n-scan.test.mjs scripts/local-db.test.mjs scripts/cloud-bootstrap.test.mjs scripts/check-pr-body.test.mjs scripts/cloud-add-member.test.mjs scripts/entra-mapping.test.mjs scripts/clock-watch.test.mjs scripts/dev-deploy.test.mts && vitest run --passWithNoTests",
+    "test": "node --test scripts/publication-policy.test.mjs scripts/cloud-migrate.test.mjs scripts/i18n-scan.test.mjs scripts/local-db.test.mjs scripts/cloud-bootstrap.test.mjs scripts/check-pr-body.test.mjs scripts/cloud-add-member.test.mjs scripts/entra-mapping.test.mjs scripts/clock-watch.test.mjs scripts/dev-deploy.test.mts scripts/check-migration-history.test.mts && vitest run --passWithNoTests",
     "test:integration": "node --env-file=.env scripts/integration.mjs",
     "schema:validate": "prisma validate",
     "schema:format": "prisma format",
@@ -39,7 +39,8 @@
     "test:report-lookups": "node --env-file=.env scripts/report-lookups-integration.mts",
     "test:alpha-lookups": "node --env-file=.env scripts/alpha-lookups-integration.mts",
     "test:project-status": "node --env-file=.env scripts/project-status-integration.mts",
-    "test:project-master": "node --env-file=.env scripts/project-master-integration.mts"
+    "test:project-master": "node --env-file=.env scripts/project-master-integration.mts",
+    "check:migrations": "node scripts/check-migration-history.mts"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",
