@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ReportItemDto } from '@mje/contracts';
 import { ROLE_KEYS, dec, decText, type Coverage } from '@mje/domain/rules';
 import type { DayView } from '../api.js';
@@ -23,6 +23,10 @@ import { FillIssues } from './Issues.js';
 import type { IssuesHandle } from './useIssues.js';
 import { PhotoLine, PhotosCard, UnlinkedReminder } from './Photos.js';
 import type { PhotosHandle } from './usePhotos.js';
+import {
+  QuantityEntrySheet,
+  type QuantityEntryHandle,
+} from './QuantityEntrySheet.js';
 
 const ROLE_LABEL = {
   manager: 'role_manager',
@@ -168,6 +172,7 @@ function QtyRow({
   compact?: boolean | undefined;
 }) {
   const { t, label, locale } = useI18n();
+  const quantityEntry = useRef<QuantityEntryHandle>(null);
   const f = h.facts!;
   const b = target(day, it.key);
   const q = f.qty[it.key];
@@ -177,16 +182,24 @@ function QtyRow({
   return (
     <div className="qrow">
       <div className="qline">
-        <label htmlFor={`q-${it.key}`} className="grow">
-          <span className="qname">{label(it.label)}</span>
-          {b && (
-            <span className="muted small">
-              {t('baselineN', { n: fmtNum(b, locale) })}
-            </span>
-          )}
-        </label>
+        <div className="grow">
+          <button
+            type="button"
+            className="fill-quantity-trigger"
+            disabled={locked}
+            onClick={() => quantityEntry.current?.open()}
+          >
+            <span className="qname">{label(it.label)}</span>
+            {b && (
+              <span className="muted small">
+                {t('baselineN', { n: fmtNum(b, locale) })}
+              </span>
+            )}
+          </button>
+        </div>
         <NumInput
           id={`q-${it.key}`}
+          label={label(it.label)}
           value={q}
           disabled={locked}
           onChange={(v) => h.edit(`qty.${it.key}`, v)}
@@ -197,6 +210,20 @@ function QtyRow({
         value={q}
         disabled={locked}
         onSet={(v) => h.edit(`qty.${it.key}`, v)}
+      />
+      <QuantityEntrySheet
+        ref={quantityEntry}
+        scope={JSON.stringify([
+          day.projectId,
+          day.businessDate,
+          it.key,
+          it.unit ?? null,
+        ])}
+        title={label(it.label)}
+        unit={unit}
+        value={q}
+        locked={locked}
+        onConfirm={(value) => h.edit(`qty.${it.key}`, value)}
       />
       <ForemanLine itemKey={it.key} />
       {!compact && (dec(q) !== null || cur) && (
