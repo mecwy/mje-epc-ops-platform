@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseReportLocationCandidate } from '@mje/contracts';
-import { createBrowserLocationPorts } from './browser-location-ports.js';
+import {
+  browserLocationPortsForFlag,
+  createBrowserLocationPorts,
+} from './browser-location-ports.js';
 import type { GeoSource } from './geo.js';
 import { WeatherLocationSession } from './weather-location-session.js';
 
 // Synthetic TEST browser readings only; no real GPS or provider is invoked.
 const reading = {
   coords: {
-    latitude: 45.12345678901234,
-    longitude: 19.01,
+    latitude: 0.12345678901234,
+    longitude: -140.01,
     accuracy: 12.345678,
   },
   timestamp: 0,
@@ -56,6 +59,30 @@ afterEach(() => {
 });
 
 describe('active browser report location ports', () => {
+  it.each([undefined, '', 'false', 'TRUE', '1'])(
+    'default/disabled composition %s provides no capture control ports',
+    (flag) => {
+      const getter = vi.fn(() => source().geo);
+      vi.stubGlobal(
+        'navigator',
+        Object.defineProperty({}, 'geolocation', { get: getter }),
+      );
+      expect(browserLocationPortsForFlag(flag)).toBeUndefined();
+      expect(getter).not.toHaveBeenCalled();
+    },
+  );
+  it('only the explicit true opt-in creates lazy capture ports', () => {
+    const getter = vi.fn(() => source().geo);
+    vi.stubGlobal(
+      'navigator',
+      Object.defineProperty({}, 'geolocation', { get: getter }),
+    );
+    expect(browserLocationPortsForFlag('true')).toMatchObject({
+      locationVersionId: null,
+      locate: expect.any(Function),
+    });
+    expect(getter).not.toHaveBeenCalled();
+  });
   it('construction and session mounting/weather refresh do not read GPS', async () => {
     const getGeolocation = vi.fn(() => source().geo);
     const ports = createBrowserLocationPorts(getGeolocation);
@@ -91,7 +118,7 @@ describe('active browser report location ports', () => {
     expect(await pending).toMatchObject({
       kind: 'fix',
       reading: {
-        lat: '45.12345678901234',
+        lat: '0.12345678901234',
         accuracyM: '12.345678',
         deviceFixAt: null,
       },
@@ -116,7 +143,7 @@ describe('active browser report location ports', () => {
         businessDate: '2026-10-06',
       }),
       expect.objectContaining({
-        lat: '45.12345678901234',
+        lat: '0.12345678901234',
         accuracyM: '12.345678',
       }),
     ]);

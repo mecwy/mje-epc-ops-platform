@@ -618,6 +618,7 @@ export function FillPage({
 }) {
   const { t, label, locale, lang } = useI18n();
   const [section, setSection] = useState<FillSection>('progress');
+  const [locationControlsOpen, setLocationControlsOpen] = useState(false);
   const [requestedFocus, setRequestedFocus] = useState<string | null>(null);
   const f = h.facts!;
   const locked = day.state === 'submitted' || busy || !canWrite;
@@ -767,9 +768,17 @@ export function FillPage({
                 {weatherControls && (
                   <details
                     className="fill-guidance"
-                    open={weatherControlsPending || undefined}
+                    open={weatherControlsPending || locationControlsOpen}
                   >
-                    <summary>{t('weatherLocation_position')}</summary>
+                    <summary
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (!weatherControlsPending)
+                          setLocationControlsOpen((open) => !open);
+                      }}
+                    >
+                      {t('weatherLocation_position')}
+                    </summary>
                     {weatherControls}
                   </details>
                 )}

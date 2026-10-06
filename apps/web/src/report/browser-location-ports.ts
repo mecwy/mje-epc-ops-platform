@@ -10,6 +10,13 @@ function browserGeolocation(): GeoSource | null {
   return typeof navigator === 'undefined' ? null : navigator.geolocation;
 }
 
+/** Default composition stays off; enabling also requires the server capture gate. */
+export function browserLocationPortsForFlag(
+  flag: string | undefined,
+): WeatherPresentationPorts | undefined {
+  return flag === 'true' ? createBrowserLocationPorts() : undefined;
+}
+
 /**
  * Active report location only. Confirmation and saving remain with the existing
  * WeatherLocationSession and parent DayStore; personal coordinates never become
