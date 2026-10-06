@@ -2769,6 +2769,205 @@ try {
     );
   }
 
+  // ---------- C06c1: declared category-day sums, current vs frozen ----------
+  {
+    const project = randomUUID();
+    await owner.query(
+      'INSERT INTO "Project"(id,"orgId","updatedAt","updatedBy",code,name,timezone,status) VALUES($1,$2,now(),$3,\'TEST-PEOPLE\',\'TEST Personnel Window\',\'Europe/Belgrade\',\'ACTIVE\')',
+      [project, orgA, seedActor],
+    );
+    await membership(orgA, accountPm, 'PROJECT_MANAGER', project);
+    const window = (bearer = pm, projectId = project, date = '2026-10-07') =>
+      call(
+        `/people-window?projectId=${projectId}&businessDate=${date}`,
+        bearer,
+      );
+    const before = await expectStatus(window(), 200);
+    assert.equal(before.reportedDays, 0);
+    assert.equal(before.categoryKnownSubtotals.installer.knownSubtotal, null);
+    for (const denied of [pmB, twin, expired, execA])
+      await expectStatus(window(denied), 403, 'FORBIDDEN');
+    await expectStatus(window(undefined, project, '2026-02-30'), 400);
+    assert.equal(
+      (
+        await call(
+          `/people-window?projectId=${project}&businessDate=2026-10-07`,
+        )
+      ).status,
+      401,
+    );
+    pass(
+      'personnel window authorizes an empty project, rejects cross-org/project/expired membership and invalid dates',
+    );
+
+    const dates = Array.from({ length: 7 }, (_, n) => `2026-10-0${n + 1}`);
+    const values = ['1', '0', 'unknown', '', 'na', undefined, '2'];
+    const saves = new Map();
+    const submitted = new Map();
+    const snapshots = new Map();
+    for (let index = 0; index < dates.length; index++) {
+      const businessDate = dates[index];
+      const people =
+        values[index] === undefined ? {} : { installer: values[index] };
+      const saved = await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            projectId: project,
+            businessDate,
+            facts: facts({ people }),
+          }),
+        ),
+        200,
+      );
+      saves.set(businessDate, saved);
+      if (index === 0)
+        assert.equal((await expectStatus(window(), 200)).reportedDays, 0);
+      const result = await expectStatus(
+        call(
+          '/submit',
+          pm,
+          cmd({
+            projectId: project,
+            businessDate,
+            expectedVersion: saved.version,
+          }),
+        ),
+        200,
+      );
+      submitted.set(businessDate, result);
+      const revision = await expectStatus(
+        call(
+          `/revision?projectId=${project}&businessDate=${businessDate}&n=1`,
+          pm,
+        ),
+        200,
+      );
+      snapshots.set(businessDate, revision.snapshot);
+      assert.equal(revision.snapshot.personnelSummary.windowTo, businessDate);
+      const contribution =
+        revision.snapshot.personnelSummary.dayContributions.find(
+          (x) => x.businessDate === businessDate,
+        );
+      assert.equal(contribution.reportRevisionId, revision.reportRevisionId);
+      assert.equal(contribution.n, 1);
+    }
+    const current = await expectStatus(window(), 200);
+    assert.equal(current.reportedDays, 7);
+    assert.equal(current.categoryKnownSubtotals.installer.knownSubtotal, '3');
+    const counts = current.categoryKnownSubtotals.installer;
+    assert.deepEqual(
+      [
+        counts.valueDays,
+        counts.unknownDays,
+        counts.blankDays,
+        counts.notApplicableDays,
+        counts.missingFieldDays,
+      ],
+      [3, 1, 1, 1, 1],
+    );
+    assert.equal(current.categoryKnownSubtotals.manager.knownSubtotal, null);
+    const reader = await expectStatus(window(exec), 200);
+    assert.deepEqual(reader.dayContributions, current.dayContributions);
+    assert.ok(
+      !('sourceReport' in current) &&
+        !('presence' in current) &&
+        !('personId' in current),
+    );
+    pass(
+      'seven calendar slots preserve zero/blank/unknown/NA/absent and select only submitted declared categories without a grand total',
+    );
+
+    const first = dates[0];
+    const last = dates.at(-1);
+    const correction = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          projectId: project,
+          businessDate: first,
+          expectedVersion: submitted.get(first).version,
+          reason: 'TEST category correction',
+        }),
+      ),
+      200,
+    );
+    const saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          projectId: project,
+          businessDate: first,
+          expectedVersion: correction.version,
+          facts: facts({ people: { installer: '9' } }),
+        }),
+      ),
+      200,
+    );
+    assert.equal(
+      (await expectStatus(window(), 200)).categoryKnownSubtotals.installer
+        .knownSubtotal,
+      '3',
+    );
+    const mutation = cmd({
+      projectId: project,
+      businessDate: first,
+      expectedVersion: saved.version,
+    });
+    await expectStatus(call('/submit', pm, mutation), 200);
+    await expectStatus(call('/submit', pm, mutation), 200);
+    const corrected = await expectStatus(window(), 200);
+    assert.equal(
+      corrected.categoryKnownSubtotals.installer.knownSubtotal,
+      '11',
+    );
+    assert.equal(corrected.dayContributions[0].n, 2);
+    const historical = await expectStatus(
+      call(`/revision?projectId=${project}&businessDate=${last}&n=1`, exec),
+      200,
+    );
+    assert.deepEqual(
+      historical.snapshot.personnelSummary,
+      snapshots.get(last).personnelSummary,
+    );
+    assert.equal(
+      historical.snapshot.personnelSummary.categoryKnownSubtotals.installer
+        .knownSubtotal,
+      '3',
+    );
+    const old = await expectStatus(
+      call(`/revision?projectId=${project}&businessDate=${first}&n=1`, pm),
+      200,
+    );
+    assert.deepEqual(old.snapshot, snapshots.get(first));
+    const newRevision = await expectStatus(
+      call(`/revision?projectId=${project}&businessDate=${first}&n=2`, pm),
+      200,
+    );
+    assert.equal(
+      newRevision.snapshot.personnelSummary.categoryKnownSubtotals.installer
+        .knownSubtotal,
+      '9',
+    );
+    assert.equal(newRevision.snapshot.facts.qty.support, '120');
+    assert.ok(
+      'foreman' in newRevision.snapshot && 'field' in newRevision.snapshot,
+    );
+    pass(
+      'unsubmitted correction keeps the old contribution; one resubmitted revision replaces it once and historical manifests/other snapshot extensions stay frozen',
+    );
+
+    await owner.query(
+      'UPDATE "Membership" SET "activeUntil"=now()-interval \'1 second\' WHERE "orgId"=$1 AND "accountId"=$2 AND "projectId"=$3',
+      [orgA, accountPm, project],
+    );
+    await expectStatus(window(), 403, 'FORBIDDEN');
+    pass('personnel read revocation is rechecked after successful reads');
+  }
+
   console.log(
     `Report HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Photos, issues, field devices and the web UI are later slices.`,
   );

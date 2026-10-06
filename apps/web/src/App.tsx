@@ -24,6 +24,8 @@ import {
 } from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
+import { PersonnelMetricsSession } from './report/personnel-metrics-session.js';
+import type { PersonnelRevisionLink } from './report/PersonnelMetrics.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
@@ -265,6 +267,25 @@ function Workspace({
     () => say(t('conflictReloaded')),
     resume,
   );
+  const personnelWindows = useMemo(
+    () => new Map<string, PersonnelMetricsSession>(),
+    [api, project.id],
+  );
+  let personnelSession = personnelWindows.get(date);
+  if (!personnelSession) {
+    personnelSession = new PersonnelMetricsSession(api, project.id, date);
+    personnelWindows.set(date, personnelSession);
+  }
+  useEffect(() => {
+    void personnelSession.refresh();
+  }, [
+    personnelSession,
+    h.day?.version,
+    h.day?.currentRevisionNumber,
+    signin.expired,
+    active,
+  ]);
+  const pendingPersonnelRevision = useRef<PersonnelRevisionLink | null>(null);
   const latestDrafts = useRef(h);
   latestDrafts.current = h;
   useEffect(() => {
@@ -316,11 +337,18 @@ function Workspace({
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
-  useEffect(() => dispatchView({ type: 'close' }), [date]);
+  useEffect(() => {
+    dispatchView({ type: 'close' });
+    const target = pendingPersonnelRevision.current;
+    if (target?.businessDate === date && target.projectId === project.id) {
+      pendingPersonnelRevision.current = null;
+      openVersion(target.n, target.reportRevisionId);
+    }
+  }, [date]);
   useEffect(() => {
     if (task !== null) dispatchView({ type: 'close' });
   }, [task]);
-  const openVersion = (n: number) => {
+  const openVersion = (n: number, reportRevisionId?: string) => {
     const ticket = ++viewTicket.current;
     setSheet(null);
     // Versions are shown on the report tab, never over the field page or an open task.
@@ -328,9 +356,24 @@ function Workspace({
     setView('report');
     dispatchView({ type: 'open', n, ticket });
     api.revision(project.id, date, n).then(
-      (rev) => dispatchView({ type: 'loaded', ticket, rev }),
+      (rev) =>
+        dispatchView(
+          reportRevisionId && rev.reportRevisionId !== reportRevisionId
+            ? { type: 'failed', ticket }
+            : { type: 'loaded', ticket, rev },
+        ),
       () => dispatchView({ type: 'failed', ticket }),
     );
+  };
+
+  const openPersonnelRevision = (target: PersonnelRevisionLink) => {
+    if (target.projectId !== project.id) return;
+    if (target.businessDate === date)
+      openVersion(target.n, target.reportRevisionId);
+    else {
+      pendingPersonnelRevision.current = target;
+      setDate(target.businessDate);
+    }
   };
 
   useEffect(() => {
@@ -603,6 +646,7 @@ function Workspace({
         ) : viewing.rev ? (
           <ReportBody
             c={viewing.rev.snapshot}
+            onOpenPersonnelRevision={openPersonnelRevision}
             version={meta ?? viewing.rev}
             timeZone={project.timezone}
             photos={viewing.rev.snapshot.photos ?? []}
@@ -626,6 +670,8 @@ function Workspace({
     body = (
       <ReportView
         day={day}
+        personnelSession={personnelSession}
+        onOpenPersonnelRevision={openPersonnelRevision}
         read={h.read}
         canWrite={canWrite}
         missing={cov.missing.length}

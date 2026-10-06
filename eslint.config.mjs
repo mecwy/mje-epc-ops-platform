@@ -28,6 +28,7 @@ export const BOUNDARY = {
       'report-commands.ts',
       'report-lookups.ts',
       'report-rules.ts',
+      'personnel-metrics.ts',
       'reader-view.ts',
     ].map((f) => D + f),
     issue: ['issue-store.ts', 'issue-reader.ts', 'issue-lookups.ts'].map(

@@ -10,6 +10,7 @@
  */
 import type {
   ForemanDayDto,
+  PeopleWindowSummaryDto,
   PhotoAsOfDto,
   PlanRowDto,
   ReportItemDto,
@@ -38,6 +39,8 @@ import {
   type Actor,
   type ReportProjectRow,
 } from './store-kit.js';
+import { buildPersonnelWindow } from './personnel-metrics.js';
+import { parsePeopleWindowSummary } from '@mje/contracts';
 import type { IssueAsOf } from './issue-store.js';
 import { rosterLock } from './field-kit.js';
 import { frozenPhotos } from './photo-store.js';
@@ -55,6 +58,7 @@ import {
   planStateOf,
   publicItem,
   revisionRows,
+  personnelRevisionInputs,
   type DayRow,
   type DayState,
 } from './report-store.js';
@@ -78,6 +82,7 @@ export const REPORT_PROJECTORS = [
   'report.plan.writer',
   'report.plan.reader',
   'report.items',
+  'report.peopleWindow',
   'report.lagHistory',
 ] as const;
 export type ReportProjector = (typeof REPORT_PROJECTORS)[number];
@@ -231,6 +236,10 @@ export function readerSnapshot(
   }
   const nextPlan = readerNextPlan(snapshot['nextPlan']);
   if (nextPlan !== snapshot['nextPlan']) own()['nextPlan'] = nextPlan;
+  if (snapshot['personnelSummary'] != null)
+    own()['personnelSummary'] = parsePeopleWindowSummary(
+      snapshot['personnelSummary'],
+    );
   const photos = rest['photos'];
   if (!Array.isArray(photos)) return rest;
   return {
@@ -610,6 +619,7 @@ async function revision(
   );
   if (!r) throw new ReportError('NOT_FOUND');
   const head = {
+    reportRevisionId: r.id,
     n: r.revisionNumber,
     at: r.submittedAt.toISOString(),
     by: r.updatedBy,
@@ -622,6 +632,30 @@ async function revision(
         snapshot: readerSnapshot(r.snapshot),
       })
     : projected('report.revision.writer', { ...head, snapshot: r.snapshot });
+}
+
+async function peopleWindow(
+  { client, actor }: Opened,
+  projectId: string,
+  toBusinessDate: string,
+): Promise<PeopleWindowSummaryDto> {
+  // Check both membership and tenant-owned project before inspecting even an empty window.
+  await projectAccess(client, actor, projectId);
+  const revisions = await personnelRevisionInputs(
+    client,
+    actor.orgId,
+    projectId,
+    toBusinessDate,
+  );
+  return projected(
+    'report.peopleWindow',
+    buildPersonnelWindow({
+      projectId,
+      toBusinessDate,
+      selectedAtUTC: new Date(actor.decidedAt).toISOString(),
+      revisions,
+    }),
+  );
 }
 
 async function plan(
@@ -734,6 +768,8 @@ export const reportReader = {
       plan: async (projectId: string, targetBusinessDate: string) =>
         plan(open(), projectId, targetBusinessDate),
       items: async (projectId: string) => items(open(), projectId),
+      peopleWindow: async (projectId: string, businessDate: string) =>
+        peopleWindow(open(), projectId, businessDate),
     };
   },
   /**

@@ -68,6 +68,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}report-commands.ts`,
       `${D}report-lookups.ts`,
       `${D}report-rules.ts`,
+      `${D}personnel-metrics.ts`,
       `${D}reader-view.ts`,
     ],
     tables: [

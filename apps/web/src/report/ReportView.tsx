@@ -7,6 +7,12 @@ import type {
   ReportContent,
   RevisionMeta,
 } from '../api.js';
+import {
+  PersonnelMetrics,
+  type PersonnelMetricsLabels,
+  type PersonnelRevisionLink,
+} from './PersonnelMetrics.js';
+import type { PersonnelMetricsSession } from './personnel-metrics-session.js';
 import { useI18n } from '../i18n.js';
 import { Icon } from '../icons.js';
 import { narrativeText } from '@mje/ui';
@@ -26,6 +32,58 @@ import {
   sourceCellDisplay,
   type ReportedCellDisplay,
 } from './source-report.js';
+
+function usePersonnelLabels(
+  title: 'personnelCurrentTitle' | 'personnelFrozenTitle',
+): PersonnelMetricsLabels {
+  const { t, label } = useI18n();
+  return {
+    title: t(title),
+    description: t('personnelDescription'),
+    category: t('category'),
+    knownSubtotal: t('personnelKnownSubtotal'),
+    coverageTitle: t('personnelCoverageTitle'),
+    contributions: t('personnelContributions'),
+    state: t('personnelState'),
+    noValue: t('personnelNoValue'),
+    loading: t('loading'),
+    refreshError: t('loadFail'),
+    retry: t('retry'),
+    historicalUnavailable: t('personnelUnavailable'),
+    categories: Object.fromEntries(
+      ROLE_KEYS.map((key) => [key, label(`role_${key}`)]),
+    ) as PersonnelMetricsLabels['categories'],
+    cellStates: {
+      value: t('personnelValue'),
+      blank: t('notFilled'),
+      unknown: t('unknown'),
+      na: t('na'),
+      invalid: t('personnelInvalid'),
+      missing: t('personnelMissing'),
+    },
+    totalStates: {
+      complete: t('personnelComplete'),
+      partial: t('personnelPartial'),
+      unknown: t('unknown'),
+      na: t('na'),
+      missing: t('personnelMissing'),
+    },
+    period: (from, to) => t('personnelPeriod', { from, to }),
+    coverage: (reported, slots) => t('personnelCoverage', { reported, slots }),
+    categoryCoverage: (value) =>
+      t('personnelCategoryCoverage', {
+        value: value.valueDays,
+        blank: value.blankDays,
+        unknown: value.unknownDays,
+        na: value.notApplicableDays,
+        invalid: value.invalidDays,
+        missing: value.missingFieldDays,
+        unreported: value.unreportedDays,
+      }),
+    selectedAt: (utc) => t('personnelSelectedAt', { utc }),
+    openRevision: (date, n) => t('personnelOpenRevision', { date, n }),
+  };
+}
 
 /** Resolve every value and citation from the selected content, including old revisions. */
 function OriginalComparison({ c }: { c: ReportContent }) {
@@ -513,7 +571,9 @@ function BusinessSections({
   c,
   photos,
   photoOnly,
+  personnel,
 }: {
+  personnel: ReactNode;
   c: ReportContent;
   photos: PhotoAsOfDto[];
   photoOnly: ReportItemDto[];
@@ -680,6 +740,7 @@ function BusinessSections({
         )}
       </div>
       <div hidden={selected !== 'people'} className="report-business-panel">
+        {personnel}
         {table(
           [t('people'), t('persons'), t('sourcePersonnelRemarks')],
           ROLE_KEYS.map((key) => [
@@ -945,12 +1006,16 @@ function Details({ c }: { c: ReportContent }) {
 }
 
 export function ReportBody({
+  personnelSession,
+  onOpenPersonnelRevision,
   c,
   version,
   timeZone,
   onReply,
   photos,
 }: {
+  personnelSession?: PersonnelMetricsSession;
+  onOpenPersonnelRevision?: (target: PersonnelRevisionLink) => void;
   c: ReportContent;
   version: RevisionMeta | null;
   timeZone: string;
@@ -959,6 +1024,28 @@ export function ReportBody({
   photos: PhotoAsOfDto[];
 }) {
   const { t, locale, label } = useI18n();
+  const currentLabels = usePersonnelLabels('personnelCurrentTitle');
+  const frozenLabels = usePersonnelLabels('personnelFrozenTitle');
+  const personnel = onOpenPersonnelRevision ? (
+    <div className="personnel-metrics">
+      {version && (
+        <PersonnelMetrics
+          mode="frozen"
+          summary={c.personnelSummary ?? null}
+          labels={frozenLabels}
+          onOpenRevision={onOpenPersonnelRevision}
+        />
+      )}
+      {personnelSession && (
+        <PersonnelMetrics
+          mode="current"
+          session={personnelSession}
+          labels={currentLabels}
+          onOpenRevision={onOpenPersonnelRevision}
+        />
+      )}
+    </div>
+  ) : null;
   const f = c.facts;
   const weather = [f.weather, f.temperature].filter(Boolean).join(' · ');
   const placed = photoPlacement(c, photos);
@@ -1006,8 +1093,10 @@ export function ReportBody({
               c={c}
               photos={photos}
               photoOnly={placed.photoOnlyItems}
+              personnel={personnel}
             />
           )}
+          {f.noWork && personnel}
           {f.noWork && <NoWorkSources c={c} />}
         </div>
         <div className="rcol">
@@ -1030,6 +1119,8 @@ export function ReportBody({
 
 /** The report tab: frozen revision when submitted, live content otherwise. */
 export function ReportView({
+  personnelSession,
+  onOpenPersonnelRevision,
   day,
   read,
   canWrite,
@@ -1039,6 +1130,8 @@ export function ReportView({
   onReply,
   photos,
 }: {
+  personnelSession: PersonnelMetricsSession;
+  onOpenPersonnelRevision: (target: PersonnelRevisionLink) => void;
   day: DayView;
   read: ReportContent;
   canWrite: boolean;
@@ -1053,6 +1146,8 @@ export function ReportView({
     return (
       <ReportBody
         c={read}
+        personnelSession={personnelSession}
+        onOpenPersonnelRevision={onOpenPersonnelRevision}
         version={day.revisions.at(-1) ?? null}
         onReply={onReply}
         timeZone={day.siteTimezone}
@@ -1115,6 +1210,8 @@ export function ReportView({
       )}
       <ReportBody
         c={read}
+        personnelSession={personnelSession}
+        onOpenPersonnelRevision={onOpenPersonnelRevision}
         version={null}
         timeZone={day.siteTimezone}
         photos={photos}

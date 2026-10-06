@@ -2499,3 +2499,28 @@ ul.plainlist:not(.card) {
     display: none;
   }
 }
+
+.personnel-metrics {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-block: 1rem;
+}
+.personnel-metrics section + section {
+  margin-block-start: 1.5rem;
+  border-block-start: 1px solid var(--line, #d6dce4);
+  padding-block-start: 1rem;
+}
+.personnel-metrics table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.personnel-metrics th,
+.personnel-metrics td {
+  padding: 0.5rem;
+  text-align: start;
+  vertical-align: top;
+}
+.personnel-metrics dd {
+  margin-inline-start: 1rem;
+  overflow-wrap: anywhere;
+}

@@ -271,7 +271,7 @@ describe('ADR-0003 anchors (hand-written)', () => {
       ctx: account(READER),
       allowed: true,
       capability: 'report.view-submitted',
-      keys: ['n', 'at', 'by', 'reason', 'snapshot'],
+      keys: ['reportRevisionId', 'n', 'at', 'by', 'reason', 'snapshot'],
     },
     {
       name: 'reader plan: confirmed versions; the draft key carries null',

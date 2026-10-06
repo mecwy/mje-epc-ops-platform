@@ -1,4 +1,5 @@
 import type {
+  PeopleWindowSummaryDto,
   ProjectStatusHistoryDto,
   ProjectManagerProjectionsDto,
   StatusCommandResultDto,
@@ -182,6 +183,7 @@ export interface ProjectorDtos {
   'report.plan.writer': ReportPlanDto;
   'report.plan.reader': ReportPlanDto;
   'report.items': ReportItemDto[];
+  'report.peopleWindow': PeopleWindowSummaryDto;
   'report.lagHistory': ReportLagDayDto[];
   'issue.list': IssueListDto;
   'issue.home': IssueHomeDto;
@@ -302,6 +304,7 @@ const dayCommon = (content: Layer) =>
   }) as const;
 const revision = (projector: OpaqueProjector, layer: Layer) => ({
   fields: {
+    reportRevisionId: S,
     n: S,
     at: S,
     by: S,
@@ -507,6 +510,22 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
   'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.peopleWindow': {
+    fields: {
+      schemaVersion: S,
+      projectId: S,
+      windowFrom: S,
+      windowTo: S,
+      basis: S,
+      policyVersion: S,
+      selectedAtUTC: S,
+      dayContributions: sub('submitted'),
+      categoryKnownSubtotals: sub('submitted'),
+      reportedDays: SUB,
+      slotDays: S,
+      totalState: SUB,
+    },
+  },
   'report.plan.writer': plan('draft'),
   'report.plan.reader': plan('structure'),
   'report.items': {

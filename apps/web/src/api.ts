@@ -1,4 +1,5 @@
 import type {
+  PeopleWindowSummaryDto,
   CancelCorrectionCommand,
   CloseIssueCommand,
   CreateIssueCommand,
@@ -48,7 +49,7 @@ import type {
   DeclareStatusCommand,
   StatusFieldName,
 } from '@mje/contracts';
-import { STATUS_FIELD_NAMES } from '@mje/contracts';
+import { parsePeopleWindowSummary, STATUS_FIELD_NAMES } from '@mje/contracts';
 import type { Coverage } from '@mje/domain/rules';
 
 export interface AuthConfig {
@@ -140,6 +141,8 @@ export interface ReportContent {
   cumulativeBase: Record<string, Carried>;
   materialsCumulative: Record<string, MaterialTotal>;
   coverage: Coverage;
+  /** Absent on legacy revisions; never regenerated as historical data. */
+  personnelSummary?: PeopleWindowSummaryDto;
   /** Absent only in revisions submitted before issues existed. */
   issues?: IssueAsOf[];
   /**
@@ -176,6 +179,7 @@ export interface DayView extends Omit<ReportContent, 'photos'> {
   revisions: RevisionMeta[];
 }
 export interface RevisionView extends RevisionMeta {
+  reportRevisionId?: string;
   snapshot: ReportContent & { correctionReason: string };
 }
 export interface PlanView {
@@ -468,8 +472,39 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
     },
     day: (projectId: string, businessDate: string) =>
       get<DayView>('day', { projectId, businessDate }),
-    revision: (projectId: string, businessDate: string, n: number) =>
-      get<RevisionView>('revision', { projectId, businessDate, n }),
+    revision: async (projectId: string, businessDate: string, n: number) => {
+      const result = await get<RevisionView>('revision', {
+        projectId,
+        businessDate,
+        n,
+      });
+      if (result.snapshot.personnelSummary !== undefined) {
+        try {
+          result.snapshot.personnelSummary = parsePeopleWindowSummary(
+            result.snapshot.personnelSummary,
+          );
+          if (
+            result.snapshot.personnelSummary.projectId !== projectId ||
+            result.snapshot.personnelSummary.windowTo !== businessDate
+          )
+            throw new ApiError('INVALID_RESPONSE', 502);
+        } catch {
+          throw new ApiError('INVALID_RESPONSE', 502);
+        }
+      }
+      return result;
+    },
+    peopleWindow: async (projectId: string, businessDate: string) => {
+      const result = await get<unknown>('people-window', {
+        projectId,
+        businessDate,
+      });
+      try {
+        return parsePeopleWindowSummary(result);
+      } catch {
+        throw new ApiError('INVALID_RESPONSE', 502);
+      }
+    },
     plan: (projectId: string, targetBusinessDate: string) =>
       get<PlanView>('plan', { projectId, targetBusinessDate }),
     saveFacts: (c: SaveFactsCommand) => post<WriteResult>('facts', c),

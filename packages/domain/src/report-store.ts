@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { buildPersonnelWindow } from './personnel-metrics.js';
 import { InvalidReportInput } from '@mje/contracts';
 import type { Pool, PoolClient } from 'pg';
 import type {
@@ -8,6 +9,7 @@ import type {
   ForemanAdoptCommand,
   ForemanAdoptResultDto,
   NoWorkCommand,
+  PersonnelRevisionInput,
   PlanRowDto,
   ReportItemDto,
   FrozenMilestoneDto,
@@ -100,6 +102,7 @@ export interface DayRow {
   updatedAt: Date;
 }
 export interface RevisionRow {
+  id: string;
   revisionNumber: number;
   reason: string;
   submittedAt: Date;
@@ -424,6 +427,29 @@ export class ReportStore {
     const reason = day.correctionReason ?? '';
     const revisionNumber = day.currentRevisionNumber + 1;
     const revisionId = randomUUID();
+    // Freeze prior selected submissions plus this newly assigned version in this transaction.
+    // The previous submission on this same date is superseded, never counted a second time.
+    const personnelSummary = buildPersonnelWindow({
+      projectId: project.id,
+      toBusinessDate: businessDate,
+      selectedAtUTC: new Date(actor.decidedAt).toISOString(),
+      revisions: [
+        ...(await personnelRevisionInputs(
+          client,
+          actor.orgId,
+          project.id,
+          businessDate,
+        )),
+        {
+          projectId: project.id,
+          businessDate,
+          reportRevisionId: revisionId,
+          n: revisionNumber,
+          submitted: true,
+          categories: facts.people,
+        },
+      ],
+    });
     await client.query(
       `INSERT INTO "Revision"(id,"orgId","updatedAt","updatedBy","revisionNumber","baseRevisionNumber",state,reason,snapshot,"submittedAt","dailyCloseId")
       VALUES($1,$2,now(),$3,$4,$5,'SUBMITTED',$6,$7,now(),$8)`,
@@ -436,6 +462,7 @@ export class ReportStore {
         reason,
         {
           ...snapshot,
+          personnelSummary,
           primaryWorkItemKey: project.primaryWorkItemKey,
           milestones: items
             .filter((i) => i.kind === 'milestone')
@@ -1043,11 +1070,42 @@ export async function revisionRows(
   dailyCloseId: string,
 ) {
   const r = await client.query<RevisionRow>(
-    `SELECT "revisionNumber", reason, "submittedAt", "updatedBy", snapshot FROM "Revision"
+    `SELECT id, "revisionNumber", reason, "submittedAt", "updatedBy", snapshot FROM "Revision"
     WHERE "orgId"=$1 AND "dailyCloseId"=$2 ORDER BY "revisionNumber"`,
     [orgId, dailyCloseId],
   );
   return r.rows;
+}
+
+/** Report-owned selected submitted facts only; callers establish project authorization first.
+ * An open correction does not hide its earlier submission. Only the seven business dates are
+ * read, and only category declarations leave this query (no source totals or personnel PII).
+ */
+export async function personnelRevisionInputs(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  toBusinessDate: string,
+): Promise<PersonnelRevisionInput[]> {
+  const result = await client.query<Omit<PersonnelRevisionInput, 'submitted'>>(
+    `SELECT DISTINCT ON (d."businessDate") d."projectId", d."businessDate"::text AS "businessDate",
+      r.id AS "reportRevisionId", r."revisionNumber" AS n,
+      COALESCE(r.snapshot->'facts'->'people','{}'::jsonb) AS categories
+    FROM "DailyClose" d JOIN "Revision" r
+      ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id
+    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
+      AND d."businessDate">=$4::date AND d."businessDate"<=$5::date
+      AND r.state='SUBMITTED'
+    ORDER BY d."businessDate", r."revisionNumber" DESC`,
+    [
+      orgId,
+      projectId,
+      REPORT_SCOPE,
+      shiftDate(toBusinessDate, -6),
+      toBusinessDate,
+    ],
+  );
+  return result.rows.map((row) => ({ ...row, submitted: true }));
 }
 
 /** Rule 3: carry-over comes from the latest submitted day before this one, however many days back. */

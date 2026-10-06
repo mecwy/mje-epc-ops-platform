@@ -537,6 +537,13 @@ const ENTRIES: readonly SurfaceEntry[] = [
     { writer: ALL, reader: SUBMITTED },
   ),
   reportRead(
+    'people-window',
+    'query.projectId',
+    { writer: 'report.peopleWindow', reader: 'report.peopleWindow' },
+    { writer: 'submitted', reader: 'submitted' },
+    { writer: SUBMITTED, reader: SUBMITTED },
+  ),
+  reportRead(
     'revision',
     'query.projectId',
     { writer: 'report.revision.writer', reader: 'report.revision.reader' },
