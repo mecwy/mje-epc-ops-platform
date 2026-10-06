@@ -75,7 +75,8 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
     await flow.retry();
   };
   return (
-    <div className="fline">
+    <div className="fline entry-adoption">
+      <p className="entry-context">{t('entryAdoptionOnly')}</p>
       {v && (
         <button
           type="button"

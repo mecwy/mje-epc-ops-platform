@@ -176,6 +176,8 @@
   "apps/web/src/style.css",
   "apps/web/src/ui.tsx",
   "apps/web/src/vite-env.d.ts",
+  "apps/web/src/workspace/WorkspaceShell.test.ts",
+  "apps/web/src/workspace/WorkspaceShell.tsx",
   "apps/web/tsconfig.json",
   "apps/web/vite.config.ts",
   "apps/worker/package.json",

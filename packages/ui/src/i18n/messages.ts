@@ -454,6 +454,24 @@ export const MESSAGES = {
     'Rok {d} dana · dan {e}',
     'Plazo {d} días · día {e}',
   ],
+  entryQuantityOnce: [
+    '只填写本班组今日工程量和必要说明；项目、日期、工作项与单位沿用当前记录。',
+    'Enter this crew’s quantity for today and any necessary note; project, date, items and units come from this record.',
+    'Unesite današnju količinu ove ekipe i potrebnu napomenu; projekat, datum, stavke i jedinice preuzimaju se iz zapisa.',
+    'Introduzca la cantidad de hoy de esta cuadrilla y la nota necesaria; proyecto, fecha, partidas y unidades proceden del registro.',
+  ],
+  entryAdoptionOnly: [
+    '完整申报合计可明确采用；采用不代表独立复核或质量验收。',
+    'A complete declared total can be explicitly adopted; adoption is not independent verification or quality acceptance.',
+    'Potpun prijavljeni zbir može izričito da se preuzme; to nije nezavisna provera niti prijem kvaliteta.',
+    'Se puede adoptar expresamente un total declarado completo; adoptarlo no equivale a verificación independiente ni aceptación de calidad.',
+  ],
+  entryCompletenessOnly: [
+    '这里检查填报完整性和数值提示；提交日报不代表独立复核、质量验收或计费批准。',
+    'This checks entry completeness and numeric reminders; submitting the report is not independent verification, quality acceptance or billing approval.',
+    'Ovde se proveravaju potpunost unosa i brojčane napomene; predaja izveštaja nije nezavisna provera, prijem kvaliteta niti odobrenje naplate.',
+    'Aquí se revisan la integridad de los datos y los avisos numéricos; enviar el informe no equivale a verificación independiente, aceptación de calidad ni autorización de facturación.',
+  ],
   emptyPlan: [
     '计划没有内容',
     'The plan is empty',

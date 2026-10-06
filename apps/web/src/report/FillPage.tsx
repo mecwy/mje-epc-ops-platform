@@ -584,7 +584,7 @@ export function FillPage({
     </>
   );
   return (
-    <>
+    <div className="entry-workspace entry-manager">
       <header className="bar task">
         <button
           type="button"
@@ -780,6 +780,7 @@ export function FillPage({
             </div>
           </div>
           <aside className="checkpanel">
+            <p className="entry-context">{t('entryCompletenessOnly')}</p>
             <CheckList
               cov={cov}
               h={h}
@@ -797,7 +798,7 @@ export function FillPage({
           {day.state === 'correcting' ? t('checkCorrect') : t('checkSubmit')}
         </button>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -826,7 +827,7 @@ export function CheckPage({
     (i) => dec(f.qty[i.key]) !== null,
   ).length;
   return (
-    <>
+    <div className="entry-workspace entry-manager">
       <header className="bar task">
         <button
           type="button"
@@ -842,6 +843,7 @@ export function CheckPage({
         <SaveBadge save={h.save} />
       </header>
       <main className="page">
+        <p className="entry-context">{t('entryCompletenessOnly')}</p>
         <CheckList
           cov={cov}
           h={h}
@@ -884,6 +886,6 @@ export function CheckPage({
           {day.state === 'correcting' ? t('submitCorrect') : t('submitReport')}
         </button>
       </div>
-    </>
+    </div>
   );
 }

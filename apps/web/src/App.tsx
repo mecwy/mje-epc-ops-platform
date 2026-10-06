@@ -42,12 +42,15 @@ import { ProjectOverviewSession } from './executive/overview-session.js';
 import {
   executiveHref,
   parseExecutiveRoute,
+  parseReportRoute,
+  reportHref,
 } from './executive/overview-routing.js';
 import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
+import { WorkspaceShell } from './workspace/WorkspaceShell.js';
 import {
   ResumeKeeper,
   renewal,
@@ -164,11 +167,17 @@ function Workspace({
   signin,
   resume,
   onExecutiveHome,
+  requestedDate,
+  onDateChange,
+  active,
 }: {
   session: Session;
   project: Project;
   signin: SignInState;
   onExecutiveHome: () => void;
+  active: boolean;
+  requestedDate?: string;
+  onDateChange: (date: string) => void;
   /** What was put aside before a sign-in redirect. */
   resume: ResumeKeeper;
 }) {
@@ -190,9 +199,16 @@ function Workspace({
   const [place] = useState(() =>
     resume.state?.projectId === project.id ? resume.state : null,
   );
-  const [date, setDate] = useState(
-    () => place?.date ?? siteToday(project.timezone),
+  const [date, setDateValue] = useState(
+    () => requestedDate ?? place?.date ?? siteToday(project.timezone),
   );
+  useEffect(() => {
+    if (requestedDate) setDateValue(requestedDate);
+  }, [requestedDate]);
+  const setDate = (next: string) => {
+    setDateValue(next);
+    onDateChange(next);
+  };
   const canWrite = project.access === 'write';
   // The site page (QR code, devices) is PM-only; a reader never gets it (OD20).
   const [view, setView] = useState<'field' | 'report' | 'site'>(() =>
@@ -287,9 +303,6 @@ function Workspace({
       () => dispatchView({ type: 'failed', ticket }),
     );
   };
-  useEffect(() => {
-    document.body.classList.toggle('in-task', task !== null);
-  }, [task]);
 
   const day = h.day;
   const liveContent = day && h.facts ? { ...day, facts: h.facts } : null;
@@ -637,11 +650,20 @@ function Workspace({
     );
   }
 
+  // Keep command owners and day sessions alive, but mount only the active form tree.
+  // Hidden forms would duplicate input IDs and redirect labels/focus to another project.
+  if (!active) return null;
+
   if (task && day && h.facts && cov)
     return withPmField(
       <PhotoHost env={photoEnv}>
-        {nav}
-        <div className="content">
+        <WorkspaceShell
+          navigation={nav}
+          header={null}
+          view={view}
+          containsMain
+          entry
+        >
           {/* The Fill and Check views too: a locked day's recovery is never hidden. */}
           <DayRecovery h={h} />
           {task === 'fill' ? (
@@ -683,7 +705,7 @@ function Workspace({
               photos={photos}
             />
           )}
-        </div>
+        </WorkspaceShell>
         <Toast text={toast} />
       </PhotoHost>,
     );
@@ -699,83 +721,86 @@ function Workspace({
     ) : null;
   return withPmField(
     <PhotoHost env={photoEnv}>
-      {nav}
-      <div className="content">
-        <header className="bar">
-          <div className="bar-title">
-            <span className="bar-sub">
-              {project.name}
-              {!canWrite && ` · ${t('readOnly')}`}
-            </span>
-            <label className="bar-date">
-              <span>{fmtDay(date, locale)}</span>
-              <input
-                type="date"
-                value={date}
-                aria-label={t('date')}
-                onChange={(e) => e.target.value && setDate(e.target.value)}
-              />
-            </label>
-          </div>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('prevDay')}
-            onClick={() => setDate(shift(date, -1))}
-          >
-            <Icon.left />
-          </button>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('nextDay')}
-            onClick={() => setDate(shift(date, 1))}
-          >
-            <Icon.right />
-          </button>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('more')}
-            onClick={() => setSheet('menu')}
-          >
-            <Icon.more />
-          </button>
-        </header>
-        <main className={`page view-${view}`}>
-          <DayRecovery h={h} />
-          {!canWrite && (
-            // Write access went away while a PM attempt was owned: its Retry / Give up stay.
-            <PmOwnedBar
-              owners={pm}
-              itemLabel={(k) => {
-                const it = day?.items.find((i) => i.key === k);
-                return it ? label(it.label) : k;
-              }}
-            />
-          )}
-          {signin.expired && (
-            <div className="banner err" role="alert">
-              {signin.failure ? (
-                <FailureText failure={signin.failure} />
-              ) : (
-                t('signInExpired')
-              )}{' '}
-              <button
-                type="button"
-                disabled={signin.redirecting || renewBusy}
-                onClick={() => void renew()}
-              >
-                {t('signInAgain')}
-              </button>
+      <WorkspaceShell
+        containsMain={task !== null}
+        navigation={nav}
+        view={view}
+        header={
+          <>
+            <div className="bar-title">
+              <span className="bar-sub">
+                {project.name}
+                {!canWrite && ` · ${t('readOnly')}`}
+              </span>
+              <label className="bar-date">
+                <span>{fmtDay(date, locale)}</span>
+                <input
+                  type="date"
+                  value={date}
+                  aria-label={t('date')}
+                  onChange={(e) => e.target.value && setDate(e.target.value)}
+                />
+              </label>
             </div>
-          )}
-          {body}
-          {correctEntry}
-          {photosRow && !viewing ? photosRow : null}
-          {manageIssues && !viewing ? manageIssues : null}
-        </main>
-      </div>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('prevDay')}
+              onClick={() => setDate(shift(date, -1))}
+            >
+              <Icon.left />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('nextDay')}
+              onClick={() => setDate(shift(date, 1))}
+            >
+              <Icon.right />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('more')}
+              onClick={() => setSheet('menu')}
+            >
+              <Icon.more />
+            </button>
+          </>
+        }
+      >
+        <DayRecovery h={h} />
+        {!canWrite && (
+          // Write access went away while a PM attempt was owned: its Retry / Give up stay.
+          <PmOwnedBar
+            owners={pm}
+            itemLabel={(k) => {
+              const it = day?.items.find((i) => i.key === k);
+              return it ? label(it.label) : k;
+            }}
+          />
+        )}
+        {signin.expired && (
+          <div className="banner err" role="alert">
+            {signin.failure ? (
+              <FailureText failure={signin.failure} />
+            ) : (
+              t('signInExpired')
+            )}{' '}
+            <button
+              type="button"
+              disabled={signin.redirecting || renewBusy}
+              onClick={() => void renew()}
+            >
+              {t('signInAgain')}
+            </button>
+          </div>
+        )}
+        {body}
+        {correctEntry}
+        {photosRow && !viewing ? photosRow : null}
+        {manageIssues && !viewing ? manageIssues : null}
+      </WorkspaceShell>
       {sheet === 'menu' && (
         <MenuSheet
           onClose={() => setSheet(null)}
@@ -855,20 +880,30 @@ function Root() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null,
   );
-  const [route, setRoute] = useState(() =>
-    parseExecutiveRoute(window.location.hash),
-  );
+  const [hash, setHash] = useState(() => window.location.hash);
+  const route = parseExecutiveRoute(hash);
+  const reportRoute = parseReportRoute(hash);
+  const [visited, setVisited] = useState<string[]>([]);
+  const reportDates = useRef(new Map<string, string>());
   const [projectsOwner, setProjectsOwner] = useState<Session | null>(null);
   useEffect(() => {
-    const changed = () => setRoute(parseExecutiveRoute(window.location.hash));
+    const changed = () => setHash(window.location.hash);
     window.addEventListener('hashchange', changed);
     return () => window.removeEventListener('hashchange', changed);
   }, []);
   const showExecutiveHome = route?.kind === 'home';
-  const openReport = (projectId?: string) => {
-    if (projectId) setSelectedProjectId(projectId);
-    window.location.hash = '';
-    setRoute(null);
+  const openReport = (id?: string, date?: string) => {
+    const selected = projects?.find((p) => p.id === (id ?? selectedProjectId));
+    if (!selected) return;
+    setSelectedProjectId(selected.id);
+    const businessDate =
+      date ??
+      reportDates.current.get(selected.id) ??
+      (resume.state?.projectId === selected.id
+        ? resume.state.date
+        : siteToday(selected.timezone));
+    reportDates.current.set(selected.id, businessDate);
+    window.location.hash = reportHref({ projectId: selected.id, businessDate });
   };
   const executiveApi = useMemo(
     () => (session ? reportApi(session.token) : null),
@@ -905,6 +940,8 @@ function Root() {
   );
   useEffect(() => {
     setSelectedProjectId(null);
+    setVisited([]);
+    reportDates.current.clear();
   }, [session]);
   useEffect(() => {
     let current = true;
@@ -935,6 +972,25 @@ function Root() {
         projects[0]!.id,
     );
   }, [projects, resume, selectedProjectId]);
+  useEffect(() => {
+    if (projectsOwner !== session || !projects?.length) return;
+    const id = reportRoute?.projectId ?? selectedProjectId;
+    if (!id || !projects.some((p) => p.id === id)) return;
+    setVisited((previous) =>
+      previous.includes(id) ? previous : [...previous, id],
+    );
+    if (reportRoute) {
+      setSelectedProjectId(id);
+      reportDates.current.set(id, reportRoute.businessDate);
+    }
+  }, [
+    projects,
+    projectsOwner,
+    session,
+    selectedProjectId,
+    reportRoute?.projectId,
+    reportRoute?.businessDate,
+  ]);
   // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
   const renewing = Boolean(session?.renew && state.expired && !projects);
   if (needLogin || renewing)
@@ -970,27 +1026,56 @@ function Root() {
   if (!session || !projects || projectsOwner !== session)
     return <main className="page muted">{t('loading')}</main>;
   const project =
-    projects.find((p) => p.id === selectedProjectId) ?? projects[0];
+    projects.find(
+      (p) => p.id === (reportRoute?.projectId ?? selectedProjectId),
+    ) ?? projects[0];
   if (!project) return <main className="page">{t('noProject')}</main>;
   const routedProject =
     route && 'projectId' in route
       ? projects.find((p) => p.id === route.projectId)
       : null;
   const unavailableRoute = route && 'projectId' in route && !routedProject;
+  const invalidReportTarget =
+    (reportRoute && !projects.some((p) => p.id === reportRoute.projectId)) ||
+    (hash.includes('/report/') && !reportRoute);
   return (
-    <>
-      <div className={route ? 'workspace-hidden' : undefined}>
-        <Workspace
-          key={project.id}
-          session={session}
-          project={project}
-          signin={state}
-          resume={resume}
-          onExecutiveHome={() => {
-            window.location.hash = executiveHref({ kind: 'home' });
-          }}
-        />
-      </div>
+    <div className="workspace-root">
+      {projects
+        .filter((p) => visited.includes(p.id) || p.id === project.id)
+        .map((p) => (
+          <div
+            key={p.id}
+            className={
+              route || invalidReportTarget || p.id !== project.id
+                ? 'workspace-hidden'
+                : undefined
+            }
+          >
+            <Workspace
+              active={!route && !invalidReportTarget && p.id === project.id}
+              session={session}
+              project={p}
+              signin={state}
+              resume={resume}
+              {...(reportRoute?.projectId === p.id
+                ? { requestedDate: reportRoute.businessDate }
+                : {})}
+              onDateChange={(date) => {
+                reportDates.current.set(p.id, date);
+                if (p.id === project.id) openReport(p.id, date);
+              }}
+              onExecutiveHome={() => {
+                window.location.hash = executiveHref({ kind: 'home' });
+              }}
+            />
+          </div>
+        ))}
+      {invalidReportTarget && (
+        <main className="page">
+          <p role="alert">{t('noProject')}</p>
+          <a href={executiveHref({ kind: 'home' })}>{t('execHomeTitle')}</a>
+        </main>
+      )}
       {showExecutiveHome && executiveApi && (
         <ExecutiveHome
           api={executiveApi}
@@ -1045,7 +1130,7 @@ function Root() {
           onReport={() => openReport(routedProject.id)}
         />
       )}
-    </>
+    </div>
   );
 }
 

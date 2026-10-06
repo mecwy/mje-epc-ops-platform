@@ -2312,3 +2312,190 @@ ul.plainlist:not(.card) {
   min-width: 0;
   width: 100%;
 }
+
+/* Workspace integration: all selectors stay inside the new shell/entry roots. */
+.workspace-root,
+.entry-workspace {
+  --ink: #233143;
+  --ink-2: #405267;
+  --muted: #72808e;
+  --line: #e5e9ee;
+  --accent: #398780;
+  --accent-soft: #edf5f2;
+  --surface: #fff;
+  --radius: 12px;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.workspace-root {
+  min-height: 100vh;
+  background: #f4f5f7;
+}
+.workspace-shell .workspace-brand {
+  display: none;
+}
+.workspace-shell .bar {
+  border-color: var(--line);
+  background: #fff;
+}
+.workspace-shell .bar-sub {
+  color: var(--ink-2);
+}
+.workspace-root .card,
+.entry-workspace .card {
+  border-radius: 12px;
+  border-color: var(--line);
+  box-shadow: none;
+}
+.workspace-root .workspace-page {
+  max-width: 1380px;
+}
+.workspace-root .workspace-header {
+  min-height: 64px;
+}
+.workspace-root .workspace-header .bar-date {
+  font-size: 17px;
+}
+.workspace-root .workspace-header .bar-sub {
+  font-size: 13px;
+}
+.workspace-root .primary,
+.entry-workspace .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.workspace-root .workspace-header .icon {
+  border-radius: 8px;
+}
+.entry-workspace {
+  min-width: 0;
+}
+.entry-workspace .entry-context,
+.entry-adoption .entry-context {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 12px 14px;
+  background: #f6f8fa;
+  border-radius: 8px;
+}
+.entry-workspace .qline {
+  border-color: var(--line);
+  padding: 16px 14px;
+}
+.entry-workspace .qline .num {
+  background: #fff;
+  border-radius: 8px;
+}
+.entry-workspace .blk-row {
+  gap: 12px;
+}
+.entry-workspace .field textarea {
+  border-radius: 8px;
+}
+.entry-workspace .field {
+  gap: 8px;
+}
+.entry-adoption {
+  background: #f6f8fa;
+  border: 1px solid #e5e9ee;
+  border-radius: 8px;
+  margin-top: 12px;
+}
+.entry-adoption .entry-context {
+  margin: 0;
+}
+.entry-workspace.entry-crew > .entry-context {
+  margin: 0 0 12px;
+}
+@media (min-width: 720px) {
+  .workspace-shell .tabs {
+    width: 208px;
+    top: 64px;
+    background: #182536;
+    border: 0;
+    padding: 16px 12px;
+    grid-auto-rows: 52px;
+    gap: 8px;
+  }
+  .workspace-shell .tabs button {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 0 16px;
+    color: #bfcad6;
+    border-radius: 8px;
+  }
+  .workspace-shell .tabs button.on {
+    color: #fff;
+    background: #2b4353;
+  }
+  .workspace-shell .workspace-brand {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 208px;
+    height: 64px;
+    z-index: 30;
+    padding: 16px 24px;
+    background: #182536;
+    color: #fff;
+    font-weight: 650;
+  }
+  .workspace-shell .workspace-brand span {
+    background: #398780;
+    padding: 3px 8px;
+    border-radius: 5px;
+  }
+  .workspace-shell .workspace-content {
+    margin-left: 208px;
+  }
+  .workspace-shell .foot {
+    left: 208px;
+  }
+  .entry-workspace .fmain > .card {
+    padding: 20px;
+  }
+}
+@media (max-width: 719px) {
+  .workspace-shell .tabs {
+    background: #fff;
+    border-color: #e5e9ee;
+  }
+  .workspace-shell .tabs button.on {
+    color: #27766f;
+    background: #edf5f2;
+  }
+  .workspace-root .workspace-page {
+    padding: 16px 16px 100px;
+  }
+  .workspace-root .workspace-header {
+    min-height: 60px;
+    padding: 8px 16px;
+  }
+  .workspace-root .workspace-header .bar-sub {
+    max-width: 200px;
+  }
+  .entry-workspace .qline {
+    padding: 14px 10px;
+  }
+  .entry-workspace .entry-context,
+  .entry-adoption .entry-context {
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Entry owns its existing header/main; the shell only supplies the shared navigation. */
+.workspace-root .workspace-entry .workspace-page {
+  padding: 0;
+  max-width: none;
+  margin: 0;
+}
+@media (max-width: 719px) {
+  .workspace-entry .tabs {
+    display: none;
+  }
+}
