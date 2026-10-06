@@ -68,6 +68,12 @@ export function ReviewFacts({
   return (
     <>
       {section(t('project'), <p>{projectName}</p>)}
+      {section(
+        t('siteLocation'),
+        <p>
+          {facts.siteLocation || <span className="miss">{t('notFilled')}</span>}
+        </p>,
+      )}
       {facts.reportLocationRef &&
         section(
           t('weatherLocation_savedLocation'),
@@ -103,29 +109,38 @@ export function ReviewFacts({
           )}
         </dl>,
       )}
-      {section(
-        t('progress'),
-        work.length ? (
-          <dl>
-            {work.map((it) => (
-              <div className="review-facts-row" key={it.key}>
-                <dt>{label(it.label)}</dt>
-                <dd>
-                  <Value raw={facts.qty[it.key]} unit={unit(it)} />
-                  {entered(facts.cumulative[it.key]) && (
-                    <small>
-                      {t('cumulative')}{' '}
-                      <Value raw={facts.cumulative[it.key]} unit={unit(it)} />
-                    </small>
-                  )}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <span className="miss">{t('notFilled')}</span>
-        ),
-      )}
+      {facts.noWork &&
+        section(
+          t('noWork'),
+          <>
+            <p>{label(`nw_${facts.noWork.reason}`)}</p>
+            {facts.noWork.note && <p>{facts.noWork.note}</p>}
+          </>,
+        )}
+      {(!facts.noWork || work.length > 0) &&
+        section(
+          t('progress'),
+          work.length ? (
+            <dl>
+              {work.map((it) => (
+                <div className="review-facts-row" key={it.key}>
+                  <dt>{label(it.label)}</dt>
+                  <dd>
+                    <Value raw={facts.qty[it.key]} unit={unit(it)} />
+                    {entered(facts.cumulative[it.key]) && (
+                      <small>
+                        {t('cumulative')}{' '}
+                        <Value raw={facts.cumulative[it.key]} unit={unit(it)} />
+                      </small>
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <span className="miss">{t('notFilled')}</span>
+          ),
+        )}
       {section(
         t('people'),
         people.length ? (

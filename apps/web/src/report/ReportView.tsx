@@ -1075,6 +1075,10 @@ export function ReportBody({
         </div>
       )}
       <OriginalDuration c={c} />
+      <section className="card" aria-label={t('siteLocation')}>
+        <h2 className="blk">{t('siteLocation')}</h2>
+        <p>{f.siteLocation || t('notFilled')}</p>
+      </section>
       {weather && (
         <section className="card report-weather" aria-label={t('weather')}>
           <div>

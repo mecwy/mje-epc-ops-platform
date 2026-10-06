@@ -332,6 +332,7 @@ const dayCommon = (content: Layer) =>
       fields: {
         weather: { layer: content },
         temperature: { layer: content },
+        siteLocation: { layer: content },
         qty: sub(content),
         cumulative: sub(content),
         narrative: sub(content),

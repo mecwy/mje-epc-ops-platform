@@ -1,8 +1,19 @@
-import { createElement } from 'react';
+import { createElement, type ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { DayFactsDto, ReportItemDto } from '@mje/contracts';
 import { ReviewFacts } from './ReviewFacts.js';
+import { FillPage } from './FillPage.js';
+import { ReportBody } from './ReportView.js';
+import type { DayView, ReportContent } from '../api.js';
+
+vi.mock('./Photos.js', () => ({
+  PhotosCard: () => null,
+  PhotoLine: () => null,
+  UnlinkedReminder: () => null,
+  PhotoStrip: () => null,
+  ReportPhotos: () => null,
+}));
 
 vi.mock('../i18n.js', () => {
   const text: Record<string, string> = {
@@ -66,7 +77,135 @@ function render(f: DayFactsDto, items: ReportItemDto[] = []) {
   );
 }
 
+function content(f: DayFactsDto): ReportContent {
+  return {
+    businessDate: '2026-10-07',
+    facts: f,
+    items: [],
+    baseline: null,
+    nextPlan: { status: 'none', n: null, rows: [] },
+    previousSubmittedDate: null,
+    cumulativeBase: {},
+    materialsCumulative: {},
+    coverage: { missing: [], invalid: [] },
+  };
+}
+
+function report(f: DayFactsDto, historical = false) {
+  return renderToStaticMarkup(
+    createElement(ReportBody, {
+      c: content(f),
+      version: historical
+        ? { n: 1, at: '2026-10-07T10:00:00Z', by: 'TEST', reason: '' }
+        : null,
+      timeZone: 'UTC',
+      photos: [],
+    }),
+  );
+}
+
+function fill(
+  f: DayFactsDto,
+  locked: 'submitted' | 'busy' | 'reader' | 'pending' | null = null,
+) {
+  const edit = vi.fn();
+  const day = {
+    ...content(f),
+    state: locked === 'submitted' ? 'submitted' : 'draft',
+    currentRevisionNumber: 0,
+    businessDate: '2026-10-07',
+  } as unknown as DayView;
+  const h = {
+    facts: f,
+    save: 'idle',
+    busy: locked === 'pending',
+    retained: [],
+    edit,
+    flush: vi.fn(),
+  } as unknown as ComponentProps<typeof FillPage>['h'];
+  const html = renderToStaticMarkup(
+    createElement(FillPage, {
+      h,
+      day,
+      cov: day.coverage,
+      focus: null,
+      onFocused: vi.fn(),
+      onBack: vi.fn(),
+      onCheck: vi.fn(),
+      onPlan: vi.fn(),
+      onSubmit: vi.fn(),
+      busy: locked === 'busy',
+      tomorrowText: '',
+      issues: { issues: [], lag: [] } as unknown as ComponentProps<
+        typeof FillPage
+      >['issues'],
+      canWrite: locked !== 'reader',
+    }),
+  );
+  return { html, edit };
+}
+
 describe('whole-report confirmation facts', () => {
+  it('shows the raw site location independently on confirmation, full report and history', () => {
+    const f = facts();
+    f.siteLocation = '  TEST <img src=x onerror=alert(1)> & Zone B  ';
+    f.noWork = { reason: 'permit', note: 'TEST waiting for permit' };
+    const before = structuredClone(f);
+    for (const html of [render(f), report(f), report(f, true)]) {
+      expect(html).toContain('aria-label="siteLocation"');
+      expect(html).toContain(
+        '  TEST &lt;img src=x onerror=alert(1)&gt; &amp; Zone B  ',
+      );
+      expect(html).not.toContain('<img');
+      expect(html).toContain('TEST waiting for permit');
+      expect(html).not.toContain('weatherLocation_savedLocation');
+    }
+    expect(f).toEqual(before);
+  });
+
+  it('keeps legacy missing and cleared locations unfilled without defaulting or mutating facts', () => {
+    for (const f of [facts(), { ...facts(), siteLocation: '' }]) {
+      const before = structuredClone(f);
+      for (const html of [render(f), report(f), report(f, true)]) {
+        expect(html).toMatch(/aria-label="siteLocation"[^]*?Not filled/);
+        expect(html).not.toContain('TEST default address');
+      }
+      expect(f).toEqual(before);
+    }
+  });
+
+  it('renders the optional bounded location input without generating an empty saved value', () => {
+    const f = facts();
+    const initial = fill(f);
+    expect(initial.html).toMatch(
+      /id="f-site-location"[^>]*maxLength="500"[^>]*value=""/,
+    );
+    expect(initial.edit).not.toHaveBeenCalled();
+    expect(Object.hasOwn(f, 'siteLocation')).toBe(false);
+    f.siteLocation = '  TEST Zone & <B>  ';
+    expect(fill(f).html).toContain('value="  TEST Zone &amp; &lt;B&gt;  "');
+    for (const lock of ['submitted', 'busy', 'reader', 'pending'] as const) {
+      expect(fill(f, lock).html).toMatch(
+        /id="f-site-location"[^>]*disabled=""/,
+      );
+    }
+  });
+
+  it('shows no-work reason and escaped note without an empty progress warning', () => {
+    const f = facts();
+    f.noWork = { reason: 'permit', note: 'TEST <permit> pending' };
+    const html = render(f);
+    expect(html).toContain('aria-label="noWork"');
+    expect(html).toContain('nw_permit');
+    expect(html).toContain('TEST &lt;permit&gt; pending');
+    expect(html).not.toContain('aria-label="progress"');
+    f.qty.pile = '0';
+    const entered = render(f, [item('pile')]);
+    expect(entered).toContain('aria-label="progress"');
+    expect(entered).toContain('TEST pile');
+    expect(entered).toContain('>0');
+  });
+
   it('keeps project, weather, progress and people explicit when facts are missing', () => {
     const html = render(facts(), [item('unreported')]);
     expect(html).toContain('TEST Project');

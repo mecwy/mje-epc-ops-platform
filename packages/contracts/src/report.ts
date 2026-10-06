@@ -62,6 +62,8 @@ export const ROLE_KEYS = [
 
 export interface DayFactsDto extends WeatherFactsExtension {
   sourceReport?: SourceReport;
+  /** The day's declared site/address/work-area text; omission does not clear an existing value. */
+  siteLocation?: string;
   weather: string;
   temperature: string;
   qty: Record<string, Reported>;
@@ -212,6 +214,7 @@ export function parseFacts(v: unknown): DayFactsDto {
     [
       'weather',
       'temperature',
+      'siteLocation',
       'qty',
       'cumulative',
       'narrative',
@@ -300,6 +303,9 @@ export function parseFacts(v: unknown): DayFactsDto {
         : {}),
     }),
     ...(sourceReport ? { sourceReport } : {}),
+    ...(Object.hasOwn(o, 'siteLocation')
+      ? { siteLocation: str(o['siteLocation'], 'facts.siteLocation', 500) }
+      : {}),
     weather: str(o['weather'] ?? '', 'facts.weather', 100),
     temperature: str(o['temperature'] ?? '', 'facts.temperature', 40),
     qty: reportedMap(o['qty'], 'facts.qty'),

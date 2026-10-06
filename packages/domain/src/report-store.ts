@@ -327,6 +327,11 @@ export class ReportStore {
           // Omission by an older client cannot erase source cells already on the locked draft.
           let facts: DayFacts = {
             ...command.facts,
+            ...(!Object.hasOwn(command.facts, 'siteLocation') &&
+            before &&
+            Object.hasOwn(before, 'siteLocation')
+              ? { siteLocation: before.siteLocation! }
+              : {}),
             ...(!Object.hasOwn(command.facts, 'sourceReport') &&
             before?.sourceReport
               ? { sourceReport: before.sourceReport }
