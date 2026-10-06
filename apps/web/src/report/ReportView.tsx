@@ -730,6 +730,70 @@ function BusinessSections({
   );
 }
 
+/** No-work reports still retain source declarations; these rows are never operational totals. */
+function NoWorkSources({ c }: { c: ReportContent }) {
+  const { t, label } = useI18n();
+  const labels = useSourceLabels();
+  const source = c.facts.sourceReport;
+  if (!source || (source.schemaVersion !== 4 && source.schemaVersion !== 5))
+    return null;
+  const itemLabel = (kind: ReportItemDto['kind'], key: string) =>
+    label(
+      c.items.find((item) => item.kind === kind && item.key === key)?.label ??
+        key,
+    );
+  const areas = source.schemaVersion === 5 ? source.workAreas : undefined;
+  const rows: { label: string; value: SourceCell }[] = [
+    ...Object.entries(areas ?? {}).map(([key, value]) => ({
+      label: `${t('sourceReportedArea')} · ${itemLabel('work', key)}`,
+      value,
+    })),
+    ...Object.entries(source.machinery ?? {}).flatMap(([key, fields]) =>
+      (['location', 'note'] as const).flatMap((field) => {
+        const value = fields[field];
+        return value
+          ? [
+              {
+                label: `${t('machinery')} · ${itemLabel('machinery', key)} · ${field === 'location' ? t('sourceLocation') : t('sourceOriginalNote')}`,
+                value,
+              },
+            ]
+          : [];
+      }),
+    ),
+    ...Object.entries(source.personnelRemarks ?? {}).map(([key, value]) => ({
+      label: `${t('people')} · ${label(`role_${key}`)} · ${t('sourceOriginalNote')}`,
+      value,
+    })),
+  ];
+  if (!rows.length) return null;
+  return (
+    <section
+      className="card report-no-work-source"
+      aria-label={t('sourceUnverified')}
+    >
+      <h2>{t('sourceUnverified')}</h2>
+      {rows.map((row, index) => (
+        <div key={index}>
+          <strong>{row.label}: </strong>
+          <SourceValue
+            cell={sourceCellDisplay(source, row.value)}
+            labels={labels}
+          />
+        </div>
+      ))}
+      {areas && <p className="report-muted">{t('sourceAreaUnconfirmed')}</p>}
+      <SourceReferences
+        labels={labels}
+        rows={rows.map((row) => ({
+          label: row.label,
+          cells: [sourceCellDisplay(source, row.value)],
+        }))}
+      />
+    </section>
+  );
+}
+
 function OriginalDuration({ c }: { c: ReportContent }) {
   const { t } = useI18n();
   const labels = useSourceLabels();
@@ -944,6 +1008,7 @@ export function ReportBody({
               photoOnly={placed.photoOnlyItems}
             />
           )}
+          {f.noWork && <NoWorkSources c={c} />}
         </div>
         <div className="rcol">
           {!f.noWork && <Resources c={c} />}

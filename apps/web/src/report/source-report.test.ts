@@ -512,6 +512,72 @@ describe('selected-version source adapter in the actual report body', () => {
       expect(JSON.stringify(c)).toBe(before);
     },
   );
+  it.each([
+    ['zh', 4],
+    ['en', 4],
+    ['zh', 5],
+    ['en', 5],
+  ] as const)(
+    'shows captured source declarations on no-work reports in %s V%s',
+    (lang, schemaVersion) => {
+      const c = content();
+      c.facts.noWork = { reason: 'rest', note: 'TEST no construction' };
+      c.items.push({
+        kind: 'machinery',
+        key: 'retired',
+        label: 'TEST inactive equipment',
+        active: false,
+        unit: '',
+        designQty: '0',
+        openingCumulative: '',
+        sortOrder: 10,
+      });
+      c.facts.sourceReport = parseFacts({
+        ...c.facts,
+        sourceReport: {
+          ...source,
+          schemaVersion,
+          ...(schemaVersion === 5
+            ? {
+                workAreas: {
+                  test: { ...source.peopleTotal!, raw: 'TEST original <area>' },
+                },
+              }
+            : {}),
+          machinery: {
+            retired: {
+              location: {
+                ...source.peopleTotal!,
+                raw: ' ',
+                state: 'blank',
+                at: { ...source.peopleTotal!.at, verticalMerge: 'continue' },
+              },
+              note: { ...source.peopleTotal!, raw: 'TEST equipment <note>' },
+            },
+          },
+          personnelRemarks: {
+            installer: {
+              ...source.peopleTotal!,
+              raw: 'TEST personnel <remark>',
+            },
+          },
+        },
+      }).sourceReport!;
+      const before = JSON.stringify(c),
+        html = page(c, lang);
+      expect(html).toContain(translate(lang, 'noWork'));
+      expect(html).toContain('TEST equipment &lt;note&gt;');
+      expect(html).toContain('TEST personnel &lt;remark&gt;');
+      expect(html).toContain('TEST inactive equipment');
+      expect(html).toContain(translate(lang, 'sourceUnverified'));
+      expect(html).toContain(translate(lang, 'sourceMergeContinue'));
+      if (schemaVersion === 5) {
+        expect(html).toContain('TEST original &lt;area&gt;');
+        expect(html).toContain(translate(lang, 'sourceAreaUnconfirmed'));
+      }
+      expect(JSON.stringify(c)).toBe(before);
+    },
+  );
   it.each(['zh', 'en', 'sr', 'es'] as const)(
     'shows V5 duration and area as unchanged source cells and retains V4 fields in %s',
     (lang) => {
