@@ -7,6 +7,7 @@ import {
   validateRevision,
   validateShares,
   executionChanged,
+  needsCorrectionAttention,
   type StoredShare,
 } from './validation.js';
 const doc = '11111111-1111-4111-8111-111111111111';
@@ -218,4 +219,15 @@ describe('fixed-version share reconciliation', () => {
       parseContractShares({ ...c, shares: [share(doc, '0')] }),
     ).toThrow();
   });
+});
+
+it('review F4 treats equivalent decimal line amounts as the same sourced assertion', () => {
+  const old = revision(),
+    next = structuredClone(old);
+  old.lines[0]!.amount = { state: 'VALUE', value: '1.0000' };
+  next.lines[0]!.amount = { state: 'VALUE', value: '1' };
+  expect(needsCorrectionAttention(next, old)).toBe(false);
+  expect(() => validateRevision(next, old)).not.toThrow();
+  next.lines[0]!.amount = { state: 'VALUE', value: '1.0001' };
+  expect(needsCorrectionAttention(next, old)).toBe(true);
 });

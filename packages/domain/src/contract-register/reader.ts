@@ -20,6 +20,7 @@ import {
   type ContractGrant,
 } from './rules.js';
 import {
+  eligibleContractSource,
   identityRow,
   snapshot,
   currentShares,
@@ -354,8 +355,8 @@ export class ContractRegisterReader {
       const sources = directions.length
         ? (
             await c.query<{ id: string; filename: string; sha256: string }>(
-              'SELECT id,filename,sha256 FROM "SourceDocument" WHERE "orgId"=$1 ORDER BY filename,id',
-              [a.orgId],
+              `SELECT d.id,d.filename,d.sha256 FROM "SourceDocument" d WHERE d."orgId"=$1 AND ${eligibleContractSource} ORDER BY d.filename,d.id`,
+              [a.orgId, directions],
             )
           ).rows
         : [];

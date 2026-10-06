@@ -64,6 +64,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'Contract',
       'ContractRevision',
       'ContractRevisionSource',
+      'ContractSourceIntake',
       'ContractLine',
       'ContractLineRevision',
       'ContractScope',

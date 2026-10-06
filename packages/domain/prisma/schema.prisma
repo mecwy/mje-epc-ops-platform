@@ -86,6 +86,7 @@ enum RevisionState {
 }
 
 model Organization {
+  contractSourceIntakes          ContractSourceIntake[]       @relation("ContractSourceIntake_org")
   OpportunityRecord_org          OpportunityRecord[]          @relation("OpportunityRecord_org")
   OpportunityRecordPerson_org    OpportunityRecordPerson[]    @relation("OpportunityRecordPerson_org")
   OpportunityRecordCompany_org   OpportunityRecordCompany[]   @relation("OpportunityRecordCompany_org")
@@ -451,6 +452,7 @@ model Person {
 }
 
 model LoginAccount {
+  contractSourceIntakes                 ContractSourceIntake[]       @relation("ContractSourceIntake_registrar")
   OpportunityRecord_recordedByAccountId OpportunityRecord[]          @relation("OpportunityRecord_recordedByAccountId")
   OpportunityGrant_accountId            OpportunityGrant[]           @relation("OpportunityGrant_accountId")
   OpportunityGrant_grantedBy            OpportunityGrant[]           @relation("OpportunityGrant_grantedBy")
@@ -592,6 +594,7 @@ model WorkforcePlan {
 }
 
 model SourceDocument {
+  contractSourceIntakes                    ContractSourceIntake[]    @relation("ContractSourceIntake_document")
   OpportunityRecordSource_sourceDocumentId OpportunityRecordSource[] @relation("OpportunityRecordSource_sourceDocumentId")
   ContractLineRevision_document            ContractLineRevision[]    @relation("ContractLineRevision_document")
   ContractLineRevision_removalDocument     ContractLineRevision[]    @relation("ContractLineRevision_removalDocument")
@@ -2184,4 +2187,20 @@ model OpportunityGrantRevocation {
 
   @@unique([orgId, id])
   @@unique([orgId, grantId])
+}
+
+model ContractSourceIntake {
+  id               String         @id @default(uuid()) @db.Uuid
+  orgId            String         @db.Uuid
+  sourceDocumentId String         @db.Uuid
+  direction        String
+  basis            String
+  registeredBy     String         @db.Uuid
+  registeredAt     DateTime       @default(now()) @db.Timestamptz(6)
+  org              Organization   @relation("ContractSourceIntake_org", fields: [orgId], references: [id], onDelete: Restrict)
+  document         SourceDocument @relation("ContractSourceIntake_document", fields: [orgId, sourceDocumentId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  registrar        LoginAccount   @relation("ContractSourceIntake_registrar", fields: [orgId, registeredBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, sourceDocumentId, direction])
 }

@@ -25,6 +25,7 @@ import {
   type ContractGrant,
 } from './rules.js';
 import {
+  eligibleContractSource,
   identityRow,
   snapshot,
   currentShares,
@@ -83,13 +84,14 @@ export class ContractRegisterCommands {
     c: PoolClient,
     a: Actor,
     r: ContractRevisionInput,
+    direction: ContractIdentity['direction'],
   ): Promise<void> {
     const docs = [...new Set(r.sources.map((s) => s.sourceDocumentId))];
     if (
       (
         await c.query(
-          'SELECT id FROM "SourceDocument" WHERE "orgId"=$1 AND id=ANY($2::uuid[])',
-          [a.orgId, docs],
+          `SELECT d.id FROM "SourceDocument" d WHERE d."orgId"=$1 AND ${eligibleContractSource} AND d.id=ANY($3::uuid[])`,
+          [a.orgId, [direction], docs],
         )
       ).rows.length !== docs.length
     )
@@ -129,7 +131,9 @@ export class ContractRegisterCommands {
     r: ContractRevisionInput,
     reason: string | null,
   ): Promise<void> {
-    await this.references(c, a, r);
+    const identity = await identityRow(c, a.orgId, id);
+    if (!identity) throw new ContractRegisterError('NOT_FOUND');
+    await this.references(c, a, r, identity.direction);
     await c.query(
       `INSERT INTO "ContractRevision"(id,"orgId","contractId",n,name,"originalNumber","counterpartyRaw","selfPartyRaw","counterpartyCompanyId","selfCompanyId","informationOwnerPersonId","totalState","totalAmount",currency,"taxBasis","signedOnState","signedOn","effectiveOnState","effectiveOn","registrationStatus","partiesSourceId","partiesLocation","datesSourceId","datesLocation","totalSourceId","totalLocation","correctionReason","registeredBy","registeredByPersonId")
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
@@ -411,7 +415,15 @@ export class ContractRegisterCommands {
               ],
             );
           }
-          if (command.shares.some((s) => s.retired))
+          if (
+            command.shares.some(
+              (s) =>
+                s.retired &&
+                current.some(
+                  (old) => old.scopeId === s.scopeId && !old.retired,
+                ),
+            )
+          )
             await this.attention(c, a, row.id, old.n, 'SHARE_MISASSIGNED', [
               old.registeredByPersonId,
             ]);

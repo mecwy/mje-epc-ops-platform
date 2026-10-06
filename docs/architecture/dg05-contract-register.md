@@ -45,3 +45,13 @@ revisions, grants/revocations, RLS, constraints and migration history. No drop,
 reset, or alteration of an applied migration. DG05-1 parent acceptance remains
 open for line/share projection, create/correct/attention commands, account-local
 drafts, preview and four-language browser journeys.
+
+## Review corrections: share confirmation, source direction and merge provenance
+
+The share editor submits only rows explicitly confirmed by the user. Displayed active/retired rows do not advance their pinned version merely because another row changes. Active-to-retired transitions create management attention once; repeated retired assertions retain history without another retirement attention.
+
+Source lookup and binding use the same direction eligibility: an existing same-direction contract citation, or an explicit `ContractSourceIntake` classification. Same tenant, uploader identity and filename do not confer eligibility. The additive migration creates an append-only, tenant-keyed intake classification with source/account foreign keys and recorded basis. The application role can only SELECT it; controlled intake outside this slice registers sources with an explicit direction before the first contract citation. There is no source-upload or intake-management endpoint in this slice. Unclassified daily-report/import sources and opposite-direction sources cannot be listed or rebound. Existing citations remain eligible without a backfill. Classification does not confer account permissions; current contract capabilities still govern every request.
+
+Conflict merge keeps each header assertion group and its source location together. Edit-versus-removal races require a whole-line choice. Equivalent decimal line amounts compare numerically without floating point or false correction attention.
+
+Migration/rollback: migration `202610090004_contract_source_intake` is additive. Retain its classifications, source documents, contract history, RLS and audit. A prior image with unrestricted source lookup is unsuitable for restoring contract access: keep that entry disabled and forward-fix, or select an image retaining these source controls. No reset, DROP or reverse migration is an application rollback.

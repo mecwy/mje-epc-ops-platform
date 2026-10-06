@@ -1,5 +1,6 @@
 import type {
   ContractEditorDto,
+  ContractShareInput,
   ContractRevisionInput,
   CreateContractCommand,
   CorrectContractCommand,
@@ -174,20 +175,45 @@ export function mergeRevision(
     conflicts.push({ key, mine: m, latest: l });
     return l;
   }
+  const groups = {
+    parties: [
+      'name',
+      'originalNumber',
+      'counterpartyRaw',
+      'selfPartyRaw',
+      'counterpartyCompanyId',
+      'selfCompanyId',
+    ],
+    dates: ['signedOn', 'effectiveOn', 'registrationStatus'],
+    total: ['total', 'currency', 'taxBasis'],
+  } as const;
+  const grouped = new Set<string>(Object.values(groups).flat());
+  for (const section of ['parties', 'dates', 'total'] as const) {
+    const pack = (r: ContractRevisionInput) =>
+      Object.fromEntries([
+        ...groups[section].map((key) => [key, r[key]]),
+        ['location', r.headLocs[section]],
+      ]);
+    const selected = choose(
+      'header:' + section,
+      pack(base),
+      pack(mine),
+      pack(latest),
+    ) as Record<string, unknown>;
+    for (const key of groups[section])
+      Object.assign(revision, { [key]: structuredClone(selected[key]) });
+    revision.headLocs[section] = structuredClone(
+      selected['location'],
+    ) as (typeof revision.headLocs)[typeof section];
+  }
   for (const key of Object.keys(latest) as (keyof ContractRevisionInput)[]) {
-    if (key === 'lines' || key === 'sources') continue;
-    if (key === 'headLocs') {
-      for (const section of ['parties', 'dates', 'total'] as const)
-        revision.headLocs[section] = structuredClone(
-          choose(
-            'headLocs:' + section,
-            base.headLocs[section],
-            mine.headLocs[section],
-            latest.headLocs[section],
-          ),
-        ) as (typeof revision.headLocs)[typeof section];
+    if (
+      key === 'lines' ||
+      key === 'sources' ||
+      key === 'headLocs' ||
+      grouped.has(key)
+    )
       continue;
-    }
     Object.assign(revision, {
       [key]: structuredClone(choose(key, base[key], mine[key], latest[key])),
     });
@@ -209,6 +235,13 @@ export function mergeRevision(
     // Absence is never a removal instruction. Removal remains an explicit sourced assertion.
     if (!m) return l ? [structuredClone(l)] : b ? [structuredClone(b)] : [];
     if (!l) return [structuredClone(m)];
+    if (
+      b &&
+      !same(m, l) &&
+      ((m.removed !== b.removed && !same(l, b)) ||
+        (l.removed !== b.removed && !same(m, b)))
+    )
+      return [structuredClone(choose('line:' + id, b, m, l)) as typeof l];
     const merged = structuredClone(l);
     for (const key of Object.keys(l) as (keyof typeof l)[]) {
       if (key === 'id') continue;
@@ -230,4 +263,14 @@ export function mergeRevision(
     return [merged];
   });
   return { revision, conflicts };
+}
+
+/** Only explicitly confirmed rows advance their pinned version. Displayed history is not a command. */
+export function confirmedShares(
+  rows: readonly ContractShareInput[],
+  confirmed: ReadonlySet<string>,
+): ContractShareInput[] {
+  return rows
+    .filter((row) => confirmed.has(row.scopeId))
+    .map((row) => structuredClone(row));
 }
