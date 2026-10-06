@@ -1839,7 +1839,15 @@ try {
       'source cells round-trip exactly; same-key replay, foreign tenant and reader writes remain protected',
     );
 
+    const removedPeopleTotal = structuredClone(sourceReport);
+    delete removedPeopleTotal.peopleTotal;
+    const removedMaterialNote = structuredClone(sourceReport);
+    delete removedMaterialNote.materials.rail.note;
     for (const badFacts of [
+      facts({ sourceReport: removedPeopleTotal }),
+      facts({ sourceReport: { ...sourceReport, workPercent: {} } }),
+      facts({ sourceReport: { ...sourceReport, materials: {} } }),
+      facts({ sourceReport: removedMaterialNote }),
       facts({ sourceReport: null }),
       facts({ sourceReport: { ...sourceReport, undocumented: 'TEST' } }),
       facts({

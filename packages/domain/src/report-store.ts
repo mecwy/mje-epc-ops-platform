@@ -268,6 +268,26 @@ export class ReportStore {
               source.schemaVersion < before.sourceReport.schemaVersion
             )
               throw new InvalidReportInput('facts.sourceReport.schemaVersion');
+            // Corrections may change a cell's value with audit, but omission is not
+            // an explicit correction and must not silently remove recorded source cells.
+            const previousSource = before?.sourceReport;
+            if (previousSource?.peopleTotal && !source.peopleTotal)
+              throw new InvalidReportInput('facts.sourceReport.peopleTotal');
+            for (const key of Object.keys(previousSource?.workPercent ?? {}))
+              if (!Object.hasOwn(source.workPercent, key))
+                throw new InvalidReportInput('facts.sourceReport.workPercent');
+            for (const [key, previous] of Object.entries(
+              previousSource?.materials ?? {},
+            )) {
+              const next = source.materials[key];
+              if (
+                !next ||
+                Object.keys(previous).some(
+                  (field) => !Object.hasOwn(next, field),
+                )
+              )
+                throw new InvalidReportInput('facts.sourceReport.materials');
+            }
             // Explicit source replacement cannot silently lose an already stored extension.
             for (const extension of [
               'reportedNextPlan',

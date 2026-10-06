@@ -162,11 +162,22 @@ function Toast({ text }: { text: string | null }) {
   );
 }
 
+type WorkspaceDrafts = Pick<ReturnType<typeof useDay>, 'flush' | 'unsaved'>;
+
+/** One sign-in snapshot covers every mounted authorised workspace, not just the visible one. */
+export function workspaceRecovery(workspaces: Map<string, WorkspaceDrafts>) {
+  return {
+    flush: () => Promise.all([...workspaces.values()].map((w) => w.flush())),
+    unsaved: () => [...workspaces.values()].flatMap((w) => w.unsaved()),
+  };
+}
+
 function Workspace({
   session,
   project,
   signin,
   resume,
+  recoveryWorkspaces,
   onExecutiveHome,
   requestedDate,
   onDateChange,
@@ -181,6 +192,7 @@ function Workspace({
   onDateChange: (date: string) => void;
   /** What was put aside before a sign-in redirect. */
   resume: ResumeKeeper;
+  recoveryWorkspaces: Map<string, WorkspaceDrafts>;
 }) {
   const { t, label, locale } = useI18n();
   const [toast, setToast] = useState<string | null>(null);
@@ -215,8 +227,8 @@ function Workspace({
   const [view, setView] = useState<'field' | 'report' | 'site'>(() =>
     place?.view === 'site' && !canWrite ? 'report' : (place?.view ?? 'report'),
   );
-  // The place is restored; drafts of other projects cannot be and are dropped.
-  useEffect(() => resume.opened(project.id), [resume, project.id]);
+  // Each authorised project retains its own recovery entries across workspace mounts.
+  useEffect(() => resume.opened(), [resume, project.id]);
   const [fieldTab, setFieldTab] = useState<'today' | 'plan'>('today');
   const [task, setTask] = useState<null | 'fill' | 'check'>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -251,6 +263,20 @@ function Workspace({
     () => say(t('conflictReloaded')),
     resume,
   );
+  const latestDrafts = useRef(h);
+  latestDrafts.current = h;
+  useEffect(() => {
+    if (!canWrite) return;
+    const entry: WorkspaceDrafts = {
+      flush: () => latestDrafts.current.flush(),
+      unsaved: () => latestDrafts.current.unsaved(),
+    };
+    recoveryWorkspaces.set(project.id, entry);
+    return () => {
+      if (recoveryWorkspaces.get(project.id) === entry)
+        recoveryWorkspaces.delete(project.id);
+    };
+  }, [recoveryWorkspaces, project.id, canWrite]);
   const reloadDay = useCallback(() => void h.reload(), [h.reload]);
   const dayStamp = `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`;
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
@@ -396,10 +422,11 @@ function Workspace({
     snapshot: () => false,
     redirect: async () => {},
   });
+  const workspaceDrafts = workspaceRecovery(recoveryWorkspaces);
   steps.current = {
-    flush: h.flush,
+    flush: workspaceDrafts.flush,
     snapshot: () => {
-      const unsaved = h.unsaved();
+      const unsaved = workspaceDrafts.unsaved();
       const kept = resume.save(
         { projectId: project.id, date, view },
         unsaved,
@@ -883,6 +910,10 @@ function Root() {
   const { t } = useI18n();
   const { session, needLogin, signIn, error, state } = useSession();
   const [resume] = useState(() => new ResumeKeeper(sessionStore(), Date.now()));
+  const recoveryWorkspaces = useMemo(
+    () => new Map<string, WorkspaceDrafts>(),
+    [session],
+  );
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
@@ -961,6 +992,9 @@ function Root() {
         .projects()
         .then((r) => {
           if (current) {
+            resume.retainWritableProjects(
+              r.projects.filter((p) => p.access === 'write').map((p) => p.id),
+            );
             setProjects(r.projects);
             setProjectsOwner(session);
           }
@@ -972,7 +1006,7 @@ function Root() {
     return () => {
       current = false;
     };
-  }, [session]);
+  }, [session, resume]);
   useEffect(() => {
     if (selectedProjectId || !projects?.length) return;
     setSelectedProjectId(
@@ -1065,6 +1099,7 @@ function Root() {
               project={p}
               signin={state}
               resume={resume}
+              recoveryWorkspaces={recoveryWorkspaces}
               {...(reportRoute?.projectId === p.id
                 ? { requestedDate: reportRoute.businessDate }
                 : {})}

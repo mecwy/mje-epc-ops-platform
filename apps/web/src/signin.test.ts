@@ -1,6 +1,7 @@
 import { parseFacts } from '@mje/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
+import { workspaceRecovery } from './App.js';
 import { DraftSession } from './report/draft.js';
 import { reconcileDraft } from './report/useDay.js';
 import {
@@ -316,7 +317,7 @@ describe('ResumeKeeper', () => {
     expect(cancelled.state?.date).toBe('2026-09-29');
     // Return 2: the retry succeeds.
     const retried = new ResumeKeeper(s, NOW + 60_000);
-    retried.opened('p2');
+    retried.opened();
     expect(retried.state?.view).toBe('field');
     expect(retried.draft('p2', '2026-09-29')).toEqual(draft('2026-09-29'));
     retried.resolved(draft('2026-09-29'));
@@ -328,7 +329,7 @@ describe('ResumeKeeper', () => {
     stashed(s, []);
     const k = new ResumeKeeper(s, NOW);
     expect(s.data.size).toBe(1);
-    k.opened('p2');
+    k.opened();
     expect(s.data.size).toBe(0);
   });
 
@@ -336,7 +337,7 @@ describe('ResumeKeeper', () => {
     const s = memoryStore();
     stashed(s, [draft('2026-09-28'), draft('2026-09-29')]);
     const k = new ResumeKeeper(s, NOW);
-    k.opened('p2');
+    k.opened();
     k.taken(draft('2026-09-29')); // opened and applied; now unsaved in its session
     const unsaved = [draft('2026-09-29', '13')];
     expect(k.save(place, unsaved, NOW + 5000)).toBe(true);
@@ -345,14 +346,103 @@ describe('ResumeKeeper', () => {
     expect(next.state?.savedAt).toBe(NOW + 5000);
   });
 
-  it("drops another project's drafts when the workspace opens", () => {
+  it('snapshots both mounted projects and a not-yet-opened day through one renewal', async () => {
+    const s = memoryStore();
+    const first = draft('2026-09-29', '11');
+    const second = { ...draft('2026-09-29', '19'), projectId: 'p9' };
+    const unopened = { ...draft('2026-09-28', '4'), projectId: 'p9' };
+    stashed(s, [unopened]);
+    const k = new ResumeKeeper(s, NOW);
+    k.retainWritableProjects(['p2', 'p9']);
+    const one = {
+      flush: vi.fn(async () => 'ok' as const),
+      unsaved: () => [first],
+    };
+    const two = {
+      flush: vi.fn(async () => 'ok' as const),
+      unsaved: () => [second],
+    };
+    const workspaces = new Map([
+      ['p2', one],
+      ['p9', two],
+    ]);
+    const recovery = workspaceRecovery(workspaces);
+    const redirect = vi.fn(async () => {});
+    const flow = renewal({
+      flush: recovery.flush,
+      snapshot: () => k.save(place, recovery.unsaved(), NOW + 1),
+      redirect,
+    });
+    expect(await flow.start()).toBe('done');
+    expect(one.flush).toHaveBeenCalledOnce();
+    expect(two.flush).toHaveBeenCalledOnce();
+    expect(redirect).toHaveBeenCalledOnce();
+    const reloaded = new ResumeKeeper(s, NOW + 2);
+    reloaded.retainWritableProjects(['p2', 'p9']);
+    reloaded.opened();
+    reloaded.opened();
+    expect(reloaded.draft('p2', first.businessDate)).toEqual(first);
+    expect(reloaded.draft('p9', second.businessDate)).toEqual(second);
+    reloaded.resolved(first);
+    expect(readResume(s, NOW + 2)?.drafts).toEqual([unopened, second]);
+  });
+  it('does not reintroduce revoked or read-only project drafts into a new snapshot', () => {
+    const s = memoryStore();
+    const inaccessible = { ...draft('2026-09-29'), projectId: 'p9' };
+    stashed(s, [draft('2026-09-29'), inaccessible]);
+    const k = new ResumeKeeper(s, NOW);
+    k.retainWritableProjects(['p2']);
+    expect(k.draft('p9', inaccessible.businessDate)).toBeNull();
+    expect(k.save(place, [inaccessible], NOW + 1)).toBe(true);
+    expect(readResume(s, NOW + 1)?.drafts).toEqual([draft('2026-09-29')]);
+  });
+  it('blocks redirect if combined workspace drafts exceed the bounded stash', async () => {
+    const s = memoryStore();
+    const k = new ResumeKeeper(s, NOW);
+    const workspaces = new Map(
+      Array.from({ length: RESUME_LIMITS.maxDrafts + 1 }, (_, n) => {
+        const projectId = 'TEST-project-' + n;
+        return [
+          projectId,
+          {
+            flush: async () => 'ok' as const,
+            unsaved: () => [{ ...draft('2026-09-29'), projectId }],
+          },
+        ] as const;
+      }),
+    );
+    k.retainWritableProjects([...workspaces.keys()]);
+    const recovery = workspaceRecovery(workspaces);
+    const redirect = vi.fn(async () => {});
+    const flow = renewal({
+      flush: recovery.flush,
+      snapshot: () => k.save(place, recovery.unsaved(), NOW + 1),
+      redirect,
+    });
+    expect(await flow.start()).toBe('unsaved');
+    expect(redirect).not.toHaveBeenCalled();
+  });
+  it('retains another project pending draft when the second workspace mounts', () => {
+    const s = memoryStore();
+    const first = draft('2026-09-29');
+    const second = { ...draft('2026-09-29', '19'), projectId: 'p9' };
+    stashed(s, [first, second]);
+    const k = new ResumeKeeper(s, NOW);
+    k.opened();
+    k.opened();
+    expect(k.draft('p2', first.businessDate)).toEqual(first);
+    expect(k.draft('p9', second.businessDate)).toEqual(second);
+    expect(readResume(s, NOW)?.drafts).toEqual([first, second]);
+  });
+  it('drops inaccessible drafts only after the authorised writable-project read', () => {
     const s = memoryStore();
     stashed(s, [
       draft('2026-09-29'),
       { ...draft('2026-09-29'), projectId: 'p9' },
     ]);
     const k = new ResumeKeeper(s, NOW);
-    k.opened('p2');
+    k.retainWritableProjects(['p2']);
+    k.opened();
     expect(k.pendingCount).toBe(1);
     expect(readResume(s, NOW)?.drafts).toEqual([draft('2026-09-29')]);
   });
@@ -485,7 +575,7 @@ describe('round 2 regressions', () => {
     const A = draft('2026-09-28', '12'); // stashed; its day is still loading
     stashed(s, [A]);
     const keeper = new ResumeKeeper(s, NOW);
-    keeper.opened('p2');
+    keeper.opened();
     // Day B has unsaved text (its write cannot land without a token).
     const b = session('2026-09-29', 7);
     b.edit(facts({ b: 'five' }));
@@ -508,7 +598,7 @@ describe('round 2 regressions', () => {
     const A = draft('2026-09-28', '12');
     stashed(s, [A]);
     const keeper = new ResumeKeeper(s, NOW);
-    keeper.opened('p2');
+    keeper.opened();
     let ack: (v: { version: number }) => void = () => {};
     const a = session(
       '2026-09-28',
@@ -533,7 +623,7 @@ describe('round 2 regressions', () => {
     const s = memoryStore();
     stashed(s, [draft('2026-09-28')]);
     const keeper = new ResumeKeeper(s, NOW);
-    keeper.opened('p2');
+    keeper.opened();
     const later = NOW + RESUME_LIMITS.maxAgeMs + 1;
     const fresh = draft('2026-09-29', '13');
     expect(keeper.save(place, [fresh], later)).toBe(true);

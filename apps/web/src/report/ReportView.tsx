@@ -121,7 +121,7 @@ function OriginalComparison({ c }: { c: ReportContent }) {
       label: label(item.label),
       unit: item.unit,
       today: c.facts.materials[item.key],
-      cumulative: c.materialsCumulative[item.key] ?? {
+      cumulative: c.materialsCumulative?.[item.key] ?? {
         value: null,
         complete: false,
       },
@@ -634,12 +634,14 @@ function BusinessSections({
             <Val key="today" raw={c.facts.materials[it.key]} />,
             unitOf(label, it),
             <span key="cum">
-              {c.materialsCumulative[it.key]?.value == null ? (
+              {c.materialsCumulative?.[it.key]?.value == null ? (
                 t('unknown')
               ) : (
-                <Val raw={c.materialsCumulative[it.key]?.value ?? undefined} />
+                <Val
+                  raw={c.materialsCumulative?.[it.key]?.value ?? undefined}
+                />
               )}
-              {!c.materialsCumulative[it.key]?.complete && (
+              {!c.materialsCumulative?.[it.key]?.complete && (
                 <small className="report-muted">
                   {t('sourcePartialSystemCumulative')}
                 </small>
@@ -784,7 +786,7 @@ function Details({ c }: { c: ReportContent }) {
             </thead>
             <tbody>
               {byKind(c.items, 'material').map((m) => {
-                const total = c.materialsCumulative[m.key];
+                const total = c.materialsCumulative?.[m.key];
                 return (
                   <tr key={m.key}>
                     <td>{label(m.label)}</td>

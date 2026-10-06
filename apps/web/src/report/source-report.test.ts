@@ -479,6 +479,22 @@ describe('selected-version source adapter in the actual report body', () => {
       vi.unstubAllGlobals();
     }
   };
+  it('renders a legacy material snapshot without a computed cumulative map', () => {
+    const c = content();
+    c.items.push({
+      ...c.items[0]!,
+      kind: 'material',
+      key: 'legacyMaterial',
+      label: 'TEST legacy material',
+    });
+    const legacy = { ...c } as Partial<ReportContent>;
+    delete legacy.materialsCumulative;
+    const before = JSON.stringify(legacy);
+    const html = page(legacy as ReportContent, 'en');
+    expect(html).toContain('TEST legacy material');
+    expect(html).toContain(translate('en', 'unknown'));
+    expect(JSON.stringify(legacy)).toBe(before);
+  });
   it.each(['zh', 'en', 'sr', 'es'] as const)(
     'renders selected source and frozen denominator in %s',
     (lang) => {
