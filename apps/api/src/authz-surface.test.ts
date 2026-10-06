@@ -5,6 +5,7 @@
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import {
@@ -22,6 +23,8 @@ import {
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
+  WeatherStore,
+  ManagerReviewStore,
   reportReader,
   type ReportReadContext,
 } from '@mje/domain';
@@ -56,6 +59,10 @@ function runtime(): AlphaRuntime {
     contractRegisterReader: Object.create(
       ContractRegisterReader.prototype,
     ) as ContractRegisterReader,
+    weatherStore: Object.create(WeatherStore.prototype) as WeatherStore,
+    managerReviewStore: Object.create(
+      ManagerReviewStore.prototype,
+    ) as ManagerReviewStore,
     projectStatusCommands: Object.create(
       ProjectStatusCommands.prototype,
     ) as ProjectStatusCommands,
@@ -136,6 +143,72 @@ export const CANONICAL_GUARD =
 const OTHER_GUARD =
   /import\.meta\.main|require\.main|process\.argv\[1\]|import\.meta\.filename\s*===|import\.meta\.path\s*===/;
 const HTTP_HOST = 'apps/api/src/main.ts';
+// This adapter is injected by a caller; it has no process entry or default transport.
+// Keep the exemption exact and prove it cannot execute code when loaded.
+const WORKER_SUPPORT_MODULES = [
+  'apps/worker/src/weather-provider.ts',
+  'apps/worker/src/weather-worker.ts',
+];
+function inertModule(text: string) {
+  const source = ts.createSourceFile(
+    'support.ts',
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const literal = (node: ts.Node): boolean =>
+    ts.isStringLiteral(node) ||
+    ts.isNumericLiteral(node) ||
+    (ts.isObjectLiteralExpression(node) &&
+      node.properties.every(
+        (p) =>
+          ts.isPropertyAssignment(p) &&
+          !ts.isComputedPropertyName(p.name) &&
+          literal(p.initializer),
+      )) ||
+    (ts.isAsExpression(node) && literal(node.expression));
+  return source.statements.every(
+    (s) =>
+      (ts.isImportDeclaration(s) &&
+        s.importClause !== undefined &&
+        ts.isStringLiteral(s.moduleSpecifier) &&
+        (s.importClause.isTypeOnly ||
+          ['@mje/contracts', './weather-provider.js'].includes(
+            s.moduleSpecifier.text,
+          ))) ||
+      ts.isInterfaceDeclaration(s) ||
+      ts.isTypeAliasDeclaration(s) ||
+      ts.isFunctionDeclaration(s) ||
+      (ts.isClassDeclaration(s) &&
+        !(ts.canHaveDecorators(s) && ts.getDecorators(s)?.length) &&
+        (!s.heritageClauses ||
+          s.heritageClauses.every(
+            (h) =>
+              h.token === ts.SyntaxKind.ExtendsKeyword &&
+              h.types.every(
+                (t) =>
+                  ts.isIdentifier(t.expression) &&
+                  t.expression.text === 'Error',
+              ),
+          )) &&
+        s.members.every(
+          (m) =>
+            !ts.isClassStaticBlockDeclaration(m) &&
+            !(m.name && ts.isComputedPropertyName(m.name)) &&
+            !(ts.canHaveDecorators(m) && ts.getDecorators(m)?.length) &&
+            !(
+              ts.canHaveModifiers(m) &&
+              ts
+                .getModifiers(m)
+                ?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)
+            ),
+        )) ||
+      (ts.isVariableStatement(s) &&
+        s.declarationList.declarations.every(
+          (d) => d.initializer !== undefined && literal(d.initializer),
+        )),
+  );
+}
 function sourcesUnder(dir: string): string[] {
   return readdirSync(repo + dir, { withFileTypes: true }).flatMap((d) =>
     d.isDirectory()
@@ -150,7 +223,11 @@ export function discoverEntries(
 ) {
   const entries: string[] = [];
   const refused: string[] = [];
-  for (const file of sourcesUnder('apps/worker/src/')) entries.push(file);
+  for (const file of sourcesUnder('apps/worker/src/')) {
+    if (WORKER_SUPPORT_MODULES.includes(file)) {
+      if (!inertModule(read(file))) refused.push(file);
+    } else entries.push(file);
+  }
   for (const file of sourcesUnder('apps/api/src/')) {
     const text = read(file);
     const canonical = CANONICAL_GUARD.test(text);
@@ -178,6 +255,26 @@ function launched(): string[] {
 }
 
 describe('Worker / CLI entry enumeration (ADR-0003 D2.2)', () => {
+  it('refuses executable code in the exact worker support module', () => {
+    for (const code of [
+      'fetch("https://example.invalid")',
+      'const job = start()',
+      'class Job { static { start() } }',
+      'import "./start.js"',
+      'class Job extends start() {}',
+      'class Job { [start()]() {} }',
+      'const values = { [start()]: "safe" }',
+      '@start() class Job {}',
+    ]) {
+      expect(
+        discoverEntries((f) =>
+          WORKER_SUPPORT_MODULES.includes(f)
+            ? code
+            : readFileSync(repo + f, 'utf8'),
+        ).refused,
+      ).toEqual(WORKER_SUPPORT_MODULES);
+    }
+  });
   it('discovered entries and registered entries are the same set', () => {
     const { entries, refused } = discoverEntries();
     expect(refused).toEqual([]);
@@ -204,6 +301,14 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
       'day',
       `?projectId=${PROJECT}&businessDate=2026-09-01`,
     ],
+    'GET /api/report/manager-review': [
+      'managerReview',
+      `?projectId=${PROJECT}&businessDate=2026-09-01&crewId=${PROJECT}&itemKey=installation`,
+    ],
+    'GET /api/report/people-window': [
+      'peopleWindow',
+      `?projectId=${PROJECT}&businessDate=2026-09-01`,
+    ],
     'GET /api/report/revision': [
       'revision',
       `?projectId=${PROJECT}&businessDate=2026-09-01&n=1`,
@@ -213,6 +318,19 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
       `?projectId=${PROJECT}&targetBusinessDate=2026-09-02`,
     ],
     'GET /api/report/items': ['items', `?projectId=${PROJECT}`],
+    'GET /api/weather/locations': ['weatherLocations', `?projectId=${PROJECT}`],
+    'GET /api/weather/requests': [
+      'weatherRequest',
+      `?projectId=${PROJECT}&requestId=${PROJECT}`,
+    ],
+    'GET /api/weather/snapshots': [
+      'weatherSnapshot',
+      `?projectId=${PROJECT}&snapshotId=${PROJECT}`,
+    ],
+    'GET /api/weather/report-location/coordinates': [
+      'reportLocationCoordinates',
+      `?projectId=${PROJECT}&recordId=${PROJECT}`,
+    ],
   } as const;
   it('covers every report read entry of surface.ts', () => {
     const surfaced = SURFACE.filter(

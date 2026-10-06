@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { responseCode, uploadForm, type PhotoUpload } from './api.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  reportApi,
+  responseCode,
+  uploadForm,
+  type PhotoUpload,
+} from './api.js';
 import { photoErrorKey } from './report/Photos.js';
 
 const base: PhotoUpload = {
@@ -14,6 +19,104 @@ const base: PhotoUpload = {
   takenAt: null,
   link: null,
 };
+
+describe('status refusal metadata', () => {
+  it('preserves the lost-attempt flag together with sanitized fields on transport resend', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.stubGlobal('fetch', async () => {
+      if (calls++ === 0) throw Error('TEST lost response');
+      return new Response(
+        JSON.stringify({
+          code: 'STATUS_FIELDS_REQUIRED',
+          fields: ['recovery'],
+        }),
+        { status: 400 },
+      );
+    });
+    try {
+      const result = reportApi(async () => 'TEST-token')
+        .projectStatus('TEST-project')
+        .catch((error) => error as unknown);
+      await vi.runAllTimersAsync();
+      await expect(result).resolves.toMatchObject({
+        code: 'STATUS_FIELDS_REQUIRED',
+        afterLostAttempt: true,
+        fields: ['recovery'],
+      });
+      expect(calls).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+  it.each([
+    [
+      ['areas', 'recovery', 'areas'],
+      ['areas', 'recovery'],
+    ],
+    [['areas', 'TEST-private-text'], []],
+    [['areas', 42], []],
+    ['areas', []],
+    [null, []],
+  ])(
+    'keeps only a wholly valid fixed field-name list (%j)',
+    async (fields, expected) => {
+      vi.stubGlobal(
+        'fetch',
+        async () =>
+          new Response(
+            JSON.stringify({
+              code: 'STATUS_FIELDS_REQUIRED',
+              fields,
+              message: 'TEST response text must not survive',
+            }),
+            { status: 400 },
+          ),
+      );
+      try {
+        await expect(
+          reportApi(async () => 'TEST-token').declareProjectStatus({
+            projectId: 'TEST-project',
+            expectedN: 0,
+            clientMutationId: 'TEST-key',
+            status: 'AT_RISK',
+            areas: [],
+            situation: '',
+            recovery: '',
+            expectedRecoveryDate: null,
+            expectedRecoveryUnknown: false,
+            needsSupport: false,
+            supportNote: '',
+          }),
+        ).rejects.toMatchObject({
+          code: 'STATUS_FIELDS_REQUIRED',
+          status: 400,
+          fields: expected,
+          message: 'STATUS_FIELDS_REQUIRED',
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+  it('does not retain field metadata for unrelated refusals', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(JSON.stringify({ code: 'READ_ONLY', fields: ['areas'] }), {
+          status: 403,
+        }),
+    );
+    try {
+      await expect(
+        reportApi(async () => 'TEST-token').projectStatus('TEST-project'),
+      ).rejects.toMatchObject({ code: 'READ_ONLY', fields: [] });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe('photo API boundary', () => {
   it('keeps only a well-formed code from an error response, never its text', () => {

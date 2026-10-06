@@ -16,6 +16,26 @@ import {
 } from '@mje/ui';
 
 const PREF = 'mje-lang';
+const QUANTITY_ENTRY = {
+  zh: {
+    quantity: '完成量',
+    confirm: '确定',
+    cancel: '取消',
+    invalid: '数量格式错误',
+  },
+  en: {
+    quantity: 'Completed quantity',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    invalid: 'Invalid quantity',
+  },
+} as const;
+
+/** New quantity entry prioritizes Chinese/English; existing locale catalogues stay intact. */
+export function quantityEntryText(lang: Lang) {
+  return QUANTITY_ENTRY[lang === 'zh' ? 'zh' : 'en'];
+}
+
 export interface I18n {
   lang: Lang;
   locale: string;

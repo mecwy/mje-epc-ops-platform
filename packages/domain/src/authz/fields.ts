@@ -18,6 +18,9 @@ import type {
   ContractEditorLookupsDto,
 } from '@mje/contracts';
 import type {
+  PeopleWindowSummaryDto,
+  ManagerReviewReadDto,
+  SafeFrozenWeatherReference,
   ProjectStatusHistoryDto,
   ProjectManagerProjectionsDto,
   StatusCommandResultDto,
@@ -47,6 +50,10 @@ import type {
   ReportProjectsDto,
   ReportHomeDto,
   ReportRevisionDto,
+  ReportWeatherLocationsDto,
+  ReportWeatherRequestDto,
+  ReportWeatherSnapshotDto,
+  ReportLocationCoordinatesDto,
 } from '../report-reader.js';
 import type { IssueHomeDto } from '../issue-reader.js';
 import type { IssueStore } from '../issue-store.js';
@@ -218,6 +225,12 @@ export interface ProjectorDtos {
   'report.plan.writer': ReportPlanDto;
   'report.plan.reader': ReportPlanDto;
   'report.items': ReportItemDto[];
+  'report.peopleWindow': PeopleWindowSummaryDto;
+  'report.managerReview': ManagerReviewReadDto;
+  'report.weatherLocations': ReportWeatherLocationsDto;
+  'report.weatherRequest': ReportWeatherRequestDto;
+  'report.weatherSnapshot': ReportWeatherSnapshotDto;
+  'report.reportLocationCoordinates': ReportLocationCoordinatesDto;
   'report.lagHistory': ReportLagDayDto[];
   'issue.list': IssueListDto;
   'issue.home': IssueHomeDto;
@@ -294,6 +307,51 @@ const days = (state: Layer): Root<ReportDayRowDto[]> => ({
   items: { businessDate: S, state: { layer: state }, revision: S },
 });
 /** The day keys both projectors share; `content` is where the day's facts come from. */
+const weatherData = {
+  provider: SUB,
+  query: {
+    layer: 'submitted',
+    fields: {
+      projectId: S,
+      locationVersionId: S,
+      businessDate: S,
+      timezone: S,
+      point: sub('coordinates'),
+      interval: sub('structure'),
+      product: S,
+      model: S,
+    },
+  },
+  category: SUB,
+  fetchedAt: SUB,
+  publishedAt: SUB,
+  coverage: SUB,
+  grid: sub('coordinates'),
+  metrics: sub('submitted'),
+} as const;
+// Frozen site-purpose query points and provider grid cells are submitted weather provenance.
+// They are never taken from the restricted personal ReportLocationRecord coordinate exit.
+const frozenWeatherData = {
+  ...weatherData,
+  query: {
+    ...weatherData.query,
+    fields: { ...weatherData.query.fields, point: sub('submitted') },
+  },
+  grid: sub('submitted'),
+} as const;
+const weatherReferenceFields: FieldTable<SafeFrozenWeatherReference> = {
+  referenceId: S,
+  snapshotId: S,
+  locationVersionId: S,
+  adoptedAt: SUB,
+  adoptedByAccountId: SUB,
+  adoptedByPersonId: SUB,
+  snapshot: { layer: 'submitted', fields: frozenWeatherData },
+  adapterVersion: SUB,
+  responseHash: SUB,
+  sourceLink: SUB,
+  licenseLink: SUB,
+};
 const dayCommon = (content: Layer) =>
   ({
     access: S,
@@ -304,7 +362,29 @@ const dayCommon = (content: Layer) =>
     version: { layer: content },
     currentRevisionNumber: S,
     correctionReason: { layer: content },
-    facts: sub(content),
+    // Classify each fact explicitly: the source-cell nesting exceeds the subtree depth guard.
+    facts: {
+      layer: content,
+      fields: {
+        weather: { layer: content },
+        temperature: { layer: content },
+        qty: sub(content),
+        cumulative: sub(content),
+        narrative: sub(content),
+        people: sub(content),
+        presence: sub(content),
+        machinery: sub(content),
+        materials: sub(content),
+        milestones: sub(content),
+        noWork: sub(content),
+        updated: sub(content),
+        sourceReport: sub(content),
+        weatherReferences: sub(content),
+        reportLocationRef: sub(content),
+      },
+    },
+    weatherReferences: { layer: content, items: weatherReferenceFields },
+    managerReviewCut: sub(content),
     items: sub('structure'),
     planStatus: sub(content),
     baseline: sub('structure'),
@@ -320,6 +400,7 @@ const dayCommon = (content: Layer) =>
   }) as const;
 const revision = (projector: OpaqueProjector, layer: Layer) => ({
   fields: {
+    reportRevisionId: S,
     n: S,
     at: S,
     by: S,
@@ -972,6 +1053,72 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
   'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.managerReview': {
+    fields: {
+      actorScopeKey: S,
+      target: sub('structure'),
+      revisionNumber: S,
+      reviewVersion: { layer: 'field-writer' },
+      declaredQty: { layer: 'field-writer' },
+      labels: sub('structure'),
+      unit: S,
+      scopeRef: S,
+      capability: sub('structure'),
+      evidence: sub('field-writer'),
+      state: sub('field-writer'),
+      judgment: sub('field-writer'),
+    },
+  },
+  'report.weatherLocations': {
+    items: {
+      id: S,
+      projectId: S,
+      scopeKey: S,
+      n: S,
+      siteTimezone: S,
+      point: sub('coordinates'),
+      confirmedAt: S,
+    },
+  },
+  'report.weatherRequest': {
+    fields: {
+      id: S,
+      projectId: S,
+      businessDate: S,
+      locationVersionId: S,
+      state: { layer: 'draft' },
+      snapshotId: S,
+    },
+  },
+  'report.weatherSnapshot': {
+    fields: {
+      id: S,
+      data: { layer: 'submitted', fields: weatherData },
+      adapterVersion: SUB,
+      responseHash: SUB,
+      sourceLink: SUB,
+      licenseLink: SUB,
+    },
+  },
+  'report.reportLocationCoordinates': {
+    fields: { lat: { layer: 'coordinates' }, lon: { layer: 'coordinates' } },
+  },
+  'report.peopleWindow': {
+    fields: {
+      schemaVersion: S,
+      projectId: S,
+      windowFrom: S,
+      windowTo: S,
+      basis: S,
+      policyVersion: S,
+      selectedAtUTC: S,
+      dayContributions: sub('submitted'),
+      categoryKnownSubtotals: sub('submitted'),
+      reportedDays: SUB,
+      slotDays: S,
+      totalState: SUB,
+    },
+  },
   'report.plan.writer': plan('draft'),
   'report.plan.reader': plan('structure'),
   'report.items': {
@@ -1141,7 +1288,10 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
           },
         },
       },
-      cumulative: { layer: 'submitted', items: { businessDate: S, value: S } },
+      cumulative: {
+        layer: 'submitted',
+        items: { businessDate: S, value: S, workItemKey: S, unit: S },
+      },
       primaryWorkItem: {
         layer: 'submitted',
         fields: {

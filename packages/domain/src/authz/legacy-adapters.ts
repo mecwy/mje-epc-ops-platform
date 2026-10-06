@@ -113,6 +113,9 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}report-commands.ts`,
       `${D}report-lookups.ts`,
       `${D}report-rules.ts`,
+      `${D}personnel-metrics.ts`,
+      `${D}weather-store.ts`,
+      `${D}weather-jobs.ts`,
       `${D}reader-view.ts`,
     ],
     tables: [
@@ -123,6 +126,13 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'PlanDraft',
       'PlanVersion',
       'ReportItem',
+      'WeatherLocationVersion',
+      'WeatherRequest',
+      'WeatherSnapshot',
+      'WeatherReportReference',
+      'ReportLocationRecord',
+      // First and only consumer is report WEATHER_FETCH; RLS restricts event type.
+      'OutboxEvent',
     ],
   },
   issue: {
@@ -147,6 +157,12 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}checkin-store.ts`,
       `${D}checkin-rules.ts`,
       `${D}foreman-store.ts`,
+      `${D}manager-review-rules.ts`,
+      `${D}manager-review-store.ts`,
+      `${D}manager-review-reader.ts`,
+      `${D}business-evidence-rules.ts`,
+      `${D}business-evidence-store.ts`,
+      `${D}business-evidence-reader.ts`,
     ],
     tables: [
       'Crew',
@@ -169,6 +185,9 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'ForemanReport',
       'ForemanReportRevision',
       'ForemanAdoption',
+      'ManagerReviewEvent',
+      'BusinessEvidenceSet',
+      'BusinessEvidenceVersion',
     ],
   },
   /** HTTP and process entries: no SQL of their own. */

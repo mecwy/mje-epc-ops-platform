@@ -1,3 +1,4 @@
+import { parseFacts } from '@mje/contracts';
 import { describe, expect, it } from 'vitest';
 import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
 import { blankFacts } from '@mje/domain/rules';
@@ -43,6 +44,121 @@ const session = (date: string, s: ReturnType<typeof server>, version = 1) =>
   );
 
 describe('draft session', () => {
+  it.each([1, 2, 3, 4, 5] as const)(
+    'retains source cells through ordinary edits and byte-identical retry after a lost response (V%s)',
+    async (schemaVersion) => {
+      const sourceReport = parseFacts({
+        ...blankFacts(),
+        sourceReport: {
+          documents: {
+            testDoc: {
+              sha256: 'a'.repeat(64),
+              label: 'TEST source',
+              format: 'docx',
+            },
+          },
+          peopleTotal: {
+            raw: ' 7 ',
+            state: 'value',
+            at: { document: 'testDoc', table: 0, row: 1, cell: 2 },
+          },
+          workPercent: {},
+          materials: {},
+          ...(schemaVersion !== 1
+            ? {
+                schemaVersion,
+                ...(schemaVersion === 5
+                  ? {
+                      workAreas: {
+                        support: {
+                          raw: 'TEST original area',
+                          state: 'value',
+                          at: {
+                            document: 'testDoc',
+                            table: 2,
+                            row: 1,
+                            cell: 1,
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                ...(schemaVersion >= 4
+                  ? {
+                      personnelRemarks: {
+                        installer: {
+                          raw: ' ',
+                          state: 'blank',
+                          at: {
+                            document: 'testDoc',
+                            table: 3,
+                            row: 1,
+                            cell: 4,
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                ...(schemaVersion >= 3
+                  ? {
+                      milestones: {
+                        testMilestone: {
+                          reportedDelayDays: {
+                            raw: ' ',
+                            state: 'blank' as const,
+                            at: {
+                              document: 'testDoc',
+                              table: 1,
+                              row: 1,
+                              cell: 3,
+                            },
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+                reportedNextPlan: {
+                  targetBusinessDate: '2025-03-11',
+                  quantities: {
+                    testWork: {
+                      raw: ' 23 ',
+                      state: 'value' as const,
+                      at: { document: 'testDoc', table: 2, row: 1, cell: 7 },
+                    },
+                  },
+                },
+              }
+            : { schemaVersion: 1 as const }),
+        },
+      }).sourceReport!;
+      const original: DayFactsDto = { ...empty(), sourceReport };
+      const srv = server();
+      const s = new DraftSession(
+        'p',
+        '2025-03-10',
+        1,
+        original,
+        srv.write,
+        () => undefined,
+        () => `k${++id}`,
+      );
+      s.edit(setFact(original, 'weather', 'TEST cloudy'));
+      const first = s.flush();
+      await tick();
+      const sent = JSON.stringify(srv.calls[0]!.command);
+      expect(srv.calls[0]!.command.facts.sourceReport).toEqual(sourceReport);
+      srv.calls[0]!.settle(new ApiError('NETWORK', 0));
+      expect(await first).toBe('failed');
+      const retry = s.flush();
+      await tick();
+      expect(JSON.stringify(srv.calls[1]!.command)).toBe(sent);
+      srv.ok(1, 2);
+      await retry;
+      expect(s.facts.sourceReport).toEqual(sourceReport);
+      expect(original.weather).toBe('');
+    },
+  );
+
   it("a save in flight for one day never writes another day's facts", async () => {
     const srv = server();
     const a = session('2026-09-29', srv);

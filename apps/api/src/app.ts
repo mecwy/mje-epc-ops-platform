@@ -24,6 +24,7 @@ import {
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import express from 'express';
+import { publicAssets } from './public-assets.js';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
@@ -38,6 +39,12 @@ import {
   PhotoStore,
   ReportError,
   ReportStore,
+  reportReader,
+  WeatherStore,
+  WeatherStoreError,
+  ManagerReviewStore,
+  DENY_REVIEW_PORTS,
+  type ReviewServerPorts,
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
@@ -46,7 +53,16 @@ import {
 } from '@mje/domain';
 import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
 import { AlphaController } from './alpha.controller.js';
+import {
+  WeatherController,
+  type WeatherApiPort,
+} from './weather.controller.js';
 import { ReportController } from './report.controller.js';
+import {
+  ManagerReviewController,
+  MANAGER_REVIEW_SERVICE,
+  type ManagerReviewService,
+} from './manager-review.controller.js';
 import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
 import { FieldController, FieldTokenGuard } from './field.controller.js';
@@ -95,7 +111,7 @@ const FIELD_STATUS: Partial<Record<string, number>> = {
   RETRY: 503,
 };
 @Catch()
-class SafeErrorFilter implements ExceptionFilter {
+export class SafeErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     let status = 500;
     let code = 'REQUEST_FAILED';
@@ -143,6 +159,10 @@ class SafeErrorFilter implements ExceptionFilter {
             : code === 'VERSION_CONFLICT' || code === 'IDENTITY_EXISTS'
               ? 409
               : 400;
+    } else if (error instanceof WeatherStoreError) {
+      // Store failures carry a fixed code only; preserve outcome uncertainty in the generic envelope.
+      status = 500;
+      code = 'REQUEST_FAILED';
     } else if (error instanceof ProjectStatusError) {
       code = error.code;
       status =
@@ -160,7 +180,9 @@ class SafeErrorFilter implements ExceptionFilter {
     } else if (error instanceof AlphaError || error instanceof ReportError) {
       code = error.code;
       status =
-        code === 'FORBIDDEN' || code === 'READ_ONLY'
+        code === 'FORBIDDEN' ||
+        code === 'READ_ONLY' ||
+        code === 'FEATURE_DISABLED'
           ? 403
           : code === 'NOT_FOUND'
             ? 404
@@ -214,6 +236,11 @@ export interface AlphaRuntime {
   store: AlphaStore;
   /** Site Daily Close (U2.1); absent until the report slice is enabled. */
   reportStore?: ReportStore;
+  /** TEST-enabled C03 runtime; absence keeps the weather routes disabled. */
+  weatherStore?: WeatherStore;
+  /** No title-based rights or fallback evidence; actual transaction adapters are explicit. */
+  managerReviewStore?: ManagerReviewStore;
+  managerReviewPorts?: ReviewServerPorts;
   projectStatusCommands?: ProjectStatusCommands;
   contractRegisterReader?: ContractRegisterReader;
   contractRegisterCommands?: ContractRegisterCommands;
@@ -238,6 +265,51 @@ export async function createApp(
   alpha?: AlphaRuntime,
   lifecycle: { installSignalHandlers?: boolean } = {},
 ) {
+  const managerReviewService: ManagerReviewService | null =
+    alpha?.reportStore && alpha.managerReviewStore
+      ? {
+          read: (identity, scope) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader
+                .forContext(ctx)
+                .managerReview(
+                  scope,
+                  alpha.managerReviewPorts ?? DENY_REVIEW_PORTS,
+                ),
+            ),
+          write: (identity, command) =>
+            alpha.managerReviewStore!.write(identity, command),
+        }
+      : null;
+  const weatherApi: WeatherApiPort | null =
+    alpha?.reportStore && alpha.weatherStore
+      ? {
+          configureLocation: (identity, command) =>
+            alpha.weatherStore!.configureLocation(identity, command),
+          request: (identity, command) =>
+            alpha.weatherStore!.request(identity, command),
+          locations: (identity, projectId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader.forContext(ctx).weatherLocations(projectId),
+            ),
+          requestStatus: (identity, projectId, requestId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader.forContext(ctx).weatherRequest(projectId, requestId),
+            ),
+          snapshot: (identity, projectId, snapshotId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader
+                .forContext(ctx)
+                .weatherSnapshot(projectId, snapshotId),
+            ),
+          coordinates: (identity, projectId, recordId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader
+                .forContext(ctx)
+                .reportLocationCoordinates(projectId, recordId),
+            ),
+        }
+      : null;
   @Controller('api')
   class ConfigurationController {
     @Get('auth-config') config() {
@@ -264,6 +336,8 @@ export async function createApp(
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
+      ...(weatherApi ? [WeatherController] : []),
+      ...(managerReviewService ? [ManagerReviewController] : []),
       ...(alpha?.projectStatusCommands && alpha.projectStatusReader
         ? [ProjectStatusController]
         : []),
@@ -315,6 +389,17 @@ export async function createApp(
                   useValue: alpha.contractRegisterReader,
                 },
               ]
+            : []),
+          ...(managerReviewService
+            ? [
+                {
+                  provide: MANAGER_REVIEW_SERVICE,
+                  useValue: managerReviewService,
+                },
+              ]
+            : []),
+          ...(weatherApi
+            ? [{ provide: 'C03_WEATHER_API', useValue: weatherApi }]
             : []),
           ...(alpha.projectStatusCommands && alpha.projectStatusReader
             ? [
@@ -391,6 +476,7 @@ export async function createApp(
   app.use(express.json({ limit: '256kb', strict: true }));
   if (process.env['WEB_ROOT'])
     app.use(
+      publicAssets(resolve(process.env['WEB_ROOT'])),
       express.static(resolve(process.env['WEB_ROOT']), {
         dotfiles: 'deny',
         index: 'index.html',

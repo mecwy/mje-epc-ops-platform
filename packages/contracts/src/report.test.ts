@@ -10,6 +10,44 @@ import {
 } from './report.js';
 
 const ID = '10000000-0000-4000-8000-00000000000';
+it('retains the V2 discriminant and source target through the normal facts boundary', () => {
+  const sourceReport = {
+    schemaVersion: 2,
+    documents: {
+      testDoc: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    reportedNextPlan: {
+      targetBusinessDate: '2027-03-01',
+      quantities: {
+        test: {
+          raw: '23',
+          state: 'value',
+          at: { document: 'testDoc', table: 0, row: 1, cell: 1 },
+        },
+      },
+    },
+  };
+  expect(parseFacts({ ...facts(), sourceReport }).sourceReport).toEqual(
+    sourceReport,
+  );
+  const v3 = {
+    ...sourceReport,
+    schemaVersion: 3,
+    milestones: {
+      testMilestone: {
+        reportedDelayDays: {
+          ...sourceReport.reportedNextPlan.quantities.test,
+          raw: ' ',
+          state: 'blank',
+        },
+      },
+    },
+  };
+  expect(parseFacts({ ...facts(), sourceReport: v3 }).sourceReport).toEqual(v3);
+  expect(parseFacts(facts())).not.toHaveProperty('sourceReport');
+});
 const facts = () => ({
   weather: '多云',
   temperature: '12–20℃',
@@ -183,4 +221,66 @@ describe('report contracts', () => {
       }),
     ).toThrow('reason');
   });
+});
+
+describe('source-report compatibility at the facts boundary', () => {
+  it('keeps legacy omission absent, rejects null and previously silently discarded fields', () => {
+    expect(Object.hasOwn(parseFacts(facts()), 'sourceReport')).toBe(false);
+    for (const extra of [
+      { sourceReport: null },
+      { sourceReport: {} },
+      { originalPeopleTotal: '9' },
+      { materialCumulative: {} },
+      { rawCells: [] },
+    ])
+      expect(() => parseFacts({ ...facts(), ...extra })).toThrow(
+        InvalidReportInput,
+      );
+    for (const nested of [
+      { narrative: { ...facts().narrative, extra: 'TEST' } },
+      { noWork: { reason: 'rest', note: '', extra: 'TEST' } },
+      { milestones: { test: { actual: '', note: '', extra: 'TEST' } } },
+    ])
+      expect(() => parseFacts({ ...facts(), ...nested })).toThrow(
+        InvalidReportInput,
+      );
+  });
+  it('refuses extra command authority instead of ignoring it', () => {
+    expect(() =>
+      parseSaveFactsCommand({
+        projectId: ID + '1',
+        businessDate: '2025-03-10',
+        clientMutationId: ID + '2',
+        expectedVersion: 0,
+        facts: facts(),
+        orgId: ID + '3',
+      }),
+    ).toThrow('command.extra');
+  });
+});
+
+it('V4 accepts category remarks but rejects invented personnel role keys', () => {
+  const cell = {
+    raw: ' ',
+    state: 'blank',
+    at: { document: 'testDoc', table: 3, row: 1, cell: 4 },
+  };
+  const sourceReport = {
+    schemaVersion: 4,
+    documents: {
+      testDoc: { sha256: 'a'.repeat(64), label: 'TEST', format: 'docx' },
+    },
+    workPercent: {},
+    materials: {},
+    personnelRemarks: { installer: cell },
+  };
+  expect(parseFacts({ ...facts(), sourceReport }).sourceReport).toEqual(
+    sourceReport,
+  );
+  expect(() =>
+    parseFacts({
+      ...facts(),
+      sourceReport: { ...sourceReport, personnelRemarks: { employee: cell } },
+    }),
+  ).toThrow('facts.sourceReport.personnelRemarks');
 });

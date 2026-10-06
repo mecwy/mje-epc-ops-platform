@@ -22,6 +22,8 @@ export interface DayBinding {
     owner: string,
     outcome: CommandOutcome,
   ) => Promise<boolean>;
+  refresh?: (businessDate: string, owner: string) => Promise<boolean>;
+  held?: (businessDate: string, owner: string) => boolean;
   /** Free `owner`'s lock when nothing was sent under it (DayStore.abandon). */
   abandon: (businessDate: string, owner: string) => void;
 }
@@ -42,6 +44,11 @@ export function pmDayBinding(store: DayStore, projectId: string): DayBinding {
     },
     release: (date, owner, outcome) =>
       store.release(store.entry(projectId, date), owner, outcome),
+    refresh: (date, owner) => {
+      const e = store.entry(projectId, date);
+      return e.lock === owner ? store.reloadLocked(e) : Promise.resolve(false);
+    },
+    held: (date, owner) => store.entry(projectId, date).lock === owner,
     abandon: (date, owner) =>
       store.abandon(store.entry(projectId, date), owner),
   };
@@ -84,6 +91,9 @@ export class PmOwners {
           release: (owner, outcome) =>
             this.day?.release(businessDate, owner, outcome) ??
             Promise.resolve(false),
+          refresh: (owner) =>
+            this.day?.refresh?.(businessDate, owner) ?? Promise.resolve(false),
+          held: (owner) => this.day?.held?.(businessDate, owner) ?? true,
           abandon: (owner) => this.day?.abandon(businessDate, owner),
         },
         () => this.site.changed(),
@@ -102,12 +112,23 @@ export class PmOwners {
 /** One PmOwners per project for the workspace's life. */
 export class PmOwnerRegistry {
   private readonly byProject = new Map<string, PmOwners>();
+  private readonly listeners = new Set<() => void>();
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  all(): PmOwners[] {
+    return [...this.byProject.values()];
+  }
   constructor(private readonly api: ReportApi) {}
   get(projectId: string): PmOwners {
     let o = this.byProject.get(projectId);
     if (!o) {
       o = new PmOwners(this.api, projectId);
       this.byProject.set(projectId, o);
+      o.site.subscribe(() => this.listeners.forEach((listener) => listener()));
     }
     return o;
   }

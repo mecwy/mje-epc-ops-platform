@@ -59,6 +59,7 @@ export type ScopeSource =
   | 'membership'
   | 'query.projectId'
   | 'body.projectId'
+  | 'body.target.projectId'
   | 'body.issueId'
   | 'path.projectId'
   | 'path.issueId'
@@ -753,6 +754,13 @@ const ENTRIES: readonly SurfaceEntry[] = [
     { writer: ALL, reader: SUBMITTED },
   ),
   reportRead(
+    'people-window',
+    'query.projectId',
+    { writer: 'report.peopleWindow', reader: 'report.peopleWindow' },
+    { writer: 'submitted', reader: 'submitted' },
+    { writer: SUBMITTED, reader: SUBMITTED },
+  ),
+  reportRead(
     'revision',
     'query.projectId',
     { writer: 'report.revision.writer', reader: 'report.revision.reader' },
@@ -1133,6 +1141,72 @@ const ENTRIES: readonly SurfaceEntry[] = [
     {
       protects: ['ForemanReportRevision.n'],
       advances: ['ForemanReportRevision.n', 'FieldDay.seq'],
+    },
+  ),
+
+  // C03 current weather lookups require a writer; submitted readers use frozen report refs.
+  ...(
+    [
+      ['locations', 'report.weatherLocations'],
+      ['requests', 'report.weatherRequest'],
+      ['snapshots', 'report.weatherSnapshot'],
+      ['report-location/coordinates', 'report.reportLocationCoordinates'],
+    ] as const
+  ).map(([path, projector]) =>
+    read(
+      `GET /api/weather/${path}`,
+      'account',
+      ['report.view'],
+      'query.projectId',
+      { 'report.view': { temporal: 'live', layers: ALL, projector } },
+    ),
+  ),
+  write(
+    'POST /api/weather/locations',
+    'account',
+    'report.write',
+    'body.projectId',
+    'WeatherStore.configureLocation',
+    'cas',
+    {
+      protects: ['WeatherLocationVersion.n'],
+      advances: ['WeatherLocationVersion.n'],
+    },
+  ),
+  write(
+    'POST /api/weather/requests',
+    'account',
+    'report.write',
+    'body.projectId',
+    'WeatherStore.request',
+    'append',
+    { advances: ['WeatherRequest.refreshGeneration'] },
+  ),
+
+  // Current field review needs writer access and explicit scoped review ports; roles alone grant nothing.
+  read(
+    'GET /api/report/manager-review',
+    'account',
+    ['report.view'],
+    'query.projectId',
+    {
+      'report.view': {
+        temporal: 'live',
+        layers: ALL,
+        projector: 'report.managerReview',
+      },
+    },
+  ),
+  write(
+    'POST /api/report/manager-review',
+    'account',
+    'report.write',
+    'body.target.projectId',
+    'ManagerReviewStore.write',
+    'cas',
+    {
+      protects: ['ForemanReportRevision.n', 'ManagerReviewEvent.version'],
+      advances: ['ManagerReviewEvent.version', 'FieldDay.seq'],
     },
   ),
 

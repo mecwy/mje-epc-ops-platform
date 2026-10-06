@@ -34,6 +34,7 @@ export class ReportError extends Error {
       | 'READ_ONLY'
       | 'NOT_FOUND'
       | 'VERSION_CONFLICT'
+      | 'FEATURE_DISABLED'
       | 'IDEMPOTENCY_KEY_REUSED'
       | 'LOCKED'
       | 'NOT_SUBMITTED'

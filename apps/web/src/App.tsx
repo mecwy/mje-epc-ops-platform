@@ -15,6 +15,7 @@ import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
 import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
+import { dayCommandNotice } from './report/FillPage.js';
 import {
   liveCoverage,
   byKind,
@@ -23,6 +24,21 @@ import {
 } from './report/model.js';
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
+import { PersonnelMetricsSession } from './report/personnel-metrics-session.js';
+import {
+  WeatherLocation,
+  FrozenWeatherReferences,
+} from './report/WeatherLocation.js';
+import {
+  WeatherLocationSession,
+  type WeatherContext,
+} from './report/weather-location-session.js';
+import {
+  disabledWeatherPorts,
+  type WeatherPresentationPorts,
+} from './report/weather-adapter.js';
+import { parseReportLocationCandidate } from '@mje/contracts';
+import type { PersonnelRevisionLink } from './report/PersonnelMetrics.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
@@ -33,6 +49,18 @@ import { FillIssues, ReplySheet } from './report/Issues.js';
 import { usePhotos } from './report/usePhotos.js';
 import { PhotoHost, PhotosRow, type PhotoEnv } from './report/Photos.js';
 import { SitePage } from './site/SitePage.js';
+import { ExecutiveHome } from './executive/ExecutiveHome.js';
+import { ProjectStatusSession } from './executive/status-session.js';
+import { ProjectOverview } from './executive/ProjectOverview.js';
+import { AttentionInbox } from './executive/AttentionInbox.js';
+import { ProjectIssueEntry } from './executive/ProjectIssueEntry.js';
+import { ProjectOverviewSession } from './executive/overview-session.js';
+import {
+  executiveHref,
+  parseExecutiveRoute,
+  parseReportRoute,
+  reportHref,
+} from './executive/overview-routing.js';
 import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
@@ -40,6 +68,7 @@ import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
 import { ContractsWorkspace } from './contracts/ContractsWorkspace.js';
 import { OpportunitiesWorkspace } from './opportunities/OpportunitiesWorkspace.js';
+import { WorkspaceShell } from './workspace/WorkspaceShell.js';
 import {
   ResumeKeeper,
   renewal,
@@ -150,17 +179,41 @@ function Toast({ text }: { text: string | null }) {
   );
 }
 
+type WorkspaceDrafts = Pick<ReturnType<typeof useDay>, 'flush' | 'unsaved'>;
+
+/** One sign-in snapshot covers every mounted authorised workspace, not just the visible one. */
+export function workspaceRecovery(workspaces: Map<string, WorkspaceDrafts>) {
+  return {
+    flush: () => Promise.all([...workspaces.values()].map((w) => w.flush())),
+    unsaved: () => [...workspaces.values()].flatMap((w) => w.unsaved()),
+  };
+}
+
 function Workspace({
   session,
   project,
   signin,
   resume,
+  recoveryWorkspaces,
+  pmRegistry,
+  onExecutiveHome,
+  requestedDate,
+  onDateChange,
+  active,
+  weatherPorts,
 }: {
   session: Session;
   project: Project;
   signin: SignInState;
+  onExecutiveHome: () => void;
+  active: boolean;
+  requestedDate?: string;
+  onDateChange: (date: string) => void;
   /** What was put aside before a sign-in redirect. */
   resume: ResumeKeeper;
+  recoveryWorkspaces: Map<string, WorkspaceDrafts>;
+  pmRegistry: PmOwnerRegistry;
+  weatherPorts?: WeatherPresentationPorts;
 }) {
   const { t, label, locale } = useI18n();
   const [toast, setToast] = useState<string | null>(null);
@@ -180,16 +233,23 @@ function Workspace({
   const [place] = useState(() =>
     resume.state?.projectId === project.id ? resume.state : null,
   );
-  const [date, setDate] = useState(
-    () => place?.date ?? siteToday(project.timezone),
+  const [date, setDateValue] = useState(
+    () => requestedDate ?? place?.date ?? siteToday(project.timezone),
   );
+  useEffect(() => {
+    if (requestedDate) setDateValue(requestedDate);
+  }, [requestedDate]);
+  const setDate = (next: string) => {
+    setDateValue(next);
+    onDateChange(next);
+  };
   const canWrite = project.access === 'write';
   // The site page (QR code, devices) is PM-only; a reader never gets it (OD20).
   const [view, setView] = useState<'field' | 'report' | 'site'>(() =>
     place?.view === 'site' && !canWrite ? 'report' : (place?.view ?? 'report'),
   );
-  // The place is restored; drafts of other projects cannot be and are dropped.
-  useEffect(() => resume.opened(project.id), [resume, project.id]);
+  // Each authorised project retains its own recovery entries across workspace mounts.
+  useEffect(() => resume.opened(), [resume, project.id]);
   const [fieldTab, setFieldTab] = useState<'today' | 'plan'>('today');
   const [task, setTask] = useState<null | 'fill' | 'check'>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -224,6 +284,120 @@ function Workspace({
     () => say(t('conflictReloaded')),
     resume,
   );
+  const weatherSessions = useRef(new Map<string, WeatherLocationSession>());
+  const weatherOwner = useRef(crypto.randomUUID());
+  const weatherAccess = useRef({
+    date,
+    canWrite,
+    active,
+    expired: signin.expired,
+  });
+  weatherAccess.current = { date, canWrite, active, expired: signin.expired };
+  const weatherEntry = h.store.entry(project.id, date);
+  let weatherSession = weatherSessions.current.get(date);
+  if (!weatherSession) {
+    const scope = {
+      ownerKey: weatherOwner.current,
+      projectId: project.id,
+      businessDate: date,
+      timezone: project.timezone,
+      locationVersionId: weatherPorts?.locationVersionId ?? null,
+    };
+    const accepts = (context: Readonly<WeatherContext>) =>
+      weatherAccess.current.date === scope.businessDate &&
+      weatherAccess.current.canWrite &&
+      weatherAccess.current.active &&
+      !weatherAccess.current.expired &&
+      context.ownerKey === scope.ownerKey &&
+      context.projectId === scope.projectId &&
+      context.businessDate === scope.businessDate &&
+      context.timezone === scope.timezone &&
+      context.locationVersionId === scope.locationVersionId;
+    weatherSession = new WeatherLocationSession(
+      scope,
+      {
+        loadWeather:
+          weatherPorts?.loadWeather ?? disabledWeatherPorts.loadWeather,
+        locate: weatherPorts?.locate ?? disabledWeatherPorts.locate,
+        acceptLocation: parseReportLocationCandidate,
+        confirmLocation: (context, candidate) =>
+          accepts(context) &&
+          h.store.editWeather(weatherEntry, weatherEntry.session.facts, {
+            kind: 'capture',
+            candidate,
+            clientConfirmedAt: new Date().toISOString(),
+          }),
+        referenceWeather: (context, snapshotId) =>
+          !!context.locationVersionId &&
+          accepts(context) &&
+          !(weatherEntry.session.facts.weatherReferences ?? []).some(
+            (ref) =>
+              ref.locationVersionId === context.locationVersionId &&
+              ref.snapshotId === snapshotId,
+          ) &&
+          h.store.editWeather(weatherEntry, {
+            ...weatherEntry.session.facts,
+            weatherReferences: [
+              ...(weatherEntry.session.facts.weatherReferences ?? []),
+              { locationVersionId: context.locationVersionId, snapshotId },
+            ],
+          }),
+      },
+      { writable: canWrite, locked: true },
+    );
+    weatherSessions.current.set(date, weatherSession);
+  }
+  useEffect(() => {
+    weatherSession.setAccess({
+      writable: canWrite && !signin.expired && active,
+      locked: h.busy || !h.day || h.day.state === 'submitted',
+    });
+    if (!weatherEntry.session.weatherNeedsSave)
+      weatherSession.acknowledgeSavedIntent();
+  }, [
+    weatherSession,
+    weatherEntry,
+    canWrite,
+    signin.expired,
+    active,
+    h.busy,
+    h.day?.state,
+    h.day?.version,
+  ]);
+  const personnelWindows = useMemo(
+    () => new Map<string, PersonnelMetricsSession>(),
+    [api, project.id],
+  );
+  let personnelSession = personnelWindows.get(date);
+  if (!personnelSession) {
+    personnelSession = new PersonnelMetricsSession(api, project.id, date);
+    personnelWindows.set(date, personnelSession);
+  }
+  useEffect(() => {
+    void personnelSession.refresh();
+  }, [
+    personnelSession,
+    h.day?.state,
+    h.day?.currentRevisionNumber,
+    signin.expired,
+    active,
+    canWrite,
+  ]);
+  const pendingPersonnelRevision = useRef<PersonnelRevisionLink | null>(null);
+  const latestDrafts = useRef(h);
+  latestDrafts.current = h;
+  useEffect(() => {
+    if (!canWrite) return;
+    const entry: WorkspaceDrafts = {
+      flush: () => latestDrafts.current.flush(),
+      unsaved: () => latestDrafts.current.unsaved(),
+    };
+    recoveryWorkspaces.set(project.id, entry);
+    return () => {
+      if (recoveryWorkspaces.get(project.id) === entry)
+        recoveryWorkspaces.delete(project.id);
+    };
+  }, [recoveryWorkspaces, project.id, canWrite]);
   const reloadDay = useCallback(() => void h.reload(), [h.reload]);
   const dayStamp = `${h.day?.state ?? ''}:${h.day?.currentRevisionNumber ?? ''}`;
   const issues = useIssues(api, project.id, date, reloadDay, dayStamp);
@@ -232,7 +406,6 @@ function Workspace({
   // The PM command owners (People page sessions and adoption flows) live as long as the
   // workspace, one set per project (AGENTS.md): leaving a tab, losing write access or
   // switching projects and back keeps an unresolved command, its key and its payload.
-  const [pmRegistry] = useState(() => new PmOwnerRegistry(api));
   const pm = pmRegistry.get(project.id);
   const siteSessions = pm.site;
   useSessions(siteSessions);
@@ -244,6 +417,7 @@ function Workspace({
   // is made once per project against the workspace's day store: every lock and read goes to
   // that project's own day entry, never to whatever day the page shows later.
   pm.day ??= pmDayBinding(h.store, project.id);
+  pm.adoptFor(date).workspaceRecovery = true;
   const pmField: PmField | null =
     canWrite && h.day
       ? {
@@ -261,11 +435,18 @@ function Workspace({
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
   // Another day, or starting a task, closes the version being viewed.
-  useEffect(() => dispatchView({ type: 'close' }), [date]);
+  useEffect(() => {
+    dispatchView({ type: 'close' });
+    const target = pendingPersonnelRevision.current;
+    if (target?.businessDate === date && target.projectId === project.id) {
+      pendingPersonnelRevision.current = null;
+      openVersion(target.n, target.reportRevisionId);
+    }
+  }, [date]);
   useEffect(() => {
     if (task !== null) dispatchView({ type: 'close' });
   }, [task]);
-  const openVersion = (n: number) => {
+  const openVersion = (n: number, reportRevisionId?: string) => {
     const ticket = ++viewTicket.current;
     setSheet(null);
     // Versions are shown on the report tab, never over the field page or an open task.
@@ -273,13 +454,34 @@ function Workspace({
     setView('report');
     dispatchView({ type: 'open', n, ticket });
     api.revision(project.id, date, n).then(
-      (rev) => dispatchView({ type: 'loaded', ticket, rev }),
+      (rev) =>
+        dispatchView(
+          reportRevisionId && rev.reportRevisionId !== reportRevisionId
+            ? { type: 'failed', ticket }
+            : { type: 'loaded', ticket, rev },
+        ),
       () => dispatchView({ type: 'failed', ticket }),
     );
   };
+
+  const openPersonnelRevision = (target: PersonnelRevisionLink) => {
+    if (target.projectId !== project.id) return;
+    if (target.businessDate === date)
+      openVersion(target.n, target.reportRevisionId);
+    else {
+      pendingPersonnelRevision.current = target;
+      setDate(target.businessDate);
+    }
+  };
+
   useEffect(() => {
-    document.body.classList.toggle('in-task', task !== null);
-  }, [task]);
+    // A command reply may be lost even when the fresh read confirms a submitted day.
+    // Leave its editing/check screen based on that read, without claiming our send succeeded.
+    if (h.day?.state === 'submitted' && task !== null) {
+      setTask(null);
+      setView('report');
+    }
+  }, [h.day?.state, task]);
 
   const day = h.day;
   const liveContent = day && h.facts ? { ...day, facts: h.facts } : null;
@@ -334,13 +536,11 @@ function Workspace({
             ? e.code
             : 'REQUEST_FAILED';
       if (code === 'VERSION_CONFLICT' || code === 'LOCKED') return false;
-      say(
-        code === 'NUMBER_INVALID'
-          ? t('numberInvalid')
-          : code === 'FORBIDDEN' || code === 'READ_ONLY'
-            ? t('forbidden')
-            : t('saveFail'),
+      const notice = dayCommandNotice(
+        code,
+        e instanceof ApiError && e.afterLostAttempt,
       );
+      say(t(notice));
       return false;
     } finally {
       setBusy(false);
@@ -365,10 +565,11 @@ function Workspace({
     snapshot: () => false,
     redirect: async () => {},
   });
+  const workspaceDrafts = workspaceRecovery(recoveryWorkspaces);
   steps.current = {
-    flush: h.flush,
+    flush: workspaceDrafts.flush,
     snapshot: () => {
-      const unsaved = h.unsaved();
+      const unsaved = workspaceDrafts.unsaved();
       const kept = resume.save(
         { projectId: project.id, date, view },
         unsaved,
@@ -446,6 +647,18 @@ function Workspace({
           </button>
         );
       })}
+      <button
+        type="button"
+        className="portfolio-nav"
+        onClick={() => {
+          void h.flush();
+          setTask(null);
+          onExecutiveHome();
+        }}
+      >
+        <Icon.home />
+        <span>{t('nav_home')}</span>
+      </button>
       <button
         type="button"
         onClick={() =>
@@ -542,6 +755,7 @@ function Workspace({
         ) : viewing.rev ? (
           <ReportBody
             c={viewing.rev.snapshot}
+            onOpenPersonnelRevision={openPersonnelRevision}
             version={meta ?? viewing.rev}
             timeZone={project.timezone}
             photos={viewing.rev.snapshot.photos ?? []}
@@ -565,6 +779,8 @@ function Workspace({
     body = (
       <ReportView
         day={day}
+        personnelSession={personnelSession}
+        onOpenPersonnelRevision={openPersonnelRevision}
         read={h.read}
         canWrite={canWrite}
         missing={cov.missing.length}
@@ -626,40 +842,93 @@ function Workspace({
     );
   }
 
+  // Keep command owners and day sessions alive, but mount only the active form tree.
+  // Hidden forms would duplicate input IDs and redirect labels/focus to another project.
+  if (!active) return null;
+
   if (task && day && h.facts && cov)
     return withPmField(
       <PhotoHost env={photoEnv}>
-        {nav}
-        <div className="content">
+        <WorkspaceShell
+          navigation={nav}
+          header={null}
+          view={view}
+          containsMain
+          entry
+        >
           {/* The Fill and Check views too: a locked day's recovery is never hidden. */}
-          <DayRecovery h={h} />
+          <DayRecovery
+            h={{ ...h, stale: h.stale && !pm.adoptFor(date).settling }}
+          />
           {task === 'fill' ? (
-            <FillPage
-              h={h}
-              day={day}
-              cov={cov}
-              focus={focus}
-              onFocused={() => setFocus(null)}
-              onBack={() => {
-                void h.flush();
-                setTask(null);
-              }}
-              onCheck={() => {
-                void h.flush();
-                setTask('check');
-              }}
-              onPlan={() => {
-                void h.flush();
-                setTask(null);
-                setView('field');
-                setFieldTab('plan');
-              }}
-              onSubmit={() => void submit()}
-              busy={busy}
-              tomorrowText={tomorrowText}
-              issues={issues}
-              canWrite={canWrite}
-            />
+            <>
+              <FrozenWeatherReferences
+                references={h.read?.weatherReferences ?? []}
+              />
+              <FillPage
+                weatherControlsPending={weatherEntry.session.weatherNeedsSave}
+                weatherControls={
+                  ((weatherPorts !== undefined && canWrite) ||
+                    weatherEntry.session.weatherNeedsSave) && (
+                    <WeatherLocation
+                      session={weatherSession}
+                      savedSnapshotIds={
+                        h.facts.weatherReferences?.map(
+                          (ref) => ref.snapshotId,
+                        ) ?? []
+                      }
+                      savedLocation={h.facts.reportLocationRef ?? null}
+                      pendingLocationKind={
+                        weatherEntry.session.pendingLocationKind
+                      }
+                      pendingSave={weatherEntry.session.weatherUnknown}
+                      onRetrySave={() => void h.flush()}
+                      onClearLocation={() => {
+                        h.store.editWeather(
+                          weatherEntry,
+                          weatherEntry.session.facts,
+                          { kind: 'clear' },
+                        );
+                      }}
+                      {...(h.facts.weatherReferences?.length
+                        ? {
+                            onDetachWeather: () => {
+                              h.store.editWeather(weatherEntry, {
+                                ...weatherEntry.session.facts,
+                                weatherReferences: [],
+                              });
+                            },
+                          }
+                        : {})}
+                    />
+                  )
+                }
+                h={h}
+                day={day}
+                cov={cov}
+                focus={focus}
+                onFocused={() => setFocus(null)}
+                onBack={() => {
+                  void h.flush();
+                  setTask(null);
+                }}
+                onCheck={() => {
+                  void h.flush();
+                  setTask('check');
+                }}
+                onPlan={() => {
+                  void h.flush();
+                  setTask(null);
+                  setView('field');
+                  setFieldTab('plan');
+                }}
+                onSubmit={() => void submit()}
+                busy={busy}
+                tomorrowText={tomorrowText}
+                issues={issues}
+                canWrite={canWrite}
+              />
+            </>
           ) : (
             <CheckPage
               h={h}
@@ -672,7 +941,7 @@ function Workspace({
               photos={photos}
             />
           )}
-        </div>
+        </WorkspaceShell>
         <Toast text={toast} />
       </PhotoHost>,
     );
@@ -688,83 +957,89 @@ function Workspace({
     ) : null;
   return withPmField(
     <PhotoHost env={photoEnv}>
-      {nav}
-      <div className="content">
-        <header className="bar">
-          <div className="bar-title">
-            <span className="bar-sub">
-              {project.name}
-              {!canWrite && ` · ${t('readOnly')}`}
-            </span>
-            <label className="bar-date">
-              <span>{fmtDay(date, locale)}</span>
-              <input
-                type="date"
-                value={date}
-                aria-label={t('date')}
-                onChange={(e) => e.target.value && setDate(e.target.value)}
-              />
-            </label>
-          </div>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('prevDay')}
-            onClick={() => setDate(shift(date, -1))}
-          >
-            <Icon.left />
-          </button>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('nextDay')}
-            onClick={() => setDate(shift(date, 1))}
-          >
-            <Icon.right />
-          </button>
-          <button
-            type="button"
-            className="icon"
-            aria-label={t('more')}
-            onClick={() => setSheet('menu')}
-          >
-            <Icon.more />
-          </button>
-        </header>
-        <main className={`page view-${view}`}>
-          <DayRecovery h={h} />
-          {!canWrite && (
-            // Write access went away while a PM attempt was owned: its Retry / Give up stay.
-            <PmOwnedBar
-              owners={pm}
-              itemLabel={(k) => {
-                const it = day?.items.find((i) => i.key === k);
-                return it ? label(it.label) : k;
-              }}
-            />
-          )}
-          {signin.expired && (
-            <div className="banner err" role="alert">
-              {signin.failure ? (
-                <FailureText failure={signin.failure} />
-              ) : (
-                t('signInExpired')
-              )}{' '}
-              <button
-                type="button"
-                disabled={signin.redirecting || renewBusy}
-                onClick={() => void renew()}
-              >
-                {t('signInAgain')}
-              </button>
+      <WorkspaceShell
+        containsMain={task !== null}
+        navigation={nav}
+        view={view}
+        header={
+          <>
+            <div className="bar-title">
+              <span className="bar-sub">
+                {project.name}
+                {!canWrite && ` · ${t('readOnly')}`}
+              </span>
+              <label className="bar-date">
+                <span>{fmtDay(date, locale)}</span>
+                <input
+                  type="date"
+                  value={date}
+                  aria-label={t('date')}
+                  onChange={(e) => e.target.value && setDate(e.target.value)}
+                />
+              </label>
             </div>
-          )}
-          {body}
-          {correctEntry}
-          {photosRow && !viewing ? photosRow : null}
-          {manageIssues && !viewing ? manageIssues : null}
-        </main>
-      </div>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('prevDay')}
+              onClick={() => setDate(shift(date, -1))}
+            >
+              <Icon.left />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('nextDay')}
+              onClick={() => setDate(shift(date, 1))}
+            >
+              <Icon.right />
+            </button>
+            <button
+              type="button"
+              className="icon"
+              aria-label={t('more')}
+              onClick={() => setSheet('menu')}
+            >
+              <Icon.more />
+            </button>
+          </>
+        }
+      >
+        <DayRecovery
+          h={{ ...h, stale: h.stale && !pm.adoptFor(date).settling }}
+        />
+        {!canWrite && (
+          // Write access went away while a PM attempt was owned: its Retry / Give up stay.
+          <PmOwnedBar
+            owners={pm}
+            includeAdoptions={false}
+            itemLabel={(k) => {
+              const it = day?.items.find((i) => i.key === k);
+              return it ? label(it.label) : k;
+            }}
+          />
+        )}
+        {signin.expired && (
+          <div className="banner err" role="alert">
+            {signin.failure ? (
+              <FailureText failure={signin.failure} />
+            ) : (
+              t('signInExpired')
+            )}{' '}
+            <button
+              type="button"
+              disabled={signin.redirecting || renewBusy}
+              onClick={() => void renew()}
+            >
+              {t('signInAgain')}
+            </button>
+          </div>
+        )}
+        {body}
+        {correctEntry}
+        {photosRow && !viewing ? photosRow : null}
+        {manageIssues && !viewing ? manageIssues : null}
+      </WorkspaceShell>
       {sheet === 'menu' && (
         <MenuSheet
           onClose={() => setSheet(null)}
@@ -835,25 +1110,163 @@ function FailureText({ failure }: { failure: SignInFailure }) {
   );
 }
 
-function Root() {
+function Root({ weatherPorts }: { weatherPorts?: WeatherPresentationPorts }) {
   const { t } = useI18n();
   const { session, needLogin, signIn, error, state } = useSession();
   const [resume] = useState(() => new ResumeKeeper(sessionStore(), Date.now()));
+  const recoveryWorkspaces = useMemo(
+    () => new Map<string, WorkspaceDrafts>(),
+    [session],
+  );
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
+  const [hash, setHash] = useState(() => window.location.hash);
+  const route = parseExecutiveRoute(hash);
+  const reportRoute = parseReportRoute(hash);
+  const [visited, setVisited] = useState<string[]>([]);
+  const reportDates = useRef(new Map<string, string>());
+  const [projectsOwner, setProjectsOwner] = useState<Session | null>(null);
   useEffect(() => {
-    if (
-      !session ||
-      ['/contracts', '/opportunities'].includes(window.location.pathname)
-    )
-      return;
-    reportApi(session.token)
-      .projects()
-      .then((r) => setProjects(r.projects))
-      .catch((e) =>
-        setFailed(e instanceof ApiError ? e.code : 'REQUEST_FAILED'),
-      );
+    const changed = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
+  const showExecutiveHome = route?.kind === 'home';
+  const openReport = (id?: string, date?: string) => {
+    const selected = projects?.find((p) => p.id === (id ?? selectedProjectId));
+    if (!selected) return;
+    setSelectedProjectId(selected.id);
+    const businessDate =
+      date ??
+      reportDates.current.get(selected.id) ??
+      (resume.state?.projectId === selected.id
+        ? resume.state.date
+        : siteToday(selected.timezone));
+    reportDates.current.set(selected.id, businessDate);
+    window.location.hash = reportHref({ projectId: selected.id, businessDate });
+  };
+  const executiveApi = useMemo(
+    () => (session ? reportApi(session.token) : null),
+    [session],
+  );
+  // Adopt owners survive project/tab/date switches; one workspace-level recovery surface.
+  const pmRegistry = useMemo(
+    () => (executiveApi ? new PmOwnerRegistry(executiveApi) : null),
+    [executiveApi],
+  );
+  const [, ownedChanged] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => pmRegistry?.subscribe(ownedChanged), [pmRegistry]);
+  const statusSessions = useMemo(
+    () => new Map<string, ProjectStatusSession>(),
+    [session],
+  );
+  const overviewSessions = useMemo(
+    () => new Map<string, ProjectOverviewSession>(),
+    [session],
+  );
+  const getOverviewSession = (projectId: string) => {
+    if (!executiveApi) throw new Error('Session missing');
+    let store = overviewSessions.get(projectId);
+    if (!store) {
+      store = new ProjectOverviewSession(executiveApi, projectId);
+      overviewSessions.set(projectId, store);
+    }
+    return store;
+  };
+  const getStatusSession = useCallback(
+    (projectId: string) => {
+      if (!executiveApi) throw new Error('Session missing');
+      let store = statusSessions.get(projectId);
+      if (!store) {
+        store = new ProjectStatusSession(executiveApi, projectId);
+        statusSessions.set(projectId, store);
+      }
+      return store;
+    },
+    [executiveApi, statusSessions],
+  );
+  useEffect(() => {
+    setSelectedProjectId(null);
+    setVisited([]);
+    reportDates.current.clear();
   }, [session]);
+  useEffect(() => {
+    let current = true;
+    setProjects(null);
+    setProjectsOwner(null);
+    setFailed(null);
+    if (
+      session &&
+      !['/contracts', '/opportunities'].includes(window.location.pathname)
+    )
+      void reportApi(session.token)
+        .projects()
+        .then((r) => {
+          if (current) {
+            resume.retainWritableProjects(
+              r.projects.filter((p) => p.access === 'write').map((p) => p.id),
+            );
+            setProjects(r.projects);
+            setProjectsOwner(session);
+          }
+        })
+        .catch((e) => {
+          if (current)
+            setFailed(e instanceof ApiError ? e.code : 'REQUEST_FAILED');
+        });
+    return () => {
+      current = false;
+    };
+  }, [session, resume]);
+  useEffect(() => {
+    if (selectedProjectId || !projects?.length) return;
+    setSelectedProjectId(
+      projects.find((p) => p.id === resume.state?.projectId)?.id ??
+        projects[0]!.id,
+    );
+  }, [projects, resume, selectedProjectId]);
+  useEffect(() => {
+    if (projectsOwner !== session || !projects?.length) return;
+    const id = reportRoute?.projectId ?? selectedProjectId;
+    if (!id || !projects.some((p) => p.id === id)) return;
+    setVisited((previous) =>
+      previous.includes(id) ? previous : [...previous, id],
+    );
+    if (reportRoute) {
+      setSelectedProjectId(id);
+      reportDates.current.set(id, reportRoute.businessDate);
+    }
+  }, [
+    projects,
+    projectsOwner,
+    session,
+    selectedProjectId,
+    reportRoute?.projectId,
+    reportRoute?.businessDate,
+  ]);
+  const ownedBars = pmRegistry
+    ?.all()
+    .map((owners) => (
+      <PmOwnedBar
+        key={owners.projectId}
+        owners={owners}
+        canWrite={
+          projects?.some(
+            (p) => p.id === owners.projectId && p.access === 'write',
+          ) ?? false
+        }
+        projectLabel={
+          projects?.find((p) => p.id === owners.projectId)?.name ??
+          owners.projectId
+        }
+        itemLabel={() => ''}
+        adoptionOnly
+      />
+    ));
+
   // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
   const renewing = Boolean(session?.renew && state.expired && !projects);
   if (needLogin || renewing)
@@ -899,6 +1312,7 @@ function Root() {
   if (error || failed)
     return (
       <main className="page">
+        {ownedBars}
         <div className="banner err">
           {failed === 'FORBIDDEN' ? t('noProject') : t('saveFail')}
         </div>
@@ -910,31 +1324,140 @@ function Root() {
         )}
       </main>
     );
-  if (!session || !projects)
-    return <main className="page muted">{t('loading')}</main>;
+  if (!session || !projects || projectsOwner !== session)
+    return (
+      <main className="page muted">
+        {ownedBars}
+        {t('loading')}
+      </main>
+    );
   const project =
-    projects.find((p) => p.id === resume.state?.projectId) ?? projects[0];
+    projects.find(
+      (p) => p.id === (reportRoute?.projectId ?? selectedProjectId),
+    ) ?? projects[0];
   if (!project)
     return (
       <main className="page">
+        {ownedBars}
         <p>{t('noProject')}</p>
         <a href="/contracts">{t('ctTitle')}</a>
+        <a href="/opportunities">{t('opTitle')}</a>
       </main>
     );
+  const routedProject =
+    route && 'projectId' in route
+      ? projects.find((p) => p.id === route.projectId)
+      : null;
+  const unavailableRoute = route && 'projectId' in route && !routedProject;
+  const invalidReportTarget =
+    (reportRoute && !projects.some((p) => p.id === reportRoute.projectId)) ||
+    (hash.includes('/report/') && !reportRoute);
   return (
-    <Workspace
-      session={session}
-      project={project}
-      signin={state}
-      resume={resume}
-    />
+    <div className="workspace-root">
+      {ownedBars}
+      {projects
+        .filter((p) => visited.includes(p.id) || p.id === project.id)
+        .map((p) => (
+          <div
+            key={p.id}
+            className={
+              route || invalidReportTarget || p.id !== project.id
+                ? 'workspace-hidden'
+                : undefined
+            }
+          >
+            <Workspace
+              active={!route && !invalidReportTarget && p.id === project.id}
+              session={session}
+              project={p}
+              signin={state}
+              resume={resume}
+              recoveryWorkspaces={recoveryWorkspaces}
+              pmRegistry={pmRegistry!}
+              {...(weatherPorts ? { weatherPorts } : {})}
+              {...(reportRoute?.projectId === p.id
+                ? { requestedDate: reportRoute.businessDate }
+                : {})}
+              onDateChange={(date) => {
+                reportDates.current.set(p.id, date);
+                if (p.id === project.id) openReport(p.id, date);
+              }}
+              onExecutiveHome={() => {
+                window.location.hash = executiveHref({ kind: 'home' });
+              }}
+            />
+          </div>
+        ))}
+      {invalidReportTarget && (
+        <main className="page">
+          <p role="alert">{t('noProject')}</p>
+          <a href={executiveHref({ kind: 'home' })}>{t('execHomeTitle')}</a>
+        </main>
+      )}
+      {showExecutiveHome && executiveApi && (
+        <ExecutiveHome
+          api={executiveApi}
+          projects={projects}
+          statusSession={getStatusSession}
+          onBack={() => openReport()}
+          onOpenProject={(id) => {
+            window.location.hash = executiveHref({
+              kind: 'overview',
+              projectId: id,
+            });
+          }}
+          onOpenAttention={() => {
+            window.location.hash = executiveHref({ kind: 'attention' });
+          }}
+          onOpenAttentionItem={(item) => {
+            window.location.hash = executiveHref(
+              item.kind === 'ESCALATED_ISSUE'
+                ? { kind: 'issue', projectId: item.projectId, issueId: item.id }
+                : {
+                    kind: 'overview',
+                    projectId: item.projectId,
+                    statusId: item.id,
+                  },
+            );
+          }}
+        />
+      )}
+      {unavailableRoute && (
+        <main className="page">
+          <p role="alert">{t('noProject')}</p>
+          <a href={executiveHref({ kind: 'home' })}>{t('execHomeTitle')}</a>
+        </main>
+      )}
+      {route?.kind === 'overview' && routedProject && executiveApi && (
+        <ProjectOverview
+          key={routedProject.id}
+          session={getOverviewSession(routedProject.id)}
+          {...(route.statusId ? { statusId: route.statusId } : {})}
+          onReport={() => openReport(routedProject.id)}
+        />
+      )}
+      {route?.kind === 'attention' && executiveApi && (
+        <AttentionInbox api={executiveApi} projects={projects} />
+      )}
+      {route?.kind === 'issue' && routedProject && executiveApi && (
+        <ProjectIssueEntry
+          key={`${routedProject.id}:${route.issueId}`}
+          api={executiveApi}
+          project={routedProject}
+          issueId={route.issueId}
+          onReport={() => openReport(routedProject.id)}
+        />
+      )}
+    </div>
   );
 }
 
-export function App() {
+export function App({
+  weatherPorts,
+}: { weatherPorts?: WeatherPresentationPorts } = {}) {
   return (
     <I18nProvider>
-      <Root />
+      <Root {...(weatherPorts ? { weatherPorts } : {})} />
     </I18nProvider>
   );
 }

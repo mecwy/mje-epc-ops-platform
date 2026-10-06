@@ -105,6 +105,19 @@ export class ReportController {
       reportReader.forContext(ctx).day(project, day),
     );
   }
+  @Get('people-window')
+  async peopleWindow(
+    @Req() request: Request,
+    @Query('projectId') projectId: unknown,
+    @Query('businessDate') businessDate: unknown,
+  ) {
+    const identity = await this.identity(request);
+    const project = id(projectId, 'projectId');
+    const day = date(businessDate, 'businessDate');
+    return this.store.read(identity, (ctx) =>
+      reportReader.forContext(ctx).peopleWindow(project, day),
+    );
+  }
   @Get('revision')
   async revision(
     @Req() request: Request,

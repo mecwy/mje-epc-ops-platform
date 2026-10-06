@@ -58,6 +58,27 @@ export const Icon = {
         <line x1="6" y1="6" x2="18" y2="18" />
       </>,
     ),
+  home: () =>
+    svg(
+      22,
+      1.9,
+      <>
+        <path d="m3 10 9-7 9 7" />
+        <path d="M5 9v11h14V9" />
+        <path d="M9 20v-6h6v6" />
+      </>,
+    ),
+  refresh: () =>
+    svg(
+      20,
+      2,
+      <>
+        <path d="M20 7v5h-5" />
+        <path d="M4.8 9A8 8 0 0 1 19 7l1 5" />
+        <path d="M4 17v-5h5" />
+        <path d="M19.2 15A8 8 0 0 1 5 17l-1-5" />
+      </>,
+    ),
   field: () =>
     svg(
       22,

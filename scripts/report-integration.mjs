@@ -1747,6 +1747,1227 @@ try {
     'RLS hides every report table from another org and refuses writes into it; the app role cannot update or delete revisions or plan versions; every write is audited',
   );
 
+  // Source-report extension: synthetic cells only, after the existing audit-count checks.
+  {
+    const date = '2027-02-10';
+    const sourceCell = (raw, state = 'value') => ({
+      raw,
+      state,
+      at: {
+        document: 'testDoc',
+        table: 0,
+        row: 1,
+        cell: 2,
+        gridSpan: 2,
+        verticalMerge: 'restart',
+      },
+    });
+    const sourceReport = {
+      schemaVersion: 1,
+      documents: {
+        testDoc: {
+          sha256: 'a'.repeat(64),
+          label: 'TEST source report',
+          format: 'docx',
+        },
+      },
+      peopleTotal: sourceCell(' 7 '),
+      workPercent: { support: sourceCell(' 12% ') },
+      materials: {
+        rail: {
+          cumulative: sourceCell('17'),
+          percent: sourceCell('unknown', 'unknown'),
+          unit: sourceCell('m'),
+          note: sourceCell('  ', 'blank'),
+        },
+      },
+    };
+    const request = cmd({ businessDate: date, facts: facts({ sourceReport }) });
+    const read = (bearer = pm) =>
+      expectStatus(
+        call(`/day?projectId=${projectA}&businessDate=${date}`, bearer),
+        200,
+      );
+    const revision = (n, bearer = pm) =>
+      expectStatus(
+        call(
+          `/revision?projectId=${projectA}&businessDate=${date}&n=${n}`,
+          bearer,
+        ),
+        200,
+      );
+    let saved = await expectStatus(call('/facts', pm, request), 200);
+    assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, request), 200),
+      saved,
+    );
+    await expectStatus(
+      call('/facts', pm, {
+        ...request,
+        facts: facts({ sourceReport, weather: 'different payload' }),
+      }),
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+    );
+    await expectStatus(
+      call(
+        '/facts',
+        exec,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      403,
+    );
+    await expectStatus(
+      call(
+        '/facts',
+        pmB,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      403,
+    );
+    assert.equal((await read(exec)).facts.sourceReport, undefined);
+    pass(
+      'source cells round-trip exactly; same-key replay, foreign tenant and reader writes remain protected',
+    );
+
+    const removedPeopleTotal = structuredClone(sourceReport);
+    delete removedPeopleTotal.peopleTotal;
+    const removedMaterialNote = structuredClone(sourceReport);
+    delete removedMaterialNote.materials.rail.note;
+    for (const badFacts of [
+      facts({ sourceReport: removedPeopleTotal }),
+      facts({ sourceReport: { ...sourceReport, workPercent: {} } }),
+      facts({ sourceReport: { ...sourceReport, materials: {} } }),
+      facts({ sourceReport: removedMaterialNote }),
+      facts({ sourceReport: null }),
+      facts({ sourceReport: { ...sourceReport, undocumented: 'TEST' } }),
+      facts({
+        sourceReport: {
+          ...sourceReport,
+          workPercent: { unregistered: sourceCell('1%') },
+        },
+      }),
+      facts({
+        sourceReport: {
+          ...sourceReport,
+          materials: { support: { unit: sourceCell('m') } },
+        },
+      }),
+      facts({ originalPeopleTotal: '7' }),
+    ]) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: saved.version,
+            facts: badFacts,
+          }),
+        ),
+        400,
+      );
+      assert.equal((await read()).version, saved.version);
+      assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    }
+    pass(
+      'invalid, null, unknown and wrong-kind source fields are refused atomically without changing the draft',
+    );
+
+    // An old client has no knowledge of sourceReport. Saving its facts must preserve it.
+    const oldClient = cmd({
+      businessDate: date,
+      expectedVersion: saved.version,
+      facts: facts({ weather: 'TEST old client edit' }),
+    });
+    saved = await expectStatus(call('/facts', pm, oldClient), 200);
+    assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    const auditSource = (
+      await owner.query(
+        `SELECT "after" FROM "AuditLog" WHERE "correlationId"=$1 AND action='REPORT_SAVE_FACTS'`,
+        [oldClient.clientMutationId],
+      )
+    ).rows[0];
+    assert.deepEqual(auditSource.after.sourceReport, sourceReport);
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version - 1,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      409,
+      'VERSION_CONFLICT',
+    );
+    pass(
+      'old-client omission preserves source cells in the locked draft and effective audit; stale versions cannot overwrite',
+    );
+
+    let submittedSource = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    const original = JSON.stringify(await revision(1));
+    assert.deepEqual(
+      (await revision(1, exec)).snapshot.facts.sourceReport,
+      sourceReport,
+    );
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submittedSource.version,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      409,
+      'LOCKED',
+    );
+    let correctingSource = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submittedSource.version,
+          reason: 'TEST source correction',
+        }),
+      ),
+      200,
+    );
+    const revised = { ...sourceReport, peopleTotal: sourceCell('8') };
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correctingSource.version,
+          facts: facts({ sourceReport: revised }),
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, sourceReport);
+    assert.deepEqual((await read()).facts.sourceReport, revised);
+    const cancelledSource = await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    assert.equal(JSON.stringify(await revision(1)), original);
+    correctingSource = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: cancelledSource.version,
+          reason: 'TEST append revised source',
+        }),
+      ),
+      200,
+    );
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correctingSource.version,
+          facts: facts({ sourceReport: revised }),
+        }),
+      ),
+      200,
+    );
+    submittedSource = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    assert.equal(submittedSource.revisionNumber, 2);
+    assert.deepEqual((await revision(2)).snapshot.facts.sourceReport, revised);
+    assert.equal(JSON.stringify(await revision(1)), original);
+    assert.deepEqual((await read(exec)).facts.sourceReport, revised);
+    pass(
+      'source corrections require a new revision; cancellation restores source; readers never see unpublished source changes',
+    );
+
+    const noWorkDate = '2027-02-11';
+    // Reported next-day targets are source declarations, never plan confirmations.
+    const v2 = {
+      ...revised,
+      schemaVersion: 2,
+      reportedNextPlan: {
+        targetBusinessDate: '2027-02-11',
+        quantities: {
+          support: sourceCell(' 23 '),
+          rail: sourceCell(' ', 'blank'),
+        },
+      },
+    };
+    const v1Snapshot = JSON.stringify(await revision(2));
+    const planConfirmations = (
+      await owner.query(
+        `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='REPORT_PLAN_CONFIRM'`,
+      )
+    ).rows[0].n;
+    const beforeV2 = await read();
+    const correctingV2 = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: beforeV2.version,
+          reason: 'TEST reported tomorrow targets',
+        }),
+      ),
+      200,
+    );
+    const requestV2 = cmd({
+      businessDate: date,
+      expectedVersion: correctingV2.version,
+      facts: { ...beforeV2.facts, sourceReport: v2 },
+    });
+    let savedV2 = await expectStatus(call('/facts', pm, requestV2), 200);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, requestV2), 200),
+      savedV2,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v2);
+    assert.deepEqual((await read(exec)).facts.sourceReport, revised);
+    for (const badSource of [
+      revised,
+      {
+        ...v2,
+        reportedNextPlan: { ...v2.reportedNextPlan, targetBusinessDate: date },
+      },
+      {
+        ...v2,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          targetBusinessDate: '2027-02-12',
+        },
+      },
+      {
+        ...v2,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          quantities: { unregistered: sourceCell('3') },
+        },
+      },
+      {
+        ...v2,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          quantities: { crane: sourceCell('3') },
+        },
+      },
+      { ...v2, reportedNextPlan: { ...v2.reportedNextPlan, approved: true } },
+    ]) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedV2.version,
+            facts: { ...beforeV2.facts, sourceReport: badSource },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      const unchanged = await read();
+      assert.equal(unchanged.version, savedV2.version);
+      assert.deepEqual(unchanged.facts.sourceReport, v2);
+    }
+    const legacyFacts = { ...beforeV2.facts };
+    delete legacyFacts.sourceReport;
+    savedV2 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedV2.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v2);
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correctingV2.version,
+          facts: { ...legacyFacts, sourceReport: v2 },
+        }),
+      ),
+      409,
+      'VERSION_CONFLICT',
+    );
+    pass(
+      'V2 source plan dates/keys validated, explicit V1 downgrade atomic refusal, legacy omission preserves V2 and replay is idempotent',
+    );
+
+    const submitV2 = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: savedV2.version }),
+      ),
+      200,
+    );
+    assert.equal(submitV2.revisionNumber, 3);
+    const snapshotV2 = await revision(3);
+    assert.deepEqual(snapshotV2.snapshot.facts.sourceReport, v2);
+    assert.equal(JSON.stringify(await revision(2)), v1Snapshot);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v2);
+    assert.deepEqual((await read()).nextPlan, beforeV2.nextPlan);
+    assert.equal(
+      (
+        await owner.query(
+          `SELECT count(*)::int AS n FROM "AuditLog" WHERE action='REPORT_PLAN_CONFIRM'`,
+        )
+      ).rows[0].n,
+      planConfirmations,
+    );
+    const nextCorrection = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submitV2.version,
+          reason: 'TEST revised reported target',
+        }),
+      ),
+      200,
+    );
+    const otherV2 = {
+      ...v2,
+      reportedNextPlan: {
+        ...v2.reportedNextPlan,
+        quantities: { support: sourceCell('29') },
+      },
+    };
+    const updatedV2 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: nextCorrection.version,
+          facts: { ...legacyFacts, sourceReport: otherV2 },
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v2);
+    await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: updatedV2.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v2);
+    assert.deepEqual(await revision(3), snapshotV2);
+    pass(
+      'V2 source plan remains unapproved, frozen old revisions remain exact, hidden correction and cancellation preserve selected source targets',
+    );
+
+    // TEST V3 milestones use existing project milestone keys and retain V2 targets.
+    await expectStatus(
+      call('/items', pm, {
+        projectId: projectA,
+        clientMutationId: randomUUID(),
+        items: [
+          {
+            kind: 'milestone',
+            key: 'testMilestone',
+            label: 'TEST milestone',
+            active: false,
+          },
+          {
+            kind: 'milestone',
+            key: 'testContinuation',
+            label: 'TEST continuation',
+          },
+        ],
+      }),
+      200,
+    );
+    const priorV3 = await read();
+    const v3 = {
+      ...v2,
+      schemaVersion: 3,
+      milestones: {
+        testMilestone: {
+          plannedFinish: sourceCell('TEST original date'),
+          actualFinish: sourceCell(' ', 'blank'),
+          reportedDelayDays: sourceCell('', 'blank'),
+          note: sourceCell('TEST merged note'),
+        },
+        testContinuation: {
+          note: {
+            ...sourceCell(' ', 'blank'),
+            at: { ...sourceCell('').at, row: 2, verticalMerge: 'continue' },
+          },
+        },
+      },
+    };
+    let milestoneDraft = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: priorV3.version,
+          reason: 'TEST original milestone cells',
+        }),
+      ),
+      200,
+    );
+    const milestoneRequest = cmd({
+      businessDate: date,
+      expectedVersion: milestoneDraft.version,
+      facts: { ...priorV3.facts, sourceReport: v3 },
+    });
+    const savedMilestones = await expectStatus(
+      call('/facts', pm, milestoneRequest),
+      200,
+    );
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, milestoneRequest), 200),
+      savedMilestones,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v3);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v2);
+    await expectStatus(
+      call('/facts', pmB, {
+        ...milestoneRequest,
+        clientMutationId: randomUUID(),
+      }),
+      403,
+      'FORBIDDEN',
+    );
+    await expectStatus(
+      call('/facts', exec, {
+        ...milestoneRequest,
+        clientMutationId: randomUUID(),
+      }),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      call('/facts', pm, {
+        ...milestoneRequest,
+        clientMutationId: randomUUID(),
+      }),
+      409,
+      'VERSION_CONFLICT',
+    );
+    const invalidSources = [
+      sourceReport,
+      v2,
+      { ...v3, reportedNextPlan: undefined },
+      {
+        ...v3,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          targetBusinessDate: '2027-02-12',
+        },
+      },
+      {
+        ...v3,
+        reportedNextPlan: {
+          ...v2.reportedNextPlan,
+          quantities: { testMilestone: sourceCell('2') },
+        },
+      },
+      { ...v3, milestones: { support: v3.milestones.testMilestone } },
+      { ...v3, milestones: { unregistered: v3.milestones.testMilestone } },
+      { ...v3, milestones: { testMilestone: { note: null } } },
+      { ...v3, milestones: { testMilestone: { verified: true } } },
+    ];
+    const auditsBeforeRefusal = (
+      await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')
+    ).rows[0].n;
+    for (const invalid of invalidSources) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedMilestones.version,
+            facts: { ...priorV3.facts, sourceReport: invalid },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      const unchanged = await read();
+      assert.equal(unchanged.version, savedMilestones.version);
+      assert.deepEqual(unchanged.facts.sourceReport, v3);
+    }
+    assert.equal(
+      (await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')).rows[0]
+        .n,
+      auditsBeforeRefusal,
+    );
+    milestoneDraft = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedMilestones.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v3);
+    pass(
+      'V3 source preserves raw milestones and V2 targets; downgrade/lost plan/wrong kind invalid writes refuse atomically; omission/retry/CAS/identity remain protected',
+    );
+    const submittedMilestones = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: milestoneDraft.version }),
+      ),
+      200,
+    );
+    assert.equal(submittedMilestones.revisionNumber, 4);
+    assert.deepEqual((await revision(4)).snapshot.facts.sourceReport, v3);
+    assert.deepEqual(await revision(3), snapshotV2);
+    assert.equal(JSON.stringify(await revision(2)), v1Snapshot);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v3);
+    assert.deepEqual((await read()).nextPlan, priorV3.nextPlan);
+    const startV3Cancel = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submittedMilestones.version,
+          reason: 'TEST V3 cancel',
+        }),
+      ),
+      200,
+    );
+    const changedV3 = {
+      ...v3,
+      milestones: {
+        ...v3.milestones,
+        testMilestone: {
+          ...v3.milestones.testMilestone,
+          note: sourceCell('TEST edited'),
+        },
+      },
+    };
+    const saveV3Cancel = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: startV3Cancel.version,
+          facts: { ...priorV3.facts, sourceReport: changedV3 },
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v3);
+    await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saveV3Cancel.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v3);
+    assert.deepEqual((await revision(4)).snapshot.facts.sourceReport, v3);
+    pass(
+      'V3 immutable correction, original merge continuation blank, reader snapshot, cancellation and previous V1/V2 history preserved',
+    );
+
+    const frozenV3 = await revision(4);
+    const beforeV4 = await read();
+    const v4 = {
+      ...v3,
+      schemaVersion: 4,
+      machinery: {
+        crane: {
+          location: {
+            ...sourceCell(' ', 'blank'),
+            at: { ...sourceCell(' ').at, verticalMerge: 'continue' },
+          },
+          note: sourceCell('TEST equipment note'),
+        },
+      },
+      personnelRemarks: { installer: sourceCell(' ', 'blank') },
+      reportedRecorder: {
+        line: sourceCell('TEST recorder:  '),
+        nameState: 'blank',
+      },
+    };
+    const correctionV4 = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: beforeV4.version,
+          reason: 'TEST resource source upgrade',
+        }),
+      ),
+      200,
+    );
+    const saveV4Command = cmd({
+      businessDate: date,
+      expectedVersion: correctionV4.version,
+      facts: { ...beforeV4.facts, sourceReport: v4 },
+    });
+    const savedV4 = await expectStatus(call('/facts', pm, saveV4Command), 200);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, saveV4Command), 200),
+      savedV4,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v3);
+    const auditV4 = (
+      await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')
+    ).rows[0].n;
+    const invalidV4 = [
+      v3,
+      { ...v4, machinery: { support: v4.machinery.crane } },
+      { ...v4, machinery: { unknownProjectMachine: v4.machinery.crane } },
+      { ...v4, personnelRemarks: { notARole: sourceCell('TEST') } },
+    ];
+    for (const name of [
+      'reportedNextPlan',
+      'milestones',
+      'machinery',
+      'personnelRemarks',
+      'reportedRecorder',
+    ]) {
+      const dropped = { ...v4 };
+      delete dropped[name];
+      invalidV4.push(dropped);
+    }
+    for (const invalid of invalidV4) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedV4.version,
+            facts: { ...beforeV4.facts, sourceReport: invalid },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      assert.equal((await read()).version, savedV4.version);
+      assert.deepEqual((await read()).facts.sourceReport, v4);
+    }
+    assert.equal(
+      (await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')).rows[0]
+        .n,
+      auditV4,
+    );
+    const omittedV4 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedV4.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v4);
+    const submitV4 = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: omittedV4.version }),
+      ),
+      200,
+    );
+    assert.equal(submitV4.revisionNumber, 5);
+    assert.deepEqual((await revision(5)).snapshot.facts.sourceReport, v4);
+    assert.deepEqual(await revision(4), frozenV3);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v4);
+    assert.deepEqual((await read()).nextPlan, beforeV4.nextPlan);
+    pass(
+      'V4 exact source fields, same-key retry, wrong-role/kind/project rejection, atomic extension preservation and selected immutable history',
+    );
+    const cancelV4Start = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submitV4.version,
+          reason: 'TEST V4 cancelled edit',
+        }),
+      ),
+      200,
+    );
+    const cancelV4Save = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: cancelV4Start.version,
+          facts: {
+            ...beforeV4.facts,
+            sourceReport: {
+              ...v4,
+              reportedRecorder: {
+                line: sourceCell('TEST changed recorder'),
+                nameState: 'reported',
+              },
+            },
+          },
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v4);
+    await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: cancelV4Save.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v4);
+    assert.deepEqual((await revision(5)).snapshot.facts.sourceReport, v4);
+    pass(
+      'V4 cancelled correction preserves recorder declaration, actor identity boundary and prior snapshot',
+    );
+
+    const frozenV4 = await revision(5);
+    const priorV5 = await read();
+    const v5 = {
+      ...v4,
+      schemaVersion: 5,
+      reportedDuration: {
+        contract: sourceCell(' 120 days '),
+        elapsed: sourceCell(' ', 'blank'),
+      },
+      workAreas: {
+        support: sourceCell('TEST area'),
+        rail: {
+          ...sourceCell(' ', 'blank'),
+          at: { ...sourceCell(' ').at, verticalMerge: 'continue' },
+        },
+      },
+    };
+    const startV5 = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: priorV5.version,
+          reason: 'TEST original noncommercial source cells',
+        }),
+      ),
+      200,
+    );
+    const v5Command = cmd({
+      businessDate: date,
+      expectedVersion: startV5.version,
+      facts: { ...priorV5.facts, sourceReport: v5 },
+    });
+    const savedV5 = await expectStatus(call('/facts', pm, v5Command), 200);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, v5Command), 200),
+      savedV5,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, v4);
+    const invalidV5 = [
+      v4,
+      { ...v5, workAreas: { unknown: sourceCell('TEST') } },
+      { ...v5, workAreas: { crane: sourceCell('TEST') } },
+      { ...v5, workAreas: { support: v5.workAreas.support } },
+      { ...v5, reportedDuration: { contract: v5.reportedDuration.contract } },
+      { ...v5, commercial: { amount: 'TEST' } },
+    ];
+    for (const name of ['workAreas', 'reportedDuration']) {
+      const dropped = { ...v5 };
+      delete dropped[name];
+      invalidV5.push(dropped);
+    }
+    const beforeV5Audit = (
+      await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')
+    ).rows[0].n;
+    for (const sourceReport of invalidV5) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: savedV5.version,
+            facts: { ...priorV5.facts, sourceReport },
+          }),
+        ),
+        400,
+        'INVALID_INPUT',
+      );
+      assert.equal((await read()).version, savedV5.version);
+      assert.deepEqual((await read()).facts.sourceReport, v5);
+    }
+    assert.equal(
+      (await owner.query('SELECT count(*)::int AS n FROM "AuditLog"')).rows[0]
+        .n,
+      beforeV5Audit,
+    );
+    await expectStatus(
+      call('/facts', pmB, { ...v5Command, clientMutationId: randomUUID() }),
+      403,
+      'FORBIDDEN',
+    );
+    await expectStatus(
+      call('/facts', exec, { ...v5Command, clientMutationId: randomUUID() }),
+      403,
+      'READ_ONLY',
+    );
+    await expectStatus(
+      call('/facts', pm, { ...v5Command, clientMutationId: randomUUID() }),
+      409,
+      'VERSION_CONFLICT',
+    );
+    const omittedV5 = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: savedV5.version,
+          facts: legacyFacts,
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, v5);
+    const submittedV5 = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: omittedV5.version }),
+      ),
+      200,
+    );
+    assert.equal(submittedV5.revisionNumber, 6);
+    assert.deepEqual((await revision(6)).snapshot.facts.sourceReport, v5);
+    assert.deepEqual((await read(exec)).facts.sourceReport, v5);
+    assert.deepEqual(await revision(5), frozenV4);
+    assert.deepEqual((await read()).nextPlan, priorV5.nextPlan);
+    pass(
+      'V5 noncommercial source round-trip, group/entry drops, wrong project/kind/role, CAS/replay and immutable prior revision',
+    );
+
+    const onlySource = {
+      weather: '',
+      temperature: '',
+      qty: {},
+      cumulative: {},
+      people: {},
+      presence: {},
+      machinery: {},
+      materials: {},
+      milestones: {},
+      updated: {},
+      narrative: { construction: '', quality: '', safety: '' },
+      noWork: null,
+      sourceReport: {
+        documents: sourceReport.documents,
+        schemaVersion: 3,
+        workPercent: {},
+        materials: {},
+        milestones: {
+          testMilestone: { reportedDelayDays: sourceCell('  ', 'blank') },
+        },
+      },
+    };
+    const sourceOnlySave = await expectStatus(
+      call('/facts', pm, cmd({ businessDate: noWorkDate, facts: onlySource })),
+      200,
+    );
+    assert.equal(sourceOnlySave.state, 'draft');
+    await expectStatus(
+      call(
+        '/no-work',
+        pm,
+        cmd({
+          businessDate: noWorkDate,
+          expectedVersion: sourceOnlySave.version,
+          reason: 'rest',
+          note: 'TEST',
+        }),
+      ),
+      200,
+    );
+    const noWorkSnapshot = await expectStatus(
+      call(
+        `/revision?projectId=${projectA}&businessDate=${noWorkDate}&n=1`,
+        pm,
+      ),
+      200,
+    );
+    assert.deepEqual(
+      noWorkSnapshot.snapshot.facts.sourceReport,
+      onlySource.sourceReport,
+    );
+    pass(
+      'explicit blank source is a recorded fact and survives no-work submission',
+    );
+  }
+
+  // ---------- C06c1: declared category-day sums, current vs frozen ----------
+  {
+    const project = randomUUID();
+    await owner.query(
+      'INSERT INTO "Project"(id,"orgId","updatedAt","updatedBy",code,name,timezone,status) VALUES($1,$2,now(),$3,\'TEST-PEOPLE\',\'TEST Personnel Window\',\'Europe/Belgrade\',\'ACTIVE\')',
+      [project, orgA, seedActor],
+    );
+    await membership(orgA, accountPm, 'PROJECT_MANAGER', project);
+    const window = (bearer = pm, projectId = project, date = '2026-10-07') =>
+      call(
+        `/people-window?projectId=${projectId}&businessDate=${date}`,
+        bearer,
+      );
+    const before = await expectStatus(window(), 200);
+    assert.equal(before.reportedDays, 0);
+    assert.equal(before.categoryKnownSubtotals.installer.knownSubtotal, null);
+    for (const denied of [pmB, twin, expired, execA])
+      await expectStatus(window(denied), 403, 'FORBIDDEN');
+    await expectStatus(window(undefined, project, '2026-02-30'), 400);
+    assert.equal(
+      (
+        await call(
+          `/people-window?projectId=${project}&businessDate=2026-10-07`,
+        )
+      ).status,
+      401,
+    );
+    pass(
+      'personnel window authorizes an empty project, rejects cross-org/project/expired membership and invalid dates',
+    );
+
+    const dates = Array.from({ length: 7 }, (_, n) => `2026-10-0${n + 1}`);
+    const values = ['1', '0', 'unknown', '', 'na', undefined, '2'];
+    const saves = new Map();
+    const submitted = new Map();
+    const snapshots = new Map();
+    for (let index = 0; index < dates.length; index++) {
+      const businessDate = dates[index];
+      const people =
+        values[index] === undefined ? {} : { installer: values[index] };
+      const saved = await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            projectId: project,
+            businessDate,
+            facts: facts({ people }),
+          }),
+        ),
+        200,
+      );
+      saves.set(businessDate, saved);
+      if (index === 0)
+        assert.equal((await expectStatus(window(), 200)).reportedDays, 0);
+      const result = await expectStatus(
+        call(
+          '/submit',
+          pm,
+          cmd({
+            projectId: project,
+            businessDate,
+            expectedVersion: saved.version,
+          }),
+        ),
+        200,
+      );
+      submitted.set(businessDate, result);
+      const revision = await expectStatus(
+        call(
+          `/revision?projectId=${project}&businessDate=${businessDate}&n=1`,
+          pm,
+        ),
+        200,
+      );
+      snapshots.set(businessDate, revision.snapshot);
+      assert.equal(revision.snapshot.personnelSummary.windowTo, businessDate);
+      const contribution =
+        revision.snapshot.personnelSummary.dayContributions.find(
+          (x) => x.businessDate === businessDate,
+        );
+      assert.equal(contribution.reportRevisionId, revision.reportRevisionId);
+      assert.equal(contribution.n, 1);
+    }
+    const current = await expectStatus(window(), 200);
+    assert.equal(current.reportedDays, 7);
+    assert.equal(current.categoryKnownSubtotals.installer.knownSubtotal, '3');
+    const counts = current.categoryKnownSubtotals.installer;
+    assert.deepEqual(
+      [
+        counts.valueDays,
+        counts.unknownDays,
+        counts.blankDays,
+        counts.notApplicableDays,
+        counts.missingFieldDays,
+      ],
+      [3, 1, 1, 1, 1],
+    );
+    assert.equal(current.categoryKnownSubtotals.manager.knownSubtotal, null);
+    const reader = await expectStatus(window(exec), 200);
+    assert.deepEqual(reader.dayContributions, current.dayContributions);
+    assert.ok(
+      !('sourceReport' in current) &&
+        !('presence' in current) &&
+        !('personId' in current),
+    );
+    pass(
+      'seven calendar slots preserve zero/blank/unknown/NA/absent and select only submitted declared categories without a grand total',
+    );
+
+    const first = dates[0];
+    const last = dates.at(-1);
+    const correction = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          projectId: project,
+          businessDate: first,
+          expectedVersion: submitted.get(first).version,
+          reason: 'TEST category correction',
+        }),
+      ),
+      200,
+    );
+    const saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          projectId: project,
+          businessDate: first,
+          expectedVersion: correction.version,
+          facts: facts({ people: { installer: '9' } }),
+        }),
+      ),
+      200,
+    );
+    assert.equal(
+      (await expectStatus(window(), 200)).categoryKnownSubtotals.installer
+        .knownSubtotal,
+      '3',
+    );
+    const mutation = cmd({
+      projectId: project,
+      businessDate: first,
+      expectedVersion: saved.version,
+    });
+    await expectStatus(call('/submit', pm, mutation), 200);
+    await expectStatus(call('/submit', pm, mutation), 200);
+    const corrected = await expectStatus(window(), 200);
+    assert.equal(
+      corrected.categoryKnownSubtotals.installer.knownSubtotal,
+      '11',
+    );
+    assert.equal(corrected.dayContributions[0].n, 2);
+    const historical = await expectStatus(
+      call(`/revision?projectId=${project}&businessDate=${last}&n=1`, exec),
+      200,
+    );
+    assert.deepEqual(
+      historical.snapshot.personnelSummary,
+      snapshots.get(last).personnelSummary,
+    );
+    assert.equal(
+      historical.snapshot.personnelSummary.categoryKnownSubtotals.installer
+        .knownSubtotal,
+      '3',
+    );
+    const old = await expectStatus(
+      call(`/revision?projectId=${project}&businessDate=${first}&n=1`, pm),
+      200,
+    );
+    assert.deepEqual(old.snapshot, snapshots.get(first));
+    const newRevision = await expectStatus(
+      call(`/revision?projectId=${project}&businessDate=${first}&n=2`, pm),
+      200,
+    );
+    assert.equal(
+      newRevision.snapshot.personnelSummary.categoryKnownSubtotals.installer
+        .knownSubtotal,
+      '9',
+    );
+    assert.equal(newRevision.snapshot.facts.qty.support, '120');
+    assert.ok(
+      'foreman' in newRevision.snapshot && 'field' in newRevision.snapshot,
+    );
+    pass(
+      'unsubmitted correction keeps the old contribution; one resubmitted revision replaces it once and historical manifests/other snapshot extensions stay frozen',
+    );
+
+    await owner.query(
+      'UPDATE "Membership" SET "activeUntil"=now()-interval \'1 second\' WHERE "orgId"=$1 AND "accountId"=$2 AND "projectId"=$3',
+      [orgA, accountPm, project],
+    );
+    await expectStatus(window(), 403, 'FORBIDDEN');
+    pass('personnel read revocation is rechecked after successful reads');
+  }
+
   console.log(
     `Report HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Photos, issues, field devices and the web UI are later slices.`,
   );

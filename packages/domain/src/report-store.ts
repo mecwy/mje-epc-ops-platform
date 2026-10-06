@@ -1,4 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import {
+  resolveWeatherFacts,
+  writeReportLocation,
+  frozenWeatherReferences,
+} from './weather-store.js';
+import { managerReviewSnapshotCut } from './manager-review-reader.js';
+import { buildPersonnelWindow } from './personnel-metrics.js';
+import { InvalidReportInput } from '@mje/contracts';
 import type { Pool, PoolClient } from 'pg';
 import type {
   CancelCorrectionCommand,
@@ -7,6 +15,7 @@ import type {
   ForemanAdoptCommand,
   ForemanAdoptResultDto,
   NoWorkCommand,
+  PersonnelRevisionInput,
   PlanRowDto,
   ReportItemDto,
   FrozenMilestoneDto,
@@ -15,6 +24,7 @@ import type {
   SavePlanDraftCommand,
   StartCorrectionCommand,
   SubmitReportCommand,
+  WeatherFactsExtension,
 } from '@mje/contracts';
 import {
   blankFacts,
@@ -36,6 +46,20 @@ import {
   type PlanState,
   type PlanVersion,
 } from './report-rules.js';
+
+/** Optional safe extensions only: no command coordinates or unrelated facts enter helper DTOs. */
+function weatherFactsOf(
+  facts: WeatherFactsExtension | null,
+): WeatherFactsExtension {
+  return {
+    ...(facts && Object.hasOwn(facts, 'weatherReferences')
+      ? { weatherReferences: facts.weatherReferences }
+      : {}),
+    ...(facts && Object.hasOwn(facts, 'reportLocationRef')
+      ? { reportLocationRef: facts.reportLocationRef }
+      : {}),
+  };
+}
 
 const planLock = (orgId: string, projectId: string, target: string) =>
   `${orgId}:plan:${projectId}:${target}`;
@@ -99,6 +123,7 @@ export interface DayRow {
   updatedAt: Date;
 }
 export interface RevisionRow {
+  id: string;
   revisionNumber: number;
   reason: string;
   submittedAt: Date;
@@ -128,7 +153,13 @@ export const publicItem = (r: ItemRow): ReportItemDto => ({
 export type DayState = 'empty' | 'draft' | 'submitted' | 'correcting';
 
 export class ReportStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly options: {
+      weatherReferenceEnabled?: boolean;
+      reportLocationEnabled?: boolean;
+    } = {},
+  ) {}
 
   private transaction<T>(
     identity: Identity,
@@ -234,6 +265,48 @@ export class ReportStore {
   async saveFacts(identity: Identity, command: SaveFactsCommand) {
     return this.transaction(identity, async (client, actor) => {
       const project = await this.writer(client, actor, command.projectId);
+      // Authorization precedes gates and replay. Unset capture opt-in preserves the
+      // legacy weather flag; explicit false disables capture even when weather is on.
+      const locationEnabled =
+        this.options.reportLocationEnabled ??
+        this.options.weatherReferenceEnabled === true;
+      if (
+        !locationEnabled &&
+        command.reportLocationOperation?.kind === 'capture'
+      )
+        throw new ReportError('FEATURE_DISABLED');
+      // Weather admission stays separate. Detachments and exact persisted metadata
+      // remain usable with weather disabled, even for a successful old key.
+      if (this.options.weatherReferenceEnabled !== true) {
+        const references = command.facts.weatherReferences ?? [];
+        if (references.some((ref) => !ref.referenceId))
+          throw new ReportError('FEATURE_DISABLED');
+        if (references.length) {
+          // This is a read only admission check, not a new lock ahead of idempotency:
+          // save's existing lock order and helper validation remain unchanged.
+          const existing = await dayRow(
+            client,
+            actor.orgId,
+            project.id,
+            command.businessDate,
+          );
+          const previous = existing
+            ? await draftFacts(client, actor.orgId, existing.id)
+            : null;
+          if (
+            references.some(
+              (ref) =>
+                !previous?.weatherReferences?.some(
+                  (old) =>
+                    old.referenceId === ref.referenceId &&
+                    old.snapshotId === ref.snapshotId &&
+                    old.locationVersionId === ref.locationVersionId,
+                ),
+            )
+          )
+            throw new ReportError('FEATURE_DISABLED');
+        }
+      }
       return this.idempotent(
         client,
         actor,
@@ -251,7 +324,160 @@ export class ReportStore {
           if (day.state === 'SUBMITTED' && day.correctionReason === null)
             throw new ReportError('LOCKED');
           const before = await draftFacts(client, actor.orgId, day.id);
-          await this.saveDraft(client, actor, day.id, command.facts);
+          // Omission by an older client cannot erase source cells already on the locked draft.
+          let facts: DayFacts = {
+            ...command.facts,
+            ...(!Object.hasOwn(command.facts, 'sourceReport') &&
+            before?.sourceReport
+              ? { sourceReport: before.sourceReport }
+              : {}),
+          };
+          if (command.facts.sourceReport) {
+            const items = await itemRows(client, actor.orgId, project.id);
+            const source = command.facts.sourceReport;
+            if (
+              before?.sourceReport &&
+              source.schemaVersion < before.sourceReport.schemaVersion
+            )
+              throw new InvalidReportInput('facts.sourceReport.schemaVersion');
+            // Corrections may change a cell's value with audit, but omission is not
+            // an explicit correction and must not silently remove recorded source cells.
+            const previousSource = before?.sourceReport;
+            if (previousSource?.peopleTotal && !source.peopleTotal)
+              throw new InvalidReportInput('facts.sourceReport.peopleTotal');
+            for (const key of Object.keys(previousSource?.workPercent ?? {}))
+              if (!Object.hasOwn(source.workPercent, key))
+                throw new InvalidReportInput('facts.sourceReport.workPercent');
+            for (const [key, previous] of Object.entries(
+              previousSource?.materials ?? {},
+            )) {
+              const next = source.materials[key];
+              if (
+                !next ||
+                Object.keys(previous).some(
+                  (field) => !Object.hasOwn(next, field),
+                )
+              )
+                throw new InvalidReportInput('facts.sourceReport.materials');
+            }
+            if (
+              previousSource?.schemaVersion === 5 &&
+              source.schemaVersion === 5
+            ) {
+              for (const group of ['reportedDuration', 'workAreas'] as const) {
+                const prior = previousSource[group];
+                const next = source[group];
+                if (
+                  prior &&
+                  (!next ||
+                    Object.keys(prior).some((key) => !Object.hasOwn(next, key)))
+                )
+                  throw new InvalidReportInput(`facts.sourceReport.${group}`);
+              }
+            }
+            // Explicit source replacement cannot silently lose an already stored extension.
+            for (const extension of [
+              'reportedNextPlan',
+              'milestones',
+              'machinery',
+              'personnelRemarks',
+              'reportedRecorder',
+              'reportedDuration',
+              'workAreas',
+            ] as const) {
+              if (
+                before?.sourceReport &&
+                Object.hasOwn(before.sourceReport, extension) &&
+                !Object.hasOwn(source, extension)
+              )
+                throw new InvalidReportInput(`facts.sourceReport.${extension}`);
+            }
+            if (
+              source.schemaVersion !== 1 &&
+              source.reportedNextPlan &&
+              source.reportedNextPlan.targetBusinessDate !==
+                shiftDate(command.businessDate, 1)
+            )
+              throw new InvalidReportInput(
+                'facts.sourceReport.reportedNextPlan.targetBusinessDate',
+              );
+            for (const [kind, keys] of [
+              [
+                'work',
+                [
+                  ...Object.keys(source.workPercent),
+                  ...(source.schemaVersion === 5
+                    ? Object.keys(source.workAreas ?? {})
+                    : []),
+                  ...(source.schemaVersion !== 1 && source.reportedNextPlan
+                    ? Object.keys(source.reportedNextPlan.quantities)
+                    : []),
+                ],
+              ],
+              ['material', Object.keys(source.materials)],
+              [
+                'machinery',
+                source.schemaVersion === 4 || source.schemaVersion === 5
+                  ? Object.keys(source.machinery ?? {})
+                  : [],
+              ],
+              [
+                'milestone',
+                'milestones' in source && source.milestones
+                  ? Object.keys(source.milestones)
+                  : [],
+              ],
+            ] as const) {
+              if (
+                keys.some(
+                  (key) =>
+                    !items.some(
+                      (item) => item.kind === kind && item.key === key,
+                    ),
+                )
+              )
+                throw new InvalidReportInput('facts.sourceReport.items');
+            }
+          }
+          const beforeWeather = weatherFactsOf(before);
+          const incomingWeather = weatherFactsOf(command.facts);
+          if (
+            Object.keys(beforeWeather).length ||
+            Object.keys(incomingWeather).length ||
+            command.reportLocationOperation !== undefined
+          ) {
+            const scope = {
+              projectId: project.id,
+              dailyCloseId: day.id,
+              businessDate: command.businessDate,
+              siteTimezone: day.siteTimezone,
+            };
+            const resolved = await resolveWeatherFacts(
+              client,
+              actor,
+              scope,
+              beforeWeather,
+              incomingWeather,
+              command.clientMutationId,
+            );
+            const location = await writeReportLocation(
+              client,
+              actor,
+              scope,
+              command.reportLocationOperation,
+              beforeWeather.reportLocationRef ?? null,
+              command.clientMutationId,
+            );
+            facts = {
+              ...facts,
+              ...resolved,
+              ...(Object.hasOwn(beforeWeather, 'reportLocationRef') ||
+              command.reportLocationOperation !== undefined
+                ? { reportLocationRef: location }
+                : {}),
+            };
+          }
+          await this.saveDraft(client, actor, day.id, facts);
           await this.audit(
             client,
             actor,
@@ -259,13 +485,13 @@ export class ReportStore {
             'REPORT_SAVE_FACTS',
             '',
             before,
-            command.facts,
+            facts,
             command.clientMutationId,
           );
           return {
             businessDate: command.businessDate,
             version: day.version,
-            state: dayState(day, command.facts),
+            state: dayState(day, facts),
           };
         },
       );
@@ -294,6 +520,15 @@ export class ReportStore {
       project.id,
       businessDate,
     );
+    // C04 events use nextSeq under this same gate. Freeze identity/basis only at the field cut;
+    // neither the C05 production adapter nor any retrospective snapshot rewrite is implied.
+    const managerReviewCut = await managerReviewSnapshotCut(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+      field.seqBoundary,
+    );
     const items = await itemRows(client, actor.orgId, project.id);
     const { snapshot, coverage: cov } = await daySnapshot(
       client,
@@ -308,6 +543,42 @@ export class ReportStore {
     const reason = day.correctionReason ?? '';
     const revisionNumber = day.currentRevisionNumber + 1;
     const revisionId = randomUUID();
+    // Freeze prior selected submissions plus this newly assigned version in this transaction.
+    // The previous submission on this same date is superseded, never counted a second time.
+    const weatherReferences = facts.weatherReferences?.length
+      ? await frozenWeatherReferences(
+          client,
+          actor,
+          {
+            projectId: project.id,
+            dailyCloseId: day.id,
+            businessDate,
+            siteTimezone: day.siteTimezone,
+          },
+          weatherFactsOf(facts),
+        )
+      : [];
+    const personnelSummary = buildPersonnelWindow({
+      projectId: project.id,
+      toBusinessDate: businessDate,
+      selectedAtUTC: new Date(actor.decidedAt).toISOString(),
+      revisions: [
+        ...(await personnelRevisionInputs(
+          client,
+          actor.orgId,
+          project.id,
+          businessDate,
+        )),
+        {
+          projectId: project.id,
+          businessDate,
+          reportRevisionId: revisionId,
+          n: revisionNumber,
+          submitted: true,
+          categories: facts.people,
+        },
+      ],
+    });
     await client.query(
       `INSERT INTO "Revision"(id,"orgId","updatedAt","updatedBy","revisionNumber","baseRevisionNumber",state,reason,snapshot,"submittedAt","dailyCloseId")
       VALUES($1,$2,now(),$3,$4,$5,'SUBMITTED',$6,$7,now(),$8)`,
@@ -320,6 +591,9 @@ export class ReportStore {
         reason,
         {
           ...snapshot,
+          personnelSummary,
+          weatherReferences,
+          managerReviewCut,
           primaryWorkItemKey: project.primaryWorkItemKey,
           milestones: items
             .filter((i) => i.kind === 'milestone')
@@ -927,11 +1201,42 @@ export async function revisionRows(
   dailyCloseId: string,
 ) {
   const r = await client.query<RevisionRow>(
-    `SELECT "revisionNumber", reason, "submittedAt", "updatedBy", snapshot FROM "Revision"
+    `SELECT id, "revisionNumber", reason, "submittedAt", "updatedBy", snapshot FROM "Revision"
     WHERE "orgId"=$1 AND "dailyCloseId"=$2 ORDER BY "revisionNumber"`,
     [orgId, dailyCloseId],
   );
   return r.rows;
+}
+
+/** Report-owned selected submitted facts only; callers establish project authorization first.
+ * An open correction does not hide its earlier submission. Only the seven business dates are
+ * read, and only category declarations leave this query (no source totals or personnel PII).
+ */
+export async function personnelRevisionInputs(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  toBusinessDate: string,
+): Promise<PersonnelRevisionInput[]> {
+  const result = await client.query<Omit<PersonnelRevisionInput, 'submitted'>>(
+    `SELECT DISTINCT ON (d."businessDate") d."projectId", d."businessDate"::text AS "businessDate",
+      r.id AS "reportRevisionId", r."revisionNumber" AS n,
+      COALESCE(r.snapshot->'facts'->'people','{}'::jsonb) AS categories
+    FROM "DailyClose" d JOIN "Revision" r
+      ON r."orgId"=d."orgId" AND r."dailyCloseId"=d.id
+    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
+      AND d."businessDate">=$4::date AND d."businessDate"<=$5::date
+      AND r.state='SUBMITTED'
+    ORDER BY d."businessDate", r."revisionNumber" DESC`,
+    [
+      orgId,
+      projectId,
+      REPORT_SCOPE,
+      shiftDate(toBusinessDate, -6),
+      toBusinessDate,
+    ],
+  );
+  return result.rows.map((row) => ({ ...row, submitted: true }));
 }
 
 /** Rule 3: carry-over comes from the latest submitted day before this one, however many days back. */

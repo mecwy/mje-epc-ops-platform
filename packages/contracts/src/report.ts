@@ -15,6 +15,27 @@ import {
   version,
 } from './parse.js';
 
+import {
+  parseWeatherFactsExtension,
+  parseReportLocationOperation,
+  type WeatherFactsExtension,
+  type ReportLocationOperation,
+} from './weather-persistence.js';
+
+import {
+  parseSourceReport,
+  reportObject,
+  type SourceReport,
+} from './report-source.js';
+export type {
+  SourceCell,
+  SourceReport,
+  SourceReportV1,
+  SourceReportV2,
+  SourceReportV3,
+  SourceReportV4,
+  SourceReportV5,
+} from './report-source.js';
 export { InvalidReportInput, isRealDate };
 export type Reported = string;
 export const REPORT_TOKENS = ['unknown', 'na'] as const;
@@ -39,7 +60,8 @@ export const ROLE_KEYS = [
   'installer',
 ] as const;
 
-export interface DayFactsDto {
+export interface DayFactsDto extends WeatherFactsExtension {
+  sourceReport?: SourceReport;
   weather: string;
   temperature: string;
   qty: Record<string, Reported>;
@@ -61,6 +83,7 @@ export interface SaveFactsCommand {
   expectedVersion: number;
   clientMutationId: string;
   facts: DayFactsDto;
+  reportLocationOperation?: ReportLocationOperation;
 }
 export interface PlanRowDto {
   item: string;
@@ -184,8 +207,32 @@ function reportedMap(v: unknown, field: string): Record<string, Reported> {
   return out;
 }
 export function parseFacts(v: unknown): DayFactsDto {
-  const o = obj(v, 'facts');
-  const narrative = obj(o['narrative'] ?? {}, 'facts.narrative');
+  const o = reportObject(
+    v,
+    [
+      'weather',
+      'temperature',
+      'qty',
+      'cumulative',
+      'narrative',
+      'people',
+      'presence',
+      'machinery',
+      'materials',
+      'milestones',
+      'noWork',
+      'updated',
+      'sourceReport',
+      'weatherReferences',
+      'reportLocationRef',
+    ],
+    'facts',
+  );
+  const narrative = reportObject(
+    o['narrative'] ?? {},
+    ['construction', 'quality', 'safety'],
+    'facts.narrative',
+  );
   // Presence is keyed by Person id (a UUID, normalized to lower case); prototype-style keys stay valid.
   const presence: DayFactsDto['presence'] = {};
   mapEntries(
@@ -205,7 +252,7 @@ export function parseFacts(v: unknown): DayFactsDto {
   });
   const milestones: DayFactsDto['milestones'] = {};
   for (const [k, val] of mapEntries(o['milestones'], 'facts.milestones')) {
-    const m = obj(val, `facts.milestones.${k}`);
+    const m = reportObject(val, ['actual', 'note'], `facts.milestones.${k}`);
     const actual = str(m['actual'] ?? '', `facts.milestones.${k}.actual`, 10);
     if (actual && !isRealDate(actual))
       throw new InvalidReportInput(`facts.milestones.${k}.actual`);
@@ -222,7 +269,7 @@ export function parseFacts(v: unknown): DayFactsDto {
   }
   let noWork: DayFactsDto['noWork'] = null;
   if (o['noWork'] !== null && o['noWork'] !== undefined) {
-    const n = obj(o['noWork'], 'facts.noWork');
+    const n = reportObject(o['noWork'], ['reason', 'note'], 'facts.noWork');
     noWork = {
       reason: oneOf(n['reason'], NO_WORK_REASONS, 'facts.noWork.reason'),
       note: str(n['note'] ?? '', 'facts.noWork.note', 500),
@@ -232,7 +279,27 @@ export function parseFacts(v: unknown): DayFactsDto {
   for (const k of Object.keys(people))
     if (!(ROLE_KEYS as readonly string[]).includes(k))
       throw new InvalidReportInput(`facts.people.${k}`);
+  const sourceReport = Object.hasOwn(o, 'sourceReport')
+    ? parseSourceReport(o['sourceReport'])
+    : undefined;
+  if (
+    sourceReport &&
+    'personnelRemarks' in sourceReport &&
+    Object.keys(sourceReport.personnelRemarks ?? {}).some(
+      (key) => !(ROLE_KEYS as readonly string[]).includes(key),
+    )
+  )
+    throw new InvalidReportInput('facts.sourceReport.personnelRemarks');
   return {
+    ...parseWeatherFactsExtension({
+      ...(Object.hasOwn(o, 'weatherReferences')
+        ? { weatherReferences: o['weatherReferences'] }
+        : {}),
+      ...(Object.hasOwn(o, 'reportLocationRef')
+        ? { reportLocationRef: o['reportLocationRef'] }
+        : {}),
+    }),
+    ...(sourceReport ? { sourceReport } : {}),
     weather: str(o['weather'] ?? '', 'facts.weather', 100),
     temperature: str(o['temperature'] ?? '', 'facts.temperature', 40),
     qty: reportedMap(o['qty'], 'facts.qty'),
@@ -256,13 +323,31 @@ export function parseFacts(v: unknown): DayFactsDto {
 }
 
 export function parseSaveFactsCommand(v: unknown): SaveFactsCommand {
-  const o = obj(v, 'command');
+  const o = reportObject(
+    v,
+    [
+      'projectId',
+      'businessDate',
+      'expectedVersion',
+      'clientMutationId',
+      'facts',
+      'reportLocationOperation',
+    ],
+    'command',
+  );
   return {
     projectId: id(o['projectId'], 'projectId'),
     businessDate: date(o['businessDate'], 'businessDate'),
     expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
     facts: parseFacts(o['facts']),
+    ...(Object.hasOwn(o, 'reportLocationOperation')
+      ? {
+          reportLocationOperation: parseReportLocationOperation(
+            o['reportLocationOperation'],
+          ),
+        }
+      : {}),
   };
 }
 export function parseSavePlanDraftCommand(v: unknown): SavePlanDraftCommand {

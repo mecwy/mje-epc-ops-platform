@@ -75,9 +75,27 @@ export function locate(
   geo: GeoSource | null | undefined,
   timers: Timers = browserTimers,
 ): Promise<LocateResult> {
+  return acquirePosition(
+    geo,
+    (p, now) => toFix(p.coords, p.timestamp, now),
+    timers,
+  );
+}
+
+export interface GeoReading {
+  coords: { latitude: number; longitude: number; accuracy: number };
+  timestamp: number;
+}
+/** One bounded acquisition, with a separate decoder for each storage contract. */
+export function acquirePosition<T>(
+  geo: GeoSource | null | undefined,
+  decode: (reading: GeoReading, acquiredAt: number) => T | null,
+  timers: Timers = browserTimers,
+  signal?: AbortSignal,
+): Promise<{ fix: T; reason: null } | { fix: null; reason: NoFixReason }> {
   return new Promise((resolve) => {
     if (!geo) return resolve({ fix: null, reason: 'unsupported' });
-    let best: CaptureFixDto | null = null;
+    let best: T | null = null;
     let bestAcc = Infinity;
     let done = false;
     let watch: number | null = null;
@@ -87,18 +105,25 @@ export function locate(
       done = true;
       if (watch !== null) geo.clearWatch(watch);
       if (timer !== null) timers.clear(timer);
+      signal?.removeEventListener('abort', abort);
       resolve(
         best
           ? { fix: best, reason: null }
           : { fix: null, reason: denied ? 'denied' : 'noFix' },
       );
     };
+    const abort = () => {
+      best = null;
+      finish();
+    };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener('abort', abort, { once: true });
     timer = timers.set(() => finish(), MAX_LOCATE_MS);
     try {
       watch = geo.watchPosition(
         (p) => {
           if (done) return;
-          const fix = toFix(p.coords, p.timestamp, timers.now());
+          const fix = decode(p, timers.now());
           if (!fix) return;
           if (p.coords.accuracy < bestAcc) {
             best = fix;

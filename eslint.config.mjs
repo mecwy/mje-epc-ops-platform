@@ -44,6 +44,9 @@ export const BOUNDARY = {
       'report-commands.ts',
       'report-lookups.ts',
       'report-rules.ts',
+      'personnel-metrics.ts',
+      'weather-store.ts',
+      'weather-jobs.ts',
       'reader-view.ts',
     ].map((f) => D + f),
     issue: ['issue-store.ts', 'issue-reader.ts', 'issue-lookups.ts'].map(
@@ -86,6 +89,17 @@ export const BOUNDARY = {
         'readerSnapshot',
         'observeReportProjections',
         'REPORT_PROJECTORS',
+      ],
+    },
+    [`${D}weather-store.ts`]: { only: ['WeatherStore', 'WeatherStoreError'] },
+    [`${D}weather-jobs.ts`]: {
+      only: [
+        'claimWeatherJob',
+        'finishWeatherJob',
+        'failWeatherJob',
+        'WeatherJobLease',
+        'WeatherJobFailure',
+        'WeatherSnapshotMetadata',
       ],
     },
     [`${D}report-read-context.ts`]: {
@@ -136,6 +150,12 @@ export const BOUNDARY = {
     D + 'project-home/reader.ts',
     ...[
       'store-kit.ts',
+      'manager-review-store.ts',
+      'manager-review-reader.ts',
+      'business-evidence-store.ts',
+      'business-evidence-reader.ts',
+      'weather-store.ts',
+      'weather-jobs.ts',
       'alpha-store.ts',
       'report-store.ts',
       'report-read-context.ts',
@@ -168,6 +188,11 @@ export const BOUNDARY = {
       (f) => D + 'project-status/' + f,
     ),
     ...[
+      'weather-store.ts',
+      'manager-review-store.ts',
+      'manager-review-reader.ts',
+      'business-evidence-store.ts',
+      'business-evidence-reader.ts',
       // A7-0b: the alpha store runs on the shared account transaction (ADR-0003 D5).
       'alpha-store.ts',
       'report-store.ts',
