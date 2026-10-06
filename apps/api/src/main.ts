@@ -40,6 +40,13 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     reportStore: new ReportStore(pool, {
       weatherReferenceEnabled:
         process.env['WEATHER_REFERENCE_ENABLED'] === 'true',
+      // Omission retains the legacy weather opt-in; any explicit non-true value is off.
+      ...(process.env['REPORT_LOCATION_ENABLED'] !== undefined
+        ? {
+            reportLocationEnabled:
+              process.env['REPORT_LOCATION_ENABLED'] === 'true',
+          }
+        : {}),
     }),
     projectStatusCommands: new ProjectStatusCommands(pool),
     projectStatusReader: new ProjectStatusReader(pool),

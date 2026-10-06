@@ -155,7 +155,10 @@ export type DayState = 'empty' | 'draft' | 'submitted' | 'correcting';
 export class ReportStore {
   constructor(
     private readonly pool: Pool,
-    private readonly options: { weatherReferenceEnabled?: boolean } = {},
+    private readonly options: {
+      weatherReferenceEnabled?: boolean;
+      reportLocationEnabled?: boolean;
+    } = {},
   ) {}
 
   private transaction<T>(
@@ -262,11 +265,19 @@ export class ReportStore {
   async saveFacts(identity: Identity, command: SaveFactsCommand) {
     return this.transaction(identity, async (client, actor) => {
       const project = await this.writer(client, actor, command.projectId);
-      // Authorization still precedes replay. Default-off blocks new capture/adoption even
-      // for a successful old key; detachments and exact persisted metadata remain usable.
+      // Authorization precedes gates and replay. Unset capture opt-in preserves the
+      // legacy weather flag; explicit false disables capture even when weather is on.
+      const locationEnabled =
+        this.options.reportLocationEnabled ??
+        this.options.weatherReferenceEnabled === true;
+      if (
+        !locationEnabled &&
+        command.reportLocationOperation?.kind === 'capture'
+      )
+        throw new ReportError('FEATURE_DISABLED');
+      // Weather admission stays separate. Detachments and exact persisted metadata
+      // remain usable with weather disabled, even for a successful old key.
       if (this.options.weatherReferenceEnabled !== true) {
-        if (command.reportLocationOperation?.kind === 'capture')
-          throw new ReportError('FEATURE_DISABLED');
         const references = command.facts.weatherReferences ?? [];
         if (references.some((ref) => !ref.referenceId))
           throw new ReportError('FEATURE_DISABLED');

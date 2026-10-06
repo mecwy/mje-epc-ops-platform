@@ -73,6 +73,109 @@ function fake(
 }
 const identity = { tenantId: 'TEST_tenant', objectId: 'TEST_object' };
 describe('C03 report weather capture default-off gate', () => {
+  it.each([false, true])(
+    'weather adoption remains enabled with capture opt-in %s',
+    async (location) => {
+      const command: SaveFactsCommand = {
+        ...base,
+        facts: {
+          ...base.facts,
+          weatherReferences: [
+            {
+              snapshotId: reference.snapshotId,
+              locationVersionId: reference.locationVersionId,
+            },
+          ],
+        },
+      };
+      const { pool, query } = fake(command);
+      expect(
+        await new ReportStore(pool, {
+          weatherReferenceEnabled: true,
+          reportLocationEnabled: location,
+        }).saveFacts(identity, command),
+      ).toEqual({ version: 2 });
+      expect(
+        query.mock.calls.some(([sql]) => /^INSERT|^UPDATE/.test(sql.trim())),
+      ).toBe(false);
+    },
+  );
+  it.each([
+    { weather: false, location: false, captureEnabled: false },
+    { weather: false, location: true, captureEnabled: true },
+    { weather: true, location: false, captureEnabled: false },
+    { weather: true, location: true, captureEnabled: true },
+  ])('independent capture gate: $weather/$location', async (flags) => {
+    const command = { ...base, reportLocationOperation: capture };
+    const { pool, query } = fake(command);
+    const result = new ReportStore(pool, {
+      weatherReferenceEnabled: flags.weather,
+      reportLocationEnabled: flags.location,
+    }).saveFacts(identity, command);
+    if (flags.captureEnabled) {
+      expect(await result).toEqual({ version: 2 });
+    } else {
+      await expect(result).rejects.toMatchObject({ code: 'FEATURE_DISABLED' });
+      expect(
+        query.mock.calls.some(([sql]) => sql.includes('IdempotencyRecord')),
+      ).toBe(false);
+    }
+    // This fake covers admission/replay, not first-write database persistence.
+    expect(
+      query.mock.calls.some(([sql]) => /^INSERT|^UPDATE/.test(sql.trim())),
+    ).toBe(false);
+  });
+  it.each([false, true])(
+    'independent capture still checks the role first (%s)',
+    async (weather) => {
+      const command = { ...base, reportLocationOperation: capture };
+      const { pool, query } = fake(command, 'EXECUTIVE_READER');
+      await expect(
+        new ReportStore(pool, {
+          weatherReferenceEnabled: weather,
+          reportLocationEnabled: true,
+        }).saveFacts(identity, command),
+      ).rejects.toMatchObject({ code: 'READ_ONLY' });
+      expect(
+        query.mock.calls.some(([sql]) => sql.includes('IdempotencyRecord')),
+      ).toBe(false);
+      expect(
+        query.mock.calls.some(([sql]) => /^INSERT|^UPDATE/.test(sql.trim())),
+      ).toBe(false);
+    },
+  );
+  it.each(['unadopted', 'other-reference'] as const)(
+    'location-only opt-in does not admit %s weather',
+    async (mode) => {
+      const command: SaveFactsCommand = {
+        ...base,
+        facts: {
+          ...base.facts,
+          weatherReferences: [
+            mode === 'unadopted'
+              ? {
+                  snapshotId: reference.snapshotId,
+                  locationVersionId: reference.locationVersionId,
+                }
+              : { ...reference, snapshotId: 'TEST_other_snapshot' },
+          ],
+        },
+      };
+      const { pool, query } = fake(command);
+      await expect(
+        new ReportStore(pool, {
+          weatherReferenceEnabled: false,
+          reportLocationEnabled: true,
+        }).saveFacts(identity, command),
+      ).rejects.toMatchObject({ code: 'FEATURE_DISABLED' });
+      expect(
+        query.mock.calls.some(([sql]) => sql.includes('IdempotencyRecord')),
+      ).toBe(false);
+      expect(
+        query.mock.calls.some(([sql]) => /^INSERT|^UPDATE/.test(sql.trim())),
+      ).toBe(false);
+    },
+  );
   it.each([undefined, false])(
     'blocks capture before successful replay with option %s',
     async (enabled) => {
