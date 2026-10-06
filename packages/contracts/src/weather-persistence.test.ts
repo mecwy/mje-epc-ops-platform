@@ -3,6 +3,7 @@ import {
   buildWeatherQuery,
   parseConfigureWeatherLocationCommand,
   parseReportLocationOperation,
+  parseSafeReportLocationRef,
   parseWeatherFactsExtension,
   parseWeatherRequestCommand,
   weatherDayInterval,
@@ -11,6 +12,35 @@ const a = '00000000-0000-4000-8000-000000000001',
   b = '00000000-0000-4000-8000-000000000002';
 // Synthetic TEST points only.
 describe('persistence boundary', () => {
+  it('retains native accuracy text through operation and safe history codecs', () => {
+    const at = '2026-10-06T12:41:00Z';
+    const candidate = {
+      lat: '45.12345678901234',
+      lon: '19.12345678901234',
+      accuracyM: '12.345678',
+      deviceFixAt: null,
+      acquiredAt: at,
+    };
+    expect(
+      parseReportLocationOperation({
+        kind: 'capture',
+        candidate,
+        clientConfirmedAt: at,
+      }),
+    ).toEqual({ kind: 'capture', candidate, clientConfirmedAt: at });
+    const ref = {
+      recordId: a,
+      accuracyM: candidate.accuracyM,
+      deviceFixAt: null,
+      acquiredAt: at,
+      clientConfirmedAt: at,
+      serverReceivedAt: at,
+    };
+    expect(parseSafeReportLocationRef(ref)).toEqual(ref);
+    expect(() =>
+      parseSafeReportLocationRef({ ...ref, lat: candidate.lat }),
+    ).toThrow();
+  });
   it('preserves omitted extensions versus explicit clear', () => {
     expect(parseWeatherFactsExtension({})).toEqual({});
     expect(

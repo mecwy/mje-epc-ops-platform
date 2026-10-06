@@ -298,9 +298,9 @@ async function run(): Promise<void> {
     const capture: ReportLocationOperation = {
       kind: 'capture',
       candidate: {
-        lat: '44.123456789012',
-        lon: '19.987654321012',
-        accuracyM: '10.00',
+        lat: '44.12345678901234',
+        lon: '19.98765432101234',
+        accuracyM: '10.1234567',
         deviceFixAt: null,
         acquiredAt: new Date().toISOString(),
       },
@@ -368,7 +368,7 @@ async function run(): Promise<void> {
     };
 
     begin(
-      'atomic parent facts save with safe refs and restricted raw precision',
+      'atomic parent HTTP facts save with safe refs and native high precision',
     );
     const firstCommand = command(
       {
@@ -387,13 +387,18 @@ async function run(): Promise<void> {
     assert.ok(firstState.facts.weatherReferences?.[0]?.referenceId);
     assert.equal(firstState.facts.reportLocationRef?.deviceFixAt, null);
     const rawPosition = (
-      await owner.query<{ lat: string; lon: string }>(
-        `SELECT "rawLat" AS lat,"rawLon" AS lon FROM "ReportLocationRecord" WHERE "orgId"=$1 AND id=$2`,
+      await owner.query<{ lat: string; lon: string; accuracy: string }>(
+        `SELECT "rawLat" AS lat,"rawLon" AS lon,"rawAccuracyM" AS accuracy FROM "ReportLocationRecord" WHERE "orgId"=$1 AND id=$2`,
         [org, firstState.facts.reportLocationRef?.recordId],
       )
     ).rows[0]!;
     assert.equal(rawPosition.lat, capture.candidate.lat);
     assert.equal(rawPosition.lon, capture.candidate.lon);
+    assert.equal(rawPosition.accuracy, capture.candidate.accuracyM);
+    assert.equal(
+      firstState.facts.reportLocationRef?.accuracyM,
+      capture.candidate.accuracyM,
+    );
     await privacy();
     pass();
 
@@ -576,14 +581,14 @@ async function run(): Promise<void> {
     pass();
 
     begin(
-      'excess coordinate precision rejected with null fix timestamp preserved',
+      'over-324 coordinate precision rejected with null fix timestamp preserved',
     );
     const beforePrecision = await inspect();
     const tooPrecise = {
       ...command(beforePrecision.facts),
       reportLocationOperation: {
         ...capture,
-        candidate: { ...capture.candidate, lat: '44.1234567890123' },
+        candidate: { ...capture.candidate, lat: `44.${'1'.repeat(325)}` },
       },
     };
     await expect(

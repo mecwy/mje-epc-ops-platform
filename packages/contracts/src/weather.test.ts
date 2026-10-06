@@ -8,6 +8,58 @@ import {
   weatherCategory,
 } from './weather.js';
 
+describe('native report precision', () => {
+  it.each([
+    { lat: '45.12345678901234', lon: '19.12345678901234', accuracyM: '12.34' },
+    { lat: '45.123456', lon: '19.123456', accuracyM: '12.345678' },
+    { lat: `0.${'0'.repeat(323)}5`, lon: '-0', accuracyM: '0' },
+  ])(
+    'preserves original native decimal text and unknown device time %#',
+    (values) => {
+      const input = {
+        ...values,
+        deviceFixAt: null,
+        acquiredAt: '2026-10-06T12:41:00Z',
+      };
+      expect(parseReportLocationCandidate(input)).toEqual(input);
+    },
+  );
+  it.each([
+    { lat: '90', lon: '-180', accuracyM: '999999.9999999999' },
+    { lat: '-0.000', lon: '000.0', accuracyM: '-0.000' },
+  ])('retains boundary and explicit zero text %#', (values) => {
+    const input = {
+      ...values,
+      deviceFixAt: null,
+      acquiredAt: '2026-10-06T12:41:00Z',
+    };
+    expect(parseReportLocationCandidate(input)).toEqual(input);
+  });
+  it.each([
+    { lat: '90.00000000000000000001' },
+    { lon: '-180.00000000000000000001' },
+    { lat: `0.${'0'.repeat(324)}5` },
+    { lat: 'NaN' },
+    { lon: 'Infinity' },
+    { accuracyM: '-0.00000000000000000001' },
+    { accuracyM: '1000000' },
+  ])(
+    'refuses exact-range, nonfinite, negative and overlength input %#',
+    (values) => {
+      expect(() =>
+        parseReportLocationCandidate({
+          lat: '1',
+          lon: '1',
+          accuracyM: '0',
+          deviceFixAt: null,
+          acquiredAt: '2026-10-06T12:41:00Z',
+          ...values,
+        }),
+      ).toThrow();
+    },
+  );
+});
+
 // All locations and dates below are synthetic TEST inputs.
 const now = '2026-10-06T10:00:00Z';
 const query = () => ({

@@ -32,6 +32,7 @@ export const disabledWeatherPorts = {
 };
 /** Expand exponent notation without changing or rounding its numeric digits. */
 function decimalText(value: number): string {
+  if (Object.is(value, -0)) return '-0';
   const text = String(value);
   const match = /^(-?)(\d+)(?:\.(\d+))?e([+-]?\d+)$/.exec(text);
   if (!match) return text;

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { Pool } from 'pg';
 import {
@@ -40,6 +40,9 @@ import { ReportController } from '../apps/api/dist/report.controller.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
 import {
   parseFacts,
+  parseSaveFactsCommand,
+  type SafeReportLocationRef,
+  type ReportLocationCandidateDto,
   parseWeatherQuery,
   parseWeatherReferenceDraft,
   type ReportLocationOperation,
@@ -81,6 +84,426 @@ const identity = { tenantId, objectId },
 const role = 'mje_c03_test_app_' + randomBytes(4).toString('hex'),
   password = randomBytes(24).toString('hex');
 let roleCreated = false;
+interface NativeFixture {
+  org: string;
+  project: string;
+  person: string;
+  account: string;
+  tenantId: string;
+  objectId: string;
+  readerPerson: string;
+  readerAccount: string;
+  readerObject: string;
+  businessDate: string;
+  legacyRef: SafeReportLocationRef;
+  legacyRow: Record<string, unknown>;
+  submittedVersion: number;
+}
+/** Precision-only mode reuses one fixture across formal baseline -> additive migration. */
+async function nativePrecisionOnly(owner: Pool, appPool: Pool) {
+  const phase = process.env['C03_NATIVE_PRECISION_PHASE'];
+  assert.ok(phase === 'legacy' || phase === 'fixed');
+  const fixtureFile = process.env['C03_NATIVE_FIXTURE_FILE'];
+  assert.ok(fixtureFile);
+  assert.ok(fixtureFile.startsWith('/private/tmp/'));
+  const reports = new ReportStore(appPool, { weatherReferenceEnabled: true });
+  const at = new Date().toISOString();
+  const representable: ReportLocationCandidateDto = {
+    lat: '033.987654321012',
+    lon: '011.000000000001',
+    accuracyM: '200.00',
+    deviceFixAt: null,
+    acquiredAt: at,
+  };
+  const native: ReportLocationCandidateDto[] = [
+    {
+      ...representable,
+      lat: '45.12345678901234',
+      lon: '19.12345678901234',
+      accuracyM: '12.34',
+    },
+    {
+      ...representable,
+      lat: '45.123456',
+      lon: '19.123456',
+      accuracyM: '12.345678',
+    },
+  ];
+  const results: string[] = [];
+  const record = (v: string) => results.push(v);
+  const facts = parseFacts({
+    ...blankFacts(),
+    weather: 'TEST native manual',
+    temperature: '0',
+  });
+  let fixture: NativeFixture;
+  if (phase === 'legacy') {
+    await owner.query(
+      'INSERT INTO "Organization"(id,name,"updatedAt","updatedBy") VALUES($1,\'TEST native precision\',now(),$2)',
+      [org, seed],
+    );
+    await owner.query(
+      `INSERT INTO "Project"(id,"orgId","updatedAt","updatedBy",code,name,timezone,status) VALUES($1,$2,now(),$3,'TEST-native','TEST-native','Europe/Belgrade','ACTIVE')`,
+      [project, org, seed],
+    );
+    for (const p of [person, readerPerson])
+      await owner.query(
+        'INSERT INTO "Person"(id,"orgId","updatedAt","updatedBy","displayName") VALUES($1,$2,now(),$3,\'TEST native person\')',
+        [p, org, seed],
+      );
+    for (const [a, p, o, membership] of [
+      [account, person, objectId, 'PROJECT_MANAGER'],
+      [readerAccount, readerPerson, readerObject, 'EXECUTIVE_READER'],
+    ]) {
+      await owner.query(
+        'INSERT INTO "LoginAccount"(id,"orgId","updatedAt","updatedBy","entraTenantId","entraObjectId","personId") VALUES($1,$2,now(),$3,$4,$5,$6)',
+        [a, org, seed, tenantId, o, p],
+      );
+      await owner.query(
+        'INSERT INTO "Membership"(id,"orgId","updatedAt","updatedBy",role,"activeFrom","accountId","projectId") VALUES($1,$2,now(),$3,$4,now(),$5,$6)',
+        [randomUUID(), org, seed, membership, a, project],
+      );
+    }
+    const businessDate = (
+      await owner.query<{ day: string }>(
+        `SELECT ((clock_timestamp() AT TIME ZONE 'Europe/Belgrade')::date-1)::text AS day`,
+      )
+    ).rows[0]!.day;
+    const manual = await reports.saveFacts(identity, {
+      projectId: project,
+      businessDate,
+      expectedVersion: 0,
+      clientMutationId: randomUUID(),
+      facts,
+    });
+    const saved = await reports.saveFacts(
+      identity,
+      parseSaveFactsCommand({
+        projectId: project,
+        businessDate,
+        expectedVersion: manual.version,
+        clientMutationId: randomUUID(),
+        facts,
+        reportLocationOperation: {
+          kind: 'capture',
+          candidate: representable,
+          clientConfirmedAt: at,
+        },
+      }),
+    );
+    const view = await reports.read(identity, (ctx) =>
+      reportReader.forContext(ctx).day(project, businessDate),
+    );
+    assert.ok(view.facts?.reportLocationRef);
+    const legacyRef = view.facts.reportLocationRef;
+    for (const candidate of native) {
+      const command = parseSaveFactsCommand({
+        projectId: project,
+        businessDate,
+        expectedVersion: saved.version,
+        clientMutationId: randomUUID(),
+        facts,
+        reportLocationOperation: {
+          kind: 'capture',
+          candidate,
+          clientConfirmedAt: at,
+        },
+      });
+      await assert.rejects(
+        reports.saveFacts(identity, command),
+        /WEATHER_STORE_FAILED/,
+      );
+    }
+    assert.equal(
+      (
+        await owner.query(
+          'SELECT count(*)::integer AS n FROM "ReportLocationRecord" WHERE "orgId"=$1',
+          [org],
+        )
+      ).rows[0].n,
+      1,
+    );
+    record(
+      'two known native inputs refused by real 23-migration baseline; day/CAS/raw rows rolled back',
+    );
+    const legacyRow = (
+      await owner.query<Record<string, unknown>>(
+        "SELECT to_jsonb(r)-'lat'-'lon'-'accuracyM' AS row FROM \"ReportLocationRecord\" r WHERE id=$1",
+        [legacyRef.recordId],
+      )
+    ).rows[0]!.row as Record<string, unknown>;
+    const submitted = await reports.submit(identity, {
+      projectId: project,
+      businessDate,
+      expectedVersion: saved.version,
+      clientMutationId: randomUUID(),
+    });
+    fixture = {
+      org,
+      project,
+      person,
+      account,
+      tenantId,
+      objectId,
+      readerPerson,
+      readerAccount,
+      readerObject,
+      businessDate,
+      legacyRef,
+      legacyRow,
+      submittedVersion: submitted.version,
+    };
+    writeFileSync(fixtureFile, JSON.stringify(fixture), { mode: 0o600 });
+    record(
+      'representable legacy row and R1 saved before widening; original raw texts/time metadata retained for comparison',
+    );
+  } else {
+    fixture = JSON.parse(readFileSync(fixtureFile, 'utf8')) as NativeFixture;
+    const i = { tenantId: fixture.tenantId, objectId: fixture.objectId };
+    const ri = { tenantId: fixture.tenantId, objectId: fixture.readerObject };
+    const rawRow = (
+      await owner.query<Record<string, unknown>>(
+        "SELECT to_jsonb(r)-'lat'-'lon'-'accuracyM' AS row FROM \"ReportLocationRecord\" r WHERE id=$1",
+        [fixture.legacyRef.recordId],
+      )
+    ).rows[0]!.row;
+    assert.deepEqual(rawRow, fixture.legacyRow);
+    assert.equal(
+      (
+        await owner.query(
+          'SELECT lat="rawLat"::numeric AND lon="rawLon"::numeric AND "accuracyM"="rawAccuracyM"::numeric AS exact FROM "ReportLocationRecord" WHERE id=$1',
+          [fixture.legacyRef.recordId],
+        )
+      ).rows[0].exact,
+      true,
+    );
+    record(
+      'pre-migration legacy raw row/actor/times/identity unchanged; numeric values exactly equal originals',
+    );
+    const live = await reports.read(i, (ctx) =>
+      reportReader.forContext(ctx).day(fixture.project, fixture.businessDate),
+    );
+    let version =
+      live.state === 'submitted'
+        ? (
+            await reports.startCorrection(i, {
+              projectId: fixture.project,
+              businessDate: fixture.businessDate,
+              expectedVersion: live.version,
+              clientMutationId: randomUUID(),
+              reason: 'TEST native precision correction',
+            })
+          ).version
+        : live.version;
+    const cases: ReportLocationCandidateDto[] = [
+      { ...representable, lat: '90', lon: '-180', accuracyM: '0' },
+      { ...representable, lat: '-0', lon: '-0.000', accuracyM: '-0' },
+      {
+        ...representable,
+        lat: `0.${'0'.repeat(323)}5`,
+        lon: '0',
+        accuracyM: `0.${'0'.repeat(323)}5`,
+      },
+      ...native,
+    ];
+    let currentRef = fixture.legacyRef;
+    for (const candidate of cases) {
+      const command = parseSaveFactsCommand({
+        projectId: fixture.project,
+        businessDate: fixture.businessDate,
+        expectedVersion: version,
+        clientMutationId: randomUUID(),
+        facts,
+        reportLocationOperation: {
+          kind: 'capture',
+          candidate,
+          clientConfirmedAt: at,
+        },
+      });
+      const saved = await reports.saveFacts(i, command);
+      assert.deepEqual(await reports.saveFacts(i, command), saved);
+      version = saved.version;
+      const view = await reports.read(i, (ctx) =>
+        reportReader.forContext(ctx).day(fixture.project, fixture.businessDate),
+      );
+      assert.ok(view.facts?.reportLocationRef);
+      currentRef = view.facts.reportLocationRef;
+      assert.equal(currentRef.accuracyM, candidate.accuracyM);
+      assert.equal(currentRef.deviceFixAt, null);
+      assert.equal(view.facts.temperature, '0');
+      assert.equal(view.facts.weather, 'TEST native manual');
+      assert.deepEqual(
+        await inTransaction(appPool, i, (c, a) =>
+          readReportLocationCoordinates(
+            c,
+            a,
+            fixture.project,
+            currentRef.recordId,
+          ),
+        ),
+        { lat: candidate.lat, lon: candidate.lon },
+      );
+      assert.equal(
+        (
+          await owner.query(
+            'SELECT count(*)::integer AS n FROM "ReportLocationRecord" WHERE "orgId"=$1 AND "clientMutationId"=$2',
+            [fixture.org, command.clientMutationId],
+          )
+        ).rows[0].n,
+        1,
+      );
+      assert.equal(
+        (
+          await owner.query(
+            'SELECT lat="rawLat"::numeric AND lon="rawLon"::numeric AND "accuracyM"="rawAccuracyM"::numeric AS exact FROM "ReportLocationRecord" WHERE id=$1',
+            [currentRef.recordId],
+          )
+        ).rows[0].exact,
+        true,
+      );
+      assert.equal('lat' in currentRef || 'lon' in currentRef, false);
+    }
+    record(
+      'same two old-rejected inputs plus boundary/signed-zero/subnormal now pass actual lowprivileged ReportStore save/read/replay; originals and projections exact',
+    );
+    await assert.rejects(
+      inTransaction(appPool, ri, (c, a) =>
+        readReportLocationCoordinates(
+          c,
+          a,
+          fixture.project,
+          currentRef.recordId,
+        ),
+      ),
+      /READ_ONLY/,
+    );
+    await inTransaction(appPool, i, async (c, a) => {
+      assert.equal(
+        (
+          await c.query(
+            'SELECT count(*)::integer AS n FROM "ReportLocationRecord" WHERE "orgId"<>$1',
+            [a.orgId],
+          )
+        ).rows[0].n,
+        0,
+      );
+    });
+    await assert.rejects(
+      owner.query(
+        'UPDATE "ReportLocationRecord" SET "rawLat"=\'1\' WHERE id=$1',
+        [currentRef.recordId],
+      ),
+      /append-only/,
+    );
+    const badKey = randomUUID();
+    await assert.rejects(
+      owner.query(
+        `INSERT INTO "ReportLocationRecord"(id,"orgId","projectId","dailyCloseId","businessDate","siteTimezone",lat,lon,"rawLat","rawLon","accuracyM","rawAccuracyM","acquiredAt","clientConfirmedAt","actorAccountId","actorPersonId","clientMutationId") SELECT $2,"orgId","projectId","dailyCloseId","businessDate","siteTimezone",90.00000000000000000001,0,'90.00000000000000000001','0',0,'0',"acquiredAt","clientConfirmedAt","actorAccountId","actorPersonId",$3 FROM "ReportLocationRecord" WHERE id=$1`,
+        [currentRef.recordId, randomUUID(), badKey],
+      ),
+    );
+    record(
+      'reader coordinates refused; tenant RLS and immutable trigger retained; database independently refuses exact out-of-range input',
+    );
+    const submitted = await reports.submit(i, {
+      projectId: fixture.project,
+      businessDate: fixture.businessDate,
+      expectedVersion: version,
+      clientMutationId: randomUUID(),
+    });
+    const revision = await reports.read(i, (ctx) =>
+      reportReader
+        .forContext(ctx)
+        .revision(fixture.project, fixture.businessDate, 2),
+    );
+    assert.ok(revision);
+    const safeFacts = (revision.snapshot as { facts: WeatherFactsExtension })
+      .facts;
+    assert.deepEqual(safeFacts.reportLocationRef, currentRef);
+    assert.equal('lat' in safeFacts || 'lon' in safeFacts, false);
+    const corrected = await reports.startCorrection(i, {
+      projectId: fixture.project,
+      businessDate: fixture.businessDate,
+      expectedVersion: submitted.version,
+      clientMutationId: randomUUID(),
+      reason: 'TEST detach only',
+    });
+    const cleared = await reports.saveFacts(
+      i,
+      parseSaveFactsCommand({
+        projectId: fixture.project,
+        businessDate: fixture.businessDate,
+        expectedVersion: corrected.version,
+        clientMutationId: randomUUID(),
+        facts,
+        reportLocationOperation: { kind: 'clear' },
+      }),
+    );
+    await reports.submit(i, {
+      projectId: fixture.project,
+      businessDate: fixture.businessDate,
+      expectedVersion: cleared.version,
+      clientMutationId: randomUUID(),
+    });
+    assert.deepEqual(
+      await reports.read(i, (ctx) =>
+        reportReader
+          .forContext(ctx)
+          .revision(fixture.project, fixture.businessDate, 2),
+      ),
+      revision,
+    );
+    const old = await reports.read(i, (ctx) =>
+      reportReader
+        .forContext(ctx)
+        .revision(fixture.project, fixture.businessDate, 1),
+    );
+    assert.ok(old);
+    assert.deepEqual(
+      (old.snapshot as { facts: WeatherFactsExtension }).facts
+        .reportLocationRef,
+      fixture.legacyRef,
+    );
+    record(
+      'high-precision safe R2 frozen after R3clear; old pre-migration R1 safe reference exactly retained; no raw point added to history',
+    );
+    const texts = (
+      await owner.query(
+        'SELECT to_jsonb(a)::text AS text FROM "AuditLog" a WHERE "orgId"=$1 UNION ALL SELECT "responseBody"::text AS text FROM "IdempotencyRecord" WHERE "orgId"=$1',
+        [fixture.org],
+      )
+    ).rows;
+    assert.equal(
+      texts.some(
+        (r: { text: string }) =>
+          r.text.includes(native[0]!.lat) || r.text.includes(native[0]!.lon),
+      ),
+      false,
+    );
+    record(
+      'actual parent audit/idempotency bodies contain no high-precision personal coordinates',
+    );
+  }
+  const result = {
+    phase,
+    checks: results.length,
+    passed: results,
+    database: 'mje_c03_test_20261006',
+    actualStore: 'lowprivileged real ReportStore; no composed fake save',
+    role,
+    notRun: [
+      'browser/GPS/provider',
+      'whole check/baseline integration/independent review',
+      'new HTTP controller journey',
+    ],
+  };
+  if (process.env['C03_RESULT_FILE'])
+    writeFileSync(
+      process.env['C03_RESULT_FILE'],
+      JSON.stringify(result, null, 2) + '\n',
+    );
+  console.log(JSON.stringify(result));
+}
 try {
   await owner.query(
     `CREATE ROLE "${role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${password}'`,
@@ -91,6 +514,22 @@ try {
   appUrl.username = role;
   appUrl.password = password;
   appPool = new Pool({ connectionString: appUrl.toString(), max: 8 });
+  if (process.env['C03_NATIVE_PRECISION_PHASE']) {
+    await nativePrecisionOnly(owner, appPool);
+  } else {
+    await fullWeatherIntegration(appPool);
+  }
+} finally {
+  await app?.close();
+  await appPool?.end();
+  try {
+    if (roleCreated) await owner.query(`DROP ROLE "${role}"`);
+  } finally {
+    await owner.end();
+  }
+}
+
+async function fullWeatherIntegration(appPool: Pool) {
   for (const [id, name] of [
     [org, 'TEST C03 org'],
     [otherOrg, 'TEST C03 other org'],
@@ -886,12 +1325,4 @@ try {
       JSON.stringify(result, null, 2) + '\n',
     );
   console.log(JSON.stringify(result));
-} finally {
-  await app?.close();
-  await appPool?.end();
-  try {
-    if (roleCreated) await owner.query(`DROP ROLE "${role}"`);
-  } finally {
-    await owner.end();
-  }
 }

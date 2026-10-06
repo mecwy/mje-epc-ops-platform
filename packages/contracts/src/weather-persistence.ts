@@ -2,6 +2,7 @@ import { date, id, InvalidReportInput, obj, str, version } from './parse.js';
 import { isRealTimestamp } from './report.js';
 import {
   parseReportLocationCandidate,
+  parseReportLocationAccuracy,
   parseWeatherQuery,
   type ReportLocationCandidateDto,
   type WeatherQueryDto,
@@ -122,9 +123,10 @@ export function parseSafeReportLocationRef(v: unknown): SafeReportLocationRef {
     ],
     'weather.locationRef',
   );
-  const accuracyM = str(o['accuracyM'], 'weather.locationRef.accuracyM', 16);
-  if (!/^\d{1,6}(?:\.\d{1,2})?$/.test(accuracyM))
-    throw new InvalidReportInput('weather.locationRef.accuracyM');
+  const accuracyM = parseReportLocationAccuracy(
+    o['accuracyM'],
+    'weather.locationRef.accuracyM',
+  );
   return {
     recordId: id(o['recordId'], 'weather.locationRef.recordId'),
     accuracyM,

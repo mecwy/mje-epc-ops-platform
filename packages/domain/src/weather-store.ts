@@ -256,6 +256,7 @@ interface PersonalRow {
 }
 const safeLocation = (r: PersonalRow): SafeReportLocationRef => ({
   recordId: r.id,
+  // Raw text, never NUMERIC's padded projection, is the safe public accuracy representation.
   accuracyM: r.rawAccuracyM,
   deviceFixAt: r.deviceFixAt ? iso(r.deviceFixAt) : null,
   acquiredAt: iso(r.acquiredAt),

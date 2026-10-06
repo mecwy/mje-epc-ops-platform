@@ -41,11 +41,44 @@ export interface WeatherReferenceDraftDto {
   metrics: Record<WeatherMetric, WeatherValueDto>;
 }
 export interface ReportLocationCandidateDto {
+  /** Original decimal text; finite browser Number notation is expanded without rounding. */
   lat: string;
   lon: string;
   accuracyM: string;
   deviceFixAt: string | null;
   acquiredAt: string;
+}
+
+/** IEEE-754 native readings can have 324 fractional places (5e-324). */
+function nativeDecimal(
+  v: unknown,
+  field: string,
+  integerDigits: number,
+  limit: bigint,
+  signed: boolean,
+): string {
+  const s = str(v, field, integerDigits + 326);
+  if (!new RegExp(`^-?\\d{1,${integerDigits}}(?:\\.\\d{1,324})?$`).test(s))
+    throw new InvalidReportInput(field);
+  const unsigned = s.startsWith('-') ? s.slice(1) : s;
+  const [integer = '', fraction = ''] = unsigned.split('.');
+  const whole = BigInt(integer);
+  const nonzeroFraction = /[1-9]/.test(fraction);
+  if (
+    whole > limit ||
+    (whole === limit && nonzeroFraction) ||
+    (!signed && s.startsWith('-') && (whole !== 0n || nonzeroFraction))
+  )
+    throw new InvalidReportInput(field);
+  return s;
+}
+
+/** Raw precision is shared by the capture command and safe historical accuracy metadata. */
+export function parseReportLocationAccuracy(
+  v: unknown,
+  field = 'weather.reportLocation.accuracyM',
+): string {
+  return nativeDecimal(v, field, 6, 1000000n, false);
 }
 
 function shape(v: unknown, keys: readonly string[], field: string) {
@@ -280,13 +313,11 @@ export function parseReportLocationCandidate(
     ['lat', 'lon', 'accuracyM', 'deviceFixAt', 'acquiredAt'],
     'weather.reportLocation',
   );
-  const coords = point(
-    { lat: o['lat'], lon: o['lon'] },
-    'weather.reportLocation',
-  );
-  const accuracyM = str(o['accuracyM'], 'weather.reportLocation.accuracyM', 16);
-  if (!/^\d{1,6}(?:\.\d{1,2})?$/.test(accuracyM))
-    throw new InvalidReportInput('weather.reportLocation.accuracyM');
+  const coords = {
+    lat: nativeDecimal(o['lat'], 'weather.reportLocation.lat', 3, 90n, true),
+    lon: nativeDecimal(o['lon'], 'weather.reportLocation.lon', 3, 180n, true),
+  };
+  const accuracyM = parseReportLocationAccuracy(o['accuracyM']);
   return {
     ...coords,
     accuracyM,

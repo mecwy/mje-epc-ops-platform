@@ -1920,11 +1920,12 @@ model ReportLocationRecord {
   businessDate DateTime @db.Date
   siteTimezone String
   day DailyClose @relation(fields:[orgId,projectId,businessDate,siteTimezone,dailyCloseId],references:[orgId,projectId,businessDate,siteTimezone,id],onDelete:Restrict,onUpdate:NoAction)
-  lat Decimal @db.Decimal(20,12)
-  lon Decimal @db.Decimal(20,12)
+  /// Exact numeric projections of original decimal text, including expanded native subnormals.
+  lat Decimal @db.Decimal(340,324)
+  lon Decimal @db.Decimal(340,324)
   rawLat String
   rawLon String
-  accuracyM Decimal @db.Decimal(20,6)
+  accuracyM Decimal @db.Decimal(340,324)
   rawAccuracyM String
   deviceFixAt DateTime? @db.Timestamptz(6)
   acquiredAt DateTime @db.Timestamptz(6)

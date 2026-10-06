@@ -293,6 +293,7 @@
   "packages/domain/prisma/migrations/202610130002_weather_outbox_access/migration.sql",
   "packages/domain/prisma/migrations/202610140001_manager_review_event/migration.sql",
   "packages/domain/prisma/migrations/202610150001_business_evidence/migration.sql",
+  "packages/domain/prisma/migrations/202610160001_report_location_native_precision/migration.sql",
   "packages/domain/prisma/migrations/migration_lock.toml",
   "packages/domain/prisma/schema.prisma",
   "packages/domain/src/alpha-store.ts",

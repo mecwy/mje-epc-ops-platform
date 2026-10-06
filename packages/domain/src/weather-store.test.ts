@@ -86,37 +86,47 @@ describe('report transaction joins', () => {
       }),
     ).rejects.toThrow('READ_ONLY');
   });
-  it('retains a persisted reference with JSONB key order after refresh', async () => {
-    const { c, query } = client();
-    const recordId = '00000000-0000-4000-8000-000000000001';
-    const at = '2026-10-06T12:00:00.000Z';
-    const before = {
-      serverReceivedAt: at,
-      clientConfirmedAt: at,
-      acquiredAt: at,
-      deviceFixAt: null,
-      accuracyM: '200.00',
-      recordId,
-    };
-    const previous = query.getMockImplementation()!;
-    query.mockImplementation(async (sql: string) =>
-      sql.includes('FROM "ReportLocationRecord"')
-        ? {
-            rows: [
-              {
-                id: recordId,
-                rawAccuracyM: '200.00',
-                deviceFixAt: null,
-                acquiredAt: new Date(at),
-                clientConfirmedAt: new Date(at),
-                serverReceivedAt: new Date(at),
-              },
-            ],
-          }
-        : previous(sql),
-    );
-    expect(
-      await writeReportLocation(c, actor, scope, undefined, before, 'TEST-key'),
-    ).toEqual(before);
-  });
+  it.each(['200.00', '12.345678'])(
+    'retains persisted accuracy %s with JSONB key order after refresh',
+    async (accuracyM) => {
+      const { c, query } = client();
+      const recordId = '00000000-0000-4000-8000-000000000001';
+      const at = '2026-10-06T12:00:00.000Z';
+      const before = {
+        serverReceivedAt: at,
+        clientConfirmedAt: at,
+        acquiredAt: at,
+        deviceFixAt: null,
+        accuracyM,
+        recordId,
+      };
+      const previous = query.getMockImplementation()!;
+      query.mockImplementation(async (sql: string) =>
+        sql.includes('FROM "ReportLocationRecord"')
+          ? {
+              rows: [
+                {
+                  id: recordId,
+                  rawAccuracyM: accuracyM,
+                  deviceFixAt: null,
+                  acquiredAt: new Date(at),
+                  clientConfirmedAt: new Date(at),
+                  serverReceivedAt: new Date(at),
+                },
+              ],
+            }
+          : previous(sql),
+      );
+      expect(
+        await writeReportLocation(
+          c,
+          actor,
+          scope,
+          undefined,
+          before,
+          'TEST-key',
+        ),
+      ).toEqual(before);
+    },
+  );
 });

@@ -85,16 +85,30 @@ describe('C03 raw decoding and bounded acquisition', () => {
     expect(reportLocationReading(reading(1e-7), 1000)?.lat).toBe('0.0000001');
     expect(reportLocationReading(reading(-90), 1000)?.lat).toBe('-90');
   });
-  it.each([
-    reading(0.1234567890123),
-    reading(1, 25.123),
-    reading(91),
-    reading(NaN),
-    reading(1, -1),
-  ])(
-    'rejects unrepresentable or invalid readings instead of rounding',
+  it.each([reading(91), reading(NaN), reading(1, -1)])(
+    'rejects invalid readings instead of rounding',
     (input) => {
       expect(reportLocationReading(input, 1000)).toBeNull();
+    },
+  );
+  it.each([
+    reading(45.12345678901234, 12.34),
+    reading(45.123456, 12.345678),
+    reading(Number.MIN_VALUE, 0),
+    reading(-0, -0),
+  ])(
+    'retains native precision through the actual report decoder %#',
+    (input) => {
+      const decoded = reportLocationReading(input, 1000);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.deviceFixAt).toBeNull();
+      expect(Number(decoded?.lat)).toBe(input.coords.latitude);
+      expect(Number(decoded?.accuracyM)).toBe(input.coords.accuracy);
+      if (input.coords.latitude === 45.12345678901234)
+        expect(decoded?.lat).toBe('45.12345678901234');
+      if (input.coords.accuracy === 12.345678)
+        expect(decoded?.accuracyM).toBe('12.345678');
+      if (Object.is(input.coords.latitude, -0)) expect(decoded?.lat).toBe('-0');
     },
   );
   it('aborts the injected watch and never accepts a later reading', async () => {
