@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
+import { translate, type Lang } from '@mje/ui';
+let presentationLang: Lang = 'en';
+vi.mock('../i18n.js', () => ({
+  useI18n: () => ({
+    t: (key: Parameters<typeof translate>[1]) =>
+      translate(presentationLang, key),
+  }),
+}));
 import {
   parseReportLocationCandidate,
   parseWeatherQuery,
@@ -498,15 +506,38 @@ describe('one-day weather/location session', () => {
 });
 
 describe('isolated WeatherLocation presentation', () => {
+  it('does not adopt the same pending snapshot twice', async () => {
+    const { session, dependencies } = setup();
+    await session.refreshWeather();
+    expect(session.referenceWeather()).toBe(true);
+    expect(session.referenceWeather()).toBe(false);
+    expect(dependencies.referenceWeather).toHaveBeenCalledTimes(1);
+  });
+  it('keeps a saved snapshot nonselectable after applied readback', async () => {
+    presentationLang = 'en';
+    const { session } = setup();
+    await session.refreshWeather();
+    session.referenceWeather();
+    session.acknowledgeSavedIntent();
+    const html = renderToStaticMarkup(
+      createElement(WeatherLocation, {
+        session,
+        savedSnapshotIds: ['TEST-weather-v1'],
+      }),
+    );
+    expect(html).toMatch(
+      /<button\b[^>]*disabled[^>]*>Reference this snapshot<\/button>/,
+    );
+  });
   it.each(['zh', 'en'] as const)(
     'shows manual input, zero/missing and provenance in %s',
     async (locale) => {
+      presentationLang = locale;
       const { session } = setup();
       await session.refreshWeather();
       const html = renderToStaticMarkup(
         createElement(WeatherLocation, {
           session,
-          locale,
           manualWeather: 'TEST onsite <rain>',
           manualTemperature: 'TEST unknown',
           onManualChange: vi.fn(),
@@ -529,7 +560,6 @@ describe('isolated WeatherLocation presentation', () => {
     renderToStaticMarkup(
       createElement(WeatherLocation, {
         session,
-        locale: 'en',
         manualWeather: 'TEST manual',
         manualTemperature: '',
         onManualChange: change,
@@ -543,7 +573,6 @@ describe('isolated WeatherLocation presentation', () => {
     const html = renderToStaticMarkup(
       createElement(WeatherLocation, {
         session,
-        locale: 'en',
         manualWeather: '',
         manualTemperature: '',
         onManualChange: vi.fn(),

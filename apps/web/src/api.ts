@@ -1,5 +1,11 @@
 import type {
   PeopleWindowSummaryDto,
+  SafeFrozenWeatherReference,
+  WeatherLocationDto,
+  WeatherRequestDto,
+  WeatherSnapshotDto,
+  WeatherRequestCommand,
+  ConfigureWeatherLocationCommand,
   CancelCorrectionCommand,
   CloseIssueCommand,
   CreateIssueCommand,
@@ -50,6 +56,7 @@ import type {
   StatusFieldName,
 } from '@mje/contracts';
 import { parsePeopleWindowSummary, STATUS_FIELD_NAMES } from '@mje/contracts';
+import { parseFrozenWeatherReferences } from './report/weather-adapter.js';
 import type { Coverage } from '@mje/domain/rules';
 
 export interface AuthConfig {
@@ -128,6 +135,8 @@ export interface LagView {
 
 /** What the report screens render: a live day or a frozen revision snapshot. */
 export interface ReportContent {
+  /** Frozen safe references only; draft requests and personal coordinates never enter this view. */
+  weatherReferences?: SafeFrozenWeatherReference[];
   businessDate: string;
   facts: DayFactsDto;
   items: ReportItemDto[];
@@ -470,14 +479,38 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
         body,
       );
     },
-    day: (projectId: string, businessDate: string) =>
-      get<DayView>('day', { projectId, businessDate }),
+    day: async (projectId: string, businessDate: string) => {
+      const result = await get<DayView>('day', { projectId, businessDate });
+      if (result.weatherReferences !== undefined) {
+        try {
+          result.weatherReferences = parseFrozenWeatherReferences(
+            result.weatherReferences,
+            projectId,
+            businessDate,
+          );
+        } catch {
+          throw new ApiError('INVALID_RESPONSE', 502);
+        }
+      }
+      return result;
+    },
     revision: async (projectId: string, businessDate: string, n: number) => {
       const result = await get<RevisionView>('revision', {
         projectId,
         businessDate,
         n,
       });
+      if (result.snapshot.weatherReferences !== undefined) {
+        try {
+          result.snapshot.weatherReferences = parseFrozenWeatherReferences(
+            result.snapshot.weatherReferences,
+            projectId,
+            businessDate,
+          );
+        } catch {
+          throw new ApiError('INVALID_RESPONSE', 502);
+        }
+      }
       if (result.snapshot.personnelSummary !== undefined) {
         try {
           result.snapshot.personnelSummary = parsePeopleWindowSummary(
@@ -508,6 +541,22 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
     plan: (projectId: string, targetBusinessDate: string) =>
       get<PlanView>('plan', { projectId, targetBusinessDate }),
     saveFacts: (c: SaveFactsCommand) => post<WriteResult>('facts', c),
+    weatherLocations: (projectId: string) =>
+      apiGet<WeatherLocationDto[]>(
+        `/api/weather/locations?${qs({ projectId })}`,
+      ),
+    weatherSnapshot: (projectId: string, snapshotId: string) =>
+      apiGet<WeatherSnapshotDto>(
+        `/api/weather/snapshots?${qs({ projectId, snapshotId })}`,
+      ),
+    weatherRequestStatus: (projectId: string, requestId: string) =>
+      apiGet<WeatherRequestDto>(
+        `/api/weather/requests?${qs({ projectId, requestId })}`,
+      ),
+    requestWeather: (command: WeatherRequestCommand) =>
+      apiPost<WeatherRequestDto>('/api/weather/requests', command),
+    configureWeatherLocation: (command: ConfigureWeatherLocationCommand) =>
+      apiPost<WeatherLocationDto>('/api/weather/locations', command),
     submit: (c: SubmitReportCommand) => post<WriteResult>('submit', c),
     noWork: (c: NoWorkCommand) => post<WriteResult>('no-work', c),
     startCorrection: (c: StartCorrectionCommand) =>

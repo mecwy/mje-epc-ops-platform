@@ -1,111 +1,168 @@
 import { useEffect, useSyncExternalStore } from 'react';
+import { useI18n } from '../i18n.js';
 import type { WeatherLocationSession } from './weather-location-session.js';
+import type { SafeFrozenWeatherReference } from '@mje/contracts';
+import { weatherReferenceView } from './weather-adapter.js';
 
-const text = {
-  zh: {
-    title: '工地位置与天气参考',
-    position: '本次定位（可选）',
-    cancel: '放弃定位',
-    confirm: '确认本次位置',
-    fetching: '正在获取天气参考',
-    refresh: '刷新参考',
-    reference: '引用此参考',
-    referenced: '参考已关联到草稿，待保存',
-    idle: '尚未获取天气参考',
-    not_configured: '尚未确认天气查询位置，可继续手填',
-    unavailable: '天气参考暂不可用，可继续手填',
-    locating: '正在获取一次位置',
-    denied: '定位权限已拒绝，可继续手填',
-    unsupported: '当前设备不支持定位，可继续手填',
-    locationUnavailable: '未取得位置，可继续手填',
-    candidate: '位置待确认',
-    confirmed_pending_save: '本次位置已确认到草稿，待保存',
-    accuracy: '精度半径',
-    device: '设备采集时刻',
-    acquired: '设备取得结果时刻',
-    unknown: '未知',
-    missing: '未提供',
-    blank: '空白',
-    not_applicable: '不适用',
-    reanalysis: '历史再分析参考',
-    analysis: '历史模型分析参考',
-    forecast: '预报参考',
-    fetched: '查询时间',
-    published: '发布时间',
-    effective: '适用时段',
-    partial: '部分指标缺失',
-    complete: '请求指标已返回',
-    stale: '已过期',
-    manual: '现场天气观察',
-    temperature: '现场温度',
-    note: '天气参考不证明现场实测、停工或安全放行。',
-    positionNote: '记录本次填报位置；补录时不能作为过去日期的位置。',
-  },
-  en: {
-    title: 'Site location and weather reference',
-    position: 'Locate once (optional)',
-    cancel: 'Discard location',
-    confirm: 'Confirm this location',
-    fetching: 'Loading weather reference',
-    refresh: 'Refresh reference',
-    reference: 'Reference this snapshot',
-    referenced: 'Reference added to draft; awaiting save',
-    idle: 'Weather reference not requested',
-    not_configured:
-      'Weather location not confirmed; manual entry remains available',
-    unavailable:
-      'Weather reference unavailable; manual entry remains available',
-    locating: 'Obtaining one location',
-    denied: 'Location permission denied; manual entry remains available',
-    unsupported: 'Location unsupported; manual entry remains available',
-    locationUnavailable: 'No location obtained; manual entry remains available',
-    candidate: 'Location awaiting confirmation',
-    confirmed_pending_save: 'Location confirmed in draft; awaiting save',
-    accuracy: 'Accuracy radius',
-    device: 'Device fix time',
-    acquired: 'Device result acquisition time',
-    unknown: 'Unknown',
-    missing: 'Not provided',
-    blank: 'Blank',
-    not_applicable: 'Not applicable',
-    reanalysis: 'Historical reanalysis reference',
-    analysis: 'Historical model analysis reference',
-    forecast: 'Forecast reference',
-    fetched: 'Fetched at',
-    published: 'Published at',
-    effective: 'Effective interval',
-    partial: 'Some metrics unavailable',
-    complete: 'Requested metrics returned',
-    stale: 'Expired',
-    manual: 'Onsite weather observation',
-    temperature: 'Onsite temperature',
-    note: 'Weather reference does not verify onsite conditions, downtime or work permission.',
-    positionNote:
-      'This is the reporting location now; it cannot establish a past-day location.',
-  },
+const TEXT_KEYS = {
+  title: 'weatherLocation_title',
+  position: 'weatherLocation_position',
+  cancel: 'weatherLocation_cancel',
+  confirm: 'weatherLocation_confirm',
+  fetching: 'weatherLocation_fetching',
+  refresh: 'weatherLocation_refresh',
+  reference: 'weatherLocation_reference',
+  referenced: 'weatherLocation_referenced',
+  idle: 'weatherLocation_idle',
+  not_configured: 'weatherLocation_not_configured',
+  unavailable: 'weatherLocation_unavailable',
+  locating: 'weatherLocation_locating',
+  denied: 'weatherLocation_denied',
+  unsupported: 'weatherLocation_unsupported',
+  locationUnavailable: 'weatherLocation_locationUnavailable',
+  candidate: 'weatherLocation_candidate',
+  confirmed_pending_save: 'weatherLocation_confirmed_pending_save',
+  accuracy: 'weatherLocation_accuracy',
+  device: 'weatherLocation_device',
+  acquired: 'weatherLocation_acquired',
+  unknown: 'weatherLocation_unknown',
+  missing: 'weatherLocation_missing',
+  blank: 'weatherLocation_blank',
+  not_applicable: 'weatherLocation_not_applicable',
+  reanalysis: 'weatherLocation_reanalysis',
+  analysis: 'weatherLocation_analysis',
+  forecast: 'weatherLocation_forecast',
+  fetched: 'weatherLocation_fetched',
+  published: 'weatherLocation_published',
+  effective: 'weatherLocation_effective',
+  partial: 'weatherLocation_partial',
+  complete: 'weatherLocation_complete',
+  stale: 'weatherLocation_stale',
+  manual: 'weatherLocation_manual',
+  temperature: 'weatherLocation_temperature',
+  note: 'weatherLocation_note',
+  positionNote: 'weatherLocation_positionNote',
+  clear: 'weatherLocation_clear',
+  detach: 'weatherLocation_detach',
+  cleared: 'weatherLocation_cleared',
+  savedLocation: 'weatherLocation_savedLocation',
+  pending: 'weatherLocation_pending',
+  retry: 'weatherLocation_retry',
+  frozen: 'weatherLocation_frozen',
+  adopted: 'weatherLocation_adopted',
 } as const;
 
 export interface WeatherLocationProps {
   session: WeatherLocationSession;
-  locale: 'zh' | 'en';
-  manualWeather: string;
-  manualTemperature: string;
-  onManualChange: (field: 'weather' | 'temperature', value: string) => void;
+  manualWeather?: string;
+  manualTemperature?: string;
+  onManualChange?: (field: 'weather' | 'temperature', value: string) => void;
+  onClearLocation?: () => void;
+  onDetachWeather?: () => void;
+  savedLocation?: import('@mje/contracts').SafeReportLocationRef | null;
+  pendingLocationKind?: 'capture' | 'clear' | null;
+  pendingSave?: boolean;
+  onRetrySave?: () => void;
+  /** IDs from the parent's applied facts, distinct from the current weather query. */
+  savedSnapshotIds?: readonly string[];
+}
+
+/** Submitted and history views consume their frozen references, without current-provider reads. */
+export function FrozenWeatherReferences({
+  references,
+}: {
+  references: readonly SafeFrozenWeatherReference[];
+}) {
+  const { t } = useI18n();
+  if (!references.length) return null;
+  return (
+    <section
+      className="card report-weather"
+      aria-label={t('weatherLocation_frozen')}
+    >
+      <h2>{t('weatherLocation_frozen')}</h2>
+      {references.map((reference) => {
+        const view = weatherReferenceView(reference);
+        const categoryKey = TEXT_KEYS[view.category];
+        const coverageKey = TEXT_KEYS[view.coverage];
+        return (
+          <article key={reference.referenceId}>
+            <strong>
+              {t(categoryKey)} · {view.source}
+            </strong>
+            <p>
+              {view.businessDate} · {view.timezone} · {t(coverageKey)}
+            </p>
+            <dl>
+              {view.values.map((value) => {
+                const stateKey =
+                  value.state === 'value'
+                    ? TEXT_KEYS.unknown
+                    : TEXT_KEYS[value.state];
+                return (
+                  <div key={value.label}>
+                    <dt>{value.label}</dt>
+                    <dd>
+                      {value.state === 'value'
+                        ? `${value.value} ${value.unit ?? ''}`
+                        : t(stateKey)}
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+            <details>
+              <summary>{t('weatherLocation_effective')}</summary>
+              <p>
+                {view.interval.startAt} — {view.interval.endAt}
+              </p>
+              <p>
+                {t('weatherLocation_fetched')}: {view.fetchedAt}
+              </p>
+              <p>
+                {t('weatherLocation_published')}:{' '}
+                {view.publishedAt ?? t('weatherLocation_unknown')}
+              </p>
+              <p>
+                {t('weatherLocation_adopted')}: {reference.adoptedAt}
+              </p>
+              <p>
+                {reference.adapterVersion} · {reference.responseHash}
+              </p>
+              <p>
+                {reference.sourceLink} · {reference.licenseLink}
+              </p>
+            </details>
+          </article>
+        );
+      })}
+      <p>{t('weatherLocation_note')}</p>
+    </section>
+  );
 }
 /** Injected session: this component never calls navigator.geolocation or an external API. */
 export function WeatherLocation({
   session,
-  locale,
   manualWeather,
   manualTemperature,
   onManualChange,
+  onClearLocation,
+  onDetachWeather,
+  savedLocation,
+  pendingLocationKind,
+  pendingSave,
+  onRetrySave,
+  savedSnapshotIds = [],
 }: WeatherLocationProps) {
   const state = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
   );
-  const t = text[locale];
+  const { t: sharedT } = useI18n();
+  const t = Object.fromEntries(
+    Object.entries(TEXT_KEYS).map(([key, message]) => [key, sharedT(message)]),
+  ) as Record<keyof typeof TEXT_KEYS, string>;
   const context = state.context;
   const editable = state.writable && !state.locked;
   useEffect(() => {
@@ -121,6 +178,10 @@ export function WeatherLocation({
     editable,
   ]);
   const reference = state.reference;
+  const alreadyReferenced =
+    !!reference &&
+    (state.referencedSnapshotId === reference.snapshotId ||
+      savedSnapshotIds.includes(reference.snapshotId));
   const status = state.locationStatus;
   return (
     <section className="card report-weather" aria-label={t.title}>
@@ -176,6 +237,40 @@ export function WeatherLocation({
         </div>
       )}
       <p className="muted small">{t.positionNote}</p>
+      {savedLocation && (
+        <p>
+          {t.savedLocation} · {t.accuracy}: {savedLocation.accuracyM} m ·{' '}
+          {t.device}: {savedLocation.deviceFixAt ?? t.unknown} · {t.acquired}:{' '}
+          {savedLocation.acquiredAt}
+        </p>
+      )}
+      {pendingLocationKind && (
+        <p>
+          {pendingLocationKind === 'clear'
+            ? t.cleared
+            : t.confirmed_pending_save}
+        </p>
+      )}
+      {pendingSave && (
+        <p role="status">
+          {t.pending}{' '}
+          {onRetrySave && (
+            <button type="button" onClick={onRetrySave}>
+              {t.retry}
+            </button>
+          )}
+        </p>
+      )}
+      {state.writable && savedLocation && onClearLocation && (
+        <button type="button" disabled={!editable} onClick={onClearLocation}>
+          {t.clear}
+        </button>
+      )}
+      {state.writable && onDetachWeather && (
+        <button type="button" disabled={!editable} onClick={onDetachWeather}>
+          {t.detach}
+        </button>
+      )}
       <div aria-live="polite">
         {state.weatherStatus === 'loading' ? (
           <p>{t.fetching}</p>
@@ -222,6 +317,7 @@ export function WeatherLocation({
                 disabled={
                   !editable ||
                   state.weatherStatus !== 'ready' ||
+                  alreadyReferenced ||
                   reference.stale
                 }
                 onClick={() => session.referenceWeather()}
@@ -233,6 +329,9 @@ export function WeatherLocation({
               <p>
                 {t.referenced} · {state.referencedSnapshotId}
               </p>
+            )}
+            {alreadyReferenced && !state.referencedSnapshotId && (
+              <p>{sharedT('saved')}</p>
             )}
           </div>
         )}
@@ -251,24 +350,28 @@ export function WeatherLocation({
         </button>
       )}
       <p className="muted small">{t.note}</p>
-      <label className="field">
-        <span>{t.manual}</span>
-        <input
-          value={manualWeather}
-          disabled={!editable}
-          maxLength={100}
-          onChange={(e) => onManualChange('weather', e.target.value)}
-        />
-      </label>
-      <label className="field">
-        <span>{t.temperature}</span>
-        <input
-          value={manualTemperature}
-          disabled={!editable}
-          maxLength={40}
-          onChange={(e) => onManualChange('temperature', e.target.value)}
-        />
-      </label>
+      {onManualChange && (
+        <>
+          <label className="field">
+            <span>{t.manual}</span>
+            <input
+              value={manualWeather}
+              disabled={!editable}
+              maxLength={100}
+              onChange={(e) => onManualChange('weather', e.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>{t.temperature}</span>
+            <input
+              value={manualTemperature}
+              disabled={!editable}
+              maxLength={40}
+              onChange={(e) => onManualChange('temperature', e.target.value)}
+            />
+          </label>
+        </>
+      )}
     </section>
   );
 }

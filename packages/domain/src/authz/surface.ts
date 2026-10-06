@@ -927,6 +927,45 @@ const ENTRIES: readonly SurfaceEntry[] = [
     },
   ),
 
+  // C03 current weather lookups require a writer; submitted readers use frozen report refs.
+  ...(
+    [
+      ['locations', 'report.weatherLocations'],
+      ['requests', 'report.weatherRequest'],
+      ['snapshots', 'report.weatherSnapshot'],
+      ['report-location/coordinates', 'report.reportLocationCoordinates'],
+    ] as const
+  ).map(([path, projector]) =>
+    read(
+      `GET /api/weather/${path}`,
+      'account',
+      ['report.view'],
+      'query.projectId',
+      { 'report.view': { temporal: 'live', layers: ALL, projector } },
+    ),
+  ),
+  write(
+    'POST /api/weather/locations',
+    'account',
+    'report.write',
+    'body.projectId',
+    'WeatherStore.configureLocation',
+    'cas',
+    {
+      protects: ['WeatherLocationVersion.n'],
+      advances: ['WeatherLocationVersion.n'],
+    },
+  ),
+  write(
+    'POST /api/weather/requests',
+    'account',
+    'report.write',
+    'body.projectId',
+    'WeatherStore.request',
+    'append',
+    { advances: ['WeatherRequest.refreshGeneration'] },
+  ),
+
   // ---------- Worker / CLI ----------
   {
     entry: 'worker:apps/worker/src/main.ts',

@@ -22,7 +22,9 @@
     "scripts/alpha-lookups-integration.mts",
     "scripts/project-status-integration.mts",
     "scripts/project-master-integration.mts",
+    "scripts/weather-integration.mts",
     "scripts/check-migration-history.mts",
-    "scripts/check-migration-history.test.mts"
+    "scripts/check-migration-history.test.mts",
+    "scripts/report-weather-integration.mts"
   ]
 }

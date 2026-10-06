@@ -16,6 +16,13 @@ import {
 } from './parse.js';
 
 import {
+  parseWeatherFactsExtension,
+  parseReportLocationOperation,
+  type WeatherFactsExtension,
+  type ReportLocationOperation,
+} from './weather-persistence.js';
+
+import {
   parseSourceReport,
   reportObject,
   type SourceReport,
@@ -53,7 +60,7 @@ export const ROLE_KEYS = [
   'installer',
 ] as const;
 
-export interface DayFactsDto {
+export interface DayFactsDto extends WeatherFactsExtension {
   sourceReport?: SourceReport;
   weather: string;
   temperature: string;
@@ -76,6 +83,7 @@ export interface SaveFactsCommand {
   expectedVersion: number;
   clientMutationId: string;
   facts: DayFactsDto;
+  reportLocationOperation?: ReportLocationOperation;
 }
 export interface PlanRowDto {
   item: string;
@@ -215,6 +223,8 @@ export function parseFacts(v: unknown): DayFactsDto {
       'noWork',
       'updated',
       'sourceReport',
+      'weatherReferences',
+      'reportLocationRef',
     ],
     'facts',
   );
@@ -281,6 +291,14 @@ export function parseFacts(v: unknown): DayFactsDto {
   )
     throw new InvalidReportInput('facts.sourceReport.personnelRemarks');
   return {
+    ...parseWeatherFactsExtension({
+      ...(Object.hasOwn(o, 'weatherReferences')
+        ? { weatherReferences: o['weatherReferences'] }
+        : {}),
+      ...(Object.hasOwn(o, 'reportLocationRef')
+        ? { reportLocationRef: o['reportLocationRef'] }
+        : {}),
+    }),
     ...(sourceReport ? { sourceReport } : {}),
     weather: str(o['weather'] ?? '', 'facts.weather', 100),
     temperature: str(o['temperature'] ?? '', 'facts.temperature', 40),
@@ -313,6 +331,7 @@ export function parseSaveFactsCommand(v: unknown): SaveFactsCommand {
       'expectedVersion',
       'clientMutationId',
       'facts',
+      'reportLocationOperation',
     ],
     'command',
   );
@@ -322,6 +341,13 @@ export function parseSaveFactsCommand(v: unknown): SaveFactsCommand {
     expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
     facts: parseFacts(o['facts']),
+    ...(Object.hasOwn(o, 'reportLocationOperation')
+      ? {
+          reportLocationOperation: parseReportLocationOperation(
+            o['reportLocationOperation'],
+          ),
+        }
+      : {}),
   };
 }
 export function parseSavePlanDraftCommand(v: unknown): SavePlanDraftCommand {

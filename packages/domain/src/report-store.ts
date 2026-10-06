@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+  resolveWeatherFacts,
+  writeReportLocation,
+  frozenWeatherReferences,
+} from './weather-store.js';
 import { buildPersonnelWindow } from './personnel-metrics.js';
 import { InvalidReportInput } from '@mje/contracts';
 import type { Pool, PoolClient } from 'pg';
@@ -18,6 +23,7 @@ import type {
   SavePlanDraftCommand,
   StartCorrectionCommand,
   SubmitReportCommand,
+  WeatherFactsExtension,
 } from '@mje/contracts';
 import {
   blankFacts,
@@ -39,6 +45,20 @@ import {
   type PlanState,
   type PlanVersion,
 } from './report-rules.js';
+
+/** Optional safe extensions only: no command coordinates or unrelated facts enter helper DTOs. */
+function weatherFactsOf(
+  facts: WeatherFactsExtension | null,
+): WeatherFactsExtension {
+  return {
+    ...(facts && Object.hasOwn(facts, 'weatherReferences')
+      ? { weatherReferences: facts.weatherReferences }
+      : {}),
+    ...(facts && Object.hasOwn(facts, 'reportLocationRef')
+      ? { reportLocationRef: facts.reportLocationRef }
+      : {}),
+  };
+}
 
 const planLock = (orgId: string, projectId: string, target: string) =>
   `${orgId}:plan:${projectId}:${target}`;
@@ -256,7 +276,7 @@ export class ReportStore {
             throw new ReportError('LOCKED');
           const before = await draftFacts(client, actor.orgId, day.id);
           // Omission by an older client cannot erase source cells already on the locked draft.
-          const facts = {
+          let facts: DayFacts = {
             ...command.facts,
             ...(!Object.hasOwn(command.facts, 'sourceReport') &&
             before?.sourceReport
@@ -370,6 +390,44 @@ export class ReportStore {
                 throw new InvalidReportInput('facts.sourceReport.items');
             }
           }
+          const beforeWeather = weatherFactsOf(before);
+          const incomingWeather = weatherFactsOf(command.facts);
+          if (
+            Object.keys(beforeWeather).length ||
+            Object.keys(incomingWeather).length ||
+            command.reportLocationOperation !== undefined
+          ) {
+            const scope = {
+              projectId: project.id,
+              dailyCloseId: day.id,
+              businessDate: command.businessDate,
+              siteTimezone: day.siteTimezone,
+            };
+            const resolved = await resolveWeatherFacts(
+              client,
+              actor,
+              scope,
+              beforeWeather,
+              incomingWeather,
+              command.clientMutationId,
+            );
+            const location = await writeReportLocation(
+              client,
+              actor,
+              scope,
+              command.reportLocationOperation,
+              beforeWeather.reportLocationRef ?? null,
+              command.clientMutationId,
+            );
+            facts = {
+              ...facts,
+              ...resolved,
+              ...(Object.hasOwn(beforeWeather, 'reportLocationRef') ||
+              command.reportLocationOperation !== undefined
+                ? { reportLocationRef: location }
+                : {}),
+            };
+          }
           await this.saveDraft(client, actor, day.id, facts);
           await this.audit(
             client,
@@ -429,6 +487,19 @@ export class ReportStore {
     const revisionId = randomUUID();
     // Freeze prior selected submissions plus this newly assigned version in this transaction.
     // The previous submission on this same date is superseded, never counted a second time.
+    const weatherReferences = facts.weatherReferences?.length
+      ? await frozenWeatherReferences(
+          client,
+          actor,
+          {
+            projectId: project.id,
+            dailyCloseId: day.id,
+            businessDate,
+            siteTimezone: day.siteTimezone,
+          },
+          weatherFactsOf(facts),
+        )
+      : [];
     const personnelSummary = buildPersonnelWindow({
       projectId: project.id,
       toBusinessDate: businessDate,
@@ -463,6 +534,7 @@ export class ReportStore {
         {
           ...snapshot,
           personnelSummary,
+          weatherReferences,
           primaryWorkItemKey: project.primaryWorkItemKey,
           milestones: items
             .filter((i) => i.kind === 'milestone')

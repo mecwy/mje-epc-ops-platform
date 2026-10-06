@@ -19,6 +19,7 @@ import {
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
+  WeatherStore,
   reportReader,
   type ReportReadContext,
 } from '@mje/domain';
@@ -41,6 +42,7 @@ function runtime(): AlphaRuntime {
   return {
     store: Object.create(AlphaStore.prototype) as AlphaStore,
     reportStore,
+    weatherStore: Object.create(WeatherStore.prototype) as WeatherStore,
     projectStatusCommands: Object.create(
       ProjectStatusCommands.prototype,
     ) as ProjectStatusCommands,
@@ -123,7 +125,10 @@ const OTHER_GUARD =
 const HTTP_HOST = 'apps/api/src/main.ts';
 // This adapter is injected by a caller; it has no process entry or default transport.
 // Keep the exemption exact and prove it cannot execute code when loaded.
-const WORKER_SUPPORT_MODULES = ['apps/worker/src/weather-provider.ts'];
+const WORKER_SUPPORT_MODULES = [
+  'apps/worker/src/weather-provider.ts',
+  'apps/worker/src/weather-worker.ts',
+];
 function inertModule(text: string) {
   const source = ts.createSourceFile(
     'support.ts',
@@ -136,18 +141,41 @@ function inertModule(text: string) {
     ts.isNumericLiteral(node) ||
     (ts.isObjectLiteralExpression(node) &&
       node.properties.every(
-        (p) => ts.isPropertyAssignment(p) && literal(p.initializer),
+        (p) =>
+          ts.isPropertyAssignment(p) &&
+          !ts.isComputedPropertyName(p.name) &&
+          literal(p.initializer),
       )) ||
     (ts.isAsExpression(node) && literal(node.expression));
   return source.statements.every(
     (s) =>
+      (ts.isImportDeclaration(s) &&
+        s.importClause !== undefined &&
+        ts.isStringLiteral(s.moduleSpecifier) &&
+        (s.importClause.isTypeOnly ||
+          ['@mje/contracts', './weather-provider.js'].includes(
+            s.moduleSpecifier.text,
+          ))) ||
       ts.isInterfaceDeclaration(s) ||
       ts.isTypeAliasDeclaration(s) ||
       ts.isFunctionDeclaration(s) ||
       (ts.isClassDeclaration(s) &&
+        !(ts.canHaveDecorators(s) && ts.getDecorators(s)?.length) &&
+        (!s.heritageClauses ||
+          s.heritageClauses.every(
+            (h) =>
+              h.token === ts.SyntaxKind.ExtendsKeyword &&
+              h.types.every(
+                (t) =>
+                  ts.isIdentifier(t.expression) &&
+                  t.expression.text === 'Error',
+              ),
+          )) &&
         s.members.every(
           (m) =>
             !ts.isClassStaticBlockDeclaration(m) &&
+            !(m.name && ts.isComputedPropertyName(m.name)) &&
+            !(ts.canHaveDecorators(m) && ts.getDecorators(m)?.length) &&
             !(
               ts.canHaveModifiers(m) &&
               ts
@@ -213,6 +241,10 @@ describe('Worker / CLI entry enumeration (ADR-0003 D2.2)', () => {
       'const job = start()',
       'class Job { static { start() } }',
       'import "./start.js"',
+      'class Job extends start() {}',
+      'class Job { [start()]() {} }',
+      'const values = { [start()]: "safe" }',
+      '@start() class Job {}',
     ]) {
       expect(
         discoverEntries((f) =>
@@ -262,6 +294,19 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
       `?projectId=${PROJECT}&targetBusinessDate=2026-09-02`,
     ],
     'GET /api/report/items': ['items', `?projectId=${PROJECT}`],
+    'GET /api/weather/locations': ['weatherLocations', `?projectId=${PROJECT}`],
+    'GET /api/weather/requests': [
+      'weatherRequest',
+      `?projectId=${PROJECT}&requestId=${PROJECT}`,
+    ],
+    'GET /api/weather/snapshots': [
+      'weatherSnapshot',
+      `?projectId=${PROJECT}&snapshotId=${PROJECT}`,
+    ],
+    'GET /api/weather/report-location/coordinates': [
+      'reportLocationCoordinates',
+      `?projectId=${PROJECT}&recordId=${PROJECT}`,
+    ],
   } as const;
   it('covers every report read entry of surface.ts', () => {
     const surfaced = SURFACE.filter(

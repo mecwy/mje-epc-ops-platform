@@ -1,5 +1,6 @@
 import type {
   PeopleWindowSummaryDto,
+  SafeFrozenWeatherReference,
   ProjectStatusHistoryDto,
   ProjectManagerProjectionsDto,
   StatusCommandResultDto,
@@ -29,6 +30,10 @@ import type {
   ReportProjectsDto,
   ReportHomeDto,
   ReportRevisionDto,
+  ReportWeatherLocationsDto,
+  ReportWeatherRequestDto,
+  ReportWeatherSnapshotDto,
+  ReportLocationCoordinatesDto,
 } from '../report-reader.js';
 import type { IssueHomeDto } from '../issue-reader.js';
 import type { IssueStore } from '../issue-store.js';
@@ -184,6 +189,10 @@ export interface ProjectorDtos {
   'report.plan.reader': ReportPlanDto;
   'report.items': ReportItemDto[];
   'report.peopleWindow': PeopleWindowSummaryDto;
+  'report.weatherLocations': ReportWeatherLocationsDto;
+  'report.weatherRequest': ReportWeatherRequestDto;
+  'report.weatherSnapshot': ReportWeatherSnapshotDto;
+  'report.reportLocationCoordinates': ReportLocationCoordinatesDto;
   'report.lagHistory': ReportLagDayDto[];
   'issue.list': IssueListDto;
   'issue.home': IssueHomeDto;
@@ -260,6 +269,51 @@ const days = (state: Layer): Root<ReportDayRowDto[]> => ({
   items: { businessDate: S, state: { layer: state }, revision: S },
 });
 /** The day keys both projectors share; `content` is where the day's facts come from. */
+const weatherData = {
+  provider: SUB,
+  query: {
+    layer: 'submitted',
+    fields: {
+      projectId: S,
+      locationVersionId: S,
+      businessDate: S,
+      timezone: S,
+      point: sub('coordinates'),
+      interval: sub('structure'),
+      product: S,
+      model: S,
+    },
+  },
+  category: SUB,
+  fetchedAt: SUB,
+  publishedAt: SUB,
+  coverage: SUB,
+  grid: sub('coordinates'),
+  metrics: sub('submitted'),
+} as const;
+// Frozen site-purpose query points and provider grid cells are submitted weather provenance.
+// They are never taken from the restricted personal ReportLocationRecord coordinate exit.
+const frozenWeatherData = {
+  ...weatherData,
+  query: {
+    ...weatherData.query,
+    fields: { ...weatherData.query.fields, point: sub('submitted') },
+  },
+  grid: sub('submitted'),
+} as const;
+const weatherReferenceFields: FieldTable<SafeFrozenWeatherReference> = {
+  referenceId: S,
+  snapshotId: S,
+  locationVersionId: S,
+  adoptedAt: SUB,
+  adoptedByAccountId: SUB,
+  adoptedByPersonId: SUB,
+  snapshot: { layer: 'submitted', fields: frozenWeatherData },
+  adapterVersion: SUB,
+  responseHash: SUB,
+  sourceLink: SUB,
+  licenseLink: SUB,
+};
 const dayCommon = (content: Layer) =>
   ({
     access: S,
@@ -287,8 +341,11 @@ const dayCommon = (content: Layer) =>
         noWork: sub(content),
         updated: sub(content),
         sourceReport: sub(content),
+        weatherReferences: sub(content),
+        reportLocationRef: sub(content),
       },
     },
+    weatherReferences: { layer: content, items: weatherReferenceFields },
     items: sub('structure'),
     planStatus: sub(content),
     baseline: sub('structure'),
@@ -510,6 +567,40 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
   'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.weatherLocations': {
+    items: {
+      id: S,
+      projectId: S,
+      scopeKey: S,
+      n: S,
+      siteTimezone: S,
+      point: sub('coordinates'),
+      confirmedAt: S,
+    },
+  },
+  'report.weatherRequest': {
+    fields: {
+      id: S,
+      projectId: S,
+      businessDate: S,
+      locationVersionId: S,
+      state: { layer: 'draft' },
+      snapshotId: S,
+    },
+  },
+  'report.weatherSnapshot': {
+    fields: {
+      id: S,
+      data: { layer: 'submitted', fields: weatherData },
+      adapterVersion: SUB,
+      responseHash: SUB,
+      sourceLink: SUB,
+      licenseLink: SUB,
+    },
+  },
+  'report.reportLocationCoordinates': {
+    fields: { lat: { layer: 'coordinates' }, lon: { layer: 'coordinates' } },
+  },
   'report.peopleWindow': {
     fields: {
       schemaVersion: S,

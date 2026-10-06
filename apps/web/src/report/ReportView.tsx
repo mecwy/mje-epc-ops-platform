@@ -21,6 +21,7 @@ import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, photoPlacement, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
 import { PhotoStrip, ReportPhotos } from './Photos.js';
+import { FrozenWeatherReferences } from './WeatherLocation.js';
 import {
   SourceReport,
   SourceCell as SourceValue,
@@ -1077,6 +1078,25 @@ export function ReportBody({
         </section>
       )}
       <Attention issues={c.issues ?? []} onReply={onReply ?? null} />
+      <FrozenWeatherReferences references={c.weatherReferences ?? []} />
+      {f.reportLocationRef && (
+        <section
+          className="card report-weather"
+          aria-label={t('weatherLocation_savedLocation')}
+        >
+          <h3>{t('weatherLocation_savedLocation')}</h3>
+          <p>
+            {t('weatherLocation_accuracy')}: {f.reportLocationRef.accuracyM} m
+          </p>
+          <p>
+            {t('weatherLocation_device')}:{' '}
+            {f.reportLocationRef.deviceFixAt ?? t('unknown')}
+          </p>
+          <p>
+            {t('weatherLocation_acquired')}: {f.reportLocationRef.acquiredAt}
+          </p>
+        </section>
+      )}
       <div className="rgrid">
         <div className="rcol">
           {f.noWork ? (

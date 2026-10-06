@@ -1,4 +1,4 @@
-import type { DayFactsDto } from '@mje/contracts';
+import type { DayFactsDto, ReportLocationOperation } from '@mje/contracts';
 import {
   ApiError,
   type DayView,
@@ -99,6 +99,10 @@ export const ownerToken = (what: string) => `${what}:${++tokens}`;
  */
 export class DayStore {
   private readonly entries = new Map<string, DayEntry>();
+  private readonly weatherFlushes = new WeakMap<
+    DayEntry,
+    Promise<FlushOutcome>
+  >();
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** Kept current by the hook (callbacks change between renders). */
   hooks: { conflict: () => void; recovery: DraftRecovery | undefined } = {
@@ -348,10 +352,55 @@ export class DayStore {
   /** Save what was typed; never while the day is locked (its holder saves first). */
   async flush(e: DayEntry): Promise<FlushOutcome> {
     this.cancelAutosave();
+    if (e.session.weatherNeedsSave) {
+      const running = this.weatherFlushes.get(e);
+      if (running) return running;
+      const run = this.flushWeather(e).finally(() =>
+        this.weatherFlushes.delete(e),
+      );
+      this.weatherFlushes.set(e, run);
+      return run;
+    }
     if (e.lock !== null) return e.session.dirty ? 'failed' : 'ok';
     const outcome = await e.session.flush();
     await this.settleAfter(e, outcome);
     return outcome;
+  }
+  private async flushWeather(e: DayEntry): Promise<FlushOutcome> {
+    const owner = e.lock ?? ownerToken('weather');
+    if (!owner.startsWith('weather:') || !this.acquire(e, owner))
+      return 'failed';
+    try {
+      const outcome = e.session.weatherAwaitingRead
+        ? 'ok'
+        : await e.session.hold();
+      if (outcome === 'ok') await this.release(e, owner, 'saved');
+      else if (outcome === 'conflict') {
+        this.hooks.conflict();
+        await this.release(e, owner, 'refused');
+      } else if (!e.session.weatherUnknown) this.abandon(e, owner);
+      return outcome;
+    } catch (error) {
+      if (!e.session.weatherUnknown) this.abandon(e, owner);
+      throw error;
+    }
+  }
+  /** Accept an explicit C03 draft intent, then save through the existing single day lock. */
+  editWeather(
+    e: DayEntry,
+    facts: DayFactsDto,
+    operation?: ReportLocationOperation,
+  ): boolean {
+    if (
+      e.lock !== null ||
+      !e.day ||
+      e.day.access !== 'write' ||
+      e.day.state === 'submitted'
+    )
+      return false;
+    if (!e.session.editWeather(facts, operation)) return false;
+    void this.flush(e);
+    return true;
   }
   /**
    * Fill a retained input in again, as an edit of the user's (autosaved on the day's current

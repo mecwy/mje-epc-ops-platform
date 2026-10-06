@@ -3,7 +3,11 @@
  * Inputs are plain values; the store and the browser both call these so that
  * server-side enforcement and client-side previews cannot drift.
  */
-import { isRealTimestamp, type SourceReport } from '@mje/contracts';
+import {
+  isRealTimestamp,
+  type SourceReport,
+  type WeatherFactsExtension,
+} from '@mje/contracts';
 
 export const TOKENS = ['unknown', 'na'] as const;
 export type Token = (typeof TOKENS)[number];
@@ -98,7 +102,7 @@ export interface MilestoneFact {
   actual: string;
   note: string;
 }
-export interface DayFacts {
+export interface DayFacts extends WeatherFactsExtension {
   sourceReport?: SourceReport;
   weather: string;
   temperature: string;
@@ -131,6 +135,8 @@ export function blankFacts(): DayFacts {
 }
 export function hasFacts(f: DayFacts): boolean {
   return Boolean(
+    f.weatherReferences?.length ||
+    f.reportLocationRef ||
     (f.sourceReport &&
       ((f.sourceReport.schemaVersion !== 1 &&
         f.sourceReport.reportedNextPlan &&

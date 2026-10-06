@@ -16,4 +16,5 @@ export * from './project-master.js';
 export * from './project-home.js';
 export * from './manager-review.js';
 export * from './weather.js';
+export * from './weather-persistence.js';
 export * from './personnel-metrics.js';

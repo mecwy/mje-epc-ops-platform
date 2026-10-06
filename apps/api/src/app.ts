@@ -28,6 +28,9 @@ import {
   PhotoStore,
   ReportError,
   ReportStore,
+  reportReader,
+  WeatherStore,
+  WeatherStoreError,
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
@@ -36,6 +39,10 @@ import {
 } from '@mje/domain';
 import { InvalidAlphaInput, InvalidReportInput } from '@mje/contracts';
 import { AlphaController } from './alpha.controller.js';
+import {
+  WeatherController,
+  type WeatherApiPort,
+} from './weather.controller.js';
 import { ReportController } from './report.controller.js';
 import { IssueController } from './issue.controller.js';
 import { PhotoController } from './photo.controller.js';
@@ -85,7 +92,7 @@ const FIELD_STATUS: Partial<Record<string, number>> = {
   RETRY: 503,
 };
 @Catch()
-class SafeErrorFilter implements ExceptionFilter {
+export class SafeErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     let status = 500;
     let code = 'REQUEST_FAILED';
@@ -106,6 +113,10 @@ class SafeErrorFilter implements ExceptionFilter {
     ) {
       status = 400;
       code = 'INVALID_INPUT';
+    } else if (error instanceof WeatherStoreError) {
+      // Store failures carry a fixed code only; preserve outcome uncertainty in the generic envelope.
+      status = 500;
+      code = 'REQUEST_FAILED';
     } else if (error instanceof ProjectStatusError) {
       code = error.code;
       status =
@@ -177,6 +188,8 @@ export interface AlphaRuntime {
   store: AlphaStore;
   /** Site Daily Close (U2.1); absent until the report slice is enabled. */
   reportStore?: ReportStore;
+  /** TEST-enabled C03 runtime; absence keeps the weather routes disabled. */
+  weatherStore?: WeatherStore;
   projectStatusCommands?: ProjectStatusCommands;
   projectStatusReader?: ProjectStatusReader;
   projectHomeReader?: ProjectHomeReader;
@@ -194,6 +207,35 @@ export interface AlphaRuntime {
   auth: TokenConfiguration;
 }
 export async function createApp(alpha?: AlphaRuntime) {
+  const weatherApi: WeatherApiPort | null =
+    alpha?.reportStore && alpha.weatherStore
+      ? {
+          configureLocation: (identity, command) =>
+            alpha.weatherStore!.configureLocation(identity, command),
+          request: (identity, command) =>
+            alpha.weatherStore!.request(identity, command),
+          locations: (identity, projectId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader.forContext(ctx).weatherLocations(projectId),
+            ),
+          requestStatus: (identity, projectId, requestId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader.forContext(ctx).weatherRequest(projectId, requestId),
+            ),
+          snapshot: (identity, projectId, snapshotId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader
+                .forContext(ctx)
+                .weatherSnapshot(projectId, snapshotId),
+            ),
+          coordinates: (identity, projectId, recordId) =>
+            alpha.reportStore!.read(identity, (ctx) =>
+              reportReader
+                .forContext(ctx)
+                .reportLocationCoordinates(projectId, recordId),
+            ),
+        }
+      : null;
   @Controller('api')
   class ConfigurationController {
     @Get('auth-config') config() {
@@ -213,6 +255,7 @@ export async function createApp(alpha?: AlphaRuntime) {
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
+      ...(weatherApi ? [WeatherController] : []),
       ...(alpha?.projectStatusCommands && alpha.projectStatusReader
         ? [ProjectStatusController]
         : []),
@@ -237,6 +280,9 @@ export async function createApp(alpha?: AlphaRuntime) {
     providers: alpha
       ? [
           { provide: AlphaStore, useValue: alpha.store },
+          ...(weatherApi
+            ? [{ provide: 'C03_WEATHER_API', useValue: weatherApi }]
+            : []),
           ...(alpha.projectStatusCommands && alpha.projectStatusReader
             ? [
                 {

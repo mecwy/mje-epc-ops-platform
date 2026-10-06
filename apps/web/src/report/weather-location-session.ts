@@ -122,6 +122,13 @@ export class WeatherLocationSession {
   get editable() {
     return this.state.writable && !this.state.locked;
   }
+  /** The parent calls this only after its positively applied post-write day read. */
+  acknowledgeSavedIntent() {
+    if (this.state.locationStatus === 'confirmed_pending_save')
+      this.update({ locationStatus: 'idle' });
+    if (this.state.referencedSnapshotId)
+      this.update({ referencedSnapshotId: null });
+  }
   setContext(context: WeatherContext) {
     if (keyOf(context) === keyOf(this.state.context)) return;
     this.deactivate();
@@ -285,6 +292,7 @@ export class WeatherLocationSession {
       !this.editable ||
       !ref ||
       this.state.weatherStatus !== 'ready' ||
+      this.state.referencedSnapshotId === ref.snapshotId ||
       ref.stale
     )
       return false;

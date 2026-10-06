@@ -1,14 +1,6 @@
 /** No default HTTP transport: activation, authorization and persistence belong to the caller. */
-export interface OpenMeteoQuery {
-  projectId: string;
-  locationVersionId: string;
-  businessDate: string;
-  timezone: string;
-  point: { lat: string; lon: string };
-  interval: { startAt: string; endAt: string };
-  product: 'historical-weather' | 'forecast';
-  model: 'era5' | 'ifs' | 'forecast';
-}
+import { weatherCategory, type WeatherQueryDto } from '@mje/contracts';
+export type OpenMeteoQuery = WeatherQueryDto;
 export class WeatherProviderError extends Error {
   constructor(
     readonly code:
@@ -111,12 +103,7 @@ export function parseOpenMeteoDaily(
   return {
     provider: 'open-meteo',
     query,
-    category:
-      query.model === 'era5'
-        ? 'reanalysis'
-        : query.model === 'ifs'
-          ? 'analysis'
-          : 'forecast',
+    category: weatherCategory(query),
     fetchedAt,
     publishedAt: null,
     coverage: Object.values(metrics).every((v) => v.state === 'value')

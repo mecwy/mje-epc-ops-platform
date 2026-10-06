@@ -25,6 +25,19 @@ import {
 import { PlanEditor, planListeners } from './report/PlanEditor.js';
 import { PlanSession } from './report/plan-session.js';
 import { PersonnelMetricsSession } from './report/personnel-metrics-session.js';
+import {
+  WeatherLocation,
+  FrozenWeatherReferences,
+} from './report/WeatherLocation.js';
+import {
+  WeatherLocationSession,
+  type WeatherContext,
+} from './report/weather-location-session.js';
+import {
+  disabledWeatherPorts,
+  type WeatherPresentationPorts,
+} from './report/weather-adapter.js';
+import { parseReportLocationCandidate } from '@mje/contracts';
 import type { PersonnelRevisionLink } from './report/PersonnelMetrics.js';
 import { ReportBody, ReportView } from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
@@ -185,6 +198,7 @@ function Workspace({
   requestedDate,
   onDateChange,
   active,
+  weatherPorts,
 }: {
   session: Session;
   project: Project;
@@ -197,6 +211,7 @@ function Workspace({
   resume: ResumeKeeper;
   recoveryWorkspaces: Map<string, WorkspaceDrafts>;
   pmRegistry: PmOwnerRegistry;
+  weatherPorts?: WeatherPresentationPorts;
 }) {
   const { t, label, locale } = useI18n();
   const [toast, setToast] = useState<string | null>(null);
@@ -267,6 +282,86 @@ function Workspace({
     () => say(t('conflictReloaded')),
     resume,
   );
+  const weatherSessions = useRef(new Map<string, WeatherLocationSession>());
+  const weatherOwner = useRef(crypto.randomUUID());
+  const weatherAccess = useRef({
+    date,
+    canWrite,
+    active,
+    expired: signin.expired,
+  });
+  weatherAccess.current = { date, canWrite, active, expired: signin.expired };
+  const weatherEntry = h.store.entry(project.id, date);
+  let weatherSession = weatherSessions.current.get(date);
+  if (!weatherSession) {
+    const scope = {
+      ownerKey: weatherOwner.current,
+      projectId: project.id,
+      businessDate: date,
+      timezone: project.timezone,
+      locationVersionId: weatherPorts?.locationVersionId ?? null,
+    };
+    const accepts = (context: Readonly<WeatherContext>) =>
+      weatherAccess.current.date === scope.businessDate &&
+      weatherAccess.current.canWrite &&
+      weatherAccess.current.active &&
+      !weatherAccess.current.expired &&
+      context.ownerKey === scope.ownerKey &&
+      context.projectId === scope.projectId &&
+      context.businessDate === scope.businessDate &&
+      context.timezone === scope.timezone &&
+      context.locationVersionId === scope.locationVersionId;
+    weatherSession = new WeatherLocationSession(
+      scope,
+      {
+        loadWeather:
+          weatherPorts?.loadWeather ?? disabledWeatherPorts.loadWeather,
+        locate: weatherPorts?.locate ?? disabledWeatherPorts.locate,
+        acceptLocation: parseReportLocationCandidate,
+        confirmLocation: (context, candidate) =>
+          accepts(context) &&
+          h.store.editWeather(weatherEntry, weatherEntry.session.facts, {
+            kind: 'capture',
+            candidate,
+            clientConfirmedAt: new Date().toISOString(),
+          }),
+        referenceWeather: (context, snapshotId) =>
+          !!context.locationVersionId &&
+          accepts(context) &&
+          !(weatherEntry.session.facts.weatherReferences ?? []).some(
+            (ref) =>
+              ref.locationVersionId === context.locationVersionId &&
+              ref.snapshotId === snapshotId,
+          ) &&
+          h.store.editWeather(weatherEntry, {
+            ...weatherEntry.session.facts,
+            weatherReferences: [
+              ...(weatherEntry.session.facts.weatherReferences ?? []),
+              { locationVersionId: context.locationVersionId, snapshotId },
+            ],
+          }),
+      },
+      { writable: canWrite, locked: true },
+    );
+    weatherSessions.current.set(date, weatherSession);
+  }
+  useEffect(() => {
+    weatherSession.setAccess({
+      writable: canWrite && !signin.expired && active,
+      locked: h.busy || !h.day || h.day.state === 'submitted',
+    });
+    if (!weatherEntry.session.weatherNeedsSave)
+      weatherSession.acknowledgeSavedIntent();
+  }, [
+    weatherSession,
+    weatherEntry,
+    canWrite,
+    signin.expired,
+    active,
+    h.busy,
+    h.day?.state,
+    h.day?.version,
+  ]);
   const personnelWindows = useMemo(
     () => new Map<string, PersonnelMetricsSession>(),
     [api, project.id],
@@ -280,10 +375,11 @@ function Workspace({
     void personnelSession.refresh();
   }, [
     personnelSession,
-    h.day?.version,
+    h.day?.state,
     h.day?.currentRevisionNumber,
     signin.expired,
     active,
+    canWrite,
   ]);
   const pendingPersonnelRevision = useRef<PersonnelRevisionLink | null>(null);
   const latestDrafts = useRef(h);
@@ -752,32 +848,67 @@ function Workspace({
             h={{ ...h, stale: h.stale && !pm.adoptFor(date).settling }}
           />
           {task === 'fill' ? (
-            <FillPage
-              h={h}
-              day={day}
-              cov={cov}
-              focus={focus}
-              onFocused={() => setFocus(null)}
-              onBack={() => {
-                void h.flush();
-                setTask(null);
-              }}
-              onCheck={() => {
-                void h.flush();
-                setTask('check');
-              }}
-              onPlan={() => {
-                void h.flush();
-                setTask(null);
-                setView('field');
-                setFieldTab('plan');
-              }}
-              onSubmit={() => void submit()}
-              busy={busy}
-              tomorrowText={tomorrowText}
-              issues={issues}
-              canWrite={canWrite}
-            />
+            <>
+              {(canWrite || weatherEntry.session.weatherNeedsSave) && (
+                <WeatherLocation
+                  session={weatherSession}
+                  savedSnapshotIds={
+                    h.facts.weatherReferences?.map((ref) => ref.snapshotId) ??
+                    []
+                  }
+                  savedLocation={h.facts.reportLocationRef ?? null}
+                  pendingLocationKind={weatherEntry.session.pendingLocationKind}
+                  pendingSave={weatherEntry.session.weatherUnknown}
+                  onRetrySave={() => void h.flush()}
+                  onClearLocation={() => {
+                    h.store.editWeather(
+                      weatherEntry,
+                      weatherEntry.session.facts,
+                      { kind: 'clear' },
+                    );
+                  }}
+                  {...(h.facts.weatherReferences?.length
+                    ? {
+                        onDetachWeather: () => {
+                          h.store.editWeather(weatherEntry, {
+                            ...weatherEntry.session.facts,
+                            weatherReferences: [],
+                          });
+                        },
+                      }
+                    : {})}
+                />
+              )}
+              <FrozenWeatherReferences
+                references={h.read?.weatherReferences ?? []}
+              />
+              <FillPage
+                h={h}
+                day={day}
+                cov={cov}
+                focus={focus}
+                onFocused={() => setFocus(null)}
+                onBack={() => {
+                  void h.flush();
+                  setTask(null);
+                }}
+                onCheck={() => {
+                  void h.flush();
+                  setTask('check');
+                }}
+                onPlan={() => {
+                  void h.flush();
+                  setTask(null);
+                  setView('field');
+                  setFieldTab('plan');
+                }}
+                onSubmit={() => void submit()}
+                busy={busy}
+                tomorrowText={tomorrowText}
+                issues={issues}
+                canWrite={canWrite}
+              />
+            </>
           ) : (
             <CheckPage
               h={h}
@@ -959,7 +1090,7 @@ function FailureText({ failure }: { failure: SignInFailure }) {
   );
 }
 
-function Root() {
+function Root({ weatherPorts }: { weatherPorts?: WeatherPresentationPorts }) {
   const { t } = useI18n();
   const { session, needLogin, signIn, error, state } = useSession();
   const [resume] = useState(() => new ResumeKeeper(sessionStore(), Date.now()));
@@ -1194,6 +1325,7 @@ function Root() {
               resume={resume}
               recoveryWorkspaces={recoveryWorkspaces}
               pmRegistry={pmRegistry!}
+              {...(weatherPorts ? { weatherPorts } : {})}
               {...(reportRoute?.projectId === p.id
                 ? { requestedDate: reportRoute.businessDate }
                 : {})}
@@ -1271,10 +1403,12 @@ function Root() {
   );
 }
 
-export function App() {
+export function App({
+  weatherPorts,
+}: { weatherPorts?: WeatherPresentationPorts } = {}) {
   return (
     <I18nProvider>
-      <Root />
+      <Root {...(weatherPorts ? { weatherPorts } : {})} />
     </I18nProvider>
   );
 }

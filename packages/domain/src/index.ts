@@ -64,3 +64,15 @@ export type {
   ForecastObservation as ProjectHomeForecastObservation,
 } from './project-home/rules.js';
 export * from './manager-review-rules.js';
+
+export { WeatherStore, WeatherStoreError } from './weather-store.js';
+export {
+  claimWeatherJob,
+  finishWeatherJob,
+  failWeatherJob,
+} from './weather-jobs.js';
+export type {
+  WeatherJobLease,
+  WeatherJobFailure,
+  WeatherSnapshotMetadata,
+} from './weather-jobs.js';
