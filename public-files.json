@@ -134,6 +134,7 @@
   "apps/web/src/report/evidence-session.test.ts",
   "apps/web/src/report/evidence-session.ts",
   "apps/web/src/report/fact-evidence.test.ts",
+  "apps/web/src/report/fill-layout.test.ts",
   "apps/web/src/report/foreman-adopt.test.ts",
   "apps/web/src/report/foreman-adopt.ts",
   "apps/web/src/report/format.test.ts",

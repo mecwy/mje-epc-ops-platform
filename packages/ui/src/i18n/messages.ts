@@ -411,6 +411,25 @@ export const MESSAGES = {
   adopt: ['采用', 'Use', 'Preuzmi', 'Usar'],
   adoptN: ['采用 {n}', 'Use {n}', 'Preuzmi {n}', 'Usar {n}'],
   allDetails: ['全部明细', 'All details', 'Svi detalji', 'Todos los detalles'],
+  fillDayStatus: [
+    '当天填报状态',
+    'Today’s report status',
+    'Today’s report status',
+    'Today’s report status',
+  ],
+  fillSections: [
+    '填写日报分区',
+    'Report entry sections',
+    'Report entry sections',
+    'Report entry sections',
+  ],
+  fillSaveDraft: ['保存草稿', 'Save draft', 'Save draft', 'Save draft'],
+  fillPreview: [
+    '预览与检查',
+    'Preview and check',
+    'Preview and check',
+    'Preview and check',
+  ],
   allFilled: ['已全部填写', 'All filled in', 'Sve je uneto', 'Todo rellenado'],
   already: [
     '今天已签到',
