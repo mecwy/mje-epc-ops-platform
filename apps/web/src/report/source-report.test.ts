@@ -550,6 +550,55 @@ describe('selected-version source adapter in the actual report body', () => {
       expect(page(before, lang)).not.toContain('TEST recorder:');
     },
   );
+  it.each(['zh', 'en', 'sr', 'es'] as const)(
+    'keeps system plan, source target, headcount and percent bases separate in %s',
+    (lang) => {
+      const c = content();
+      c.nextPlan = { status: 'draft', n: null, rows: [] };
+      c.facts.qty.test = '10';
+      c.facts.sourceReport = parseFacts({
+        ...c.facts,
+        sourceReport: {
+          ...source,
+          schemaVersion: 2,
+          reportedNextPlan: {
+            targetBusinessDate: '2025-03-11',
+            quantities: { test: { ...source.peopleTotal!, raw: ' 23 ' } },
+          },
+        },
+      }).sourceReport!;
+      const frozen = JSON.stringify(c);
+      const html = page(c, lang);
+      const summary = html
+        .split('<section class="card source-report"')[0]!
+        .replaceAll('&#x27;', "'");
+      expect(summary).toContain(translate(lang, 'tomorrowPlan'));
+      expect(summary).toContain(translate(lang, 'draft'));
+      expect(summary).toContain(translate(lang, 'sourceNextPlan'));
+      expect(summary).toContain('2025-03-11');
+      expect(summary).toContain(' 23 ');
+      expect(summary).toContain(translate(lang, 'sourceApprovalUnknown'));
+      expect(summary).toContain(translate(lang, 'sourceClassifiedTotal'));
+      expect(summary).toContain(
+        translate(lang, 'sourceDifference', { value: '+1' }),
+      );
+      expect(summary).toContain(translate(lang, 'sourceCalculatedPercent'));
+      expect(summary).toContain(translate(lang, 'sourceWorkPercent'));
+      expect(JSON.stringify(c)).toBe(frozen);
+      const old = content();
+      delete old.facts.sourceReport;
+      const oldHtml = page(old, lang);
+      expect(oldHtml).not.toContain('2025-03-11');
+      expect(oldHtml).toContain(translate(lang, 'sourceNextPlanMissing'));
+      expect(oldHtml).not.toContain(
+        translate(lang, 'sourceDifference', { value: '+1' }),
+      );
+      c.facts.people.installer = 'unknown';
+      expect(page(c, lang)).not.toContain(
+        translate(lang, 'sourceDifference', { value: '+1' }),
+      );
+    },
+  );
   it('keeps absent source on an old version instead of displaying a newer source', () => {
     const old = content();
     delete old.facts.sourceReport;

@@ -205,6 +205,14 @@ function Progress({
 }) {
   const { t, label, locale } = useI18n();
   const f = c.facts;
+  const sourceLabels = useSourceLabels();
+  const source = f.sourceReport;
+  const reportedPlan =
+    source && source.schemaVersion !== 1 ? source.reportedNextPlan : undefined;
+  const reportedTargets = Object.entries(reportedPlan?.quantities ?? {}).filter(
+    ([, cell]) => cell.state !== 'blank',
+  );
+
   const { active } = activeWork(c);
   const items = byKind(c.items, 'work');
   const tomorrow =
@@ -249,7 +257,19 @@ function Progress({
               <div className="muted small">
                 {t('cumulative')} {fmtNum(cum, locale)}
                 {it.designQty ? ` / ${fmtNum(it.designQty, locale)}` : ''}
-                {cp ? ` · ${cp}%` : ''}
+                {cp ? ` · ${t('sourceCalculatedPercent')} ${cp}%` : ''}
+                {source?.workPercent[it.key] && (
+                  <span className="report-muted">
+                    {t('sourceWorkPercent')}:{' '}
+                    <SourceValue
+                      cell={sourceCellDisplay(
+                        source,
+                        source.workPercent[it.key],
+                      )}
+                      labels={sourceLabels}
+                    />
+                  </span>
+                )}
               </div>
             )}
             <ReportPhotos photos={photos} type="item" id={it.key} />
@@ -271,7 +291,7 @@ function Progress({
           </span>
         )}
       </p>
-      <Kv label={t('tomorrow')} top>
+      <Kv label={t('tomorrowPlan')} top>
         {tomorrow.length ? (
           tomorrow
             .map((r) => {
@@ -287,6 +307,35 @@ function Progress({
         )}
         {c.nextPlan.status === 'draft' && <Chip>{t('draft')}</Chip>}
       </Kv>
+      <Kv label={t('sourceNextPlan')} top>
+        {reportedPlan ? (
+          <>
+            <time dateTime={reportedPlan.targetBusinessDate}>
+              {reportedPlan.targetBusinessDate}
+            </time>
+            {reportedTargets.length ? (
+              reportedTargets.map(([key, value]) => {
+                const item = items.find((it) => it.key === key);
+                return (
+                  <div key={key}>
+                    {item ? label(item.label) : key}{' '}
+                    <SourceValue
+                      cell={sourceCellDisplay(source, value)}
+                      labels={sourceLabels}
+                    />{' '}
+                    {unitOf(label, item)}
+                  </div>
+                );
+              })
+            ) : (
+              <span className="report-muted">{t('notFilled')}</span>
+            )}
+            <small className="report-muted">{t('sourceApprovalUnknown')}</small>
+          </>
+        ) : (
+          <span className="report-muted">{t('sourceNextPlanMissing')}</span>
+        )}
+      </Kv>
     </section>
   );
 }
@@ -294,6 +343,24 @@ function Progress({
 function Resources({ c }: { c: ReportContent }) {
   const { t, label, locale } = useI18n();
   const f = c.facts;
+  const sourceLabels = useSourceLabels();
+  const source = f.sourceReport;
+  const originalTotal = sourceCellDisplay(source, source?.peopleTotal);
+  const peopleComparison = sourceReportModel({
+    ...(source
+      ? {
+          source: {
+            ...(originalTotal ? { peopleTotal: originalTotal } : {}),
+            workPercent: {},
+            materials: {},
+          },
+        }
+      : {}),
+    people: f.people,
+    work: [],
+    materials: [],
+  }).people;
+
   const numeric = ROLE_KEYS.filter((r) => dec(f.people[r]) !== null);
   const roles = ROLE_KEYS.map((r) => (f.people[r] ?? '').trim());
   // A total is complete only when every role is a number or n/a; otherwise say it is partial.
@@ -318,7 +385,13 @@ function Resources({ c }: { c: ReportContent }) {
   return (
     <section className="card">
       <h2 className="blk">{t('resources')}</h2>
-      <Kv label={t('people')}>
+      <Kv
+        label={
+          partial
+            ? t('sourcePartialClassifiedTotal')
+            : t('sourceClassifiedTotal')
+        }
+      >
         {numeric.length ? (
           <>
             <b className="num">{decText(sum(['gc', 'sub', 'worker']))}</b>{' '}
@@ -336,6 +409,22 @@ function Resources({ c }: { c: ReportContent }) {
             {roles.some((r) => r === '') &&
               ` · ${t('nBlank', { n: roles.filter((r) => r === '').length })}`}
           </span>
+        )}
+      </Kv>
+      <Kv label={`${t('people')} · ${t('sourceOriginal')}`}>
+        <SourceValue cell={originalTotal} labels={sourceLabels} />
+        {peopleComparison.comparison.state === 'different' && (
+          <small className="report-muted">
+            {t('sourceDifference', {
+              value: peopleComparison.comparison.difference,
+            })}
+          </small>
+        )}
+        {peopleComparison.comparison.state === 'equal' && (
+          <small className="report-muted">{t('sourceEqual')}</small>
+        )}
+        {peopleComparison.comparison.state === 'partial' && (
+          <small className="report-muted">{t('sourcePartial')}</small>
         )}
       </Kv>
       {machinery.length > 0 && (
@@ -495,7 +584,12 @@ function BusinessSections({
       <div hidden={selected !== 'progress'} className="report-business-panel">
         <Progress c={c} photos={photos} photoOnly={photoOnly} />
         {table(
-          [t('progress'), t('today'), t('cumulative'), t('design')],
+          [
+            t('progress'),
+            t('today'),
+            `${t('cumulative')} · ${t('sourceCalculatedPercent')}`,
+            t('design'),
+          ],
           byKind(c.items, 'work').map((it) => {
             const completion = pct(
               dec(c.facts.cumulative[it.key]),
