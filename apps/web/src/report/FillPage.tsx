@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useState, type ReactNode } from 'react';
 import type { ReportItemDto } from '@mje/contracts';
 import { ROLE_KEYS, dec, decText, type Coverage } from '@mje/domain/rules';
 import type { DayView } from '../api.js';
@@ -545,6 +545,44 @@ export function CheckList({
   );
 }
 
+const FILL_SECTIONS = ['progress', 'materials', 'people', 'machinery'] as const;
+type FillSection = (typeof FILL_SECTIONS)[number];
+/** Reveal the existing input's section before focusing; never creates another editor/session. */
+export function fillSectionForFocus(id: string): FillSection | null {
+  if (id.startsWith('mat-')) return 'materials';
+  if (id.startsWith('m-')) return 'machinery';
+  if (id.startsWith('p-')) return 'people';
+  if (
+    id.startsWith('q-') ||
+    id.startsWith('c-') ||
+    id.startsWith('ph-') ||
+    id === 'f-construction'
+  )
+    return 'progress';
+  return null;
+}
+
+/** One request spans reveal + focus commits, then ends even if its control is absent. */
+export function resolveFillFocus(
+  id: string,
+  section: FillSection,
+  ports: {
+    reveal: (section: FillSection) => void;
+    find: (id: string) => Pick<HTMLElement, 'scrollIntoView' | 'focus'> | null;
+    resolved: () => void;
+  },
+) {
+  const target = fillSectionForFocus(id);
+  if (target !== null && target !== section) {
+    ports.reveal(target);
+    return;
+  }
+  const el = ports.find(id);
+  el?.scrollIntoView({ block: 'center' });
+  el?.focus();
+  ports.resolved();
+}
+
 export function FillPage({
   h,
   day,
@@ -559,6 +597,8 @@ export function FillPage({
   tomorrowText,
   issues,
   canWrite,
+  weatherControls,
+  weatherControlsPending,
 }: {
   h: DayHandle;
   day: DayView;
@@ -573,21 +613,27 @@ export function FillPage({
   tomorrowText: string;
   issues: IssuesHandle;
   canWrite: boolean;
+  weatherControls?: ReactNode;
+  weatherControlsPending?: boolean;
 }) {
   const { t, label, locale, lang } = useI18n();
-  const [mm, setMm] = useState(false);
+  const [section, setSection] = useState<FillSection>('progress');
+  const [locationControlsOpen, setLocationControlsOpen] = useState(false);
+  const [requestedFocus, setRequestedFocus] = useState<string | null>(null);
   const f = h.facts!;
-  const locked = day.state === 'submitted' || busy;
+  const locked = day.state === 'submitted' || busy || !canWrite;
   useEffect(() => {
-    if (!focus) return;
-    if (focus.startsWith('m-')) setMm(true);
-    const el = document.getElementById(focus);
-    if (el) {
-      el.scrollIntoView({ block: 'center' });
-      (el as HTMLInputElement).focus();
-      onFocused();
-    }
-  }, [focus, onFocused, mm]);
+    const id = requestedFocus ?? focus;
+    if (!id) return;
+    resolveFillFocus(id, section, {
+      reveal: setSection,
+      find: (targetId) => document.getElementById(targetId),
+      resolved: () => {
+        setRequestedFocus(null);
+        if (focus) onFocused();
+      },
+    });
+  }, [focus, requestedFocus, section, onFocused]);
   const any = ROLE_KEYS.some((r) => dec(f.people[r]) !== null);
   const total = ROLE_KEYS.reduce((a, r) => a + (dec(f.people[r]) ?? 0n), 0n);
   const narrative = (k: 'quality' | 'safety') => (
@@ -616,7 +662,7 @@ export function FillPage({
     </>
   );
   return (
-    <div className="entry-workspace entry-manager">
+    <div className="entry-workspace entry-manager fill-workbench">
       <header className="bar task">
         <button
           type="button"
@@ -630,6 +676,22 @@ export function FillPage({
           {t('reportOf', { d: fmtShort(day.businessDate, locale) })}
         </span>
         <SaveBadge save={h.save} />
+        <button
+          type="button"
+          className="ghost fill-save"
+          disabled={locked}
+          onClick={() => void h.flush()}
+        >
+          {t('fillSaveDraft')}
+        </button>
+        <button
+          type="button"
+          className="primary fill-preview"
+          disabled={busy}
+          onClick={onCheck}
+        >
+          {t('fillPreview')}
+        </button>
       </header>
       <main className="page task-page">
         <div className="fwrap">
@@ -661,30 +723,88 @@ export function FillPage({
                 )}
               </div>
             )}
-            <div className="fgrid">
-              <div className="fcol">
-                <section className="card">
-                  <div className="row2">
-                    <label className="field">
-                      <span>{t('weather')}</span>
-                      <input
-                        id="f-weather"
-                        value={f.weather}
-                        disabled={locked}
-                        onChange={(e) => h.edit('weather', e.target.value)}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>{t('temperature')}</span>
-                      <input
-                        value={f.temperature}
-                        disabled={locked}
-                        onChange={(e) => h.edit('temperature', e.target.value)}
-                      />
-                    </label>
-                  </div>
-                </section>
-                <section className="card">
+            <section
+              className="card fill-day-status"
+              aria-label={t('fillDayStatus')}
+            >
+              <div>
+                <span className="report-eyebrow">{t('fillDayStatus')}</span>
+                <h2>
+                  {day.state === 'correcting'
+                    ? t('correcting')
+                    : day.state === 'submitted'
+                      ? t('submittedLocked')
+                      : t('draft')}
+                </h2>
+              </div>
+              <strong className={cov.missing.length ? 'warn-t' : ''}>
+                {cov.missing.length
+                  ? t('missingN', { n: cov.missing.length })
+                  : t('allFilled')}
+              </strong>
+            </section>
+            <div className="fill-business">
+              <section className="card fill-manual-weather">
+                <h2 className="blk">{t('weather')}</h2>
+                <div className="row2">
+                  <label className="field">
+                    <span>{t('weather')}</span>
+                    <input
+                      id="f-weather"
+                      value={f.weather}
+                      disabled={locked}
+                      onChange={(e) => h.edit('weather', e.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>{t('temperature')}</span>
+                    <input
+                      value={f.temperature}
+                      disabled={locked}
+                      onChange={(e) => h.edit('temperature', e.target.value)}
+                    />
+                  </label>
+                </div>
+                {weatherControls && (
+                  <details
+                    className="fill-guidance"
+                    open={weatherControlsPending || locationControlsOpen}
+                  >
+                    <summary
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (!weatherControlsPending)
+                          setLocationControlsOpen((open) => !open);
+                      }}
+                    >
+                      {t('weatherLocation_position')}
+                    </summary>
+                    {weatherControls}
+                  </details>
+                )}
+              </section>
+              <section className="card fill-sections">
+                <div
+                  className="report-section-tabs fill-section-tabs"
+                  role="group"
+                  aria-label={t('fillSections')}
+                >
+                  {FILL_SECTIONS.map((key) => (
+                    <button
+                      type="button"
+                      key={key}
+                      aria-pressed={section === key}
+                      onClick={() => setSection(key)}
+                    >
+                      {t(key)}
+                    </button>
+                  ))}
+                </div>
+                <section
+                  hidden={section !== 'progress'}
+                  className="fill-section"
+                  aria-label={t('progress')}
+                >
                   <h2 className="blk">{t('progress')}</h2>
                   <WorkRows h={h} day={day} locked={locked} />
                   <label className="field">
@@ -711,9 +831,11 @@ export function FillPage({
                     <Icon.right />
                   </button>
                 </section>
-              </div>
-              <div className="fcol">
-                <section className="card">
+                <section
+                  hidden={section !== 'people'}
+                  className="fill-section"
+                  aria-label={t('people')}
+                >
                   <div className="blk-row">
                     <h2 className="blk">{t('resources')}</h2>
                     <span className="small">
@@ -739,80 +861,80 @@ export function FillPage({
                       );
                     })}
                   </div>
-                  <button
-                    type="button"
-                    className="rowbtn inset"
-                    aria-expanded={mm}
-                    onClick={() => setMm(!mm)}
-                  >
-                    <span className="grow">
-                      <b>{t('machineryMaterials')}</b>
-                    </span>
-                    {mm ? <Icon.down /> : <Icon.right />}
-                  </button>
-                  {mm && (
-                    <div className="sub">
-                      {byKind(day.items, 'machinery').map((m) => (
-                        <div className="qline" key={`m-${m.key}`}>
-                          <label htmlFor={`m-${m.key}`} className="grow">
-                            <span className="qname">{label(m.label)}</span>
-                          </label>
-                          <NumInput
-                            id={`m-${m.key}`}
-                            size="sm"
-                            value={f.machinery[m.key]}
-                            disabled={locked}
-                            onChange={(v) => h.edit(`machinery.${m.key}`, v)}
-                          />
-                        </div>
-                      ))}
-                      {byKind(day.items, 'material').map((m) => {
-                        const total = day.materialsCumulative[m.key];
-                        return (
-                          <div className="qline" key={`mat-${m.key}`}>
-                            <label htmlFor={`mat-${m.key}`} className="grow">
-                              <span className="qname">{label(m.label)}</span>
-                              <span className="muted small">
-                                {t('cumulative')}{' '}
-                                {total?.value
-                                  ? fmtNum(total.value, locale)
-                                  : '—'}
-                                {m.designQty
-                                  ? ` / ${fmtNum(m.designQty, locale)}`
-                                  : ''}
-                                {total && !total.complete
-                                  ? ` · ${t('incomplete')}`
-                                  : ''}
-                              </span>
-                            </label>
-                            <NumInput
-                              id={`mat-${m.key}`}
-                              size="sm"
-                              value={f.materials[m.key]}
-                              disabled={locked}
-                              onChange={(v) => h.edit(`materials.${m.key}`, v)}
-                            />
-                          </div>
-                        );
-                      })}
+                </section>
+                <section
+                  hidden={section !== 'machinery'}
+                  className="fill-section"
+                  aria-label={t('machinery')}
+                >
+                  <h2 className="blk">{t('machinery')}</h2>
+                  {byKind(day.items, 'machinery').map((m) => (
+                    <div className="qline" key={`m-${m.key}`}>
+                      <label htmlFor={`m-${m.key}`} className="grow">
+                        <span className="qname">{label(m.label)}</span>
+                      </label>
+                      <NumInput
+                        id={`m-${m.key}`}
+                        size="sm"
+                        value={f.machinery[m.key]}
+                        disabled={locked}
+                        onChange={(v) => h.edit(`machinery.${m.key}`, v)}
+                      />
                     </div>
-                  )}
+                  ))}
                 </section>
-                <section className="card">
-                  <FillIssues
-                    handle={issues}
-                    items={day.items}
-                    canWrite={canWrite}
-                  />
-                  {narrative('quality')}
-                  {narrative('safety')}
+                <section
+                  hidden={section !== 'materials'}
+                  className="fill-section"
+                  aria-label={t('materials')}
+                >
+                  <h2 className="blk">{t('materials')}</h2>
+                  {byKind(day.items, 'material').map((m) => {
+                    const total = day.materialsCumulative[m.key];
+                    return (
+                      <div className="qline" key={`mat-${m.key}`}>
+                        <label htmlFor={`mat-${m.key}`} className="grow">
+                          <span className="qname">{label(m.label)}</span>
+                          <span className="muted small">
+                            {t('cumulative')}{' '}
+                            {total?.value ? fmtNum(total.value, locale) : '—'}
+                            {m.designQty
+                              ? ` / ${fmtNum(m.designQty, locale)}`
+                              : ''}
+                            {total && !total.complete
+                              ? ` · ${t('incomplete')}`
+                              : ''}
+                          </span>
+                        </label>
+                        <NumInput
+                          id={`mat-${m.key}`}
+                          size="sm"
+                          value={f.materials[m.key]}
+                          disabled={locked}
+                          onChange={(v) => h.edit(`materials.${m.key}`, v)}
+                        />
+                      </div>
+                    );
+                  })}
                 </section>
-                <PhotosCard />
-              </div>
+              </section>
+              <section className="card">
+                <FillIssues
+                  handle={issues}
+                  items={day.items}
+                  canWrite={canWrite}
+                />
+                {narrative('quality')}
+                {narrative('safety')}
+              </section>
+              <PhotosCard />
             </div>
           </div>
           <aside className="checkpanel">
-            <p className="entry-context">{t('entryCompletenessOnly')}</p>
+            <details className="fill-guidance">
+              <summary>{t('fillCheckGuidance')}</summary>
+              <p className="entry-context">{t('entryCompletenessOnly')}</p>
+            </details>
             <CheckList
               cov={cov}
               h={h}
@@ -820,13 +942,18 @@ export function FillPage({
               busy={busy}
               panel
               onSubmit={onSubmit}
-              onFocus={(id) => document.getElementById(id)?.focus()}
+              onFocus={setRequestedFocus}
             />
           </aside>
         </div>
       </main>
       <div className="foot fill-foot">
-        <button type="button" className="primary wide" onClick={onCheck}>
+        <button
+          type="button"
+          className="primary wide"
+          disabled={busy}
+          onClick={onCheck}
+        >
           {day.state === 'correcting' ? t('checkCorrect') : t('checkSubmit')}
         </button>
       </div>

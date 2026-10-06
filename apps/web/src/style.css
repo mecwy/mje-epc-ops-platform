@@ -2314,6 +2314,85 @@ ul.plainlist:not(.card) {
 }
 
 /* Workspace integration: all selectors stay inside the new shell/entry roots. */
+.fill-workbench .fill-day-status {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: start;
+}
+.fill-workbench .fill-day-status h2 {
+  margin: 6px 0 0;
+  font-size: 22px;
+}
+.fill-workbench .fill-business,
+.fill-workbench .fill-section {
+  min-width: 0;
+}
+.fill-workbench .fill-sections {
+  padding: 0;
+  overflow: hidden;
+}
+.fill-workbench .fill-section {
+  padding: 20px;
+}
+.fill-workbench .fill-section[hidden] {
+  display: none;
+}
+.fill-workbench .fill-section-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+.fill-workbench .fill-section-tabs button {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 16px 8px;
+  background: transparent;
+  color: var(--muted);
+}
+.fill-workbench .fill-section-tabs button[aria-pressed='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+}
+.fill-workbench .fill-guidance {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.fill-workbench .fill-guidance summary {
+  cursor: pointer;
+}
+.fill-workbench .fill-manual-weather .blk {
+  margin-bottom: 12px;
+}
+.fill-workbench .qline .grow {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fill-workbench .bar.task {
+  height: auto;
+  min-height: 56px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-block: 8px;
+}
+@media (max-width: 719px) {
+  .fill-workbench .bar-h {
+    flex-basis: calc(100% - 56px);
+  }
+  .fill-workbench .fill-save,
+  .fill-workbench .fill-preview {
+    flex: 1;
+  }
+  .fill-workbench .fill-section {
+    padding: 16px 12px;
+  }
+}
 .workspace-root,
 .entry-workspace {
   --ink: #233143;
