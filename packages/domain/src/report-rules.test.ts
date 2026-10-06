@@ -615,3 +615,37 @@ describe('carry-over between submitted days', () => {
     ).toEqual({ value: null, complete: false });
   });
 });
+
+describe('source declarations are facts, never operational quantities', () => {
+  it('counts a recorded blank cell but not documents alone; leaves numeric rules unchanged', () => {
+    const f = blankFacts();
+    f.sourceReport = {
+      schemaVersion: 1,
+      documents: {
+        testDoc: {
+          sha256: 'a'.repeat(64),
+          label: 'TEST source',
+          format: 'docx',
+        },
+      },
+      workPercent: {},
+      materials: {},
+    };
+    expect(hasFacts(f)).toBe(false);
+    f.sourceReport.peopleTotal = {
+      raw: '  ',
+      state: 'blank',
+      at: { document: 'testDoc', table: 0, row: 0, cell: 0 },
+    };
+    expect(hasFacts(f)).toBe(true);
+    expect(peopleTotal(f.people)).toBeNull();
+    f.sourceReport.peopleTotal = {
+      ...f.sourceReport.peopleTotal,
+      raw: '999',
+      state: 'value',
+    };
+    expect(peopleTotal(f.people)).toBeNull();
+    expect(f.qty).toEqual({});
+    expect(f.materials).toEqual({});
+  });
+});

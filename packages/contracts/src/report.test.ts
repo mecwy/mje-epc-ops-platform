@@ -184,3 +184,39 @@ describe('report contracts', () => {
     ).toThrow('reason');
   });
 });
+
+describe('source-report compatibility at the facts boundary', () => {
+  it('keeps legacy omission absent, rejects null and previously silently discarded fields', () => {
+    expect(Object.hasOwn(parseFacts(facts()), 'sourceReport')).toBe(false);
+    for (const extra of [
+      { sourceReport: null },
+      { sourceReport: {} },
+      { originalPeopleTotal: '9' },
+      { materialCumulative: {} },
+      { rawCells: [] },
+    ])
+      expect(() => parseFacts({ ...facts(), ...extra })).toThrow(
+        InvalidReportInput,
+      );
+    for (const nested of [
+      { narrative: { ...facts().narrative, extra: 'TEST' } },
+      { noWork: { reason: 'rest', note: '', extra: 'TEST' } },
+      { milestones: { test: { actual: '', note: '', extra: 'TEST' } } },
+    ])
+      expect(() => parseFacts({ ...facts(), ...nested })).toThrow(
+        InvalidReportInput,
+      );
+  });
+  it('refuses extra command authority instead of ignoring it', () => {
+    expect(() =>
+      parseSaveFactsCommand({
+        projectId: ID + '1',
+        businessDate: '2025-03-10',
+        clientMutationId: ID + '2',
+        expectedVersion: 0,
+        facts: facts(),
+        orgId: ID + '3',
+      }),
+    ).toThrow('command.extra');
+  });
+});

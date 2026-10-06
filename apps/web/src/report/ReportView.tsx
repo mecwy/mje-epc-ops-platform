@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { PhotoAsOfDto, ReportItemDto } from '@mje/contracts';
+import type { PhotoAsOfDto, ReportItemDto, SourceCell } from '@mje/contracts';
 import { ROLE_GROUP, ROLE_KEYS, dec, decText, pct } from '@mje/domain/rules';
 import type {
   DayView,
@@ -15,6 +15,117 @@ import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, photoPlacement, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
 import { PhotoStrip, ReportPhotos } from './Photos.js';
+import { SourceReport, type SourceReportLabels } from './SourceReport.js';
+import {
+  sourceReportModel,
+  type ReportedCellDisplay,
+} from './source-report.js';
+
+/** Resolve every value and citation from the selected content, including old revisions. */
+function OriginalComparison({ c }: { c: ReportContent }) {
+  const { t, label } = useI18n();
+  const source = c.facts.sourceReport;
+  const cell = (value: SourceCell): ReportedCellDisplay => {
+    const document = source?.documents[value.at.document];
+    const { table, row, cell, gridSpan, verticalMerge } = value.at;
+    return {
+      raw: value.raw,
+      state: value.state,
+      citation: document
+        ? {
+            ...document,
+            table,
+            row,
+            cell,
+            ...(gridSpan !== undefined ? { gridSpan } : {}),
+            ...(verticalMerge !== undefined ? { verticalMerge } : {}),
+          }
+        : null,
+    };
+  };
+  const model = sourceReportModel({
+    ...(source
+      ? {
+          source: {
+            ...(source.peopleTotal
+              ? { peopleTotal: cell(source.peopleTotal) }
+              : {}),
+            workPercent: Object.fromEntries(
+              Object.entries(source.workPercent).map(([key, value]) => [
+                key,
+                cell(value),
+              ]),
+            ),
+            materials: Object.fromEntries(
+              Object.entries(source.materials).map(([key, value]) => [
+                key,
+                Object.fromEntries(
+                  Object.entries(value).map(([field, value]) => [
+                    field,
+                    cell(value),
+                  ]),
+                ),
+              ]),
+            ),
+          },
+        }
+      : {}),
+    people: c.facts.people,
+    work: byKind(c.items, 'work').map((item) => ({
+      key: item.key,
+      label: label(item.label),
+      cumulative: c.facts.cumulative[item.key],
+      design: item.designQty,
+    })),
+    materials: byKind(c.items, 'material').map((item) => ({
+      key: item.key,
+      label: label(item.label),
+      unit: item.unit,
+      today: c.facts.materials[item.key],
+      cumulative: c.materialsCumulative[item.key] ?? {
+        value: null,
+        complete: false,
+      },
+    })),
+  });
+  const labels: SourceReportLabels = {
+    title: t('sourceTitle'),
+    missingVersion: t('sourceMissingVersion'),
+    unverifiedSource: t('sourceUnverified'),
+    sourceUnavailable: t('sourceUnavailable'),
+    original: t('sourceOriginal'),
+    blank: t('notFilled'),
+    unknown: t('unknown'),
+    na: t('na'),
+    absent: t('sourceAbsent'),
+    people: t('people'),
+    classifiedTotal: t('sourceClassifiedTotal'),
+    partialClassifiedTotal: t('sourcePartialClassifiedTotal'),
+    workPercent: t('sourceWorkPercent'),
+    calculatedPercent: t('sourceCalculatedPercent'),
+    materials: t('materials'),
+    today: t('sourceToday'),
+    originalCumulative: t('sourceOriginalCumulative'),
+    originalPercent: t('sourceOriginalPercent'),
+    originalUnit: t('sourceOriginalUnit'),
+    originalNote: t('sourceOriginalNote'),
+    systemCumulative: t('sourceSystemCumulative'),
+    partialSystemCumulative: t('sourcePartialSystemCumulative'),
+    unit: t('sourceSystemUnit'),
+    equal: t('sourceEqual'),
+    unavailable: t('sourceCannotCompare'),
+    partial: t('sourcePartial'),
+    unitMismatch: t('sourceUnitMismatch'),
+    unitUnavailable: t('sourceUnitUnavailable'),
+    difference: (value) => t('sourceDifference', { value }),
+    coordinates: (table, row, cell) =>
+      t('sourceCoordinates', { table, row, cell }),
+    gridSpan: (value) => t('sourceGridSpan', { value }),
+    verticalMerge: (value) =>
+      value === 'restart' ? t('sourceMergeRestart') : t('sourceMergeContinue'),
+  };
+  return <SourceReport model={model} labels={labels} />;
+}
 
 function Val({ raw }: { raw: string | undefined }) {
   const { t, locale } = useI18n();
@@ -400,6 +511,7 @@ export function ReportBody({
         </div>
       </div>
       <Details c={c} />
+      <OriginalComparison c={c} />
     </>
   );
 }

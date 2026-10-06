@@ -1747,6 +1747,324 @@ try {
     'RLS hides every report table from another org and refuses writes into it; the app role cannot update or delete revisions or plan versions; every write is audited',
   );
 
+  // Source-report extension: synthetic cells only, after the existing audit-count checks.
+  {
+    const date = '2027-02-10';
+    const sourceCell = (raw, state = 'value') => ({
+      raw,
+      state,
+      at: {
+        document: 'testDoc',
+        table: 0,
+        row: 1,
+        cell: 2,
+        gridSpan: 2,
+        verticalMerge: 'restart',
+      },
+    });
+    const sourceReport = {
+      schemaVersion: 1,
+      documents: {
+        testDoc: {
+          sha256: 'a'.repeat(64),
+          label: 'TEST source report',
+          format: 'docx',
+        },
+      },
+      peopleTotal: sourceCell(' 7 '),
+      workPercent: { support: sourceCell(' 12% ') },
+      materials: {
+        rail: {
+          cumulative: sourceCell('17'),
+          percent: sourceCell('unknown', 'unknown'),
+          unit: sourceCell('m'),
+          note: sourceCell('  ', 'blank'),
+        },
+      },
+    };
+    const request = cmd({ businessDate: date, facts: facts({ sourceReport }) });
+    const read = (bearer = pm) =>
+      expectStatus(
+        call(`/day?projectId=${projectA}&businessDate=${date}`, bearer),
+        200,
+      );
+    const revision = (n, bearer = pm) =>
+      expectStatus(
+        call(
+          `/revision?projectId=${projectA}&businessDate=${date}&n=${n}`,
+          bearer,
+        ),
+        200,
+      );
+    let saved = await expectStatus(call('/facts', pm, request), 200);
+    assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    assert.deepEqual(
+      await expectStatus(call('/facts', pm, request), 200),
+      saved,
+    );
+    await expectStatus(
+      call('/facts', pm, {
+        ...request,
+        facts: facts({ sourceReport, weather: 'different payload' }),
+      }),
+      409,
+      'IDEMPOTENCY_KEY_REUSED',
+    );
+    await expectStatus(
+      call(
+        '/facts',
+        exec,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      403,
+    );
+    await expectStatus(
+      call(
+        '/facts',
+        pmB,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      403,
+    );
+    assert.equal((await read(exec)).facts.sourceReport, undefined);
+    pass(
+      'source cells round-trip exactly; same-key replay, foreign tenant and reader writes remain protected',
+    );
+
+    for (const badFacts of [
+      facts({ sourceReport: null }),
+      facts({ sourceReport: { ...sourceReport, undocumented: 'TEST' } }),
+      facts({
+        sourceReport: {
+          ...sourceReport,
+          workPercent: { unregistered: sourceCell('1%') },
+        },
+      }),
+      facts({
+        sourceReport: {
+          ...sourceReport,
+          materials: { support: { unit: sourceCell('m') } },
+        },
+      }),
+      facts({ originalPeopleTotal: '7' }),
+    ]) {
+      await expectStatus(
+        call(
+          '/facts',
+          pm,
+          cmd({
+            businessDate: date,
+            expectedVersion: saved.version,
+            facts: badFacts,
+          }),
+        ),
+        400,
+      );
+      assert.equal((await read()).version, saved.version);
+      assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    }
+    pass(
+      'invalid, null, unknown and wrong-kind source fields are refused atomically without changing the draft',
+    );
+
+    // An old client has no knowledge of sourceReport. Saving its facts must preserve it.
+    const oldClient = cmd({
+      businessDate: date,
+      expectedVersion: saved.version,
+      facts: facts({ weather: 'TEST old client edit' }),
+    });
+    saved = await expectStatus(call('/facts', pm, oldClient), 200);
+    assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    const auditSource = (
+      await owner.query(
+        `SELECT "after" FROM "AuditLog" WHERE "correlationId"=$1 AND action='REPORT_SAVE_FACTS'`,
+        [oldClient.clientMutationId],
+      )
+    ).rows[0];
+    assert.deepEqual(auditSource.after.sourceReport, sourceReport);
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version - 1,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      409,
+      'VERSION_CONFLICT',
+    );
+    pass(
+      'old-client omission preserves source cells in the locked draft and effective audit; stale versions cannot overwrite',
+    );
+
+    let submittedSource = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    const original = JSON.stringify(await revision(1));
+    assert.deepEqual(
+      (await revision(1, exec)).snapshot.facts.sourceReport,
+      sourceReport,
+    );
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submittedSource.version,
+          facts: facts({ sourceReport }),
+        }),
+      ),
+      409,
+      'LOCKED',
+    );
+    let correctingSource = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submittedSource.version,
+          reason: 'TEST source correction',
+        }),
+      ),
+      200,
+    );
+    const revised = { ...sourceReport, peopleTotal: sourceCell('8') };
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correctingSource.version,
+          facts: facts({ sourceReport: revised }),
+        }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read(exec)).facts.sourceReport, sourceReport);
+    assert.deepEqual((await read()).facts.sourceReport, revised);
+    const cancelledSource = await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    assert.deepEqual((await read()).facts.sourceReport, sourceReport);
+    assert.equal(JSON.stringify(await revision(1)), original);
+    correctingSource = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: cancelledSource.version,
+          reason: 'TEST append revised source',
+        }),
+      ),
+      200,
+    );
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correctingSource.version,
+          facts: facts({ sourceReport: revised }),
+        }),
+      ),
+      200,
+    );
+    submittedSource = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    assert.equal(submittedSource.revisionNumber, 2);
+    assert.deepEqual((await revision(2)).snapshot.facts.sourceReport, revised);
+    assert.equal(JSON.stringify(await revision(1)), original);
+    assert.deepEqual((await read(exec)).facts.sourceReport, revised);
+    pass(
+      'source corrections require a new revision; cancellation restores source; readers never see unpublished source changes',
+    );
+
+    const noWorkDate = '2027-02-11';
+    const onlySource = {
+      weather: '',
+      temperature: '',
+      qty: {},
+      cumulative: {},
+      people: {},
+      presence: {},
+      machinery: {},
+      materials: {},
+      milestones: {},
+      updated: {},
+      narrative: { construction: '', quality: '', safety: '' },
+      noWork: null,
+      sourceReport: {
+        ...sourceReport,
+        peopleTotal: sourceCell('  ', 'blank'),
+        workPercent: {},
+        materials: {},
+      },
+    };
+    const sourceOnlySave = await expectStatus(
+      call('/facts', pm, cmd({ businessDate: noWorkDate, facts: onlySource })),
+      200,
+    );
+    assert.equal(sourceOnlySave.state, 'draft');
+    await expectStatus(
+      call(
+        '/no-work',
+        pm,
+        cmd({
+          businessDate: noWorkDate,
+          expectedVersion: sourceOnlySave.version,
+          reason: 'rest',
+          note: 'TEST',
+        }),
+      ),
+      200,
+    );
+    const noWorkSnapshot = await expectStatus(
+      call(
+        `/revision?projectId=${projectA}&businessDate=${noWorkDate}&n=1`,
+        pm,
+      ),
+      200,
+    );
+    assert.deepEqual(
+      noWorkSnapshot.snapshot.facts.sourceReport,
+      onlySource.sourceReport,
+    );
+    pass(
+      'explicit blank source is a recorded fact and survives no-work submission',
+    );
+  }
+
   console.log(
     `Report HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Photos, issues, field devices and the web UI are later slices.`,
   );

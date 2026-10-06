@@ -140,6 +140,33 @@ describe('resume state', () => {
     drafts: [draft('2026-09-29')],
     savedAt: NOW,
   };
+  it('round-trips source cells through a sign-in resume without converting blank or raw text', () => {
+    const s = memoryStore();
+    const saved = draft('2025-03-10');
+    saved.facts.sourceReport = {
+      schemaVersion: 1,
+      documents: {
+        testDoc: {
+          sha256: 'b'.repeat(64),
+          label: 'TEST sign-in source',
+          format: 'docx',
+        },
+      },
+      peopleTotal: {
+        raw: ' \n ',
+        state: 'blank',
+        at: { document: 'testDoc', table: 0, row: 0, cell: 0, gridSpan: 2 },
+      },
+      workPercent: {},
+      materials: {},
+    };
+    const withSource = { ...state, drafts: [saved] };
+    expect(saveResume(s, withSource)).toBe(true);
+    expect(readResume(s, NOW)).toEqual(withSource);
+    expect(
+      readResume(s, NOW)?.drafts[0]?.facts.sourceReport?.peopleTotal?.raw,
+    ).toBe(' \n ');
+  });
   it('reads project, date, view and drafts without removing them', () => {
     const s = memoryStore();
     expect(saveResume(s, state)).toBe(true);

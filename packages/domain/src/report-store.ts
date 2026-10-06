@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { InvalidReportInput } from '@mje/contracts';
 import type { Pool, PoolClient } from 'pg';
 import type {
   CancelCorrectionCommand,
@@ -251,7 +252,33 @@ export class ReportStore {
           if (day.state === 'SUBMITTED' && day.correctionReason === null)
             throw new ReportError('LOCKED');
           const before = await draftFacts(client, actor.orgId, day.id);
-          await this.saveDraft(client, actor, day.id, command.facts);
+          // Omission by an older client cannot erase source cells already on the locked draft.
+          const facts = {
+            ...command.facts,
+            ...(!Object.hasOwn(command.facts, 'sourceReport') &&
+            before?.sourceReport
+              ? { sourceReport: before.sourceReport }
+              : {}),
+          };
+          if (command.facts.sourceReport) {
+            const items = await itemRows(client, actor.orgId, project.id);
+            const source = command.facts.sourceReport;
+            for (const [kind, keys] of [
+              ['work', Object.keys(source.workPercent)],
+              ['material', Object.keys(source.materials)],
+            ] as const) {
+              if (
+                keys.some(
+                  (key) =>
+                    !items.some(
+                      (item) => item.kind === kind && item.key === key,
+                    ),
+                )
+              )
+                throw new InvalidReportInput('facts.sourceReport.items');
+            }
+          }
+          await this.saveDraft(client, actor, day.id, facts);
           await this.audit(
             client,
             actor,
@@ -259,13 +286,13 @@ export class ReportStore {
             'REPORT_SAVE_FACTS',
             '',
             before,
-            command.facts,
+            facts,
             command.clientMutationId,
           );
           return {
             businessDate: command.businessDate,
             version: day.version,
-            state: dayState(day, command.facts),
+            state: dayState(day, facts),
           };
         },
       );
