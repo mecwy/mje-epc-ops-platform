@@ -331,6 +331,22 @@ describe('authenticated browser weather ports', () => {
       JSON.stringify(post.mock.calls[0]![0]),
     );
   });
+  it('starts a fresh keyed request after a known snapshot read fails', async () => {
+    const snapshotRead = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('TEST invalid snapshot'))
+      .mockResolvedValue(snapshot());
+    const { instance, api } = setup({ weatherSnapshot: snapshotRead });
+    await instance.activateWeather();
+    expect(instance.getSnapshot().weatherStatus).toBe('unavailable');
+    await instance.refreshWeather();
+    expect(instance.getSnapshot().weatherStatus).toBe('ready');
+    expect(api.requestWeather).toHaveBeenCalledTimes(2);
+    const first = vi.mocked(api.requestWeather).mock.calls[0]![0];
+    const second = vi.mocked(api.requestWeather).mock.calls[1]![0];
+    expect(second.clientMutationId).not.toBe(first.clientMutationId);
+    expect(second.refresh).toBe(true);
+  });
   it('performs at most fifteen serial status reads and resumes only the original request', async () => {
     vi.useFakeTimers();
     const status = vi.fn(async () => request('PENDING', null));

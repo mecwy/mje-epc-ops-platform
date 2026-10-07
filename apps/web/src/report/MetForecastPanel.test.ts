@@ -241,3 +241,57 @@ describe('MET forecast presentation', () => {
     session.deactivate();
   });
 });
+
+describe('weather edit recovery across feature flags', () => {
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    'retains Retry and Detach (weather=%s, location=%s)',
+    (weatherEnabled, locationEnabled) => {
+      language = 'en';
+      const view = weatherReferenceView(frozen());
+      const session = new WeatherLocationSession(
+        {
+          ownerKey: 'TEST-owner',
+          projectId: view.projectId,
+          businessDate: view.businessDate,
+          timezone: view.timezone,
+          locationVersionId: view.locationVersionId,
+        },
+        {
+          loadWeather: async () => view,
+          locate: vi.fn(),
+          acceptLocation: () => {
+            throw new Error('TEST');
+          },
+          confirmLocation: () => false,
+          referenceWeather: () => false,
+        },
+        { writable: true, locked: false },
+      );
+      const retry = vi.fn(),
+        detach = vi.fn();
+      const html = renderToStaticMarkup(
+        createElement(WeatherLocation, {
+          session,
+          weatherEnabled,
+          locationEnabled,
+          pendingSave: true,
+          onRetrySave: retry,
+          onDetachWeather: detach,
+          savedSnapshotIds: [view.snapshotId],
+        }),
+      );
+      expect(html).toContain(translate('en', 'weatherLocation_pending'));
+      expect(html).toContain(translate('en', 'weatherLocation_retry'));
+      expect(html).toContain(translate('en', 'weatherLocation_detach'));
+      expect(html.match(/role="status"/g)?.length).toBeGreaterThanOrEqual(1);
+      expect(retry).not.toHaveBeenCalled();
+      expect(detach).not.toHaveBeenCalled();
+      session.deactivate();
+    },
+  );
+});

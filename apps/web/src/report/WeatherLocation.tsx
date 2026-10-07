@@ -212,6 +212,21 @@ export function WeatherLocation({
       <p>
         {context.businessDate} · {context.timezone}
       </p>
+      {pendingSave && (
+        <p role="status">
+          {t.pending}{' '}
+          {onRetrySave && (
+            <button type="button" onClick={onRetrySave}>
+              {t.retry}
+            </button>
+          )}
+        </p>
+      )}
+      {state.writable && onDetachWeather && (
+        <button type="button" disabled={!editable} onClick={onDetachWeather}>
+          {t.detach}
+        </button>
+      )}
       {locationEnabled && (
         <>
           <p className="muted small">{t.positionNote}</p>
@@ -281,16 +296,6 @@ export function WeatherLocation({
                 : t.confirmed_pending_save}
             </p>
           )}
-          {pendingSave && (
-            <p role="status">
-              {t.pending}{' '}
-              {onRetrySave && (
-                <button type="button" onClick={onRetrySave}>
-                  {t.retry}
-                </button>
-              )}
-            </p>
-          )}
           {state.writable && savedLocation && onClearLocation && (
             <button
               type="button"
@@ -304,16 +309,6 @@ export function WeatherLocation({
       )}
       {weatherEnabled && (
         <>
-          {!locationEnabled && pendingSave && (
-            <p role="status">
-              {t.pending}{' '}
-              {onRetrySave && (
-                <button type="button" onClick={onRetrySave}>
-                  {t.retry}
-                </button>
-              )}
-            </p>
-          )}
           {state.locationDirectoryStatus !== 'idle' && (
             <div>
               {state.locationDirectoryStatus !== 'selected' && (
@@ -353,15 +348,6 @@ export function WeatherLocation({
                 <p role="status">{t.directory_updated}</p>
               )}
             </div>
-          )}
-          {state.writable && onDetachWeather && (
-            <button
-              type="button"
-              disabled={!editable}
-              onClick={onDetachWeather}
-            >
-              {t.detach}
-            </button>
           )}
           <div aria-live="polite">
             {state.weatherStatus === 'loading' ? (

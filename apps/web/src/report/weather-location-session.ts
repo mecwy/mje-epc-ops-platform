@@ -342,7 +342,9 @@ export class WeatherLocationSession {
           'UNAVAILABLE',
           'RATE_LIMITED',
           'DISABLED',
-        ].includes(this.state.weatherStatus)
+        ].includes(this.state.weatherStatus) ||
+        (this.state.weatherStatus === 'unavailable' &&
+          !!this.queryIntent?.requestId)
       )
         this.queryIntent = null;
       return this.activateWeather(true);

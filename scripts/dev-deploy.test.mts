@@ -100,7 +100,9 @@ for (const ui of [false, true])
       );
       assert.ok(build.includes('VITE_WEATHER_REFERENCE_ENABLED=false'));
       assert.equal(
-        app.some((arg) => arg.includes('weatherReferenceEnabled=true')),
+        app.some((arg) =>
+          /WEATHER_REFERENCE_ENABLED|weatherReferenceEnabled/i.test(arg),
+        ),
         false,
       );
     });
@@ -373,7 +375,13 @@ test('weather UI flag is explicit, independent and build-only', () => {
       );
       assert.equal(
         deployApp(options, sha, '/tmp/src', 'TEST-image').some((arg) =>
-          arg.includes('weatherReferenceEnabled=true'),
+          /WEATHER_REFERENCE_ENABLED|weatherReferenceEnabled/i.test(arg),
+        ),
+        false,
+      );
+      assert.equal(
+        deployMigrationJob(options, sha, '/tmp/src', 'TEST-image').some((arg) =>
+          /WEATHER_REFERENCE_ENABLED|weatherReferenceEnabled/i.test(arg),
         ),
         false,
       );
