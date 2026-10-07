@@ -28,6 +28,10 @@
     "scripts/report-weather-integration.mts",
     "scripts/manager-review-integration.mts",
     "scripts/business-evidence-integration.mts",
-    "scripts/met-cache-integration.mts"
+    "scripts/met-cache-integration.mts",
+    "scripts/dev-contract-server.mts",
+    "scripts/contract-register-integration.mts",
+    "scripts/opportunity-integration.mts",
+    "scripts/dev-opportunity-server.mts"
   ]
 }

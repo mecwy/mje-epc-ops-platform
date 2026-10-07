@@ -63,6 +63,14 @@ export type {
   Forecast as ProjectHomeForecast,
   ForecastObservation as ProjectHomeForecastObservation,
 } from './project-home/rules.js';
+
+export { ContractRegisterReader } from './contract-register/reader.js';
+export { ContractRegisterError } from './contract-register/rules.js';
+
+export { ContractRegisterCommands } from './contract-register/commands.js';
+export { OpportunityCommands } from './opportunity/commands.js';
+export { OpportunityReader } from './opportunity/reader.js';
+export { OpportunityError } from './opportunity/rules.js';
 export * from './manager-review-rules.js';
 
 export { WeatherStore, WeatherStoreError } from './weather-store.js';

@@ -14,13 +14,13 @@ export const DEFERRED: readonly DeferredDimension[] = [
   {
     dimension: 'direction (revenue / cost / all)',
     notApplicableIn: ['report', 'issue', 'photo', 'field', 'project-status'],
-    introducedBy: 'DG-05 first PR',
-    note: 'every surface entry declares direction n/a; the generator does not expand it and does not count it as passed',
+    introducedBy: 'DG05-1a (contract direction implemented)',
+    note: 'Legacy entries declare direction n/a; contract.direction is enforced by the contract reader and tested in its real database suite, not counted by the legacy TEST interpreter',
   },
   {
     dimension: 'contract share',
     notApplicableIn: ['report', 'issue', 'photo', 'field', 'project-status'],
-    introducedBy: 'DG-05 first PR',
-    note: 'explicit grant table with share, clause and amount policy arrives with the contract module',
+    introducedBy: 'DG05-1b (version-pinned project shares)',
+    note: 'DG05-1b implements version-pinned shares and current-project projection in the real contract HTTP/database suite. The legacy interpreter has no contract-share objects and does not count these dimensions',
   },
 ];

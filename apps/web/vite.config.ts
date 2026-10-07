@@ -1,5 +1,8 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
+const apiPort = Number(process.env['DEV_API_PORT'] ?? '3300');
+if (!Number.isInteger(apiPort) || apiPort < 1024 || apiPort > 65535)
+  throw new Error('DEV_API_PORT');
 export default defineConfig({
   build: {
     rollupOptions: {
@@ -14,8 +17,8 @@ export default defineConfig({
     port: 5178,
     strictPort: true,
     proxy: {
-      '/health': 'http://127.0.0.1:3300',
-      '/api': 'http://127.0.0.1:3300',
+      '/health': `http://127.0.0.1:${apiPort}`,
+      '/api': `http://127.0.0.1:${apiPort}`,
     },
   },
 });

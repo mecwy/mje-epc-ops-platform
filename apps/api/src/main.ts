@@ -1,5 +1,9 @@
 import type { Pool } from 'pg';
 import {
+  ContractRegisterReader,
+  OpportunityCommands,
+  OpportunityReader,
+  ContractRegisterCommands,
   AlphaStore,
   CheckInStore,
   FieldStore,
@@ -42,6 +46,10 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     auth,
     verifier,
     store: new AlphaStore(pool),
+    contractRegisterReader: new ContractRegisterReader(pool),
+    contractRegisterCommands: new ContractRegisterCommands(pool),
+    opportunityCommands: new OpportunityCommands(pool),
+    opportunityReader: new OpportunityReader(pool),
     reportStore: new ReportStore(pool, {
       weatherReferenceEnabled:
         process.env['WEATHER_REFERENCE_ENABLED'] === 'true',

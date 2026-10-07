@@ -9,6 +9,10 @@ import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import {
+  ContractRegisterReader,
+  OpportunityCommands,
+  OpportunityReader,
+  ContractRegisterCommands,
   AlphaStore,
   CheckInStore,
   FieldStore,
@@ -41,8 +45,20 @@ function runtime(): AlphaRuntime {
     use: (ctx: ReportReadContext) => Promise<unknown>,
   ) => use(CTX)) as ReportStore['read'];
   return {
+    opportunityCommands: Object.create(
+      OpportunityCommands.prototype,
+    ) as OpportunityCommands,
+    opportunityReader: Object.create(
+      OpportunityReader.prototype,
+    ) as OpportunityReader,
+    contractRegisterCommands: Object.create(
+      ContractRegisterCommands.prototype,
+    ) as ContractRegisterCommands,
     store: Object.create(AlphaStore.prototype) as AlphaStore,
     reportStore,
+    contractRegisterReader: Object.create(
+      ContractRegisterReader.prototype,
+    ) as ContractRegisterReader,
     weatherStore: Object.create(WeatherStore.prototype) as WeatherStore,
     managerReviewStore: Object.create(
       ManagerReviewStore.prototype,

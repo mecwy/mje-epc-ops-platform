@@ -126,6 +126,8 @@ interface AccountRow {
   authzVersion: number;
 }
 export interface AccountAdmission {
+  /** Commands that atomically grant their own account rights must capture FOR UPDATE first. */
+  exclusiveAccount?: boolean;
   /** True when the memberships active at decidedAt let the account into this store at all. */
   admit: (memberships: { role: string; projectId: string | null }[]) => boolean;
   forbidden: () => Error;
@@ -186,7 +188,9 @@ export async function accountTransaction<T>(
       [identity.tenantId, identity.objectId],
     );
     const accounts = await client.query<AccountRow>(
-      'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity($1, $2) a',
+      admission.exclusiveAccount
+        ? 'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity_write($1, $2) a'
+        : 'SELECT a."orgId", a.id, a."personId", a."authzVersion" FROM app_account_for_identity($1, $2) a',
       [identity.tenantId, identity.objectId],
     );
     if (accounts.rows.length !== 1) throw admission.forbidden();
@@ -324,11 +328,14 @@ export async function idempotent<T>(
   command: unknown,
   work: () => Promise<T>,
   project: Projection<T> = asStored,
+  /** Resource-dependent authorization: idem lock → resource lock → reauthorize → replay. */
+  beforeReplay?: () => Promise<void>,
 ): Promise<T> {
   const requestHash = sha(command);
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
     `${actor.orgId}:${actor.accountId}:${route}:${key}`,
   ]);
+  await beforeReplay?.();
   const prior = await client.query<{ requestHash: string; responseBody: T }>(
     `SELECT "requestHash", "responseBody" FROM "IdempotencyRecord"
     WHERE "orgId"=$1 AND "actorId"=$2 AND route=$3 AND key=$4`,

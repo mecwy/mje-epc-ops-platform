@@ -61,6 +61,15 @@ try {
     index.headers.get('content-security-policy'),
     /frame-ancestors 'none'/,
   );
+  for (const path of ['/contracts', '/opportunities']) {
+    const entry = await fetch(base + path);
+    assert.equal(entry.status, 200, `workspace entry must exist: ${path}`);
+    assert.match(entry.headers.get('content-type'), /text\/html/);
+    assert.equal(entry.headers.get('cache-control'), 'no-store');
+    assert.match(await entry.text(), /MJE/);
+  }
+  const auth = await fetch(`${base}/api/auth-config`);
+  assert.deepEqual(await auth.json(), { enabled: false });
   for (const path of [
     '/.env',
     '/.git/config',

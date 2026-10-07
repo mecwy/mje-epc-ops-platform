@@ -1,4 +1,15 @@
 import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
+import { ContractRegisterController } from './contract-register.controller.js';
+import { OpportunityController } from './opportunity.controller.js';
+import {
+  ContractRegisterReader,
+  OpportunityCommands,
+  OpportunityReader,
+  OpportunityError,
+  ContractRegisterError,
+  ContractRegisterCommands,
+} from '@mje/domain';
+import { ContractCommandsController } from './contract-commands.controller.js';
 import { ProjectStatusController } from './project-status.controller.js';
 import { ProjectHomeController } from './project-home.controller.js';
 import 'reflect-metadata';
@@ -14,6 +25,7 @@ import {
 import { NestFactory } from '@nestjs/core';
 import express from 'express';
 import { publicAssets } from './public-assets.js';
+import { businessEntry } from './business-entry.js';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
@@ -121,6 +133,33 @@ export class SafeErrorFilter implements ExceptionFilter {
     ) {
       status = 400;
       code = 'INVALID_INPUT';
+    } else if (error instanceof OpportunityError) {
+      code = error.code;
+      status =
+        code === 'NOT_FOUND'
+          ? 404
+          : code === 'FORBIDDEN'
+            ? 403
+            : [
+                  'VERSION_CONFLICT',
+                  'FIELD_CONFLICT',
+                  'STEP_CONFLICT',
+                  'REQUEST_CONFLICT',
+                  'DECISION_CONFLICT',
+                  'IDENTITY_EXISTS',
+                ].includes(code)
+              ? 409
+              : 400;
+    } else if (error instanceof ContractRegisterError) {
+      code = error.code;
+      status =
+        code === 'NOT_FOUND'
+          ? 404
+          : code === 'FORBIDDEN'
+            ? 403
+            : code === 'VERSION_CONFLICT' || code === 'IDENTITY_EXISTS'
+              ? 409
+              : 400;
     } else if (error instanceof WeatherStoreError) {
       // Store failures carry a fixed code only; preserve outcome uncertainty in the generic envelope.
       status = 500;
@@ -204,6 +243,10 @@ export interface AlphaRuntime {
   managerReviewStore?: ManagerReviewStore;
   managerReviewPorts?: ReviewServerPorts;
   projectStatusCommands?: ProjectStatusCommands;
+  contractRegisterReader?: ContractRegisterReader;
+  contractRegisterCommands?: ContractRegisterCommands;
+  opportunityCommands?: OpportunityCommands;
+  opportunityReader?: OpportunityReader;
   projectStatusReader?: ProjectStatusReader;
   projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
@@ -293,6 +336,13 @@ export async function createApp(
   @Module({
     controllers: [
       HealthController,
+      ...(alpha?.opportunityCommands && alpha.opportunityReader
+        ? [OpportunityController]
+        : []),
+      ...(alpha?.contractRegisterReader ? [ContractRegisterController] : []),
+      ...(alpha?.contractRegisterReader && alpha.contractRegisterCommands
+        ? [ContractCommandsController]
+        : []),
       ConfigurationController,
       ...(alpha ? [AlphaController] : []),
       ...(alpha?.reportStore ? [ReportController] : []),
@@ -331,6 +381,34 @@ export async function createApp(
       ...(alpha
         ? [
             { provide: AlphaStore, useValue: alpha.store },
+            ...(alpha.opportunityCommands && alpha.opportunityReader
+              ? [
+                  {
+                    provide: OpportunityCommands,
+                    useValue: alpha.opportunityCommands,
+                  },
+                  {
+                    provide: OpportunityReader,
+                    useValue: alpha.opportunityReader,
+                  },
+                ]
+              : []),
+            ...(alpha.contractRegisterCommands
+              ? [
+                  {
+                    provide: ContractRegisterCommands,
+                    useValue: alpha.contractRegisterCommands,
+                  },
+                ]
+              : []),
+            ...(alpha.contractRegisterReader
+              ? [
+                  {
+                    provide: ContractRegisterReader,
+                    useValue: alpha.contractRegisterReader,
+                  },
+                ]
+              : []),
             ...(managerReviewService
               ? [
                   {
@@ -418,6 +496,7 @@ export async function createApp(
   app.use(express.json({ limit: '256kb', strict: true }));
   if (process.env['WEB_ROOT'])
     app.use(
+      businessEntry(resolve(process.env['WEB_ROOT'])),
       publicAssets(resolve(process.env['WEB_ROOT'])),
       express.static(resolve(process.env['WEB_ROOT']), {
         dotfiles: 'deny',

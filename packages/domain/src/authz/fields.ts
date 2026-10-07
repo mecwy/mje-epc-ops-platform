@@ -1,4 +1,23 @@
 import type {
+  OpportunityItemDto,
+  OpportunityHistoryDto,
+  OpportunityLookupsDto,
+  OpportunityWorklistsDto,
+  OpportunityFactsDto,
+  OpportunityRevisionDto,
+  OpportunityUpdateDto,
+  OpportunityRequestDto,
+  OpportunityDecisionDto,
+} from '@mje/contracts';
+import type {
+  ContractRegisterItemDto,
+  ContractHistoryDto,
+  ContractRevisionDto,
+  ContractEditorDto,
+  ContractRevisionInput,
+  ContractEditorLookupsDto,
+} from '@mje/contracts';
+import type {
   PeopleWindowSummaryDto,
   ManagerReviewReadDto,
   SafeFrozenWeatherReference,
@@ -49,6 +68,13 @@ import type { ReportItemDto } from '@mje/contracts';
  * (issue titles and notes); field-writer: check-ins, foreman reports and adoptions (A6.0).
  */
 export type Layer =
+  | 'opportunity-internal'
+  // Closed field/value union: projected by its semantic field, including nested restricted basis.
+  | 'opportunity-projected-field'
+  | 'contract-amount'
+  | 'contract-original'
+  | 'contract-internal'
+  | 'contract-terms'
   | 'structure'
   | 'draft'
   | 'submitted'
@@ -172,6 +198,16 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 
 /** The DTO each layered projector produces. */
 export interface ProjectorDtos {
+  'opportunity.list': { items: OpportunityItemDto[] };
+  'opportunity.detail': OpportunityItemDto;
+  'opportunity.history': OpportunityHistoryDto;
+  'opportunity.lookups': OpportunityLookupsDto;
+  'opportunity.worklists': OpportunityWorklistsDto;
+  'contract-register.list': ContractRegisterItemDto[];
+  'contract-register.detail': ContractRegisterItemDto;
+  'contract-register.history': ContractHistoryDto;
+  'contract-register.editor': ContractEditorDto;
+  'contract-register.lookups': ContractEditorLookupsDto;
   'project-status.history': ProjectStatusHistoryDto;
   'project-status.managers': ProjectManagerProjectionsDto;
   'project-status.home': ProjectStatusHomeDto;
@@ -437,7 +473,454 @@ const reportItemFields = {
   active: S,
 };
 
+const SOURCE: FieldTable<import('@mje/contracts').ContractSourceDto> = {
+  sourceDocumentId: { layer: 'contract-original' },
+  location: { layer: 'contract-original' },
+  filename: { layer: 'contract-original' },
+  sha256: { layer: 'contract-original' },
+};
+const SOURCE_NODE = { layer: 'contract-original' as const, fields: SOURCE };
+const CONTRACT_SHARE: FieldTable<import('@mje/contracts').ContractShareDto> = {
+  scopeId: S,
+  projectId: S,
+  version: S,
+  pinnedRevisionN: S,
+  basis: S,
+  quantity: S,
+  unitRaw: S,
+  unit: S,
+  description: { layer: 'public-text' },
+  retired: S,
+  needsReconciliation: S,
+  internal: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      area: { layer: 'contract-internal' },
+      note: { layer: 'contract-internal' },
+      reason: { layer: 'contract-internal' },
+    },
+  },
+};
+const CONTRACT_REVISION: FieldTable<ContractRevisionDto> = {
+  n: S,
+  name: { layer: 'public-text' },
+  originalNumber: { layer: 'public-text' },
+  counterpartyRaw: { layer: 'public-text' },
+  selfPartyRaw: { layer: 'public-text' },
+  informationOwnerPersonId: S,
+  informationOwnerDisplayName: S,
+  registeredAt: S,
+  signedOn: { layer: 'structure', fields: { state: S, value: S } },
+  effectiveOn: { layer: 'structure', fields: { state: S, value: S } },
+  registrationStatus: S,
+  lines: {
+    layer: 'structure',
+    items: {
+      id: S,
+      lineNo: S,
+      description: { layer: 'public-text' },
+      quantity: { layer: 'structure', fields: { state: S, value: S } },
+      unitRaw: S,
+      unit: S,
+      removed: S,
+      amount: {
+        layer: 'structure',
+        fields: {
+          visibility: S,
+          restriction: S,
+          state: { layer: 'contract-amount' },
+          value: { layer: 'contract-amount' },
+          currency: { layer: 'contract-amount' },
+          taxBasis: { layer: 'contract-amount' },
+        },
+      },
+      pricing: {
+        layer: 'structure',
+        fields: { visibility: S, type: { layer: 'contract-terms' } },
+      },
+      internal: {
+        layer: 'structure',
+        fields: {
+          visibility: S,
+          includes: { layer: 'contract-internal' },
+          excludes: { layer: 'contract-internal' },
+          derivation: { layer: 'contract-internal' },
+        },
+      },
+      evidence: {
+        layer: 'structure',
+        fields: {
+          visibility: S,
+          source: SOURCE_NODE,
+          removalSource: SOURCE_NODE,
+        },
+      },
+      allocation: { layer: 'structure', fields: { state: S, remaining: S } },
+      sharedLineAmount: { layer: 'contract-amount' },
+      canMaintainShares: S,
+      shares: {
+        layer: 'structure',
+        items: CONTRACT_SHARE,
+      },
+    },
+  },
+  total: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      restriction: S,
+      state: { layer: 'contract-amount' },
+      value: { layer: 'contract-amount' },
+      currency: { layer: 'contract-amount' },
+      taxBasis: { layer: 'contract-amount' },
+    },
+  },
+  internal: {
+    layer: 'structure',
+    fields: { visibility: S, correctionReason: { layer: 'contract-internal' } },
+  },
+  evidence: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      headLocs: {
+        layer: 'contract-original',
+        fields: {
+          parties: SOURCE_NODE,
+          dates: SOURCE_NODE,
+          total: SOURCE_NODE,
+        },
+      },
+      sources: {
+        layer: 'contract-original',
+        items: {
+          sourceDocumentId: { layer: 'contract-original' },
+          location: { layer: 'contract-original' },
+          filename: { layer: 'contract-original' },
+          sha256: { layer: 'contract-original' },
+        },
+      },
+    },
+  },
+};
+const CONTRACT_ITEM: FieldTable<ContractRegisterItemDto> = {
+  id: S,
+  code: S,
+  direction: S,
+  expenditureSubtype: S,
+  latest: { layer: 'structure', fields: CONTRACT_REVISION },
+  attention: {
+    layer: 'structure',
+    fields: {
+      visibility: S,
+      entries: {
+        layer: 'structure',
+        items: {
+          id: S,
+          revisionN: S,
+          kind: S,
+          read: S,
+          requiresAnotherPerson: S,
+        },
+      },
+    },
+  },
+};
+const LOC = {
+  layer: 'contract-original' as const,
+  fields: {
+    sourceDocumentId: { layer: 'contract-original' as const },
+    location: { layer: 'contract-original' as const },
+  },
+};
+const EDITOR_REVISION: FieldTable<ContractRevisionInput> = {
+  name: S,
+  originalNumber: S,
+  counterpartyRaw: S,
+  selfPartyRaw: S,
+  counterpartyCompanyId: S,
+  selfCompanyId: S,
+  informationOwnerPersonId: S,
+  signedOn: { layer: 'structure', fields: { state: S, value: S } },
+  effectiveOn: { layer: 'structure', fields: { state: S, value: S } },
+  registrationStatus: S,
+  total: {
+    layer: 'contract-amount',
+    fields: {
+      state: { layer: 'contract-amount' },
+      value: { layer: 'contract-amount' },
+    },
+  },
+  currency: { layer: 'contract-amount' },
+  taxBasis: { layer: 'contract-amount' },
+  sources: { layer: 'contract-original', items: LOC.fields },
+  headLocs: {
+    layer: 'contract-original',
+    fields: { parties: LOC, dates: LOC, total: LOC },
+  },
+  lines: {
+    layer: 'structure',
+    items: {
+      id: S,
+      lineNo: S,
+      description: S,
+      quantity: { layer: 'structure', fields: { state: S, value: S } },
+      unitRaw: S,
+      unit: S,
+      pricingType: { layer: 'contract-terms' },
+      amount: {
+        layer: 'contract-amount',
+        fields: {
+          state: { layer: 'contract-amount' },
+          value: { layer: 'contract-amount' },
+        },
+      },
+      includes: { layer: 'contract-internal' },
+      excludes: { layer: 'contract-internal' },
+      derivation: { layer: 'contract-internal' },
+      source: LOC,
+      removed: S,
+      removalSource: LOC,
+    },
+  },
+};
+
+const OP_PUBLIC_VALUE = {
+  layer: 'structure',
+  fields: { visibility: S, value: { subtree: 'public-text' } },
+} as const;
+const OP_TEXT_STRING = {
+  layer: 'structure',
+  fields: { visibility: S, value: { layer: 'opportunity-internal' } },
+} as const;
+const OP_TEXT_VALUE = {
+  layer: 'structure',
+  fields: { visibility: S, value: { subtree: 'opportunity-internal' } },
+} as const;
+const OP_STEP = {
+  id: S,
+  action: { layer: 'public-text' },
+  ownerPersonId: S,
+  dueOn: { subtree: 'structure' },
+  createdAt: S,
+  completed: S,
+} as const;
+const OP_REQUEST = {
+  id: S,
+  requestedPersonId: S,
+  explanation: OP_TEXT_STRING,
+  dueOn: { subtree: 'structure' },
+  raisedByPersonId: S,
+  recordedByAccountId: S,
+  recordedAt: S,
+} satisfies FieldTable<OpportunityRequestDto>;
+const OP_FACTS = {
+  name: { layer: 'public-text' },
+  businessLine: { subtree: 'structure' },
+  customerGroup: { subtree: 'structure' },
+  informationOwnerPersonId: S,
+  assistantPersonIds: S,
+  parties: { subtree: 'structure' },
+  proposedScopes: { subtree: 'structure' },
+  dates: { subtree: 'structure' },
+  stageRaw: { subtree: 'public-text' },
+  probabilityRaw: OP_PUBLIC_VALUE,
+  mustWinRaw: OP_PUBLIC_VALUE,
+  internalNote: OP_TEXT_VALUE,
+  ownerProject: {
+    layer: 'structure',
+    fields: {
+      projectType: { subtree: 'structure' },
+      country: { subtree: 'structure' },
+      city: { subtree: 'structure' },
+      reportedScale: { subtree: 'structure' },
+      conditions: {
+        layer: 'structure',
+        items: {
+          id: S,
+          summary: { layer: 'public-text' },
+          responsibleRaw: { subtree: 'structure' },
+          status: S,
+          basis: OP_TEXT_STRING,
+        },
+      },
+    },
+  },
+} satisfies FieldTable<OpportunityFactsDto>;
+const OP_REVISION = {
+  n: S,
+  facts: { layer: 'structure', fields: OP_FACTS },
+  sources: OP_TEXT_VALUE,
+  recordedAt: S,
+  recordedByAccountId: S,
+  recordedByPersonId: S,
+} satisfies FieldTable<OpportunityRevisionDto>;
+const OP_FIELD = {
+  layer: 'structure',
+  fields: { visibility: S, value: { subtree: 'opportunity-projected-field' } },
+} as const;
+const OP_UPDATE = {
+  id: S,
+  n: S,
+  newFact: { layer: 'public-text' },
+  noMaterialChange: S,
+  evidence: OP_TEXT_STRING,
+  obstacle: OP_TEXT_STRING,
+  recordedAt: S,
+  recordedByAccountId: S,
+  recordedByPersonId: S,
+  occurrence: { subtree: 'structure' },
+  sources: OP_TEXT_VALUE,
+  changes: {
+    layer: 'structure',
+    items: {
+      field: S,
+      before: OP_FIELD,
+      after: OP_FIELD,
+      reason: OP_TEXT_STRING,
+      basis: OP_TEXT_STRING,
+      dateChange: S,
+    },
+  },
+  nextStepMode: S,
+  nextStep: { layer: 'structure', fields: OP_STEP },
+  completedStepId: S,
+} satisfies FieldTable<OpportunityUpdateDto>;
+const OP_DECISION = {
+  n: S,
+  current: { subtree: 'structure' },
+  previous: { subtree: 'structure' },
+  actualDecisionPersonId: S,
+  recordedByAccountId: S,
+  recordedByPersonId: S,
+  recordedAt: S,
+  occurrence: { subtree: 'structure' },
+  recordText: OP_TEXT_STRING,
+  basis: OP_TEXT_STRING,
+  proxy: OP_TEXT_VALUE,
+  resolvedRequest: { layer: 'structure', fields: OP_REQUEST },
+} satisfies FieldTable<OpportunityDecisionDto>;
+const OP_ITEM = {
+  id: S,
+  code: S,
+  version: S,
+  revision: { layer: 'structure', fields: OP_REVISION },
+  effectiveDecision: { subtree: 'structure' },
+  decisionVersion: S,
+  decisionIsDefault: S,
+  pendingRequest: { layer: 'structure', fields: OP_REQUEST },
+  nextStep: { layer: 'structure', fields: OP_STEP },
+  lastContact: { layer: 'structure', fields: OP_UPDATE },
+  lastSubstantiveProgress: { layer: 'structure', fields: OP_UPDATE },
+  rescheduleCount: S,
+  capabilities: { subtree: 'structure' },
+} satisfies FieldTable<OpportunityItemDto>;
+
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'opportunity.list': {
+    fields: { items: { layer: 'structure', items: OP_ITEM } },
+  },
+  'opportunity.detail': { fields: OP_ITEM },
+  'opportunity.history': {
+    fields: {
+      revisions: { layer: 'structure', items: OP_REVISION },
+      updates: { layer: 'structure', items: OP_UPDATE },
+      decisions: { layer: 'structure', items: OP_DECISION },
+      requests: { layer: 'structure', items: OP_REQUEST },
+    },
+  },
+  'opportunity.lookups': {
+    fields: {
+      accountId: S,
+      personId: S,
+      canCreateLead: S,
+      people: { subtree: 'structure' },
+      companies: { subtree: 'structure' },
+      sources: { subtree: 'opportunity-internal' },
+    },
+  },
+  'opportunity.worklists': {
+    fields: {
+      accountId: S,
+      items: { layer: 'structure', items: OP_ITEM },
+      myNextSteps: {
+        layer: 'structure',
+        items: {
+          opportunityId: S,
+          step: { layer: 'structure', fields: OP_STEP },
+        },
+      },
+      weekChanges: {
+        layer: 'structure',
+        items: {
+          opportunityId: S,
+          update: { layer: 'structure', fields: OP_UPDATE },
+        },
+      },
+      pendingDecisions: {
+        layer: 'structure',
+        items: {
+          opportunityId: S,
+          request: { layer: 'structure', fields: OP_REQUEST },
+        },
+      },
+      recordedWeek: { subtree: 'structure' },
+    },
+  },
+
+  'contract-register.lookups': {
+    fields: {
+      accountId: S,
+      directions: S,
+      maintainedProjects: {
+        layer: 'structure',
+        items: { direction: S, projectIds: S },
+      },
+      projects: { layer: 'structure', items: { id: S, code: S, name: S } },
+      people: {
+        layer: 'contract-internal',
+        items: {
+          id: { layer: 'contract-internal' },
+          displayName: { layer: 'contract-internal' },
+        },
+      },
+      companies: {
+        layer: 'contract-internal',
+        items: {
+          id: { layer: 'contract-internal' },
+          name: { layer: 'contract-internal' },
+        },
+      },
+      sources: {
+        layer: 'contract-original',
+        items: {
+          id: { layer: 'contract-original' },
+          filename: { layer: 'contract-original' },
+          sha256: { layer: 'contract-original' },
+        },
+      },
+    },
+  },
+  'contract-register.editor': {
+    fields: {
+      id: S,
+      code: S,
+      direction: S,
+      expenditureSubtype: S,
+      version: S,
+      revision: { layer: 'structure', fields: EDITOR_REVISION },
+    },
+  },
+  'contract-register.list': { items: CONTRACT_ITEM },
+  'contract-register.detail': { fields: CONTRACT_ITEM },
+  'contract-register.history': {
+    fields: {
+      id: S,
+      revisions: { layer: 'structure', items: CONTRACT_REVISION },
+      shareVersions: { layer: 'structure', items: CONTRACT_SHARE },
+    },
+  },
   'project-status.managers': {
     items: { projectId: S, personId: S, displayName: { layer: 'public-text' } },
   },

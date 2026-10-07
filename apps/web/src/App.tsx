@@ -67,6 +67,8 @@ import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
 import { Sheet } from './ui.js';
+import { ContractsWorkspace } from './contracts/ContractsWorkspace.js';
+import { OpportunitiesWorkspace } from './opportunities/OpportunitiesWorkspace.js';
 import { WorkspaceShell } from './workspace/WorkspaceShell.js';
 import {
   ResumeKeeper,
@@ -707,6 +709,17 @@ function Workspace({
         <Icon.home />
         <span>{t('nav_home')}</span>
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          void h.flush().then((outcome) => {
+            if (outcome === 'ok') window.location.assign('/contracts');
+          })
+        }
+      >
+        <Icon.report />
+        <span>{t('ctTitle')}</span>
+      </button>
     </nav>
   );
 
@@ -1259,7 +1272,10 @@ function Root({
     setProjects(null);
     setProjectsOwner(null);
     setFailed(null);
-    if (session)
+    if (
+      session &&
+      !['/contracts', '/opportunities'].includes(window.location.pathname)
+    )
       void reportApi(session.token)
         .projects()
         .then((r) => {
@@ -1349,6 +1365,24 @@ function Root({
         </button>
       </main>
     );
+  if (session && window.location.pathname === '/opportunities')
+    return (
+      <OpportunitiesWorkspace
+        token={session.token}
+        signOut={session.signOut}
+        renew={session.renew}
+        expired={state.expired}
+      />
+    );
+  if (session && window.location.pathname === '/contracts')
+    return (
+      <ContractsWorkspace
+        token={session.token}
+        signOut={session.signOut}
+        renew={session.renew}
+        expired={state.expired}
+      />
+    );
   if (error || failed)
     return (
       <main className="page">
@@ -1356,6 +1390,12 @@ function Root({
         <div className="banner err">
           {failed === 'FORBIDDEN' ? t('noProject') : t('saveFail')}
         </div>
+        {session && (
+          <>
+            <a href="/contracts">{t('ctTitle')}</a>
+            <a href="/opportunities">{t('opTitle')}</a>
+          </>
+        )}
       </main>
     );
   if (!session || !projects || projectsOwner !== session)
@@ -1373,7 +1413,9 @@ function Root({
     return (
       <main className="page">
         {ownedBars}
-        {t('noProject')}
+        <p>{t('noProject')}</p>
+        <a href="/contracts">{t('ctTitle')}</a>
+        <a href="/opportunities">{t('opTitle')}</a>
       </main>
     );
   const routedProject =

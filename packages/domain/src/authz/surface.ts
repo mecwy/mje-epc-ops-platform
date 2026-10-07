@@ -14,6 +14,12 @@ import type { Layer, ProjectorName } from './fields.js';
 
 /** ADR-0003 D1 transition table (report / issue / photo / field / device), plus outside-D1 names. */
 export type Capability =
+  | 'opportunity.view'
+  | 'opportunity.maintain'
+  | 'opportunity.decide'
+  | 'contract.view'
+  | 'contract.maintain'
+  | 'contract.attention'
   | 'project.status.view'
   | 'project.status.declare'
   | 'project.status.reply'
@@ -48,6 +54,8 @@ export type Concurrency =
   'read' | 'cas' | 'append' | 'create' | 'legacy-overwrite';
 export type ScopeSource =
   | 'none'
+  | 'explicit.contract-grants'
+  | 'explicit.opportunity-grants'
   | 'membership'
   | 'query.projectId'
   | 'body.projectId'
@@ -73,8 +81,8 @@ export interface SurfaceEntry {
   /** Any one of these allows the entry; listed strongest first. */
   capability: Capability[];
   scopeSource: ScopeSource;
-  /** No module has a direction dimension yet (ADR-0003 D6; deferred.ts). */
-  direction: 'n/a';
+  /** Contract reads use explicit direction grants; legacy modules have no direction. */
+  direction: 'n/a' | 'contract.direction';
   /** Per held capability: which facts in time the response may contain. */
   temporal: Partial<Record<Capability, Temporal>>;
   /** Per held capability: the field layers (fields.ts) the response may contain. */
@@ -278,6 +286,214 @@ const DEVICE = {
 };
 
 const ENTRIES: readonly SurfaceEntry[] = [
+  ...(['list', 'detail', 'history', 'lookups', 'worklists'] as const).map(
+    (kind) =>
+      read(
+        'GET /api/opportunities' +
+          (kind === 'list'
+            ? ''
+            : kind === 'detail'
+              ? '/:id'
+              : kind === 'history'
+                ? '/:id/history'
+                : '/' + kind),
+        'account',
+        ['opportunity.view'],
+        'explicit.opportunity-grants',
+        {
+          'opportunity.view': {
+            temporal: 'live',
+            layers: [
+              'structure',
+              'public-text',
+              'opportunity-internal',
+              'opportunity-projected-field',
+            ],
+            projector: `opportunity.${kind}`,
+          },
+        },
+        { outsideD1: true },
+      ),
+  ),
+  ...(
+    [
+      {
+        entry: 'POST /api/opportunities',
+        command: 'OpportunityCommands.create',
+        cap: 'opportunity.maintain',
+        mode: 'create',
+        protects: ['Opportunity.identity'],
+      },
+      {
+        entry: 'POST /api/opportunities/:id/updates',
+        command: 'OpportunityCommands.update',
+        cap: 'opportunity.maintain',
+        mode: 'cas',
+        protects: ['Opportunity.version', 'Opportunity.nextStepId'],
+      },
+      {
+        entry: 'POST /api/opportunities/:id/requests',
+        command: 'OpportunityCommands.request',
+        cap: 'opportunity.maintain',
+        mode: 'cas',
+        protects: ['Opportunity.pendingRequestId'],
+      },
+      {
+        entry: 'POST /api/opportunities/:id/decisions',
+        command: 'OpportunityCommands.decide',
+        cap: 'opportunity.decide',
+        mode: 'cas',
+        protects: [
+          'Opportunity.decisionVersion',
+          'Opportunity.pendingRequestId',
+        ],
+      },
+    ] as const
+  ).map((x) =>
+    write(
+      x.entry,
+      'account',
+      x.cap,
+      'explicit.opportunity-grants',
+      x.command,
+      x.mode,
+      {
+        protects: [...x.protects],
+        advances: [...new Set(['Opportunity.version', ...x.protects])],
+      },
+      { outsideD1: true },
+    ),
+  ),
+  {
+    entry: 'GET /api/contracts/lookups',
+    kind: 'read',
+    principal: 'account',
+    capability: ['contract.view'],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: { 'contract.view': 'live' },
+    layers: {
+      'contract.view': [
+        'structure',
+        'public-text',
+        'contract-amount',
+        'contract-original',
+        'contract-internal',
+      ],
+    },
+    projector: { 'contract.view': 'contract-register.lookups' },
+    concurrency: 'read',
+    advances: [],
+    discloses: 'none',
+  },
+  {
+    entry: 'GET /api/contracts/:id/editor',
+    kind: 'read',
+    principal: 'account',
+    capability: ['contract.maintain'],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: { 'contract.maintain': 'live' },
+    layers: {
+      'contract.maintain': [
+        'structure',
+        'public-text',
+        'contract-amount',
+        'contract-original',
+        'contract-internal',
+      ],
+    },
+    projector: { 'contract.maintain': 'contract-register.editor' },
+    concurrency: 'read',
+    advances: [],
+    discloses: 'none',
+  },
+  ...(
+    [
+      {
+        entry: 'POST /api/contracts',
+        command: 'create',
+        mode: 'create',
+        protects: [],
+        advances: ['ContractRevision.n'],
+      },
+      {
+        entry: 'POST /api/contracts/:id/corrections',
+        command: 'correct',
+        mode: 'cas',
+        protects: ['ContractRevision.n'],
+        advances: ['ContractRevision.n'],
+      },
+      {
+        entry: 'POST /api/contracts/:id/shares',
+        command: 'shares',
+        mode: 'cas',
+        protects: ['ContractRevision.n', 'ContractScopeVersion.n'],
+        advances: ['ContractScopeVersion.n'],
+      },
+      {
+        entry: 'POST /api/contracts/:id/attention/read',
+        command: 'readAttention',
+        mode: 'append',
+        protects: [],
+        advances: [],
+      },
+    ] as const
+  ).map((s): SurfaceEntry => ({
+    entry: s.entry,
+    kind: 'write',
+    principal: 'account',
+    capability: [
+      s.command === 'readAttention'
+        ? 'contract.attention'
+        : 'contract.maintain',
+    ],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: {
+      [s.command === 'readAttention'
+        ? 'contract.attention'
+        : 'contract.maintain']: 'live',
+    },
+    layers: {
+      [s.command === 'readAttention'
+        ? 'contract.attention'
+        : 'contract.maintain']: ['structure'],
+    },
+    command: `ContractRegisterCommands.${s.command}`,
+    concurrency: s.mode,
+    protects: [...s.protects],
+    advances: [...s.advances],
+    discloses: 'none',
+  })),
+  ...(['list', 'detail', 'history'] as const).map((kind): SurfaceEntry => ({
+    entry:
+      kind === 'list'
+        ? 'GET /api/contracts'
+        : kind === 'detail'
+          ? 'GET /api/contracts/:id'
+          : 'GET /api/contracts/:id/history',
+    kind: 'read',
+    principal: 'account',
+    capability: ['contract.view'],
+    scopeSource: 'explicit.contract-grants',
+    direction: 'contract.direction',
+    temporal: { 'contract.view': 'live' },
+    layers: {
+      'contract.view': [
+        'structure',
+        'public-text',
+        'contract-amount',
+        'contract-original',
+        'contract-internal',
+      ],
+    },
+    projector: { 'contract.view': `contract-register.${kind}` },
+    concurrency: 'read',
+    advances: [],
+    discloses: 'none',
+  })),
+
   write(
     'POST /api/projects/:id/primary-work-item',
     'account',

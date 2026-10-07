@@ -6,6 +6,9 @@ import { FIELDS } from './fields.js';
 import { SURFACE, type Capability } from './surface.js';
 
 const D1: Capability[] = [
+  'contract.view',
+  'contract.maintain',
+  'contract.attention',
   'project.status.view',
   'project.status.declare',
   'project.status.reply',
@@ -28,10 +31,22 @@ const D1: Capability[] = [
 ];
 
 describe('surface.ts', () => {
-  it('has one entry per route or process, direction n/a everywhere', () => {
+  it('has one entry per route or process, direction explicit on contract entries', () => {
     const entries = SURFACE.map((e) => e.entry);
     expect(new Set(entries).size).toBe(entries.length);
-    expect(SURFACE.filter((e) => e.direction !== 'n/a')).toEqual([]);
+    expect(
+      SURFACE.filter((e) => e.direction !== 'n/a').map((e) => e.entry),
+    ).toEqual([
+      'GET /api/contracts/lookups',
+      'GET /api/contracts/:id/editor',
+      'POST /api/contracts',
+      'POST /api/contracts/:id/corrections',
+      'POST /api/contracts/:id/shares',
+      'POST /api/contracts/:id/attention/read',
+      'GET /api/contracts',
+      'GET /api/contracts/:id',
+      'GET /api/contracts/:id/history',
+    ]);
     expect(DEFERRED.map((d) => d.dimension)).toEqual([
       'direction (revenue / cost / all)',
       'contract share',
@@ -63,7 +78,9 @@ describe('surface.ts', () => {
       (e) =>
         e.kind === 'read' &&
         e.capability.some((c) =>
-          /^(report|issue|project\.(status|master))\./.test(c),
+          /^(report|issue|contract|opportunity|project\.(status|master))\./.test(
+            c,
+          ),
         ),
     );
     for (const e of layered)

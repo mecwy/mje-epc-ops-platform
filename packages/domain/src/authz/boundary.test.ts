@@ -19,6 +19,8 @@ describe('import boundary', () => {
       'photo',
       'project-status',
       'project-home',
+      'contract-register',
+      'opportunity',
     ] as const)
       expect([...BOUNDARY.modules[m]].sort()).toEqual(
         [...MODULES[m].files].sort(),
@@ -34,6 +36,25 @@ describe('import boundary', () => {
     );
     expect(v(`${D}issue-store.ts`, 'pg')).toBeNull();
     expect(v(`${D}issue-store.ts`, './store-kit.js')).toBeNull();
+  });
+  it('exposes opportunity commands and reader while refusing cross-module internals', () => {
+    expect(
+      v(`${D}report-store.ts`, './opportunity/data.js', ['stored']),
+    ).toMatch(/opportunity module/);
+    expect(
+      v(
+        'apps/api/src/opportunity.controller.ts',
+        '../../../packages/domain/src/opportunity/grants.js',
+        ['activeGrants'],
+      ),
+    ).toMatch(/import the domain through/);
+    expect(
+      v('apps/api/src/opportunity.controller.ts', '@mje/domain', [
+        'OpportunityCommands',
+        'OpportunityReader',
+        'OpportunityError',
+      ]),
+    ).toBeNull();
   });
   it('refuses report, issue and photo internals on resolved paths', () => {
     expect(v(`${D}issue-store.ts`, './report-store.js')).toMatch(
