@@ -1,5 +1,6 @@
 import { ReadFence } from '../read-fence.js';
 import { MAX_LOCATE_MS } from './geo.js';
+import type { MetForecastDto } from '@mje/contracts';
 
 /** Presentation adapters only. Parent DayStore owns all persistence and command retries. */
 export interface WeatherContext {
@@ -16,13 +17,14 @@ export interface LocationCandidate {
   deviceFixAt: string | null;
   acquiredAt: string;
 }
-export interface WeatherReferenceView {
+export type WeatherReferenceView = {
   projectId: string;
   businessDate: string;
   timezone: string;
   locationVersionId: string;
   snapshotId: string;
-  source: string;
+  sourceLink?: string;
+  licenseLink?: string;
   category: 'reanalysis' | 'analysis' | 'forecast';
   fetchedAt: string;
   publishedAt: string | null;
@@ -35,7 +37,10 @@ export interface WeatherReferenceView {
     value: string | null;
     unit: string | null;
   }[];
-}
+} & (
+  | { source: 'met-norway'; forecast: MetForecastDto }
+  | { source: 'open-meteo' | 'TEST Open-Meteo'; forecast?: never }
+);
 export type LocateInput =
   | { kind: 'fix'; reading: unknown }
   | { kind: 'denied' | 'unsupported' | 'unavailable' };

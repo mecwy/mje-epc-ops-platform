@@ -15,5 +15,19 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "@mje/contracts": "workspace:*"
+  },
+  "exports": {
+    "./weather-runtime": {
+      "types": "./dist/weather-runtime.d.ts",
+      "import": "./dist/weather-runtime.js"
+    },
+    "./weather-worker": {
+      "types": "./dist/weather-worker.d.ts",
+      "import": "./dist/weather-worker.js"
+    },
+    "./met-norway-transport": {
+      "types": "./dist/met-norway-transport.d.ts",
+      "import": "./dist/met-norway-transport.js"
+    }
   }
 }

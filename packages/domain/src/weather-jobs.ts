@@ -28,6 +28,12 @@ const DEFAULT_METADATA: WeatherSnapshotMetadata = {
   sourceLink: 'https://open-meteo.com/en/docs/historical-weather-api',
   licenseLink: 'https://open-meteo.com/en/terms',
 };
+const MET_METADATA: WeatherSnapshotMetadata = {
+  adapterVersion: 'met-norway-locationforecast-v1',
+  sourceLink:
+    'https://api.met.no/weatherapi/locationforecast/2.0/documentation',
+  licenseLink: 'https://api.met.no/doc/License',
+};
 async function jobTransaction<T>(
   pool: Pool,
   orgId: string,
@@ -125,23 +131,40 @@ export async function finishWeatherJob(
   pool: Pool,
   lease: WeatherJobLease,
   input: WeatherReferenceDraftDto,
-  metadata: WeatherSnapshotMetadata = DEFAULT_METADATA,
+  metadata?: WeatherSnapshotMetadata,
 ): Promise<boolean> {
   return jobTransaction(pool, lease.orgId, async (client) => {
     const row = await ownedRequest(client, lease);
     if (!row) return false;
     const draft = parseWeatherReferenceDraft(input);
+    // Legacy defaults belong only to Open-Meteo. MET callers must supply the
+    // fixed actual provider attribution; arbitrary HTTPS links are not proof.
+    const attribution =
+      metadata ??
+      (draft.provider === 'open-meteo' ? DEFAULT_METADATA : undefined);
     if (
       JSON.stringify(draft.query) !==
       JSON.stringify(parseWeatherQuery(row.query, draft.fetchedAt))
     )
       throw new Error('WEATHER_SCOPE_MISMATCH');
     if (
-      !metadata.adapterVersion ||
-      metadata.adapterVersion.length > 80 ||
-      ![metadata.sourceLink, metadata.licenseLink].every(
+      !attribution ||
+      !attribution.adapterVersion ||
+      attribution.adapterVersion.length > 80 ||
+      ![attribution.sourceLink, attribution.licenseLink].every(
         (s) => s.length <= 300 && s.startsWith('https://'),
       )
+    )
+      throw new Error('WEATHER_METADATA_INVALID');
+    if (
+      (draft.provider === 'met-norway' &&
+        (attribution.adapterVersion !== MET_METADATA.adapterVersion ||
+          attribution.sourceLink !== MET_METADATA.sourceLink ||
+          attribution.licenseLink !== MET_METADATA.licenseLink)) ||
+      (draft.provider === 'open-meteo' &&
+        (attribution.adapterVersion.startsWith('met-norway') ||
+          attribution.sourceLink === MET_METADATA.sourceLink ||
+          attribution.licenseLink === MET_METADATA.licenseLink))
     )
       throw new Error('WEATHER_METADATA_INVALID');
     // Canonical decoder order is fixed; hash is reproducible without storing external raw bodies.
@@ -161,10 +184,10 @@ export async function finishWeatherJob(
         JSON.stringify(draft),
         draft.fetchedAt,
         draft.publishedAt,
-        metadata.adapterVersion,
+        attribution.adapterVersion,
         responseHash,
-        metadata.sourceLink,
-        metadata.licenseLink,
+        attribution.sourceLink,
+        attribution.licenseLink,
       ],
     );
     await client.query(

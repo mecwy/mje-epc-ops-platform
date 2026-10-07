@@ -30,8 +30,28 @@ export const WEATHER_METRICS = [
 ] as const;
 export type WeatherMetric = (typeof WEATHER_METRICS)[number];
 /** A backend draft; database identity/adoption actor are added by the protected store. */
-export interface WeatherReferenceDraftDto {
-  provider: 'open-meteo';
+export interface MetForecastDto {
+  /** MET update time is not a model-run/publication time. All times are UTC. */
+  providerUpdatedAt: string;
+  outboundPoint: { lat: string; lon: string };
+  returnedPoint: { lat: string; lon: string };
+  coveredInterval: { startAt: string; endAt: string };
+  instants: Array<{
+    at: string;
+    airTemperature: WeatherValueDto;
+    windSpeed: WeatherValueDto;
+    gust: WeatherValueDto;
+  }>;
+  /** Separate overlapping provider periods; never sum 1/6/12-hour products. */
+  periods: Array<{
+    startAt: string;
+    endAt: string;
+    hours: 1 | 6 | 12;
+    symbolCode: string | null;
+    precipitation: WeatherValueDto;
+  }>;
+}
+interface WeatherReferenceBase {
   query: WeatherQueryDto;
   category: 'reanalysis' | 'analysis' | 'forecast';
   fetchedAt: string;
@@ -40,6 +60,141 @@ export interface WeatherReferenceDraftDto {
   grid: { lat: string; lon: string } | null;
   metrics: Record<WeatherMetric, WeatherValueDto>;
 }
+export type WeatherReferenceDraftDto = WeatherReferenceBase &
+  (
+    | { provider: 'open-meteo'; forecast?: never }
+    | { provider: 'met-norway'; forecast: MetForecastDto }
+  );
+/** Provider normalization truncates outward request precision, never the stored site point. */
+export function metForecastPoint(input: { lat: string; lon: string }) {
+  const p = point(input, 'weather.forecast.outboundPoint');
+  const truncate = (s: string) => {
+    const negative = s.startsWith('-');
+    const [whole = '0', fraction = ''] = (negative ? s.slice(1) : s).split('.');
+    const text = `${BigInt(whole)}.${fraction.slice(0, 4).padEnd(4, '0')}`;
+    return negative && /[1-9]/.test(text) ? `-${text}` : text;
+  };
+  return { lat: truncate(p.lat), lon: truncate(p.lon) };
+}
+function parseMetForecast(v: unknown, q: WeatherQueryDto): MetForecastDto {
+  const o = shape(
+    v,
+    [
+      'providerUpdatedAt',
+      'outboundPoint',
+      'returnedPoint',
+      'coveredInterval',
+      'instants',
+      'periods',
+    ],
+    'weather.forecast',
+  );
+  const outboundPoint = point(
+    o['outboundPoint'],
+    'weather.forecast.outboundPoint',
+  );
+  const expected = metForecastPoint(q.point);
+  if (outboundPoint.lat !== expected.lat || outboundPoint.lon !== expected.lon)
+    throw new InvalidReportInput('weather.forecast.outboundPoint');
+  const covered = shape(
+    o['coveredInterval'],
+    ['startAt', 'endAt'],
+    'weather.forecast.coveredInterval',
+  );
+  const startAt = utc(covered['startAt'], 'weather.forecast.startAt');
+  const endAt = utc(covered['endAt'], 'weather.forecast.endAt');
+  const start = Date.parse(startAt),
+    end = Date.parse(endAt);
+  const dayStart = Date.parse(q.interval.startAt),
+    dayEnd = Date.parse(q.interval.endAt);
+  if (start < dayStart || end > dayEnd || end <= start)
+    throw new InvalidReportInput('weather.forecast.coveredInterval');
+  const inputInstants = o['instants'],
+    inputPeriods = o['periods'];
+  if (
+    !Array.isArray(inputInstants) ||
+    inputInstants.length === 0 ||
+    inputInstants.length > 96 ||
+    !Array.isArray(inputPeriods) ||
+    inputPeriods.length > 288
+  )
+    throw new InvalidReportInput('weather.forecast.series');
+  let previous = -Infinity;
+  const instants = inputInstants.map((v) => {
+    const i = shape(
+      v,
+      ['at', 'airTemperature', 'windSpeed', 'gust'],
+      'weather.forecast.instant',
+    );
+    const at = utc(i['at'], 'weather.forecast.at'),
+      ms = Date.parse(at);
+    if (ms <= previous || ms < start || ms >= end)
+      throw new InvalidReportInput('weather.forecast.at');
+    previous = ms;
+    return {
+      at,
+      airTemperature: parseWeatherValue(i['airTemperature']),
+      windSpeed: parseWeatherValue(i['windSpeed']),
+      gust: parseWeatherValue(i['gust']),
+    };
+  });
+  const keys = new Set<string>();
+  const periods = inputPeriods.map((v): MetForecastDto['periods'][number] => {
+    const p = shape(
+      v,
+      ['startAt', 'endAt', 'hours', 'symbolCode', 'precipitation'],
+      'weather.forecast.period',
+    );
+    const ps = utc(p['startAt'], 'weather.forecast.period.startAt'),
+      pe = utc(p['endAt'], 'weather.forecast.period.endAt');
+    const hours = p['hours'];
+    if (hours !== 1 && hours !== 6 && hours !== 12)
+      throw new InvalidReportInput('weather.forecast.hours');
+    const key = `${ps}/${hours}`;
+    if (
+      keys.has(key) ||
+      !instants.some((i) => i.at === ps) ||
+      Date.parse(pe) - Date.parse(ps) !== hours * 3600000
+    )
+      throw new InvalidReportInput('weather.forecast.period');
+    keys.add(key);
+    const symbolCode =
+      p['symbolCode'] === null
+        ? null
+        : str(p['symbolCode'], 'weather.forecast.symbolCode', 100);
+    if (symbolCode !== null && !/^[a-z][a-z0-9_]*$/.test(symbolCode))
+      throw new InvalidReportInput('weather.forecast.symbolCode');
+    return {
+      startAt: ps,
+      endAt: pe,
+      hours,
+      symbolCode,
+      precipitation: parseWeatherValue(p['precipitation']),
+    };
+  });
+  const actualStart = instants[0]!.at;
+  const actualEnd = Math.min(
+    dayEnd,
+    Math.max(
+      ...instants.map((i) => Date.parse(i.at) + 1),
+      ...periods.map((p) => Date.parse(p.endAt)),
+    ),
+  );
+  if (startAt !== actualStart || end !== actualEnd)
+    throw new InvalidReportInput('weather.forecast.coveredInterval');
+  return {
+    providerUpdatedAt: utc(
+      o['providerUpdatedAt'],
+      'weather.forecast.providerUpdatedAt',
+    ),
+    outboundPoint,
+    returnedPoint: point(o['returnedPoint'], 'weather.forecast.returnedPoint'),
+    coveredInterval: { startAt, endAt },
+    instants,
+    periods,
+  };
+}
+
 export interface ReportLocationCandidateDto {
   /** Original decimal text; finite browser Number notation is expanded without rounding. */
   lat: string;
@@ -255,6 +410,9 @@ export function parseWeatherReferenceDraft(
       'coverage',
       'grid',
       'metrics',
+      ...(obj(v, 'weather.reference')['provider'] === 'met-norway'
+        ? ['forecast']
+        : []),
     ],
     'weather.reference',
   );
@@ -285,12 +443,12 @@ export function parseWeatherReferenceDraft(
   );
   if (coverage === 'complete' && !complete)
     throw new InvalidReportInput('weather.reference.coverage');
-  return {
-    provider: oneOf(
-      o['provider'],
-      ['open-meteo'] as const,
-      'weather.reference.provider',
-    ),
+  const provider = oneOf(
+    o['provider'],
+    ['open-meteo', 'met-norway'] as const,
+    'weather.reference.provider',
+  );
+  const common = {
     query,
     category,
     fetchedAt,
@@ -302,6 +460,21 @@ export function parseWeatherReferenceDraft(
     grid:
       o['grid'] === null ? null : point(o['grid'], 'weather.reference.grid'),
     metrics,
+  };
+  if (provider === 'open-meteo') return { ...common, provider };
+  if (
+    query.product !== 'forecast' ||
+    category !== 'forecast' ||
+    coverage !== 'partial' ||
+    common.grid !== null ||
+    common.publishedAt !== null ||
+    WEATHER_METRICS.some((key) => metrics[key].state !== 'not_applicable')
+  )
+    throw new InvalidReportInput('weather.forecast');
+  return {
+    ...common,
+    provider,
+    forecast: parseMetForecast(o['forecast'], query),
   };
 }
 /** The backend supplies serverReceivedAt separately; unknown device time is never filled. */

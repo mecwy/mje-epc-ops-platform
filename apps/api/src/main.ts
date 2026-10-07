@@ -16,13 +16,18 @@ import { createApp, type AlphaRuntime } from './app.js';
 import { TokenVerifier } from './auth/token-verifier.js';
 import {
   assertApplicationLogin,
+  applicationResourceLifecycle,
   databasePoolFromEnv,
   photoBlobsFromEnv,
   required,
+  weatherConsumerConfig,
+  weatherRuntimeFromEnv,
 } from './runtime-env.js';
 
 let runtime: AlphaRuntime | undefined;
 let pool: Pool | undefined;
+// Validate an enabled Dev consumer before opening application resources.
+weatherConsumerConfig(process.env);
 if (process.env['ALPHA_ENABLED'] === 'true') {
   const auth = {
     tenantId: required('ENTRA_TENANT_ID'),
@@ -63,17 +68,16 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
   // Without a blob store check-ins still work; selfie upload answers FEATURE_OFF.
   runtime.checkInStore = new CheckInStore(pool, blobs ?? null);
 }
-const app = await createApp(runtime);
+const weather = pool ? weatherRuntimeFromEnv(pool) : undefined;
+const resources = applicationResourceLifecycle({
+  ...(weather ? { weather } : {}),
+  closePool: async () => {
+    await pool?.end();
+  },
+});
+const app = await createApp(runtime, { resourceLifecycle: resources });
 await app.listen(
   Number(process.env['PORT'] ?? 3300),
   process.env['HOST'] ?? '127.0.0.1',
 );
-if (pool) {
-  const database = pool;
-  process.once('SIGTERM', () => {
-    void database.end();
-  });
-  process.once('SIGINT', () => {
-    void database.end();
-  });
-}
+weather?.start();

@@ -292,6 +292,36 @@ const weatherData = {
   coverage: SUB,
   grid: sub('coordinates'),
   metrics: sub('submitted'),
+  // Approved site-purpose/provider points, UTC series and original units are
+  // submitted weather provenance, never personal ReportLocationRecord fields.
+  forecast: {
+    layer: 'submitted',
+    fields: {
+      providerUpdatedAt: SUB,
+      outboundPoint: sub('submitted'),
+      returnedPoint: sub('submitted'),
+      coveredInterval: sub('submitted'),
+      instants: {
+        layer: 'submitted',
+        items: {
+          at: SUB,
+          airTemperature: sub('submitted'),
+          windSpeed: sub('submitted'),
+          gust: sub('submitted'),
+        },
+      },
+      periods: {
+        layer: 'submitted',
+        items: {
+          startAt: SUB,
+          endAt: SUB,
+          hours: SUB,
+          symbolCode: SUB,
+          precipitation: sub('submitted'),
+        },
+      },
+    },
+  },
 } as const;
 // Frozen site-purpose query points and provider grid cells are submitted weather provenance.
 // They are never taken from the restricted personal ReportLocationRecord coordinate exit.

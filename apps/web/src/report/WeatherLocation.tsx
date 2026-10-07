@@ -3,6 +3,7 @@ import { useI18n } from '../i18n.js';
 import type { WeatherLocationSession } from './weather-location-session.js';
 import type { SafeFrozenWeatherReference } from '@mje/contracts';
 import { weatherReferenceView } from './weather-adapter.js';
+import { MetForecastPanel } from './MetForecastPanel.js';
 
 const TEXT_KEYS = {
   title: 'weatherLocation_title',
@@ -81,7 +82,8 @@ export function FrozenWeatherReferences({
   if (!references.length) return null;
   return (
     <section
-      className="card report-weather"
+      className="card"
+      style={{ minWidth: 0, overflowWrap: 'anywhere' }}
       aria-label={t('weatherLocation_frozen')}
     >
       <h2>{t('weatherLocation_frozen')}</h2>
@@ -97,24 +99,31 @@ export function FrozenWeatherReferences({
             <p>
               {view.businessDate} · {view.timezone} · {t(coverageKey)}
             </p>
-            <dl>
-              {view.values.map((value) => {
-                const stateKey =
-                  value.state === 'value'
-                    ? TEXT_KEYS.unknown
-                    : TEXT_KEYS[value.state];
-                return (
-                  <div key={value.label}>
-                    <dt>{value.label}</dt>
-                    <dd>
-                      {value.state === 'value'
-                        ? `${value.value} ${value.unit ?? ''}`
-                        : t(stateKey)}
-                    </dd>
-                  </div>
-                );
-              })}
-            </dl>
+            {view.source === 'met-norway' ? (
+              <MetForecastPanel
+                forecast={view.forecast}
+                fetchedAt={view.fetchedAt}
+              />
+            ) : (
+              <dl>
+                {view.values.map((value) => {
+                  const stateKey =
+                    value.state === 'value'
+                      ? TEXT_KEYS.unknown
+                      : TEXT_KEYS[value.state];
+                  return (
+                    <div key={value.label}>
+                      <dt>{value.label}</dt>
+                      <dd>
+                        {value.state === 'value'
+                          ? `${value.value} ${value.unit ?? ''}`
+                          : t(stateKey)}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            )}
             <details>
               <summary>{t('weatherLocation_effective')}</summary>
               <p>
@@ -123,10 +132,11 @@ export function FrozenWeatherReferences({
               <p>
                 {t('weatherLocation_fetched')}: {view.fetchedAt}
               </p>
-              <p>
-                {t('weatherLocation_published')}:{' '}
-                {view.publishedAt ?? t('weatherLocation_unknown')}
-              </p>
+              {view.publishedAt && (
+                <p>
+                  {t('weatherLocation_published')}: {view.publishedAt}
+                </p>
+              )}
               <p>
                 {t('weatherLocation_adopted')}: {reference.adoptedAt}
               </p>
@@ -297,18 +307,25 @@ export function WeatherLocation({
               {reference.coverage === 'partial' ? t.partial : t.complete}
               {reference.stale ? ` · ${t.stale}` : ''}
             </p>
-            <dl>
-              {reference.values.map((v, i) => (
-                <div key={`${v.label}:${i}`}>
-                  <dt>{v.label}</dt>
-                  <dd>
-                    {v.state === 'value'
-                      ? `${v.value ?? t.unknown} ${v.unit ?? ''}`
-                      : t[v.state]}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+            {reference.source === 'met-norway' && reference.forecast ? (
+              <MetForecastPanel
+                forecast={reference.forecast}
+                fetchedAt={reference.fetchedAt}
+              />
+            ) : (
+              <dl>
+                {reference.values.map((v, i) => (
+                  <div key={`${v.label}:${i}`}>
+                    <dt>{v.label}</dt>
+                    <dd>
+                      {v.state === 'value'
+                        ? `${v.value ?? t.unknown} ${v.unit ?? ''}`
+                        : t[v.state]}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
             <details>
               <summary>{t.effective}</summary>
               <p>
@@ -317,9 +334,11 @@ export function WeatherLocation({
               <p>
                 {t.fetched}: {reference.fetchedAt}
               </p>
-              <p>
-                {t.published}: {reference.publishedAt ?? t.unknown}
-              </p>
+              {reference.publishedAt && (
+                <p>
+                  {t.published}: {reference.publishedAt}
+                </p>
+              )}
             </details>
             {state.writable && (
               <button
