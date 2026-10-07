@@ -108,7 +108,7 @@ export function projection(
       const revision: OpportunityRevisionDto = {
         n: history.revisions.length + 1,
         facts: factsDto(r.facts, caps.restrictedText),
-        sources: project(caps.restrictedText, r.sources),
+        sources: project(caps.restrictedText && r.sourcesEligible, r.sources),
         recordedAt: r.recordedAt,
         recordedByAccountId: r.recordedByAccountId,
         recordedByPersonId: r.recordedByPersonId,
@@ -161,7 +161,7 @@ export function projection(
         recordedByAccountId: r.recordedByAccountId,
         recordedByPersonId: r.recordedByPersonId,
         occurrence: c.occurrence,
-        sources: project(caps.restrictedText, r.sources),
+        sources: project(caps.restrictedText && r.sourcesEligible, r.sources),
         changes,
         nextStepMode: c.nextStep.mode,
         nextStep: next ? structuredClone(next) : null,

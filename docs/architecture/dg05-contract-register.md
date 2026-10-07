@@ -55,3 +55,5 @@ Source lookup and binding use the same direction eligibility: an existing same-d
 Conflict merge keeps each header assertion group and its source location together. Edit-versus-removal races require a whole-line choice. Equivalent decimal line amounts compare numerically without floating point or false correction attention.
 
 Migration/rollback: migration `202610090004_contract_source_intake` is additive. Retain its classifications, source documents, contract history, RLS and audit. A prior image with unrestricted source lookup is unsuitable for restoring contract access: keep that entry disabled and forward-fix, or select an image retaining these source controls. No reset, DROP or reverse migration is an application rollback.
+
+The forward opportunity boundary repair exposes a contract-owned classification boolean only to the owner-owned opportunity source eligibility function. Application code receives only a tenant-bound eligible/not-eligible boolean; contract intake or citation cannot be reclassified into opportunity-readable metadata. No contract row is written by the opportunity module.

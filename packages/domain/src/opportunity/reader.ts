@@ -8,7 +8,7 @@ import type { Identity } from '../alpha-store.js';
 import { accountTransaction, type Actor } from '../store-kit.js';
 import { activeGrants } from './grants.js';
 import { canCreate, OpportunityError, type OpportunityGrant } from './rules.js';
-import { stored } from './data.js';
+import { stored, eligibleOpportunitySource } from './data.js';
 import { projection } from './projection.js';
 export const OPPORTUNITY_PROJECTORS = [
   'opportunity.list',
@@ -128,7 +128,7 @@ export class OpportunityReader {
         permitted && text
           ? (
               await c.query<{ id: string; filename: string; sha256: string }>(
-                'SELECT id,filename,sha256 FROM "SourceDocument" WHERE "orgId"=$1 ORDER BY id',
+                `SELECT id,filename,sha256 FROM "SourceDocument" WHERE "orgId"=$1 AND ${eligibleOpportunitySource('$1', 'id')} ORDER BY id`,
                 [a.orgId],
               )
             ).rows

@@ -155,6 +155,10 @@ try {
     'INSERT INTO "SourceDocument"(id,"orgId",sha256,filename,"blobKey","sourceVersion","updatedAt","updatedBy") VALUES($1,$2,$3,\'TEST evidence metadata.txt\',\'TEST metadata only\',\'TEST-v1\',now(),$4)',
     [document, org, 'a'.repeat(64), writer.accountId],
   );
+  await owner.query(
+    'INSERT INTO "OpportunitySourceIntake"(id,"orgId","sourceDocumentId",basis,"registeredBy") VALUES($1,$2,$3,\'TEST controlled opportunity metadata\',$4)',
+    [randomUUID(), org, document, writer.accountId],
+  );
   for (const cap of ['view', 'maintain', 'amount', 'internal', 'decide'])
     await grant(writer, cap);
   await grant(reader, 'view');

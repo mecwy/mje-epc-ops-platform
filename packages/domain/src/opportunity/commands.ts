@@ -28,6 +28,7 @@ import {
 } from './rules.js';
 import {
   stored,
+  eligibleOpportunitySource,
   state,
   type StoredOpportunity,
   type StoredRecord,
@@ -174,6 +175,24 @@ export class OpportunityCommands {
         [a.orgId, command.opportunityId, n, a.accountId],
       );
   }
+  private async authorizeSources(c: PoolClient, a: Actor, command: Command) {
+    const docs = [
+      ...new Set(
+        command.sources
+          .map((s) => s.sourceDocumentId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    if (
+      (
+        await c.query(
+          `SELECT id FROM "SourceDocument" WHERE "orgId"=$1 AND id=ANY($2::uuid[]) AND ${eligibleOpportunitySource('$1', 'id')}`,
+          [a.orgId, docs],
+        )
+      ).rows.length !== docs.length
+    )
+      throw new OpportunityError('SOURCE_INVALID');
+  }
   create(
     identity: Identity,
     command: CreateOpportunityCommand,
@@ -184,6 +203,7 @@ export class OpportunityCommands {
       identity,
       async (c, a, g) => {
         if (!canCreate(g)) throw new OpportunityError('FORBIDDEN');
+        await this.authorizeSources(c, a, command);
         // No inherited view or monetary rights. A scoped creator may create an as-yet-unviewable lead.
         const sensitive =
           restrictedFactsChanged(
@@ -239,6 +259,7 @@ export class OpportunityCommands {
             await this.lock(c, a, command.opportunityId);
             if (!canCreate(await activeGrants(c, a)))
               throw new OpportunityError('FORBIDDEN');
+            await this.authorizeSources(c, a, command);
           },
         );
       },
@@ -290,6 +311,7 @@ export class OpportunityCommands {
           const caps = capabilities(g, row.id, state(row).facts);
           if (!(kind === 'DECISION' ? caps.decide : caps.maintain))
             throw new OpportunityError('FORBIDDEN');
+          await this.authorizeSources(c, a, command);
           // Replays recheck restricted ordinary text too, before consulting stored idempotency.
           if (kind === 'UPDATE')
             this.authorizeUpdate(g, row, command as UpdateOpportunityCommand);

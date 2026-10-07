@@ -57,6 +57,8 @@ const company = randomUUID(),
   foreignCompany = randomUUID(),
   document = randomUUID(),
   foreignDocument = randomUUID(),
+  unclassifiedDocument = randomUUID(),
+  contractDocument = randomUUID(),
   opp = randomUUID();
 const occurrence = { occurredAt: null, timezone: null, businessDate: null };
 const sourceBinding = {
@@ -231,12 +233,22 @@ try {
     );
   for (const [id, o, h] of [
     [document, org, 'a'],
+    [unclassifiedDocument, org, 'c'],
+    [contractDocument, org, 'd'],
     [foreignDocument, otherOrg, 'b'],
   ] as const)
     await owner.query(
       'INSERT INTO "SourceDocument"(id,"orgId",sha256,filename,"blobKey","sourceVersion","updatedAt","updatedBy") VALUES($1,$2,$3,\'TEST opportunity.txt\',\'TEST metadata only\',\'TEST-v1\',now(),$4)',
       [id, o, h.repeat(64), account],
     );
+  await owner.query(
+    'INSERT INTO "ContractSourceIntake"(id,"orgId","sourceDocumentId",direction,basis,"registeredBy") VALUES($1,$2,$3,\'INCOME\',\'TEST contract-confidential source\',$4)',
+    [randomUUID(), org, contractDocument, account],
+  );
+  await owner.query(
+    'INSERT INTO "OpportunitySourceIntake"(id,"orgId","sourceDocumentId",basis,"registeredBy") VALUES($1,$2,$3,\'TEST controlled opportunity metadata\',$4)',
+    [randomUUID(), org, document, account],
+  );
   // Existing-domain rows are real persisted TEST fixtures, captured before any DG06 command.
   const baselineProject = randomUUID(),
     baselineDay = randomUUID(),
@@ -432,6 +444,33 @@ try {
     facts: blankOpportunityFacts('TEST one sentence'),
     sources: [],
   };
+  for (const sourceDocumentId of [unclassifiedDocument, contractDocument]) {
+    const rejected = {
+      ...creation,
+      opportunityId: randomUUID(),
+      clientMutationId: randomUUID(),
+      code: null,
+      sources: [{ ...sourceBinding, sourceDocumentId }],
+    };
+    await post('', rejected, 400);
+    assert.ok(
+      !((await call('/lookups')).body['sources'] as { id: string }[]).some(
+        (x: { id: string }) => x.id === sourceDocumentId,
+      ),
+    );
+    assert.equal(
+      (
+        await owner.query(
+          'SELECT id FROM "Opportunity" WHERE "orgId"=$1 AND id=$2',
+          [org, rejected.opportunityId],
+        )
+      ).rows.length,
+      0,
+    );
+  }
+  pass(
+    'unclassified and contract-classified sources cannot be listed or bound by opportunity grants',
+  );
   await post('', creation);
   const first = await detail();
   assert.equal(first.revision.facts.informationOwnerPersonId, null);
@@ -461,7 +500,87 @@ try {
     ).rows.length,
     1,
   );
+  const tempDecide = await grant('opportunity.decide');
+  for (const sourceDocumentId of [unclassifiedDocument, contractDocument]) {
+    const sources = [{ ...sourceBinding, sourceDocumentId }];
+    await post('/' + opp + '/updates', { ...update(), sources }, 400);
+    await post('/' + opp + '/requests', { ...request(), sources }, 400);
+    await post(
+      '/' + opp + '/decisions',
+      { ...decision(0, null), actualDecisionPersonId: person, sources },
+      400,
+    );
+    const c = await appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query("SELECT set_config('app.org_id',$1,true)", [org]);
+      const recordId = (
+        await owner.query<{ id: string }>(
+          'SELECT id FROM "OpportunityRecord" WHERE "orgId"=$1 AND "opportunityId"=$2 AND n=1',
+          [org, opp],
+        )
+      ).rows[0]!.id;
+      await assert.rejects(
+        c.query(
+          'INSERT INTO "OpportunityRecordSource"(id,"orgId","recordId","sourceDocumentId",reference,location) VALUES($1,$2,$3,$4,\'TEST forbidden\',\'TEST A1\')',
+          [randomUUID(), org, recordId, sourceDocumentId],
+        ),
+        /source is not eligible/,
+      );
+    } finally {
+      await c.query('ROLLBACK');
+      c.release();
+    }
+  }
+  await revoke(tempDecide);
+  await assert.rejects(
+    appPool.query(
+      'INSERT INTO "OpportunitySourceIntake"(id,"orgId","sourceDocumentId",basis,"registeredBy") VALUES($1,$2,$3,\'TEST self classification\',$4)',
+      [randomUUID(), org, unclassifiedDocument, account],
+    ),
+    /permission denied/,
+  );
+  pass(
+    'all mutation kinds and application-role source insert reject ineligible documents; no self-classification',
+  );
   pass('minimal lead + Q6 exact-account grant transaction + fixed-key replay');
+  const creationMaintainers = (
+    await owner.query<{ id: string }>(
+      'SELECT id FROM "OpportunityGrant" WHERE "orgId"=$1 AND "accountId"=$2 AND capability=\'opportunity.maintain\' AND scope=\'ORG\'',
+      [org, account],
+    )
+  ).rows;
+  for (const g of creationMaintainers) await revoke(g.id);
+  const forbiddenCreation = {
+    ...creation,
+    opportunityId: randomUUID(),
+    clientMutationId: randomUUID(),
+    code: 'TEST-REVOKED-CREATION',
+  };
+  await post('', forbiddenCreation, 403);
+  await post('', creation, 403);
+  assert.equal((await call('/lookups')).body['canCreateLead'], false);
+  for (const table of [
+    'Opportunity',
+    'OpportunityRecord',
+    'OpportunityGrant',
+  ]) {
+    const column = table === 'Opportunity' ? 'id' : 'opportunityId';
+    assert.equal(
+      (
+        await owner.query(
+          `SELECT id FROM "${table}" WHERE "orgId"=$1 AND "${column}"=$2`,
+          [org, forbiddenCreation.opportunityId],
+        )
+      ).rows.length,
+      0,
+    );
+  }
+  await grant('opportunity.maintain');
+  pass(
+    'revoked ORG creation authority refuses new creation and stored replay despite retained Q6 exact-opportunity grants',
+  );
+
   const concurrentCreates = [0, 1].map(() => ({
     ...creation,
     opportunityId: randomUUID(),
@@ -1011,6 +1130,47 @@ try {
     );
   assert.equal((await call('/' + opp, await token(scopeOid))).status, 404);
   pass('mismatched business line and exact opportunity scopes do not cross');
+  await post(
+    '',
+    {
+      ...creation,
+      opportunityId: randomUUID(),
+      clientMutationId: randomUUID(),
+      code: null,
+    },
+    403,
+    await token(scopeOid),
+  );
+  const exactAccount = randomUUID(),
+    exactPerson = randomUUID(),
+    exactOid = randomUUID(),
+    exactMember = randomUUID();
+  await personRow(exactPerson, org);
+  await accountRow(exactAccount, org, exactPerson, exactOid, exactMember);
+  await grant(
+    'opportunity.maintain',
+    exactAccount,
+    exactPerson,
+    exactMember,
+    'OPPORTUNITY',
+    null,
+    opp,
+  );
+  await post(
+    '',
+    {
+      ...creation,
+      opportunityId: randomUUID(),
+      clientMutationId: randomUUID(),
+      code: null,
+    },
+    403,
+    await token(exactOid),
+  );
+  pass(
+    'BUSINESS_LINE and manual exact-opportunity maintenance cannot create an unscoped lead',
+  );
+
   const current2 = await detail(),
     lineChange = update([
       {
@@ -1097,6 +1257,50 @@ try {
   await post('/' + opp + '/updates', payload, 404);
   assert.equal((await call('/' + opp)).status, 404);
   pass('revocation refuses stored replay before returning its result');
+  for (const cap of ['view', 'maintain', 'amount', 'internal', 'decide'])
+    await grant('opportunity.' + cap);
+  const sourceHistoryBefore = (
+    await owner.query(
+      'SELECT to_jsonb(t) AS row FROM "OpportunityRecordSource" t WHERE "orgId"=$1 ORDER BY id',
+      [org],
+    )
+  ).rows;
+  await owner.query(
+    'INSERT INTO "ContractSourceIntake"(id,"orgId","sourceDocumentId",direction,basis,"registeredBy") VALUES($1,$2,$3,\'INCOME\',\'TEST later contract classification\',$4)',
+    [randomUUID(), org, document, account],
+  );
+  assert.ok(
+    !((await call('/lookups')).body['sources'] as { id: string }[]).some(
+      (x) => x.id === document,
+    ),
+  );
+  const hiddenSources = await history();
+  assert.ok(
+    hiddenSources.updates.some((x) => x.sources.visibility === 'restricted'),
+  );
+  assert.ok(
+    !JSON.stringify(hiddenSources).includes('TEST page 1 table A cell B2'),
+  );
+  await post('/' + opp + '/updates', rich, 400);
+  assert.deepEqual(
+    (
+      await owner.query(
+        'SELECT to_jsonb(t) AS row FROM "OpportunityRecordSource" t WHERE "orgId"=$1 ORDER BY id',
+        [org],
+      )
+    ).rows,
+    sourceHistoryBefore,
+  );
+  await assert.rejects(
+    owner.query('UPDATE "OpportunitySourceIntake" SET id=id WHERE "orgId"=$1', [
+      org,
+    ]),
+    /append-only/,
+  );
+  pass(
+    'later contract ownership hides entire historical source fields and denies stored replay without rewriting original references',
+  );
+
   for (const table of [
     'OpportunityRecord',
     'OpportunityRecordPerson',

@@ -16,6 +16,9 @@ import {
   type OpportunityDecisionState,
 } from '@mje/contracts';
 import { initialDecision } from './rules.js';
+/** Single owned eligibility exit used by lookup, binding and historical projections. */
+export const eligibleOpportunitySource = (org: string, document: string) =>
+  `opportunity_source_is_eligible(${org},${document})`;
 interface BaseRecord {
   id: string;
   n: number;
@@ -24,6 +27,7 @@ interface BaseRecord {
   recordedByAccountId: string;
   recordedByPersonId: string;
   sources: OpportunitySourceDto[];
+  sourcesEligible: boolean;
 }
 export type StoredRecord = BaseRecord &
   (
@@ -67,8 +71,10 @@ export async function stored(
   ).rows;
   if (!rows.length) return null; // Legacy identity has no DG06 facts; never invent a lead.
   const sources = (
-    await c.query<OpportunitySourceDto & { recordId: string }>(
-      `SELECT s."recordId",s."sourceDocumentId",s.reference,s.location,d.filename,d.sha256 FROM "OpportunityRecordSource" s LEFT JOIN "SourceDocument" d ON d."orgId"=s."orgId" AND d.id=s."sourceDocumentId" WHERE s."orgId"=$1 AND s."recordId"=ANY($2::uuid[]) ORDER BY s.id`,
+    await c.query<
+      OpportunitySourceDto & { recordId: string; eligible: boolean }
+    >(
+      `SELECT s."recordId",s."sourceDocumentId",s.reference,s.location,d.filename,d.sha256,(s."sourceDocumentId" IS NULL OR ${eligibleOpportunitySource('$1', 's."sourceDocumentId"')}) AS eligible FROM "OpportunityRecordSource" s LEFT JOIN "SourceDocument" d ON d."orgId"=s."orgId" AND d.id=s."sourceDocumentId" WHERE s."orgId"=$1 AND s."recordId"=ANY($2::uuid[]) ORDER BY s.id`,
       [org, rows.map((x) => x.id)],
     )
   ).rows;
@@ -80,6 +86,9 @@ export async function stored(
       recordedAt: r.recordedAt.toISOString(),
       recordedByAccountId: r.recordedByAccountId,
       recordedByPersonId: r.recordedByPersonId,
+      sourcesEligible: sources
+        .filter((s) => s.recordId === r.id)
+        .every((s) => s.eligible),
       sources: sources
         .filter((s) => s.recordId === r.id)
         .map((s) => ({

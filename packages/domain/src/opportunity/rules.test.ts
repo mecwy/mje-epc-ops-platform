@@ -5,6 +5,7 @@ import {
 } from '@mje/contracts';
 import {
   allows,
+  canCreate,
   capabilities,
   dateChange,
   validateUpdate,
@@ -30,6 +31,34 @@ const update = (): UpdateOpportunityCommand => ({
   nextStep: { mode: 'KEEP' },
 });
 describe('opportunity command invariants', () => {
+  it('exact-opportunity maintenance never authorizes another creation', () => {
+    const grant: OpportunityGrant = {
+      capability: 'opportunity.maintain',
+      scope: 'OPPORTUNITY',
+      opportunityId: id,
+      businessLine: null,
+    };
+    expect(canCreate([grant])).toBe(false);
+    expect(
+      canCreate([
+        { ...grant, scope: 'ORG', source: 'system:opportunity.create' },
+      ]),
+    ).toBe(false);
+    expect(canCreate([{ ...grant, scope: 'ORG', opportunityId: null }])).toBe(
+      true,
+    );
+    expect(
+      canCreate([
+        {
+          ...grant,
+          scope: 'BUSINESS_LINE',
+          opportunityId: null,
+          businessLine: 'TEST A',
+        },
+      ]),
+    ).toBe(false);
+  });
+
   it('requires protected-text rights only for actual basis changes, including moves between condition IDs', () => {
     const before = facts(),
       after = structuredClone(before);

@@ -14,6 +14,8 @@ export type OpportunityCapability =
   | 'opportunity.decide';
 export interface OpportunityGrant {
   capability: OpportunityCapability;
+  /** DB supplies the controlled grant source; absent only in legacy pure fixtures. */
+  source?: string;
   scope: 'ORG' | 'BUSINESS_LINE' | 'OPPORTUNITY';
   businessLine: string | null;
   opportunityId: string | null;
@@ -54,7 +56,12 @@ export function allows(
   );
 }
 export const canCreate = (g: OpportunityGrant[]) =>
-  g.some((x) => x.capability === 'opportunity.maintain');
+  g.some(
+    (x) =>
+      x.capability === 'opportunity.maintain' &&
+      x.scope === 'ORG' &&
+      x.source !== 'system:opportunity.create',
+  );
 export function capabilities(
   g: OpportunityGrant[],
   id: string,

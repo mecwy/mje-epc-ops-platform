@@ -45,6 +45,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'OpportunityRecordPerson',
       'OpportunityRecordCompany',
       'OpportunityRecordSource',
+      'OpportunitySourceIntake',
       'OpportunityGrant',
       'OpportunityGrantRevocation',
     ],
