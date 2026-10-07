@@ -5,6 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Pool } from 'pg';
 import {
   AlphaStore,
@@ -83,11 +85,11 @@ try {
       stdio: 'pipe',
       timeout: 180000,
     });
-    writeFileSync(`/private/tmp/${database}-migration.log`, migrationOutput);
+    writeFileSync(join(tmpdir(), `${database}-migration.log`), migrationOutput);
   } catch (e) {
     const x = e as { stdout?: Buffer; stderr?: Buffer };
     writeFileSync(
-      `/private/tmp/${database}-migration.log`,
+      join(tmpdir(), `${database}-migration.log`),
       Buffer.concat([x.stdout ?? Buffer.alloc(0), x.stderr ?? Buffer.alloc(0)]),
     );
     throw e;

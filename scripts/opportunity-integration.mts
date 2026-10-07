@@ -4,6 +4,8 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Pool } from 'pg';
 import {
   AlphaStore,
@@ -177,16 +179,16 @@ try {
       stdio: 'pipe',
       timeout: 180000,
     });
-    writeFileSync(`/private/tmp/${database}-migration.log`, output);
-    writeFileSync(`/private/tmp/${database}-migration.exit`, '0\n');
+    writeFileSync(join(tmpdir(), `${database}-migration.log`), output);
+    writeFileSync(join(tmpdir(), `${database}-migration.exit`), '0\n');
   } catch (e) {
     const x = e as { stdout?: Buffer; stderr?: Buffer; status?: number };
     writeFileSync(
-      `/private/tmp/${database}-migration.log`,
+      join(tmpdir(), `${database}-migration.log`),
       Buffer.concat([x.stdout ?? Buffer.alloc(0), x.stderr ?? Buffer.alloc(0)]),
     );
     writeFileSync(
-      `/private/tmp/${database}-migration.exit`,
+      join(tmpdir(), `${database}-migration.exit`),
       String(x.status ?? 1) + '\n',
     );
     throw e;
@@ -1320,7 +1322,7 @@ try {
   const finalHashes = await existingDomainHashes();
   assert.deepEqual(finalHashes, baselineHashes);
   writeFileSync(
-    `/private/tmp/${database}-preservation.json`,
+    join(tmpdir(), `${database}-preservation.json`),
     JSON.stringify(
       {
         TEST: true,
@@ -1344,13 +1346,13 @@ try {
       timeout: 60000,
     },
   );
-  writeFileSync(`/private/tmp/${database}-foundation.log`, foundationOutput);
-  writeFileSync(`/private/tmp/${database}-foundation.exit`, '0\n');
+  writeFileSync(join(tmpdir(), `${database}-foundation.log`), foundationOutput);
+  writeFileSync(join(tmpdir(), `${database}-foundation.exit`), '0\n');
   pass(
     'existing foundation tenant/time/ledger checks and private Azurite roundtrip on isolated TEST DB',
   );
   writeFileSync(
-    `/private/tmp/${database}-summary.json`,
+    join(tmpdir(), `${database}-summary.json`),
     JSON.stringify(
       {
         database,
