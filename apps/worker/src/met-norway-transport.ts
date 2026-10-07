@@ -46,6 +46,13 @@ export interface MetTransportDependencies {
   now: () => string;
   gate: MetSharedGate;
 }
+/** Shared gate contention/cooldown occurs before HTTP, so it is not a supplier attempt. */
+export class MetGateBusyError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super('MET_GATE_BUSY');
+    this.name = 'MetGateBusyError';
+  }
+}
 const ENDPOINT = 'https://api.met.no/weatherapi/locationforecast/2.0/compact';
 const MAX_BODY = 2 * 1024 * 1024;
 function boundedDelay(v: number): number {
@@ -82,7 +89,11 @@ async function body(response: Response, signal: AbortSignal): Promise<unknown> {
       chunks.push(part.value);
     }
     cancelled(signal);
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+    } catch {
+      throw new MetNorwayError('INVALID_RESPONSE');
+    }
   } finally {
     signal.removeEventListener('abort', abort);
     await reader.cancel().catch(() => undefined);
@@ -115,10 +126,7 @@ export function createMetNorwayTransport(deps: MetTransportDependencies) {
       if (taken.state === 'leased') lease = taken.lease;
       cancelled(signal);
       if (taken.state === 'busy')
-        throw new MetNorwayError(
-          'RATE_LIMITED',
-          boundedDelay(taken.retryAfterSeconds),
-        );
+        throw new MetGateBusyError(boundedDelay(taken.retryAfterSeconds));
       if (taken.state === 'fresh') {
         if (Date.parse(taken.entry.expiresAt) <= Date.parse(now))
           throw new MetNorwayError('UNAVAILABLE');
@@ -209,8 +217,9 @@ export function createMetNorwayTransport(deps: MetTransportDependencies) {
         httpDate(response.headers.get('last-modified')) ??
         (response.status === 304 ? (old?.lastModified ?? null) : null);
       cancelled(signal);
-      if (
-        !(await deps.gate.commit(
+      let committed: boolean;
+      try {
+        committed = await deps.gate.commit(
           lease,
           {
             body: value,
@@ -219,12 +228,23 @@ export function createMetNorwayTransport(deps: MetTransportDependencies) {
             lastModified,
           },
           deps.now(),
-        ))
-      )
-        throw new MetNorwayError('UNAVAILABLE');
+        );
+      } catch (e) {
+        // The trusted injected gate has a narrow typed persistence-budget error.
+        // Keep malformed/canonical-oversize payloads distinct from DB outages.
+        if (
+          e instanceof Error &&
+          e.name === 'MetForecastCacheError' &&
+          'code' in e &&
+          e.code === 'INVALID_PAYLOAD'
+        )
+          throw new MetNorwayError('INVALID_RESPONSE');
+        throw e;
+      }
+      if (!committed) throw new MetNorwayError('UNAVAILABLE');
       return draft;
     } catch (e) {
-      if (e instanceof MetNorwayError) throw e;
+      if (e instanceof MetNorwayError || e instanceof MetGateBusyError) throw e;
       throw new MetNorwayError(signal.aborted ? 'CANCELLED' : 'UNAVAILABLE');
     } finally {
       if (lease) await deps.gate.release(lease).catch(() => undefined);

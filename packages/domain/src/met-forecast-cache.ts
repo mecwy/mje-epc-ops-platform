@@ -31,7 +31,10 @@ export interface MetSharedGate {
   throttle(lease: MetCacheLease, until: string): Promise<void>;
 }
 export class MetForecastCacheError extends Error {
-  constructor(readonly code: 'INVALID_INPUT' | 'CANCELLED' | 'UNAVAILABLE') {
+  constructor(
+    readonly code:
+      'INVALID_INPUT' | 'INVALID_PAYLOAD' | 'CANCELLED' | 'UNAVAILABLE',
+  ) {
     super(code);
     this.name = 'MetForecastCacheError';
   }
@@ -120,6 +123,27 @@ function jsonBody(body: unknown): string {
   const value = JSON.stringify(body);
   if (Buffer.byteLength(value, 'utf8') > MAX_BODY) invalid();
   return value;
+}
+async function canonicalBody(client: PoolClient, body: string): Promise<void> {
+  let bytes: number | undefined;
+  try {
+    // JSONB expands numbers and spaces independently of JSON.stringify. PostgreSQL
+    // is the authority for the same inclusive bound used by the storage constraint.
+    bytes = (
+      await client.query<{ bytes: number }>(
+        'SELECT octet_length($1::jsonb::text) AS bytes',
+        [body],
+      )
+    ).rows[0]?.bytes;
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (code === '22P02' || code === '22P05' || code === '22003')
+      throw new MetForecastCacheError('INVALID_PAYLOAD');
+    throw error;
+  }
+  if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 1)
+    throw new MetForecastCacheError('UNAVAILABLE');
+  if (bytes > MAX_BODY) throw new MetForecastCacheError('INVALID_PAYLOAD');
 }
 function entry(row: CacheRow): MetCacheEntry | null {
   if (row.body === null && row.fetchedAt === null && row.expiresAt === null)
@@ -260,6 +284,11 @@ export function createMetForecastCacheGate(
       return transaction(async (client) => {
         const locked = await lock(client, hash, true);
         cancelled(signal);
+        if (!locked.row) throw new MetForecastCacheError('UNAVAILABLE');
+        const previous = entry(locked.row);
+        // A fresh cached result makes no supplier call, even during provider cooldown.
+        if (previous && Date.parse(previous.expiresAt) > locked.at.getTime())
+          return { state: 'fresh', entry: previous };
         if (
           locked.cooldown &&
           milliseconds(locked.cooldown) > locked.at.getTime()
@@ -268,10 +297,6 @@ export function createMetForecastCacheGate(
             state: 'busy',
             retryAfterSeconds: retry(locked.cooldown, locked.at),
           };
-        if (!locked.row) throw new MetForecastCacheError('UNAVAILABLE');
-        const previous = entry(locked.row);
-        if (previous && Date.parse(previous.expiresAt) > locked.at.getTime())
-          return { state: 'fresh', entry: previous };
         if (
           locked.row.leaseToken &&
           locked.row.leasedUntil &&
@@ -310,7 +335,12 @@ export function createMetForecastCacheGate(
           !Number.isFinite(Date.parse(lastModified)))
       )
         invalid();
-      const body = jsonBody(input.body);
+      let body: string;
+      try {
+        body = jsonBody(input.body);
+      } catch {
+        throw new MetForecastCacheError('INVALID_PAYLOAD');
+      }
       return transaction(async (client) => {
         const locked = await lock(client, owner.key, false);
         if (
@@ -320,6 +350,7 @@ export function createMetForecastCacheGate(
             milliseconds(locked.cooldown) > locked.at.getTime())
         )
           return false;
+        await canonicalBody(client, body);
         const result = await client.query(
           `UPDATE "MetForecastCache" SET body=$5::jsonb,"fetchedAt"=$6::timestamptz,"expiresAt"=$7::timestamptz,"lastModified"=$8,"leaseToken"=NULL,"leasedUntil"=NULL WHERE "orgId"=$1 AND provider=$2 AND "pointHash"=$3 AND "leaseToken"=$4::uuid AND "leasedUntil">clock_timestamp() AND $7::timestamptz>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM "MetForecastCooldown" c WHERE c."orgId"=$1 AND c.provider=$2 AND c."until">clock_timestamp())`,
           [

@@ -17,7 +17,11 @@ export interface WeatherJobLease {
   attempts: number;
 }
 export type WeatherJobFailure =
-  'NO_HISTORY' | 'UNAVAILABLE' | 'RATE_LIMITED' | 'DISABLED';
+  | 'NO_HISTORY'
+  | 'UNAVAILABLE'
+  | 'RATE_LIMITED'
+  | 'DISABLED'
+  | 'INVALID_RESPONSE';
 export interface WeatherSnapshotMetadata {
   adapterVersion: string;
   sourceLink: string;
@@ -119,8 +123,8 @@ export async function claimWeatherJob(
 }
 async function ownedRequest(client: PoolClient, lease: WeatherJobLease) {
   const row = (
-    await client.query<{ query: WeatherQueryDto; attempts: number }>(
-      `SELECT query,attempts FROM "WeatherRequest" WHERE "orgId"=$1 AND id=$2 AND state='FETCHING' AND "leaseToken"=$3 AND "leasedUntil">clock_timestamp() FOR UPDATE`,
+    await client.query<{ query: WeatherQueryDto; attempts: number; at: Date }>(
+      `SELECT query,attempts,clock_timestamp() AS at FROM "WeatherRequest" WHERE "orgId"=$1 AND id=$2 AND state='FETCHING' AND "leaseToken"=$3 AND "leasedUntil">clock_timestamp() FOR UPDATE`,
       [lease.orgId, lease.requestId, lease.token],
     )
   ).rows[0];
@@ -209,7 +213,13 @@ export async function failWeatherJob(
 ): Promise<boolean> {
   return jobTransaction(pool, lease.orgId, async (client) => {
     if (
-      !['NO_HISTORY', 'UNAVAILABLE', 'RATE_LIMITED', 'DISABLED'].includes(code)
+      ![
+        'NO_HISTORY',
+        'UNAVAILABLE',
+        'RATE_LIMITED',
+        'DISABLED',
+        'INVALID_RESPONSE',
+      ].includes(code)
     )
       throw new Error('INVALID_JOB_CODE');
     const row = await ownedRequest(client, lease);
@@ -225,11 +235,61 @@ export async function failWeatherJob(
     const delay = knownDelay ? Math.max(5, retryAfterSeconds!) : 5;
     await client.query(
       `UPDATE "WeatherRequest" SET state=$3,"leaseToken"=NULL,"leasedUntil"=NULL,"terminalCode"=$4,"nextAttemptAt"=clock_timestamp()+$5*interval '1 second' WHERE "orgId"=$1 AND id=$2`,
-      [lease.orgId, lease.requestId, retry ? 'PENDING' : code, code, delay],
+      [
+        lease.orgId,
+        lease.requestId,
+        retry ? 'PENDING' : code === 'INVALID_RESPONSE' ? 'UNAVAILABLE' : code,
+        code,
+        delay,
+      ],
     );
     await client.query(
       `UPDATE "OutboxEvent" SET "availableAt"=clock_timestamp()+$3*interval '1 second',"processedAt"=CASE WHEN $4::boolean THEN NULL ELSE clock_timestamp() END,attempts=$5 WHERE "orgId"=$1 AND "eventType"='WEATHER_FETCH' AND "aggregateId"=$2`,
       [lease.orgId, lease.requestId, delay, retry, row.attempts],
+    );
+    return true;
+  });
+}
+
+/** Gate busy/cooldown is pre-HTTP: undo only the owned claim's reserved attempt.
+ * Existing settled supplier attempts remain untouched; no historical snapshots are changed.
+ */
+export async function deferWeatherJob(
+  pool: Pool,
+  lease: WeatherJobLease,
+  retryAfterSeconds: number,
+): Promise<boolean> {
+  return jobTransaction(pool, lease.orgId, async (client) => {
+    if (
+      !Number.isInteger(retryAfterSeconds) ||
+      retryAfterSeconds < 1 ||
+      retryAfterSeconds > 86400
+    )
+      throw new Error('INVALID_DEFER_DELAY');
+    const row = await ownedRequest(client, lease);
+    if (!row) return false;
+    const attempts = Math.max(0, row.attempts - 1);
+    let expired = false;
+    try {
+      parseWeatherQuery(row.query, new Date(row.at).toISOString());
+    } catch {
+      expired = true;
+    }
+    const delay = Math.max(5, retryAfterSeconds);
+    await client.query(
+      `UPDATE "WeatherRequest" SET state=$3,"leaseToken"=NULL,"leasedUntil"=NULL,attempts=$4,"terminalCode"=$5,"nextAttemptAt"=clock_timestamp()+$6*interval '1 second' WHERE "orgId"=$1 AND id=$2`,
+      [
+        lease.orgId,
+        lease.requestId,
+        expired ? 'NO_HISTORY' : 'PENDING',
+        attempts,
+        expired ? 'QUERY_WINDOW_EXPIRED' : null,
+        delay,
+      ],
+    );
+    await client.query(
+      `UPDATE "OutboxEvent" SET "availableAt"=clock_timestamp()+$3*interval '1 second',"processedAt"=CASE WHEN $4::boolean THEN clock_timestamp() ELSE NULL END,attempts=$5 WHERE "orgId"=$1 AND id=$2 AND "eventType"='WEATHER_FETCH' AND "aggregateId"=$6`,
+      [lease.orgId, lease.eventId, delay, expired, attempts, lease.requestId],
     );
     return true;
   });

@@ -40,7 +40,8 @@
     "test:alpha-lookups": "node --env-file=.env scripts/alpha-lookups-integration.mts",
     "test:project-status": "node --env-file=.env scripts/project-status-integration.mts",
     "test:project-master": "node --env-file=.env scripts/project-master-integration.mts",
-    "check:migrations": "node scripts/check-migration-history.mts"
+    "check:migrations": "node scripts/check-migration-history.mts",
+    "test:met-cache": "node --env-file=.env scripts/met-cache-integration.mts"
   },
   "devDependencies": {
     "@azure/storage-blob": "^12.28.0",

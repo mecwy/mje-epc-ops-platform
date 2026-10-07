@@ -4,6 +4,11 @@ import {
   type WeatherWorkerDependencies,
   type WeatherWorkerLease,
 } from './weather-worker.js';
+import {
+  createMetNorwayTransport,
+  type MetSharedGate,
+} from './met-norway-transport.js';
+import { MetNorwayError } from './met-norway-provider.js';
 const lease = { requestId: 'TEST-request', query: {} } as WeatherWorkerLease;
 function setup(enabled?: boolean) {
   const d: WeatherWorkerDependencies<unknown, WeatherWorkerLease> = {
@@ -82,6 +87,74 @@ describe('finite injected worker', () => {
 });
 
 describe('provider-neutral MET job execution', () => {
+  function busyWorker(delay = 120) {
+    const d = setup(true);
+    const busyLease: WeatherWorkerLease = {
+      requestId: 'TEST-busy',
+      query: {
+        projectId: '11111111-1111-4111-8111-111111111111',
+        locationVersionId: '22222222-2222-4222-8222-222222222222',
+        businessDate: '2026-10-06',
+        timezone: 'UTC',
+        point: { lat: '45', lon: '19' },
+        interval: {
+          startAt: '2026-10-06T00:00:00Z',
+          endAt: '2026-10-07T00:00:00Z',
+        },
+        product: 'forecast',
+        model: 'forecast',
+      },
+    };
+    d.jobs.claim = vi.fn(async () => busyLease);
+    const gate: MetSharedGate = {
+      take: async () => ({ state: 'busy', retryAfterSeconds: delay }),
+      commit: async () => false,
+      release: async () => {},
+      throttle: async () => {},
+    };
+    const fetch = vi.fn(async (): Promise<Response> => {
+      throw new Error('TEST HTTP must not run');
+    });
+    d.execute = createMetNorwayTransport({
+      userAgent: 'TEST https://example.invalid/contact',
+      fetch,
+      now: () => '2026-10-06T10:00:00Z',
+      gate,
+    });
+    return { d, fetch, busyLease };
+  }
+  it('gate busy defers without marking a supplier failure or publishing', async () => {
+    const { d, fetch, busyLease } = busyWorker();
+    d.jobs.defer = vi.fn(async () => true);
+    expect(await runWeatherOnce(d)).toEqual({
+      state: 'idle',
+      requestId: busyLease.requestId,
+    });
+    expect(d.jobs.defer).toHaveBeenCalledWith(busyLease, 120);
+    expect(d.jobs.fail).not.toHaveBeenCalled();
+    expect(d.jobs.finish).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('a stale defer token stays stale and missing defer fails closed', async () => {
+    const { d } = busyWorker();
+    d.jobs.defer = vi.fn(async () => false);
+    expect((await runWeatherOnce(d)).state).toBe('stale');
+    delete d.jobs.defer;
+    await expect(runWeatherOnce(d)).rejects.toThrow('WEATHER_DEFER_REQUIRED');
+    expect(d.jobs.fail).not.toHaveBeenCalled();
+  });
+  it('invalid response reaches the terminal port without a retry delay', async () => {
+    const d = setup(true);
+    d.execute = async () => {
+      throw new MetNorwayError('INVALID_RESPONSE');
+    };
+    expect((await runWeatherOnce(d)).state).toBe('unavailable');
+    expect(d.jobs.fail).toHaveBeenCalledExactlyOnceWith(
+      lease,
+      'INVALID_RESPONSE',
+    );
+    expect(d.jobs.finish).not.toHaveBeenCalled();
+  });
   it('publishes through the existing stale-token fence without any Open-Meteo call', async () => {
     const d = setup(true),
       draft = { TEST: 'MET' };

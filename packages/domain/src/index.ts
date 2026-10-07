@@ -79,6 +79,7 @@ export {
   claimWeatherJob,
   finishWeatherJob,
   failWeatherJob,
+  deferWeatherJob,
 } from './weather-jobs.js';
 export type {
   WeatherJobLease,
