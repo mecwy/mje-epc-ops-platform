@@ -700,6 +700,8 @@ describe('Owner UAT: manager declaration repeat publishing', () => {
     await nextDay.load();
     expect(nextDay.unchangedForBusinessDay).toBe(false);
     await nextDay.publish();
+    expect(f.history.currentN).toBe(1);
+    await nextDay.confirmUnchanged();
     expect(f.history.currentN).toBe(2);
   });
   it('uses the site business day rather than the UTC calendar day', async () => {

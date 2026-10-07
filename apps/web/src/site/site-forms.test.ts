@@ -266,14 +266,15 @@ describe('#37 round 3: form state = the owned command payload (single source)', 
     expect(sv.log).toEqual(['N1:5', 'N1:5']);
   });
 
-  it('with nothing owned, the forms show the latest read and are editable', async () => {
+  it('with nothing owned, site shows a summary and field settings remain editable', async () => {
     const sv = server(at(1, 7));
     const s = new SiteSessions(sv.api as never, P);
     await s.settings.load();
     await s.site.load();
     const html = mount(s, sv.api);
     expect(html).toContain('value="7"');
-    expect(html).toContain('value="500"');
+    expect(html).not.toContain('value="500"');
+    expect(html).toContain('Edit location');
     expect(html).toContain('<input');
   });
 });
@@ -399,7 +400,8 @@ describe('#37 round 4: a mounted editor gives way to the owned payload before a 
     sv.failReads(true);
     await saveSiteReference(s.siteSave, api, P, s.site.data!, value(200));
     const page = mounted(s, () => mount(s, api));
-    expect(page.latest()).toContain('<input');
+    expect(page.latest()).not.toContain('<input');
+    expect(page.latest()).toContain('Edit location');
     sv.failReads(false);
     sv.holdReads(true);
     refuse = false;
@@ -473,5 +475,95 @@ describe('#37 round 4: a mounted editor gives way to the owned payload before a 
     while (holds.length) holds.shift()!();
     await run;
     expect(sent).toEqual(['999999', '111111']);
+  });
+});
+
+describe('site summary boundary', () => {
+  it('keeps coordinate inputs out of the normal page while showing one saved summary', async () => {
+    const sv = server(at(1, 7));
+    const sessions = new SiteSessions(sv.api as never, P);
+    await sessions.site.load();
+    await sessions.settings.load();
+    const html = mount(sessions, sv.api);
+    const site = html.slice(0, html.lastIndexOf('<section'));
+    expect(site).not.toContain('<input');
+    expect(site).not.toContain('Use my current location');
+    expect(site).toContain('Edit location');
+    expect(site).toContain('1.000000');
+    expect((html.match(/<h2[^>]*>Site location<\/h2>/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('site summary confirmation state', () => {
+  it('loading does not assert a missing location and has a single summary title', () => {
+    const sv = server(at(1, 7)),
+      sessions = new SiteSessions(sv.api as never, P);
+    const html = mount(sessions, sv.api);
+    expect(html).toContain('Loading');
+    expect(html).not.toContain('every self check-in is refused');
+    expect(html).not.toContain('<input');
+    expect((html.match(/data-site-location-summary/g) ?? []).length).toBe(1);
+  });
+  it('failed reload labels retained coordinates as last confirmed instead of current', async () => {
+    const sv = server(at(1, 7)),
+      sessions = new SiteSessions(sv.api as never, P);
+    await sessions.site.load();
+    sv.failReads(true);
+    await sessions.site.load();
+    const html = mount(sessions, sv.api);
+    expect(html).toContain('Last confirmed location');
+    expect(html).toContain('1.000000');
+    expect(html).not.toContain('Current: radius');
+    expect(html).not.toContain('<input');
+  });
+  it('uncertain initial save never shows a contradictory missing warning, and retries original key/version after reread', async () => {
+    let state: FieldSettingsDto = { ...at(1, 7), siteReference: null };
+    let first = true;
+    const sent: unknown[] = [];
+    const api = {
+      ...server(state).api,
+      fieldSettings: async () => state,
+      setSiteReference: async (
+        c: import('@mje/contracts').SiteReferenceCommand,
+      ) => {
+        sent.push(structuredClone(c));
+        state = {
+          ...state,
+          siteReference: { n: 1, lat: c.lat, lon: c.lon, radiusM: c.radiusM },
+        };
+        if (first) {
+          first = false;
+          throw new ApiError('NETWORK', 0);
+        }
+        return { n: 1 };
+      },
+    };
+    const sessions = new SiteSessions(api as never, P);
+    await sessions.site.load();
+    await saveSiteReference(sessions.siteSave, api, P, sessions.site.data!, {
+      lat: '2.000000',
+      lon: '3.000000',
+      radiusM: 600,
+    });
+    await sessions.site.load();
+    const html = mount(sessions, api);
+    expect(html).toContain('Save result pending');
+    expect(html).toContain('Review pending save');
+    expect(html).not.toContain('every self check-in is refused');
+    expect(html).not.toContain('Current: radius');
+    expect(html).not.toContain('<input');
+    expect((html.match(/data-site-location-summary/g) ?? []).length).toBe(1);
+    await sessions.siteSave.retry();
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toEqual(sent[1]);
+    expect(sent[0]).toMatchObject({
+      expectedN: 0,
+      lat: '2.000000',
+      lon: '3.000000',
+      radiusM: 600,
+    });
+    const saved = mount(sessions, api);
+    expect(saved).toContain('Current: radius 600');
+    expect(saved).not.toContain('Save result pending');
   });
 });

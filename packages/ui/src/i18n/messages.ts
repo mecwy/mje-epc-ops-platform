@@ -14,6 +14,25 @@ export const LOCALES: Record<Lang, string> = {
   es: 'es-ES',
 };
 export const MESSAGES = {
+  execUpdateStatus: [
+    '更新情况',
+    'Update status',
+    'Ažuriraj stanje',
+    'Actualizar situación',
+  ],
+  execConfirmUnchanged: [
+    '核对状态未变',
+    'Confirm unchanged status',
+    'Potvrdi nepromenjeno stanje',
+    'Confirmar estado sin cambios',
+  ],
+  execStatusUnchanged: ['内容未变', 'No changes', 'Bez promena', 'Sin cambios'],
+  execCancelUpdate: [
+    '取消更新',
+    'Cancel update',
+    'Otkaži ažuriranje',
+    'Cancelar actualización',
+  ],
   installationCalculatedCumulative: [
     '计算累计',
     'Calculated cumulative',
@@ -4121,11 +4140,29 @@ export const MESSAGES = {
     'Terenska podešavanja',
     'Ajustes de obra',
   ],
+  pm_siteAdd: [
+    '设置位置',
+    'Set location',
+    'Postavi lokaciju',
+    'Definir ubicación',
+  ],
   pm_siteCurrent: [
     '当前：半径 {r} 米 ·',
     'Current: radius {r} m ·',
     'Trenutno: poluprečnik {r} m ·',
     'Actual: radio {r} m ·',
+  ],
+  pm_siteEdit: [
+    '编辑位置',
+    'Edit location',
+    'Izmeni lokaciju',
+    'Editar ubicación',
+  ],
+  pm_siteLastConfirmed: [
+    '上次确认的位置',
+    'Last confirmed location',
+    'Poslednja potvrđena lokacija',
+    'Última ubicación confirmada',
   ],
   pm_siteMissing: [
     '尚未设置工地位置：设置前所有本人签到都会被拒绝。',
@@ -4138,6 +4175,24 @@ export const MESSAGES = {
     'The new location applies to later check-ins only; submitted days are unchanged.',
     'Nova lokacija važi samo za kasnije prijave; predati dani se ne menjaju.',
     'La nueva ubicación solo se aplica a fichajes posteriores; los días entregados no cambian.',
+  ],
+  pm_siteReviewSave: [
+    '查看待确认保存',
+    'Review pending save',
+    'Pregledaj čuvanje na čekanju',
+    'Revisar guardado pendiente',
+  ],
+  pm_siteSavePending: [
+    '保存结果待确认',
+    'Save result pending',
+    'Rezultat čuvanja na čekanju',
+    'Resultado del guardado pendiente',
+  ],
+  pm_siteSingleLimit: [
+    '目前每个项目仅支持一个签到位置；多个命名工地点尚未接入。',
+    'Each project currently supports one check-in location; multiple named worksites are not yet connected.',
+    'Projekat trenutno podržava jednu lokaciju za prijavu; više imenovanih gradilišta još nije povezano.',
+    'Cada proyecto admite actualmente una ubicación de fichaje; aún no se han conectado varias obras con nombre.',
   ],
   pm_siteTitle: [
     '工地位置',

@@ -25,6 +25,7 @@ import {
   type StatusConflictField,
 } from './status-session.js';
 import { ErrorText } from '../field/ErrorText.js';
+import { fmtDay, fmtStamp } from '../report/format.js';
 import { projectGroupTitle } from './overview-values.js';
 
 type Props = {
@@ -668,7 +669,7 @@ function ProjectCard({
   );
 }
 
-function StatusPage({
+export function StatusPage({
   api,
   apiProjectName,
   card,
@@ -681,7 +682,9 @@ function StatusPage({
   session: ProjectStatusSession;
   onBack: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const [view, setView] = useState<'summary' | 'edit' | 'history'>('summary');
+  const [editorBaseN, setEditorBaseN] = useState(0);
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const [summary, setSummary] = useState<{
     history: ProjectStatusHistoryDto;
@@ -727,6 +730,18 @@ function StatusPage({
   }, [api, card.id, card.code, history]);
   const currentSummary = summary?.history === history ? summary.card : null;
   const draft = session.commands.owned ? null : session.draft;
+  useEffect(() => {
+    if (
+      view === 'edit' &&
+      !session.locked &&
+      !session.read.error &&
+      draft &&
+      !draft.dirty &&
+      history &&
+      history.currentN > editorBaseN
+    )
+      setView('summary');
+  }, [view, session, history, draft?.dirty, session.locked, editorBaseN]);
   const requiredFields = session.requiredFields;
   const conflictFields =
     comparison && session.conflictIsCurrent(comparison)
@@ -760,7 +775,7 @@ function StatusPage({
           <Icon.back />
         </button>
         <div className="bar-title">
-          <strong>{t('execPublishStatus')}</strong>
+          <strong>{t('execManagerDeclaration')}</strong>
           <span className="bar-sub">
             {card.code} · {apiProjectName}
           </span>
@@ -794,6 +809,61 @@ function StatusPage({
             </div>
           ) : (
             <span role="status">{t('loading')}</span>
+          )}
+          {readLatest && (
+            <>
+              <p>
+                {(currentSummary ?? card).managers.find(
+                  (person) => person.personId === readLatest.declaredByPersonId,
+                )?.displayName ?? t('unknown')}
+                {' · '}
+                <time dateTime={readLatest.declaredAt}>
+                  {fmtStamp(
+                    readLatest.declaredAt,
+                    locale,
+                    readLatest.siteTimezone,
+                  )}
+                </time>
+              </p>
+              {readLatest.situation && <p>{readLatest.situation}</p>}
+              <details>
+                <summary>{t('allDetails')}</summary>
+                <p>{t('execVersion', { n: readLatest.n })}</p>
+                <p>{readLatest.businessDate}</p>
+                {readLatest.areas.length > 0 && (
+                  <p>
+                    {readLatest.areas
+                      .map((area) => areaLabel(t, area))
+                      .join(' · ')}
+                  </p>
+                )}
+                {readLatest.recovery && <p>{readLatest.recovery}</p>}
+                {(readLatest.expectedRecoveryDate ||
+                  readLatest.expectedRecoveryUnknown) && (
+                  <p>
+                    {t('execExpectedRecovery')}:{' '}
+                    {readLatest.expectedRecoveryDate
+                      ? fmtDay(readLatest.expectedRecoveryDate, locale)
+                      : t('unknown')}
+                  </p>
+                )}
+                {readLatest.supportNote && <p>{readLatest.supportNote}</p>}
+                {view === 'summary' && (
+                  <button
+                    type="button"
+                    className="ghost small"
+                    disabled={
+                      session.locked ||
+                      !session.unchangedContent ||
+                      session.unchangedForBusinessDay
+                    }
+                    onClick={() => void session.confirmUnchanged()}
+                  >
+                    {t('execConfirmUnchanged')}
+                  </button>
+                )}
+              </details>
+            </>
           )}
           {session.read.readError && (
             <div className="banner err" role="alert">
@@ -829,11 +899,6 @@ function StatusPage({
               >
                 {t('execRefresh')}
               </button>
-            </div>
-          )}
-          {!session.locked && session.unchangedForBusinessDay && (
-            <div className="banner" role="status">
-              {t('saved')}
             </div>
           )}
           {session.permissionLost && (
@@ -873,17 +938,61 @@ function StatusPage({
           )}
         </section>
 
+        {history && view === 'summary' && (
+          <div className="exec-card-actions">
+            <button
+              type="button"
+              className="primary small"
+              disabled={session.locked}
+              onClick={() => {
+                setComparison(null);
+                setChoices({});
+                setEditorBaseN(history.currentN);
+                setView('edit');
+              }}
+            >
+              {t('execUpdateStatus')}
+            </button>
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() => setView('history')}
+            >
+              {t('ovTimeline')}
+            </button>
+          </div>
+        )}
+        {history && view === 'history' && (
+          <section className="card">
+            <div className="blk-row">
+              <h2 className="blk">{t('ovTimeline')}</h2>
+              <button
+                type="button"
+                className="ghost small"
+                onClick={() => setView('summary')}
+              >
+                {t('back')}
+              </button>
+            </div>
+            <StatusHistoryRecords
+              history={history}
+              card={currentSummary ?? card}
+            />
+          </section>
+        )}
         {session.read.data &&
+          view === 'edit' &&
           !session.commands.owned &&
           !session.permissionLost && (
             <form className="card exec-status-form" onSubmit={onSubmit}>
               <div className="blk-row">
                 <h2 className="blk">{t('execStatusForm')}</h2>
-                <span className="muted">
+                <details className="muted">
+                  <summary>{t('allDetails')}</summary>
                   {t('execVersion', {
                     n: draft?.expectedN ?? session.read.data.currentN,
                   })}
-                </span>
+                </details>
               </div>
               {draft && draft.expectedN !== session.read.data.currentN && (
                 <div className="banner warn" role="alert">
@@ -1169,12 +1278,28 @@ function StatusPage({
                   />
                 </label>
               )}
+              {session.unchangedContent && (
+                <p role="status">{t('execStatusUnchanged')}</p>
+              )}
+              <button
+                type="button"
+                className="ghost wide"
+                disabled={session.locked}
+                onClick={() => {
+                  if (!session.cancelEditing()) return;
+                  setComparison(null);
+                  setChoices({});
+                  setView('summary');
+                }}
+              >
+                {t('execCancelUpdate')}
+              </button>
               <button
                 type="submit"
                 className="primary wide"
                 disabled={
                   session.locked ||
-                  session.unchangedForBusinessDay ||
+                  session.unchangedContent ||
                   !draft ||
                   requiredFields.length > 0 ||
                   draft.expectedN !== session.read.data.currentN
@@ -1194,6 +1319,64 @@ function StatusPage({
           </button>
         )}
       </main>
+    </div>
+  );
+}
+
+/** Read-only declarations and replies. History never owns a publish command. */
+export function StatusHistoryRecords({
+  history,
+  card,
+}: {
+  history: ProjectStatusHistoryDto;
+  card: ProjectHomeCard;
+}) {
+  const { t, locale } = useI18n();
+  return (
+    <div>
+      {history.updates.map((update) => (
+        <article className="card" key={update.id}>
+          <b>{statusLabel(t, update.status)}</b>
+          <p>
+            {card.managers.find(
+              (person) => person.personId === update.declaredByPersonId,
+            )?.displayName ?? t('unknown')}
+            {' · '}
+            <time dateTime={update.declaredAt}>
+              {fmtStamp(update.declaredAt, locale, update.siteTimezone)}
+            </time>
+          </p>
+          {update.situation && <p>{update.situation}</p>}
+          {update.recovery && <p>{update.recovery}</p>}
+          {(update.expectedRecoveryDate || update.expectedRecoveryUnknown) && (
+            <p>
+              {t('execExpectedRecovery')}:{' '}
+              {update.expectedRecoveryDate
+                ? fmtDay(update.expectedRecoveryDate, locale)
+                : t('unknown')}
+            </p>
+          )}
+          {update.supportNote && <p>{update.supportNote}</p>}
+          {update.notes.map((note) => (
+            <blockquote key={note.id}>
+              <p>{note.text}</p>
+              <time dateTime={note.at}>
+                {fmtStamp(note.at, locale, update.siteTimezone)}
+              </time>
+            </blockquote>
+          ))}
+          <details>
+            <summary>{t('allDetails')}</summary>
+            <p>{t('execVersion', { n: update.n })}</p>
+            <p>{update.businessDate}</p>
+            {update.areas.length > 0 && (
+              <p>
+                {update.areas.map((area) => areaLabel(t, area)).join(' · ')}
+              </p>
+            )}
+          </details>
+        </article>
+      ))}
     </div>
   );
 }
