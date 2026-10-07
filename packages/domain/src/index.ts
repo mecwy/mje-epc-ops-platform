@@ -67,6 +67,15 @@ export * from './manager-review-rules.js';
 
 export { WeatherStore, WeatherStoreError } from './weather-store.js';
 export {
+  createMetForecastCacheGate,
+  MetForecastCacheError,
+} from './met-forecast-cache.js';
+export type {
+  MetCacheEntry,
+  MetCacheLease,
+  MetSharedGate,
+} from './met-forecast-cache.js';
+export {
   claimWeatherJob,
   finishWeatherJob,
   failWeatherJob,

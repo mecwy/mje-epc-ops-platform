@@ -5,6 +5,7 @@ import {
   WEATHER_METRICS,
   type ReportLocationCandidateDto,
   type SafeFrozenWeatherReference,
+  type MetForecastDto,
 } from '@mje/contracts';
 import {
   acquirePosition,
@@ -156,23 +157,33 @@ export function parseFrozenWeatherReferences(
   });
 }
 
+export type ProviderWeatherReferenceView = Omit<
+  WeatherReferenceView,
+  'source' | 'forecast'
+> &
+  (
+    | { source: 'open-meteo'; forecast?: never }
+    | { source: 'met-norway'; forecast: MetForecastDto }
+  );
+
 export function weatherReferenceView(
   reference: SafeFrozenWeatherReference,
-): WeatherReferenceView {
+): ProviderWeatherReferenceView {
   const data = reference.snapshot;
-  return {
+  const common = {
     projectId: data.query.projectId,
     businessDate: data.query.businessDate,
     timezone: data.query.timezone,
     locationVersionId: reference.locationVersionId,
     snapshotId: reference.snapshotId,
-    source: data.provider,
     category: data.category,
     fetchedAt: data.fetchedAt,
     publishedAt: data.publishedAt,
     interval: structuredClone(data.query.interval),
     coverage: data.coverage,
     stale: false,
+    sourceLink: reference.sourceLink,
+    licenseLink: reference.licenseLink,
     values: WEATHER_METRICS.map((key) => {
       const metric = data.metrics[key];
       return {
@@ -183,4 +194,11 @@ export function weatherReferenceView(
       };
     }),
   };
+  return data.provider === 'met-norway'
+    ? {
+        ...common,
+        source: data.provider,
+        forecast: structuredClone(data.forecast),
+      }
+    : { ...common, source: data.provider };
 }
