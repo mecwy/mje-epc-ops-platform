@@ -47,6 +47,7 @@ export const BOUNDARY = {
       'personnel-metrics.ts',
       'weather-store.ts',
       'weather-jobs.ts',
+      'met-forecast-cache.ts',
       'reader-view.ts',
     ].map((f) => D + f),
     issue: ['issue-store.ts', 'issue-reader.ts', 'issue-lookups.ts'].map(
@@ -156,6 +157,7 @@ export const BOUNDARY = {
       'business-evidence-reader.ts',
       'weather-store.ts',
       'weather-jobs.ts',
+      'met-forecast-cache.ts',
       'alpha-store.ts',
       'report-store.ts',
       'report-read-context.ts',

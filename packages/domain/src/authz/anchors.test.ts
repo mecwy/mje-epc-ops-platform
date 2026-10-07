@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { decide, type TestContext } from './interpret.js';
 import { SURFACE, type Capability } from './surface.js';
+import { FIELDS } from './fields.js';
 
 const entry = (name: string) => {
   const e = SURFACE.find((x) => x.entry === name);
@@ -84,6 +85,7 @@ const DAY_KEYS = [
   'facts',
   'facts.weather',
   'facts.temperature',
+  'facts.siteLocation',
   'facts.qty',
   'facts.cumulative',
   'facts.narrative',
@@ -124,6 +126,22 @@ const DAY_KEYS = [
   'weatherReferences[].snapshot.category',
   'weatherReferences[].snapshot.coverage',
   'weatherReferences[].snapshot.fetchedAt',
+  'weatherReferences[].snapshot.forecast',
+  'weatherReferences[].snapshot.forecast.coveredInterval',
+  'weatherReferences[].snapshot.forecast.instants',
+  'weatherReferences[].snapshot.forecast.instants[].airTemperature',
+  'weatherReferences[].snapshot.forecast.instants[].at',
+  'weatherReferences[].snapshot.forecast.instants[].gust',
+  'weatherReferences[].snapshot.forecast.instants[].windSpeed',
+  'weatherReferences[].snapshot.forecast.outboundPoint',
+  'weatherReferences[].snapshot.forecast.periods',
+  'weatherReferences[].snapshot.forecast.periods[].endAt',
+  'weatherReferences[].snapshot.forecast.periods[].hours',
+  'weatherReferences[].snapshot.forecast.periods[].precipitation',
+  'weatherReferences[].snapshot.forecast.periods[].startAt',
+  'weatherReferences[].snapshot.forecast.periods[].symbolCode',
+  'weatherReferences[].snapshot.forecast.providerUpdatedAt',
+  'weatherReferences[].snapshot.forecast.returnedPoint',
   'weatherReferences[].snapshot.grid',
   'weatherReferences[].snapshot.metrics',
   'weatherReferences[].snapshot.provider',
@@ -143,6 +161,14 @@ const DAY_KEYS = [
 const sorted = (keys: string[]) => [...keys].sort();
 
 describe('ADR-0003 anchors (hand-written)', () => {
+  it('maps site text to draft for writers and submitted facts for readers', () => {
+    expect(
+      FIELDS['report.day.writer'].fields.facts.fields.siteLocation.layer,
+    ).toBe('draft');
+    expect(
+      FIELDS['report.day.reader'].fields.facts.fields.siteLocation.layer,
+    ).toBe('submitted');
+  });
   const cases: {
     name: string;
     entry: string;

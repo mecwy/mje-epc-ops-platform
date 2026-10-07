@@ -5,6 +5,8 @@ import {
   WEATHER_METRICS,
   type ReportLocationCandidateDto,
   type SafeFrozenWeatherReference,
+  type MetForecastDto,
+  type WeatherSnapshotDto,
 } from '@mje/contracts';
 import {
   acquirePosition,
@@ -156,23 +158,62 @@ export function parseFrozenWeatherReferences(
   });
 }
 
+export type ProviderWeatherReferenceView = Omit<
+  WeatherReferenceView,
+  'source' | 'forecast'
+> &
+  (
+    | { source: 'open-meteo'; forecast?: never }
+    | { source: 'met-norway'; forecast: MetForecastDto }
+  );
+
 export function weatherReferenceView(
   reference: SafeFrozenWeatherReference,
-): WeatherReferenceView {
-  const data = reference.snapshot;
-  return {
+): ProviderWeatherReferenceView {
+  return snapshotToView({
+    id: reference.snapshotId,
+    data: reference.snapshot,
+    sourceLink: reference.sourceLink,
+    licenseLink: reference.licenseLink,
+  });
+}
+
+/** A current snapshot is not an adoption: never manufacture actor or reference fields. */
+export function snapshotToView(
+  snapshot: Pick<
+    WeatherSnapshotDto,
+    'id' | 'data' | 'sourceLink' | 'licenseLink'
+  >,
+  now?: number,
+): ProviderWeatherReferenceView {
+  if (!UUID.test(snapshot.id)) throw new Error('INVALID_WEATHER_RESPONSE');
+  const data = parseWeatherReferenceDraft(snapshot.data);
+  for (const link of [snapshot.sourceLink, snapshot.licenseLink]) {
+    if (
+      typeof link !== 'string' ||
+      link.length > 2000 ||
+      new URL(link).protocol !== 'https:'
+    )
+      throw new Error('INVALID_WEATHER_RESPONSE');
+  }
+  const common = {
     projectId: data.query.projectId,
     businessDate: data.query.businessDate,
     timezone: data.query.timezone,
-    locationVersionId: reference.locationVersionId,
-    snapshotId: reference.snapshotId,
-    source: data.provider,
+    locationVersionId: data.query.locationVersionId,
+    snapshotId: snapshot.id,
     category: data.category,
     fetchedAt: data.fetchedAt,
     publishedAt: data.publishedAt,
     interval: structuredClone(data.query.interval),
     coverage: data.coverage,
-    stale: false,
+    stale:
+      now !== undefined &&
+      (now - Date.parse(data.fetchedAt) >= 3600000 ||
+        (data.provider === 'met-norway' &&
+          now >= Date.parse(data.forecast.coveredInterval.endAt))),
+    sourceLink: snapshot.sourceLink,
+    licenseLink: snapshot.licenseLink,
     values: WEATHER_METRICS.map((key) => {
       const metric = data.metrics[key];
       return {
@@ -183,4 +224,11 @@ export function weatherReferenceView(
       };
     }),
   };
+  return data.provider === 'met-norway'
+    ? {
+        ...common,
+        source: data.provider,
+        forecast: structuredClone(data.forecast),
+      }
+    : { ...common, source: data.provider };
 }

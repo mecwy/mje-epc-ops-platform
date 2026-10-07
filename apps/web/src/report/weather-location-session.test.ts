@@ -246,7 +246,7 @@ describe('formal codec consumer boundary', () => {
     { writable: true, locked: true },
     { writable: false, locked: false },
   ])(
-    'parent access %j fences location and adoption while retaining permitted reference reads',
+    'parent access %j fences both late location and weather results before adoption',
     async (access) => {
       const geo = deferred<LocateInput>();
       const weather = deferred<WeatherReferenceView>();
@@ -264,11 +264,9 @@ describe('formal codec consumer boundary', () => {
       geo.resolve({ kind: 'fix', reading: candidate() });
       weather.resolve(codecReference(codecContext()));
       expect(await capturing).toBe(false);
-      expect(await reading).toBe(access.writable);
+      expect(await reading).toBe(false);
       expect(session.getSnapshot().candidate).toBeNull();
-      expect(session.getSnapshot().reference).toEqual(
-        access.writable ? codecReference(codecContext()) : null,
-      );
+      expect(session.getSnapshot().reference).toBeNull();
       expect(session.confirmLocation()).toBe(false);
       expect(session.referenceWeather()).toBe(false);
       expect(dependencies.confirmLocation).not.toHaveBeenCalled();
@@ -582,4 +580,40 @@ describe('isolated WeatherLocation presentation', () => {
     expect(html).not.toContain('Reference this snapshot');
     expect(html).toContain('disabled');
   });
+  it.each(['zh', 'en'] as const)(
+    'weather-only presentation in %s does not offer GPS and location-only does not offer weather queries',
+    (locale) => {
+      presentationLang = locale;
+      const { session } = setup();
+      const weather = renderToStaticMarkup(
+        createElement(WeatherLocation, {
+          session,
+          weatherEnabled: true,
+          locationEnabled: false,
+        }),
+      );
+      expect(weather).not.toContain(
+        locale === 'zh' ? '确认我本次定位' : 'Confirm my current location',
+      );
+      expect(weather).not.toContain(
+        locale === 'zh' ? '本次定位（可选）' : 'Locate once (optional)',
+      );
+      expect(weather).toContain(
+        locale === 'zh' ? '刷新参考' : 'Refresh reference',
+      );
+      const location = renderToStaticMarkup(
+        createElement(WeatherLocation, {
+          session,
+          weatherEnabled: false,
+          locationEnabled: true,
+        }),
+      );
+      expect(location).toContain(
+        locale === 'zh' ? '本次定位（可选）' : 'Locate once (optional)',
+      );
+      expect(location).not.toContain(
+        locale === 'zh' ? '刷新参考' : 'Refresh reference',
+      );
+    },
+  );
 });

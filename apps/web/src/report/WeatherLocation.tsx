@@ -3,6 +3,7 @@ import { useI18n } from '../i18n.js';
 import type { WeatherLocationSession } from './weather-location-session.js';
 import type { SafeFrozenWeatherReference } from '@mje/contracts';
 import { weatherReferenceView } from './weather-adapter.js';
+import { MetForecastPanel } from './MetForecastPanel.js';
 
 const TEXT_KEYS = {
   title: 'weatherLocation_title',
@@ -54,6 +55,19 @@ const TEXT_KEYS = {
   retry: 'weatherLocation_retry',
   frozen: 'weatherLocation_frozen',
   adopted: 'weatherLocation_adopted',
+  directory_loading: 'weatherLocation_directoryLoading',
+  directory_none: 'weatherLocation_directoryNone',
+  directory_choose: 'weatherLocation_directoryChoose',
+  directory_failed: 'weatherLocation_directoryFailed',
+  directory_updated: 'weatherLocation_directoryUpdated',
+  select_scope: 'weatherLocation_selectScope',
+  query_pending: 'weatherLocation_queryPending',
+  query_unknown: 'weatherLocation_queryUnknown',
+  continue: 'weatherLocation_continue',
+  NO_HISTORY: 'weatherLocation_noHistory',
+  UNAVAILABLE: 'weatherLocation_unavailable',
+  RATE_LIMITED: 'weatherLocation_rateLimited',
+  DISABLED: 'weatherLocation_disabled',
 } as const;
 
 export interface WeatherLocationProps {
@@ -69,6 +83,8 @@ export interface WeatherLocationProps {
   onRetrySave?: () => void;
   /** IDs from the parent's applied facts, distinct from the current weather query. */
   savedSnapshotIds?: readonly string[];
+  weatherEnabled?: boolean;
+  locationEnabled?: boolean;
 }
 
 /** Submitted and history views consume their frozen references, without current-provider reads. */
@@ -81,7 +97,8 @@ export function FrozenWeatherReferences({
   if (!references.length) return null;
   return (
     <section
-      className="card report-weather"
+      className="card"
+      style={{ minWidth: 0, overflowWrap: 'anywhere' }}
       aria-label={t('weatherLocation_frozen')}
     >
       <h2>{t('weatherLocation_frozen')}</h2>
@@ -97,24 +114,31 @@ export function FrozenWeatherReferences({
             <p>
               {view.businessDate} · {view.timezone} · {t(coverageKey)}
             </p>
-            <dl>
-              {view.values.map((value) => {
-                const stateKey =
-                  value.state === 'value'
-                    ? TEXT_KEYS.unknown
-                    : TEXT_KEYS[value.state];
-                return (
-                  <div key={value.label}>
-                    <dt>{value.label}</dt>
-                    <dd>
-                      {value.state === 'value'
-                        ? `${value.value} ${value.unit ?? ''}`
-                        : t(stateKey)}
-                    </dd>
-                  </div>
-                );
-              })}
-            </dl>
+            {view.source === 'met-norway' ? (
+              <MetForecastPanel
+                forecast={view.forecast}
+                fetchedAt={view.fetchedAt}
+              />
+            ) : (
+              <dl>
+                {view.values.map((value) => {
+                  const stateKey =
+                    value.state === 'value'
+                      ? TEXT_KEYS.unknown
+                      : TEXT_KEYS[value.state];
+                  return (
+                    <div key={value.label}>
+                      <dt>{value.label}</dt>
+                      <dd>
+                        {value.state === 'value'
+                          ? `${value.value} ${value.unit ?? ''}`
+                          : t(stateKey)}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            )}
             <details>
               <summary>{t('weatherLocation_effective')}</summary>
               <p>
@@ -123,10 +147,11 @@ export function FrozenWeatherReferences({
               <p>
                 {t('weatherLocation_fetched')}: {view.fetchedAt}
               </p>
-              <p>
-                {t('weatherLocation_published')}:{' '}
-                {view.publishedAt ?? t('weatherLocation_unknown')}
-              </p>
+              {view.publishedAt && (
+                <p>
+                  {t('weatherLocation_published')}: {view.publishedAt}
+                </p>
+              )}
               <p>
                 {t('weatherLocation_adopted')}: {reference.adoptedAt}
               </p>
@@ -157,6 +182,8 @@ export function WeatherLocation({
   pendingSave,
   onRetrySave,
   savedSnapshotIds = [],
+  weatherEnabled = true,
+  locationEnabled = true,
 }: WeatherLocationProps) {
   const state = useSyncExternalStore(
     session.subscribe,
@@ -170,17 +197,9 @@ export function WeatherLocation({
   const context = state.context;
   const editable = state.writable && !state.locked;
   useEffect(() => {
-    if (editable) void session.refreshWeather();
+    if (editable && weatherEnabled) void session.activateWeather();
     return () => session.deactivate();
-  }, [
-    session,
-    context.ownerKey,
-    context.projectId,
-    context.businessDate,
-    context.timezone,
-    context.locationVersionId,
-    editable,
-  ]);
+  }, [session, editable, weatherEnabled]);
   const reference = state.reference;
   const alreadyReferenced =
     !!reference &&
@@ -191,76 +210,8 @@ export function WeatherLocation({
     <section className="card report-weather" aria-label={t.title}>
       <h2>{t.title}</h2>
       <p>
-        {context.businessDate} · {context.timezone} ·{' '}
-        {context.locationVersionId ?? t.not_configured}
+        {context.businessDate} · {context.timezone}
       </p>
-      <p className="muted small">{t.positionNote}</p>
-      <details>
-        <summary>{t.positionPrivacy}</summary>
-        <p>{t.positionPurpose}</p>
-        <p>{t.positionAccess}</p>
-        <p>{t.positionRetention}</p>
-      </details>
-      {state.writable && (
-        <div>
-          <button
-            type="button"
-            disabled={!editable || state.locating}
-            onClick={() => void session.captureLocation()}
-          >
-            {t.position}
-          </button>
-          {(state.locating || state.candidate) && (
-            <button type="button" onClick={session.cancelLocation}>
-              {t.cancel}
-            </button>
-          )}
-        </div>
-      )}
-      <p role="status">
-        {state.locating
-          ? t.locating
-          : status === 'unavailable'
-            ? t.locationUnavailable
-            : status === 'idle'
-              ? ''
-              : t[status]}
-      </p>
-      {state.candidate && state.writable && (
-        <div>
-          <p>
-            {state.candidate.lat}, {state.candidate.lon} · {t.accuracy}:{' '}
-            {state.candidate.accuracyM} m
-          </p>
-          <p>
-            {t.device}: {state.candidate.deviceFixAt ?? t.unknown}
-          </p>
-          <p>
-            {t.acquired}: {state.candidate.acquiredAt}
-          </p>
-          <button
-            type="button"
-            disabled={!editable}
-            onClick={() => session.confirmLocation()}
-          >
-            {t.confirm}
-          </button>
-        </div>
-      )}
-      {savedLocation && (
-        <p>
-          {t.savedLocation} · {t.accuracy}: {savedLocation.accuracyM} m ·{' '}
-          {t.device}: {savedLocation.deviceFixAt ?? t.unknown} · {t.acquired}:{' '}
-          {savedLocation.acquiredAt}
-        </p>
-      )}
-      {pendingLocationKind && (
-        <p>
-          {pendingLocationKind === 'clear'
-            ? t.cleared
-            : t.confirmed_pending_save}
-        </p>
-      )}
       {pendingSave && (
         <p role="status">
           {t.pending}{' '}
@@ -271,93 +222,235 @@ export function WeatherLocation({
           )}
         </p>
       )}
-      {state.writable && savedLocation && onClearLocation && (
-        <button type="button" disabled={!editable} onClick={onClearLocation}>
-          {t.clear}
-        </button>
-      )}
       {state.writable && onDetachWeather && (
         <button type="button" disabled={!editable} onClick={onDetachWeather}>
           {t.detach}
         </button>
       )}
-      <div aria-live="polite">
-        {state.weatherStatus === 'loading' ? (
-          <p>{t.fetching}</p>
-        ) : (
-          state.weatherStatus !== 'ready' && <p>{t[state.weatherStatus]}</p>
-        )}
-        {reference && (
-          <div>
-            <strong>
-              {t[reference.category]} · {reference.source}
-            </strong>
-            <p>
-              {reference.businessDate} ·{' '}
-              {reference.coverage === 'partial' ? t.partial : t.complete}
-              {reference.stale ? ` · ${t.stale}` : ''}
-            </p>
-            <dl>
-              {reference.values.map((v, i) => (
-                <div key={`${v.label}:${i}`}>
-                  <dt>{v.label}</dt>
-                  <dd>
-                    {v.state === 'value'
-                      ? `${v.value ?? t.unknown} ${v.unit ?? ''}`
-                      : t[v.state]}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-            <details>
-              <summary>{t.effective}</summary>
-              <p>
-                {reference.interval.startAt} — {reference.interval.endAt}
-              </p>
-              <p>
-                {t.fetched}: {reference.fetchedAt}
-              </p>
-              <p>
-                {t.published}: {reference.publishedAt ?? t.unknown}
-              </p>
-            </details>
-            {state.writable && (
+      {locationEnabled && (
+        <>
+          <p className="muted small">{t.positionNote}</p>
+          <details>
+            <summary>{t.positionPrivacy}</summary>
+            <p>{t.positionPurpose}</p>
+            <p>{t.positionAccess}</p>
+            <p>{t.positionRetention}</p>
+          </details>
+          {state.writable && (
+            <div>
               <button
                 type="button"
-                disabled={
-                  !editable ||
-                  state.weatherStatus !== 'ready' ||
-                  alreadyReferenced ||
-                  reference.stale
-                }
-                onClick={() => session.referenceWeather()}
+                disabled={!editable || state.locating}
+                onClick={() => void session.captureLocation()}
               >
-                {t.reference}
+                {t.position}
               </button>
-            )}
-            {state.referencedSnapshotId && (
+              {(state.locating || state.candidate) && (
+                <button type="button" onClick={session.cancelLocation}>
+                  {t.cancel}
+                </button>
+              )}
+            </div>
+          )}
+          <p role="status">
+            {state.locating
+              ? t.locating
+              : status === 'unavailable'
+                ? t.locationUnavailable
+                : status === 'idle'
+                  ? ''
+                  : t[status]}
+          </p>
+          {state.candidate && state.writable && (
+            <div>
               <p>
-                {t.referenced} · {state.referencedSnapshotId}
+                {state.candidate.lat}, {state.candidate.lon} · {t.accuracy}:{' '}
+                {state.candidate.accuracyM} m
               </p>
+              <p>
+                {t.device}: {state.candidate.deviceFixAt ?? t.unknown}
+              </p>
+              <p>
+                {t.acquired}: {state.candidate.acquiredAt}
+              </p>
+              <button
+                type="button"
+                disabled={!editable}
+                onClick={() => session.confirmLocation()}
+              >
+                {t.confirm}
+              </button>
+            </div>
+          )}
+          {savedLocation && (
+            <p>
+              {t.savedLocation} · {t.accuracy}: {savedLocation.accuracyM} m ·{' '}
+              {t.device}: {savedLocation.deviceFixAt ?? t.unknown} ·{' '}
+              {t.acquired}: {savedLocation.acquiredAt}
+            </p>
+          )}
+          {pendingLocationKind && (
+            <p>
+              {pendingLocationKind === 'clear'
+                ? t.cleared
+                : t.confirmed_pending_save}
+            </p>
+          )}
+          {state.writable && savedLocation && onClearLocation && (
+            <button
+              type="button"
+              disabled={!editable}
+              onClick={onClearLocation}
+            >
+              {t.clear}
+            </button>
+          )}
+        </>
+      )}
+      {weatherEnabled && (
+        <>
+          {state.locationDirectoryStatus !== 'idle' && (
+            <div>
+              {state.locationDirectoryStatus !== 'selected' && (
+                <p role="status">
+                  {state.locationDirectoryStatus === 'loading'
+                    ? t.directory_loading
+                    : state.locationDirectoryStatus === 'none'
+                      ? t.directory_none
+                      : state.locationDirectoryStatus === 'choose'
+                        ? t.directory_choose
+                        : t.directory_failed}
+                </p>
+              )}
+              {!!state.locations.length && (
+                <label className="field">
+                  <span>{t.select_scope}</span>
+                  <select
+                    value={context.locationVersionId ?? ''}
+                    disabled={
+                      !editable || state.locationDirectoryStatus === 'loading'
+                    }
+                    onChange={(event) =>
+                      void session.selectWeatherLocation(event.target.value)
+                    }
+                  >
+                    <option value="">{t.directory_choose}</option>
+                    {state.locations.map((location) => (
+                      <option key={location.id} value={location.id}>
+                        {location.scopeKey} · v{location.n} ·{' '}
+                        {location.confirmedAt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {state.locationUpdated && (
+                <p role="status">{t.directory_updated}</p>
+              )}
+            </div>
+          )}
+          <div aria-live="polite">
+            {state.weatherStatus === 'loading' ? (
+              <p>{t.fetching}</p>
+            ) : (
+              state.weatherStatus !== 'ready' && (
+                <p role="status">
+                  {state.weatherStatus === 'pending'
+                    ? t.query_pending
+                    : state.weatherStatus === 'unknown'
+                      ? t.query_unknown
+                      : t[state.weatherStatus]}
+                </p>
+              )
             )}
-            {alreadyReferenced && !state.referencedSnapshotId && (
-              <p>{sharedT('saved')}</p>
+            {reference && (
+              <div>
+                <strong>
+                  {t[reference.category]} · {reference.source}
+                </strong>
+                <p>
+                  {reference.businessDate} ·{' '}
+                  {reference.coverage === 'partial' ? t.partial : t.complete}
+                  {reference.stale ? ` · ${t.stale}` : ''}
+                </p>
+                {reference.source === 'met-norway' && reference.forecast ? (
+                  <MetForecastPanel
+                    forecast={reference.forecast}
+                    fetchedAt={reference.fetchedAt}
+                  />
+                ) : (
+                  <dl>
+                    {reference.values.map((v, i) => (
+                      <div key={`${v.label}:${i}`}>
+                        <dt>{v.label}</dt>
+                        <dd>
+                          {v.state === 'value'
+                            ? `${v.value ?? t.unknown} ${v.unit ?? ''}`
+                            : t[v.state]}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                <details>
+                  <summary>{t.effective}</summary>
+                  <p>
+                    {reference.interval.startAt} — {reference.interval.endAt}
+                  </p>
+                  <p>
+                    {t.fetched}: {reference.fetchedAt}
+                  </p>
+                  {reference.publishedAt && (
+                    <p>
+                      {t.published}: {reference.publishedAt}
+                    </p>
+                  )}
+                </details>
+                {state.writable && (
+                  <button
+                    type="button"
+                    disabled={
+                      !editable ||
+                      state.weatherStatus !== 'ready' ||
+                      alreadyReferenced ||
+                      reference.stale
+                    }
+                    onClick={() => session.referenceWeather()}
+                  >
+                    {t.reference}
+                  </button>
+                )}
+                {state.referencedSnapshotId && (
+                  <p>
+                    {t.referenced} · {state.referencedSnapshotId}
+                  </p>
+                )}
+                {alreadyReferenced && !state.referencedSnapshotId && (
+                  <p>{sharedT('saved')}</p>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
-      {state.writable && (
-        <button
-          type="button"
-          disabled={
-            !editable ||
-            !context.locationVersionId ||
-            state.weatherStatus === 'loading'
-          }
-          onClick={() => void session.refreshWeather()}
-        >
-          {t.refresh}
-        </button>
+          {state.writable && (
+            <button
+              type="button"
+              disabled={
+                !editable ||
+                (!context.locationVersionId &&
+                  !['none', 'choose', 'failed'].includes(
+                    state.locationDirectoryStatus,
+                  )) ||
+                state.weatherStatus === 'loading'
+              }
+              onClick={() => void session.refreshWeather()}
+            >
+              {state.weatherStatus === 'pending' ||
+              state.weatherStatus === 'unknown'
+                ? t.continue
+                : t.refresh}
+            </button>
+          )}
+        </>
       )}
       <p className="muted small">{t.note}</p>
       {onManualChange && (

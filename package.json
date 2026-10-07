@@ -41,6 +41,7 @@
     "test:project-status": "node --env-file=.env scripts/project-status-integration.mts",
     "test:project-master": "node --env-file=.env scripts/project-master-integration.mts",
     "check:migrations": "node scripts/check-migration-history.mts",
+    "test:met-cache": "node --env-file=.env scripts/met-cache-integration.mts",
     "test:contract-register": "node --env-file=.env scripts/contract-register-integration.mts",
     "test:opportunity": "node --env-file=.env scripts/opportunity-integration.mts"
   },

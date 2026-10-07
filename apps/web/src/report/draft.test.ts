@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { DayFactsDto, SaveFactsCommand } from '@mje/contracts';
 import { blankFacts } from '@mje/domain/rules';
 import { ApiError, type WriteResult } from '../api.js';
-import { DraftSession } from './draft.js';
+import { changedPaths, DraftSession, leaf } from './draft.js';
 import { setFact } from './model.js';
 
 const empty = () => blankFacts() as DayFactsDto;
@@ -44,6 +44,36 @@ const session = (date: string, s: ReturnType<typeof server>, version = 1) =>
   );
 
 describe('draft session', () => {
+  it('tracks optional site text and explicit empty separately without a default', () => {
+    const blank = empty();
+    expect(leaf(blank, 'siteLocation')).toBeUndefined();
+    const cleared = { ...blank, siteLocation: '' };
+    expect(leaf(cleared, 'siteLocation')).toBe('');
+    expect(changedPaths(blank, cleared)).toEqual(['siteLocation']);
+    expect(changedPaths(cleared, blank)).toEqual(['siteLocation']);
+  });
+  it('retains a site edit after version conflict and explicitly refills it on the fresh version', async () => {
+    const srv = server();
+    const s = session('2026-10-07', srv);
+    const mine = '  TEST address / Area A  ';
+    s.edit({ ...empty(), siteLocation: mine });
+    const settled = s.settle();
+    await tick();
+    srv.calls[0]!.settle(new ApiError('VERSION_CONFLICT', 409));
+    expect(await settled).toBe('conflict');
+    s.reset(2, { ...empty(), siteLocation: 'TEST other area' });
+    expect(s.retained).toEqual([{ path: 'siteLocation', mine }]);
+    expect(s.facts.siteLocation).toBe('TEST other area');
+    expect(s.refill('siteLocation')).toBe(true);
+    expect(s.facts.siteLocation).toBe(mine);
+    const flushed = s.flush();
+    await tick();
+    expect(srv.calls[1]!.command.expectedVersion).toBe(2);
+    expect(srv.calls[1]!.command.facts.siteLocation).toBe(mine);
+    srv.ok(1, 3);
+    await flushed;
+    expect(s.retained).toEqual([]);
+  });
   it.each([1, 2, 3, 4, 5] as const)(
     'retains source cells through ordinary edits and byte-identical retry after a lost response (V%s)',
     async (schemaVersion) => {

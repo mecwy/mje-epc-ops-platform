@@ -116,6 +116,7 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       `${D}personnel-metrics.ts`,
       `${D}weather-store.ts`,
       `${D}weather-jobs.ts`,
+      `${D}met-forecast-cache.ts`,
       `${D}reader-view.ts`,
     ],
     tables: [
@@ -130,6 +131,8 @@ export const MODULES: Record<ModuleName, ModuleSpec> = {
       'WeatherRequest',
       'WeatherSnapshot',
       'WeatherReportReference',
+      'MetForecastCache',
+      'MetForecastCooldown',
       'ReportLocationRecord',
       // First and only consumer is report WEATHER_FETCH; RLS restricts event type.
       'OutboxEvent',

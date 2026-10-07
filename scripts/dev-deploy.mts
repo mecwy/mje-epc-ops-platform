@@ -42,10 +42,12 @@ export interface DeployConfig {
   storageAccountName: string;
   reportLocationUiEnabled?: boolean;
   reportLocationSaveEnabled?: boolean;
+  weatherReferenceUiEnabled?: boolean;
 }
 const LOCATION_FLAGS = [
   'reportLocationUiEnabled',
   'reportLocationSaveEnabled',
+  'weatherReferenceUiEnabled',
 ] as const;
 export type Command = 'migrate' | 'app' | 'all';
 export interface Options {
@@ -152,6 +154,8 @@ export function buildImage(
       ? [
           '--build-arg',
           `VITE_REPORT_LOCATION_ENABLED=${c.reportLocationUiEnabled === true}`,
+          '--build-arg',
+          `VITE_WEATHER_REFERENCE_ENABLED=${c.weatherReferenceUiEnabled === true}`,
         ]
       : []),
     '--build-arg',

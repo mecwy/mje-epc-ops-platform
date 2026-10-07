@@ -143,10 +143,13 @@ export const CANONICAL_GUARD =
 const OTHER_GUARD =
   /import\.meta\.main|require\.main|process\.argv\[1\]|import\.meta\.filename\s*===|import\.meta\.path\s*===/;
 const HTTP_HOST = 'apps/api/src/main.ts';
-// This adapter is injected by a caller; it has no process entry or default transport.
-// Keep the exemption exact and prove it cannot execute code when loaded.
+// These adapters are injected by a caller and have no process entry.
+// Keep the set exact and prove that imports cannot start their work.
 const WORKER_SUPPORT_MODULES = [
+  'apps/worker/src/met-norway-provider.ts',
+  'apps/worker/src/met-norway-transport.ts',
   'apps/worker/src/weather-provider.ts',
+  'apps/worker/src/weather-runtime.ts',
   'apps/worker/src/weather-worker.ts',
 ];
 function inertModule(text: string) {
@@ -156,9 +159,15 @@ function inertModule(text: string) {
     ts.ScriptTarget.Latest,
     true,
   );
+  const numeric = (node: ts.Node): boolean =>
+    ts.isNumericLiteral(node) ||
+    (ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.AsteriskToken &&
+      numeric(node.left) &&
+      numeric(node.right));
   const literal = (node: ts.Node): boolean =>
     ts.isStringLiteral(node) ||
-    ts.isNumericLiteral(node) ||
+    numeric(node) ||
     (ts.isObjectLiteralExpression(node) &&
       node.properties.every(
         (p) =>
@@ -173,9 +182,20 @@ function inertModule(text: string) {
         s.importClause !== undefined &&
         ts.isStringLiteral(s.moduleSpecifier) &&
         (s.importClause.isTypeOnly ||
-          ['@mje/contracts', './weather-provider.js'].includes(
-            s.moduleSpecifier.text,
-          ))) ||
+          [
+            '@mje/contracts',
+            './weather-provider.js',
+            './met-norway-provider.js',
+            './met-norway-transport.js',
+          ].includes(s.moduleSpecifier.text) ||
+          (s.moduleSpecifier.text === 'node:crypto' &&
+            s.importClause.name === undefined &&
+            s.importClause.namedBindings !== undefined &&
+            ts.isNamedImports(s.importClause.namedBindings) &&
+            s.importClause.namedBindings.elements.length > 0 &&
+            s.importClause.namedBindings.elements.every(
+              (e) => (e.propertyName ?? e.name).text === 'createHash',
+            )))) ||
       ts.isInterfaceDeclaration(s) ||
       ts.isTypeAliasDeclaration(s) ||
       ts.isFunctionDeclaration(s) ||
@@ -237,7 +257,9 @@ export function discoverEntries(
   }
   return { entries: entries.sort(), refused };
 }
-function launched(): string[] {
+function launched(
+  read = (f: string) => readFileSync(repo + f, 'utf8'),
+): string[] {
   const configs = [
     ...readdirSync(repo).filter((f) => f.startsWith('Dockerfile')),
     'apps/api/package.json',
@@ -248,9 +270,16 @@ function launched(): string[] {
   ];
   return configs.flatMap((config) => {
     const app = config.startsWith('apps/worker') ? 'worker' : 'api';
-    return [
-      ...readFileSync(repo + config, 'utf8').matchAll(/dist\/([\w/-]+)\.js/g),
-    ].map((m) => `apps/${app}/src/${m[1]}.ts`);
+    const text = read(config);
+    const commands = config.endsWith('package.json')
+      ? Object.values(
+          (JSON.parse(text) as { scripts?: Record<string, string> }).scripts ??
+            {},
+        ).join('\n')
+      : text;
+    return [...commands.matchAll(/dist\/([\w/-]+)\.js/g)].map(
+      (m) => `apps/${app}/src/${m[1]}.ts`,
+    );
   });
 }
 
@@ -265,6 +294,9 @@ describe('Worker / CLI entry enumeration (ADR-0003 D2.2)', () => {
       'class Job { [start()]() {} }',
       'const values = { [start()]: "safe" }',
       '@start() class Job {}',
+      'const bytes = 2 * start()',
+      'import { randomUUID } from "node:crypto"',
+      'import * as crypto from "node:crypto"',
     ]) {
       expect(
         discoverEntries((f) =>
@@ -280,6 +312,18 @@ describe('Worker / CLI entry enumeration (ADR-0003 D2.2)', () => {
     expect(refused).toEqual([]);
     expect(entries.length).toBeGreaterThan(0);
     expect(entries).toEqual([...PROCESS_ENTRIES].sort());
+  });
+  it('ignores package exports but still discovers actual package script launches', () => {
+    const found = launched((f) =>
+      f === 'apps/worker/package.json'
+        ? JSON.stringify({
+            exports: { './library': './dist/library-only.js' },
+            scripts: { start: 'node dist/unregistered-command.js' },
+          })
+        : readFileSync(repo + f, 'utf8'),
+    );
+    expect(found).toContain('apps/worker/src/unregistered-command.ts');
+    expect(found).not.toContain('apps/worker/src/library-only.ts');
   });
   it('every launched dist file is the HTTP host or a registered entry', () => {
     const found = launched();

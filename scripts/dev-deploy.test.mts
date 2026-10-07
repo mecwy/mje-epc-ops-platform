@@ -98,9 +98,10 @@ for (const ui of [false, true])
         ),
         false,
       );
+      assert.ok(build.includes('VITE_WEATHER_REFERENCE_ENABLED=false'));
       assert.equal(
-        [...build, ...app].some((arg) =>
-          arg.includes('WEATHER_REFERENCE_ENABLED'),
+        app.some((arg) =>
+          /WEATHER_REFERENCE_ENABLED|weatherReferenceEnabled/i.test(arg),
         ),
         false,
       );
@@ -352,4 +353,56 @@ test('a bad option or a failing subprocess prints a stop message only; stderr st
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('weather UI flag is explicit, independent and build-only', () => {
+  for (const weather of [false, true]) {
+    for (const location of [false, true]) {
+      const options = {
+        ...config,
+        weatherReferenceUiEnabled: weather,
+        reportLocationUiEnabled: location,
+      };
+      assert.deepEqual(validateConfig(options), options);
+      const build = buildImage(options, 'mje-app', sha, '/tmp/src');
+      assert.ok(build.includes(`VITE_WEATHER_REFERENCE_ENABLED=${weather}`));
+      assert.ok(build.includes(`VITE_REPORT_LOCATION_ENABLED=${location}`));
+      assert.equal(
+        buildImage(options, 'mje-migrate', sha, '/tmp/src').some((arg) =>
+          arg.includes('VITE_WEATHER_REFERENCE_ENABLED'),
+        ),
+        false,
+      );
+      assert.equal(
+        deployApp(options, sha, '/tmp/src', 'TEST-image').some((arg) =>
+          /WEATHER_REFERENCE_ENABLED|weatherReferenceEnabled/i.test(arg),
+        ),
+        false,
+      );
+      assert.equal(
+        deployMigrationJob(options, sha, '/tmp/src', 'TEST-image').some((arg) =>
+          /WEATHER_REFERENCE_ENABLED|weatherReferenceEnabled/i.test(arg),
+        ),
+        false,
+      );
+    }
+  }
+  for (const value of [undefined, null, 0, 1, 'false', 'true'])
+    assert.throws(
+      () => validateConfig({ ...config, weatherReferenceUiEnabled: value }),
+      DeployStop,
+    );
+  const docker = readFileSync(
+    new URL('../Dockerfile', import.meta.url),
+    'utf8',
+  );
+  assert.match(docker, /ARG VITE_WEATHER_REFERENCE_ENABLED=false/);
+  assert.match(
+    docker,
+    /ENV VITE_WEATHER_REFERENCE_ENABLED=\$VITE_WEATHER_REFERENCE_ENABLED/,
+  );
+  assert.ok(
+    docker.indexOf('ENV VITE_WEATHER_REFERENCE_ENABLED=') <
+      docker.indexOf('pnpm build'),
+  );
 });

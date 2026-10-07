@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   WEATHER_METRICS,
+  metForecastPoint,
   type SafeFrozenWeatherReference,
 } from '@mje/contracts';
 import {
@@ -9,6 +10,7 @@ import {
   parseFrozenWeatherReferences,
   reportLocationReading,
   weatherReferenceView,
+  snapshotToView,
 } from './weather-adapter.js';
 import { toFix, type GeoSource } from './geo.js';
 
@@ -137,6 +139,31 @@ describe('C03 raw decoding and bounded acquisition', () => {
   });
 });
 describe('frozen weather response boundary', () => {
+  it('projects a current canonical snapshot without fake adoption identity and applies the live expiry policy', () => {
+    const reference = frozen();
+    const snapshot = {
+      id: reference.snapshotId,
+      data: reference.snapshot,
+      sourceLink: reference.sourceLink,
+      licenseLink: reference.licenseLink,
+    };
+    const current = snapshotToView(
+      snapshot,
+      Date.parse('2026-10-06T10:30:00Z'),
+    );
+    expect(current.stale).toBe(false);
+    expect(current).not.toHaveProperty('adoptedAt');
+    expect(current).not.toHaveProperty('referenceId');
+    expect(
+      snapshotToView(snapshot, Date.parse('2026-10-06T11:00:00Z')).stale,
+    ).toBe(true);
+    expect(weatherReferenceView(reference).stale).toBe(false);
+    const invalid = {
+      ...snapshot,
+      data: { ...snapshot.data, fetchedAt: 'unknown' },
+    };
+    expect(() => snapshotToView(invalid)).toThrow();
+  });
   it('retains zero, missing and the exact frozen provenance', () => {
     const reference = frozen();
     expect(
@@ -165,5 +192,103 @@ describe('frozen weather response boundary', () => {
     const other = frozen();
     other.snapshot.query.locationVersionId = id(9);
     expect(() => parseFrozenWeatherReferences([other])).toThrow();
+  });
+  it('keeps MET original forecast separate from daily metrics and isolates its copied series', () => {
+    const reference = frozen();
+    reference.snapshot = {
+      ...reference.snapshot,
+      provider: 'met-norway',
+      fetchedAt: '2026-10-05T01:00:00Z',
+      category: 'forecast',
+      coverage: 'partial',
+      grid: null,
+      query: {
+        ...reference.snapshot.query,
+        product: 'forecast',
+        model: 'forecast',
+      },
+      metrics: Object.fromEntries(
+        WEATHER_METRICS.map((key) => [
+          key,
+          {
+            state: 'not_applicable',
+            raw: null,
+            unit: null,
+            reason: 'TEST not daily',
+          },
+        ]),
+      ) as SafeFrozenWeatherReference['snapshot']['metrics'],
+      forecast: {
+        providerUpdatedAt: '2026-10-05T00:00:00Z',
+        outboundPoint: metForecastPoint({ lat: '1', lon: '1' }),
+        returnedPoint: { lat: '1', lon: '1' },
+        coveredInterval: {
+          startAt: '2026-10-05T00:00:00Z',
+          endAt: '2026-10-05T12:00:00Z',
+        },
+        instants: [
+          {
+            at: '2026-10-05T00:00:00Z',
+            airTemperature: {
+              state: 'value',
+              value: '0',
+              raw: '0',
+              unit: 'celsius',
+            },
+            windSpeed: {
+              state: 'value',
+              value: '1.25',
+              raw: '1.25',
+              unit: 'm/s',
+            },
+            gust: {
+              state: 'unknown',
+              raw: null,
+              unit: null,
+              reason: 'TEST unknown',
+            },
+          },
+        ],
+        periods: ([1, 6, 12] as const).map((hours) => ({
+          startAt: '2026-10-05T00:00:00Z',
+          endAt: `2026-10-05T${String(hours).padStart(2, '0')}:00:00Z`,
+          hours,
+          symbolCode: 'rain',
+          precipitation: {
+            state: 'value',
+            value: String(hours),
+            raw: String(hours),
+            unit: 'mm',
+          },
+        })),
+      },
+    };
+    const parsed = parseFrozenWeatherReferences([reference])[0]!;
+    const view = weatherReferenceView(parsed);
+    const live = snapshotToView(
+      {
+        id: parsed.snapshotId,
+        data: parsed.snapshot,
+        sourceLink: parsed.sourceLink,
+        licenseLink: parsed.licenseLink,
+      },
+      Date.parse('2026-10-05T01:00:00Z'),
+    );
+    expect(live.source).toBe('met-norway');
+    expect(live.sourceLink).toBe(parsed.sourceLink);
+    expect(live.licenseLink).toBe(parsed.licenseLink);
+    expect(view.source).toBe('met-norway');
+    expect(view.sourceLink).toBe(reference.sourceLink);
+    expect(view.licenseLink).toBe(reference.licenseLink);
+    if (view.source !== 'met-norway') throw new Error('TEST wrong provider');
+    expect(view.forecast).toEqual(reference.snapshot.forecast);
+    expect(view.values.every((value) => value.state === 'not_applicable')).toBe(
+      true,
+    );
+    expect(view.forecast.periods.map((period) => period.hours)).toEqual([
+      1, 6, 12,
+    ]);
+    view.forecast.periods[0]!.symbolCode = 'TEST changed';
+    expect(reference.snapshot.forecast.periods[0]!.symbolCode).toBe('rain');
   });
 });

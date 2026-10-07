@@ -27,7 +27,7 @@ const PERMANENT = new Set([
 
 // The leaves the user types, by the path grammar of `setFact`. `updated` is a device clock,
 // `milestones` and `noWork` are not typed through `setFact`: none of them is retained.
-const TOP = ['weather', 'temperature'] as const;
+const TOP = ['weather', 'temperature', 'siteLocation'] as const;
 const NARRATIVE = ['construction', 'quality', 'safety'] as const;
 const GROUPS = [
   'qty',
@@ -41,7 +41,8 @@ const GROUPS = [
 /** The string at a `setFact` path, or undefined where the facts have none. */
 export function leaf(facts: DayFactsDto, path: string): string | undefined {
   const [head, key] = path.split('.');
-  if (head === 'weather' || head === 'temperature') return facts[head];
+  if (head === 'weather' || head === 'temperature' || head === 'siteLocation')
+    return facts[head];
   if (head === 'narrative')
     return (NARRATIVE as readonly string[]).includes(key ?? '')
       ? facts.narrative[key as (typeof NARRATIVE)[number]]

@@ -3024,6 +3024,204 @@ try {
     pass('personnel read revocation is rechecked after successful reads');
   }
 
+  // SITE: free-text daily location is a fact, independent of weather/GPS/master data.
+  {
+    const date = '2027-04-01';
+    const raw = '  TEST address / Area A <north>  ';
+    const replacement = 'TEST address / Area B';
+    const getRevision = (n, bearer = exec) =>
+      expectStatus(
+        call(
+          `/revision?projectId=${projectA}&businessDate=${date}&n=${n}`,
+          bearer,
+        ),
+        200,
+      );
+    assert.equal(
+      Object.hasOwn((await dayOf(date, pm)).facts, 'siteLocation'),
+      false,
+    );
+    const mutation = cmd({
+      businessDate: date,
+      facts: facts({ siteLocation: raw }),
+    });
+    let saved = await expectStatus(call('/facts', pm, mutation), 200);
+    const replay = await expectStatus(call('/facts', pm, mutation), 200);
+    assert.deepEqual(replay, saved);
+    assert.equal((await dayOf(date, pm)).facts.siteLocation, raw);
+    assert.equal(
+      Object.hasOwn((await dayOf(date, exec)).facts, 'siteLocation'),
+      false,
+    );
+    pass(
+      'site text saves raw; same-key replay is stable and a reader cannot see a draft',
+    );
+
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version,
+          facts: facts({ weather: 'TEST manual weather' }),
+        }),
+      ),
+      200,
+    );
+    assert.equal((await dayOf(date, pm)).facts.siteLocation, raw);
+    await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: saved.version - 1,
+          facts: facts({ siteLocation: replacement }),
+        }),
+      ),
+      409,
+      'VERSION_CONFLICT',
+    );
+    assert.equal((await dayOf(date, pm)).facts.siteLocation, raw);
+    const submitted = await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    const original = (await getRevision(1)).snapshot;
+    assert.equal(original.facts.siteLocation, raw);
+    pass(
+      'legacy client omission preserves saved site text; stale writes cannot overwrite it; submission freezes it',
+    );
+
+    let correction = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: submitted.version,
+          reason: 'TEST site correction',
+        }),
+      ),
+      200,
+    );
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correction.version,
+          facts: facts({ siteLocation: replacement }),
+        }),
+      ),
+      200,
+    );
+    assert.equal((await dayOf(date, exec)).facts.siteLocation, raw);
+    const cancelled = await expectStatus(
+      call(
+        '/correction/cancel',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    assert.equal((await dayOf(date, pm)).facts.siteLocation, raw);
+    assert.deepEqual((await getRevision(1)).snapshot, original);
+    correction = await expectStatus(
+      call(
+        '/correction/start',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: cancelled.version,
+          reason: 'TEST explicit site clear',
+        }),
+      ),
+      200,
+    );
+    saved = await expectStatus(
+      call(
+        '/facts',
+        pm,
+        cmd({
+          businessDate: date,
+          expectedVersion: correction.version,
+          facts: facts({ siteLocation: '' }),
+        }),
+      ),
+      200,
+    );
+    await expectStatus(
+      call(
+        '/submit',
+        pm,
+        cmd({ businessDate: date, expectedVersion: saved.version }),
+      ),
+      200,
+    );
+    assert.equal((await getRevision(2)).snapshot.facts.siteLocation, '');
+    assert.deepEqual((await getRevision(1)).snapshot, original);
+    pass(
+      'correction is isolated, cancellation restores the snapshot, explicit clear creates a new revision without rewriting history',
+    );
+
+    const noWorkDate = '2027-04-02';
+    const emptyFacts = {
+      weather: '',
+      temperature: '',
+      qty: {},
+      cumulative: {},
+      narrative: { construction: '', quality: '', safety: '' },
+      people: {},
+      presence: {},
+      machinery: {},
+      materials: {},
+      milestones: {},
+      noWork: null,
+      updated: {},
+      siteLocation: raw,
+    };
+    saved = await expectStatus(
+      call('/facts', pm, cmd({ businessDate: noWorkDate, facts: emptyFacts })),
+      200,
+    );
+    assert.equal((await dayOf(noWorkDate, pm)).state, 'draft');
+    await expectStatus(
+      call(
+        '/no-work',
+        pm,
+        cmd({
+          businessDate: noWorkDate,
+          expectedVersion: saved.version,
+          reason: 'rest',
+          note: 'TEST no work',
+        }),
+      ),
+      200,
+    );
+    const noWorkSnapshot = await expectStatus(
+      call(
+        `/revision?projectId=${projectA}&businessDate=${noWorkDate}&n=1`,
+        exec,
+      ),
+      200,
+    );
+    assert.equal(noWorkSnapshot.snapshot.facts.siteLocation, raw);
+    assert.deepEqual(noWorkSnapshot.snapshot.facts.noWork, {
+      reason: 'rest',
+      note: 'TEST no work',
+    });
+    pass(
+      'site-only facts make a draft and survive a no-work submission without inventing progress or personnel',
+    );
+  }
+
   console.log(
     `Report HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Photos, issues, field devices and the web UI are later slices.`,
   );

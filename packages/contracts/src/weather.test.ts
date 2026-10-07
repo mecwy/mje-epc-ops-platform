@@ -6,6 +6,7 @@ import {
   parseReportLocationCandidate,
   WEATHER_METRICS,
   weatherCategory,
+  metForecastPoint,
 } from './weather.js';
 
 describe('native report precision', () => {
@@ -236,5 +237,111 @@ describe('weather boundary — CG-I07 / CG-I09', () => {
     expect(() =>
       parseReportLocationCandidate({ ...input, deviceFixAt: 'yesterday' }),
     ).toThrow();
+  });
+});
+
+function metDraft() {
+  const absent = {
+    state: 'not_applicable',
+    raw: null,
+    unit: null,
+    reason: 'met_period_products_not_daily_metrics',
+  };
+  return {
+    ...reference(),
+    provider: 'met-norway',
+    category: 'forecast',
+    coverage: 'partial',
+    query: {
+      ...query(),
+      businessDate: '2026-10-06',
+      interval: {
+        startAt: '2026-10-05T22:00:00Z',
+        endAt: '2026-10-06T22:00:00Z',
+      },
+      product: 'forecast',
+      model: 'forecast',
+    },
+    metrics: Object.fromEntries(WEATHER_METRICS.map((k) => [k, { ...absent }])),
+    forecast: {
+      providerUpdatedAt: '2026-10-06T09:00:00Z',
+      outboundPoint: { lat: '45.0000', lon: '19.0000' },
+      returnedPoint: { lat: '45', lon: '19' },
+      coveredInterval: { startAt: now, endAt: '2026-10-06T11:00:00Z' },
+      instants: [
+        { at: now, airTemperature: value(), windSpeed: value(), gust: absent },
+      ],
+      periods: [
+        {
+          startAt: now,
+          endAt: '2026-10-06T11:00:00Z',
+          hours: 1,
+          symbolCode: 'clearsky_day',
+          precipitation: value(),
+        },
+      ],
+    },
+  };
+}
+describe('provider-specific MET boundary', () => {
+  it('accepts MET only with a strict period product, preserving the old exact Open-Meteo shape', () => {
+    const input = metDraft();
+    expect(parseWeatherReferenceDraft(input)).toEqual(input);
+    expect(parseWeatherReferenceDraft(reference())).toEqual(reference());
+    expect(() =>
+      parseWeatherReferenceDraft({ ...reference(), forecast: input.forecast }),
+    ).toThrow();
+  });
+  it.each([
+    'absent',
+    'daily',
+    'grid',
+    'publication',
+    'precision',
+    'bad-period',
+    'duplicate',
+    'duplicate-instant',
+    'foreign-time',
+    'coverage',
+    'claimed-range',
+    'authorization',
+  ])('rejects MET %s mutation', (variant) => {
+    const d = metDraft();
+    if (variant === 'absent') delete (d as Record<string, unknown>)['forecast'];
+    if (variant === 'daily') d.metrics['condition'] = value();
+    if (variant === 'grid')
+      (d as Record<string, unknown>)['grid'] = { lat: '45', lon: '19' };
+    if (variant === 'publication')
+      (d as Record<string, unknown>)['publishedAt'] = now;
+    if (variant === 'precision') d.forecast.outboundPoint.lat = '45.000000';
+    if (variant === 'bad-period')
+      d.forecast.periods[0]!.endAt = '2026-10-06T12:00:00Z';
+    if (variant === 'duplicate')
+      d.forecast.periods.push(d.forecast.periods[0]!);
+    if (variant === 'duplicate-instant')
+      d.forecast.instants.push(d.forecast.instants[0]!);
+    if (variant === 'foreign-time')
+      d.forecast.instants[0]!.at = '2026-10-07T10:00:00Z';
+    if (variant === 'coverage') d.coverage = 'complete';
+    if (variant === 'claimed-range')
+      d.forecast.coveredInterval.endAt = '2026-10-06T22:00:00Z';
+    if (variant === 'authorization')
+      (d.forecast as Record<string, unknown>)['safeToWork'] = true;
+    expect(() => parseWeatherReferenceDraft(d)).toThrow();
+  });
+});
+
+describe('provider request decimal truncation', () => {
+  it.each([
+    ['45.999999999999', '45.9999'],
+    ['-45.999999999999', '-45.9999'],
+    ['-0.000099999999', '0.0000'],
+    ['000.0001', '0.0001'],
+    ['90.0000', '90.0000'],
+  ])('truncates %s toward zero without changing input', (lat, expected) => {
+    const p = { lat, lon: '-180' };
+    const before = { ...p };
+    expect(metForecastPoint(p)).toEqual({ lat: expected, lon: '-180.0000' });
+    expect(p).toEqual(before);
   });
 });

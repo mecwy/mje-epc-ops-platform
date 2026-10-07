@@ -1,0 +1,4 @@
+{
+  "extends": "../tsconfig.scripts.json",
+  "files": ["met-cache-integration.mts"]
+}

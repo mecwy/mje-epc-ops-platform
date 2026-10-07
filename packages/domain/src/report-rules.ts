@@ -104,6 +104,7 @@ export interface MilestoneFact {
 }
 export interface DayFacts extends WeatherFactsExtension {
   sourceReport?: SourceReport;
+  siteLocation?: string;
   weather: string;
   temperature: string;
   qty: Record<string, Reported>;
@@ -135,6 +136,7 @@ export function blankFacts(): DayFacts {
 }
 export function hasFacts(f: DayFacts): boolean {
   return Boolean(
+    f.siteLocation?.trim() ||
     f.weatherReferences?.length ||
     f.reportLocationRef ||
     (f.sourceReport &&

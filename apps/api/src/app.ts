@@ -262,9 +262,18 @@ export interface AlphaRuntime {
   verifier: TokenVerifier;
   auth: TokenConfiguration;
 }
+export interface ApplicationOptions {
+  /** The sole resource owner participates in the normal Nest HTTP shutdown sequence. */
+  resourceLifecycle?: {
+    beforeApplicationShutdown: () => Promise<void>;
+    onApplicationShutdown: () => Promise<void>;
+  };
+  /** Embedders may close the application themselves; default process signal hooks remain on. */
+  installSignalHandlers?: boolean;
+}
 export async function createApp(
   alpha?: AlphaRuntime,
-  lifecycle: { installSignalHandlers?: boolean } = {},
+  options: ApplicationOptions = {},
 ) {
   const managerReviewService: ManagerReviewService | null =
     alpha?.reportStore && alpha.managerReviewStore
@@ -360,92 +369,102 @@ export async function createApp(
         ? [ForemanFieldController, ForemanAdoptController]
         : []),
     ],
-    providers: alpha
-      ? [
-          { provide: AlphaStore, useValue: alpha.store },
-          ...(alpha.opportunityCommands && alpha.opportunityReader
-            ? [
-                {
-                  provide: OpportunityCommands,
-                  useValue: alpha.opportunityCommands,
-                },
-                {
-                  provide: OpportunityReader,
-                  useValue: alpha.opportunityReader,
-                },
-              ]
-            : []),
-          ...(alpha.contractRegisterCommands
-            ? [
-                {
-                  provide: ContractRegisterCommands,
-                  useValue: alpha.contractRegisterCommands,
-                },
-              ]
-            : []),
-          ...(alpha.contractRegisterReader
-            ? [
-                {
-                  provide: ContractRegisterReader,
-                  useValue: alpha.contractRegisterReader,
-                },
-              ]
-            : []),
-          ...(managerReviewService
-            ? [
-                {
-                  provide: MANAGER_REVIEW_SERVICE,
-                  useValue: managerReviewService,
-                },
-              ]
-            : []),
-          ...(weatherApi
-            ? [{ provide: 'C03_WEATHER_API', useValue: weatherApi }]
-            : []),
-          ...(alpha.projectStatusCommands && alpha.projectStatusReader
-            ? [
-                {
-                  provide: ProjectStatusCommands,
-                  useValue: alpha.projectStatusCommands,
-                },
-                {
-                  provide: ProjectStatusReader,
-                  useValue: alpha.projectStatusReader,
-                },
-              ]
-            : []),
-          ...(alpha.projectHomeReader
-            ? [
-                {
-                  provide: ProjectHomeReader,
-                  useValue: alpha.projectHomeReader,
-                },
-              ]
-            : []),
-          { provide: TokenVerifier, useValue: alpha.verifier },
-          ...(alpha.reportStore
-            ? [{ provide: ReportStore, useValue: alpha.reportStore }]
-            : []),
-          ...(alpha.reportStore && alpha.issueStore
-            ? [{ provide: IssueStore, useValue: alpha.issueStore }]
-            : []),
-          ...(alpha.reportStore && alpha.photoStore
-            ? [{ provide: PhotoStore, useValue: alpha.photoStore }]
-            : []),
-          ...(alpha.reportStore && alpha.fieldStore
-            ? [
-                { provide: FieldStore, useValue: alpha.fieldStore },
-                FieldTokenGuard,
-              ]
-            : []),
-          ...(alpha.reportStore && alpha.fieldStore && alpha.checkInStore
-            ? [{ provide: CheckInStore, useValue: alpha.checkInStore }]
-            : []),
-          ...(alpha.reportStore && alpha.fieldStore && alpha.foremanStore
-            ? [{ provide: ForemanStore, useValue: alpha.foremanStore }]
-            : []),
-        ]
-      : [],
+    providers: [
+      ...(options.resourceLifecycle
+        ? [
+            {
+              provide: 'APPLICATION_RESOURCE_LIFECYCLE',
+              useValue: options.resourceLifecycle,
+            },
+          ]
+        : []),
+      ...(alpha
+        ? [
+            { provide: AlphaStore, useValue: alpha.store },
+            ...(alpha.opportunityCommands && alpha.opportunityReader
+              ? [
+                  {
+                    provide: OpportunityCommands,
+                    useValue: alpha.opportunityCommands,
+                  },
+                  {
+                    provide: OpportunityReader,
+                    useValue: alpha.opportunityReader,
+                  },
+                ]
+              : []),
+            ...(alpha.contractRegisterCommands
+              ? [
+                  {
+                    provide: ContractRegisterCommands,
+                    useValue: alpha.contractRegisterCommands,
+                  },
+                ]
+              : []),
+            ...(alpha.contractRegisterReader
+              ? [
+                  {
+                    provide: ContractRegisterReader,
+                    useValue: alpha.contractRegisterReader,
+                  },
+                ]
+              : []),
+            ...(managerReviewService
+              ? [
+                  {
+                    provide: MANAGER_REVIEW_SERVICE,
+                    useValue: managerReviewService,
+                  },
+                ]
+              : []),
+            ...(weatherApi
+              ? [{ provide: 'C03_WEATHER_API', useValue: weatherApi }]
+              : []),
+            ...(alpha.projectStatusCommands && alpha.projectStatusReader
+              ? [
+                  {
+                    provide: ProjectStatusCommands,
+                    useValue: alpha.projectStatusCommands,
+                  },
+                  {
+                    provide: ProjectStatusReader,
+                    useValue: alpha.projectStatusReader,
+                  },
+                ]
+              : []),
+            ...(alpha.projectHomeReader
+              ? [
+                  {
+                    provide: ProjectHomeReader,
+                    useValue: alpha.projectHomeReader,
+                  },
+                ]
+              : []),
+            { provide: TokenVerifier, useValue: alpha.verifier },
+            ...(alpha.reportStore
+              ? [{ provide: ReportStore, useValue: alpha.reportStore }]
+              : []),
+            ...(alpha.reportStore && alpha.issueStore
+              ? [{ provide: IssueStore, useValue: alpha.issueStore }]
+              : []),
+            ...(alpha.reportStore && alpha.photoStore
+              ? [{ provide: PhotoStore, useValue: alpha.photoStore }]
+              : []),
+            ...(alpha.reportStore && alpha.fieldStore
+              ? [
+                  { provide: FieldStore, useValue: alpha.fieldStore },
+                  FieldTokenGuard,
+                ]
+              : []),
+            ...(alpha.reportStore && alpha.fieldStore && alpha.checkInStore
+              ? [{ provide: CheckInStore, useValue: alpha.checkInStore }]
+              : []),
+            ...(alpha.reportStore && alpha.fieldStore && alpha.foremanStore
+              ? [{ provide: ForemanStore, useValue: alpha.foremanStore }]
+              : []),
+          ]
+        : []),
+    ],
   })
   class AppModule {}
   const app = await NestFactory.create(AppModule, {
@@ -485,6 +504,6 @@ export async function createApp(
       }),
     );
   app.useGlobalFilters(new SafeErrorFilter());
-  if (lifecycle.installSignalHandlers !== false) app.enableShutdownHooks();
+  if (options.installSignalHandlers !== false) app.enableShutdownHooks();
   return app;
 }

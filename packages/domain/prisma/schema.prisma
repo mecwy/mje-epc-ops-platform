@@ -177,6 +177,8 @@ model Organization {
   managerReviewEvents          ManagerReviewEvent[]          @relation("ManagerReviewEvent_org")
   businessEvidenceSets         BusinessEvidenceSet[]         @relation("BusinessEvidenceSet_org")
   businessEvidenceVersions     BusinessEvidenceVersion[]     @relation("BusinessEvidenceVersion_org")
+  metForecastCaches            MetForecastCache[]
+  metForecastCooldowns         MetForecastCooldown[]
 }
 
 model Company {
@@ -2470,4 +2472,29 @@ model BusinessEvidenceVersion {
   @@unique([orgId, setId, version])
   @@unique([orgId, clientMutationId])
   @@index([orgId, setId, daySeq], map: "business_evidence_cut_idx")
+}
+
+// Replaceable supplier cache only; report history remains immutable elsewhere.
+model MetForecastCache {
+  orgId        String       @db.Uuid
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  provider     String
+  pointHash    String       @db.Char(64)
+  body         Json?
+  fetchedAt    DateTime?    @db.Timestamptz(6)
+  expiresAt    DateTime?    @db.Timestamptz(6)
+  lastModified String?
+  leaseToken   String?      @db.Uuid
+  leasedUntil  DateTime?    @db.Timestamptz(6)
+
+  @@id([orgId, provider, pointHash])
+}
+
+model MetForecastCooldown {
+  orgId    String       @db.Uuid
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  provider String
+  until    DateTime?    @db.Timestamptz(6)
+
+  @@id([orgId, provider])
 }

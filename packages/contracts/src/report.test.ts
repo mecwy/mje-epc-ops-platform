@@ -64,6 +64,26 @@ const facts = () => ({
 });
 
 describe('report contracts', () => {
+  it('preserves optional site text exactly and distinguishes omission from clearing', () => {
+    expect(parseFacts(facts())).not.toHaveProperty('siteLocation');
+    for (const siteLocation of [
+      '',
+      '  TEST address · Area A  ',
+      'x'.repeat(500),
+    ]) {
+      expect(parseFacts({ ...facts(), siteLocation }).siteLocation).toBe(
+        siteLocation,
+      );
+    }
+  });
+  it.each([null, undefined, 12, {}, 'x'.repeat(501)])(
+    'rejects an invalid owned site text value (%s)',
+    (siteLocation) => {
+      expect(() => parseFacts({ ...facts(), siteLocation })).toThrow(
+        InvalidReportInput,
+      );
+    },
+  );
   it('keeps blank, zero, tokens and decimals distinct; normalizes a comma decimal', () => {
     expect(reported('', 'x')).toBe('');
     expect(reported('0', 'x')).toBe('0');

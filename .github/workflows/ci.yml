@@ -36,6 +36,7 @@ jobs:
       - run: docker compose up -d --wait postgres azurite
       - run: pnpm db:migrate
       - run: pnpm test:integration
+      - run: pnpm test:met-cache
       - run: pnpm test:alpha
       - run: pnpm test:alpha-lookups
       - run: pnpm test:project-status
