@@ -14,6 +14,35 @@ export const LOCALES: Record<Lang, string> = {
   es: 'es-ES',
 };
 export const MESSAGES = {
+  metForecast_title: ['天气预报', 'Forecast', 'Forecast', 'Forecast'],
+  metForecast_updated: [
+    '供应商更新',
+    'Provider updated',
+    'Provider updated',
+    'Provider updated',
+  ],
+  metForecast_instants: [
+    '时点天气',
+    'Weather times',
+    'Weather times',
+    'Weather times',
+  ],
+  metForecast_periods: [
+    '降雨时段',
+    'Rain periods',
+    'Rain periods',
+    'Rain periods',
+  ],
+  metForecast_hours: ['时长', 'Duration', 'Duration', 'Duration'],
+  metForecast_wind: ['风速', 'Wind', 'Wind', 'Wind'],
+  metForecast_gust: ['阵风', 'Gust', 'Gust', 'Gust'],
+  metForecast_symbol: [
+    '天气代码',
+    'Weather code',
+    'Weather code',
+    'Weather code',
+  ],
+  metForecast_rain: ['降雨', 'Rain', 'Rain', 'Rain'],
   siteLocation: ['施工地点', 'Site location', 'Site location', 'Site location'],
   planPreviousReference: [
     '前日参考',
