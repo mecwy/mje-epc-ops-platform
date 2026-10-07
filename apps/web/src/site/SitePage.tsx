@@ -247,7 +247,12 @@ export function SitePage({
         headcount={headcount}
       />
       <EntryCodeCard sessions={sessions} project={project} api={api} />
-      <SettingsCards sessions={sessions} project={project} api={api} />
+      <SettingsCards
+        key={`site-settings:${project.id}`}
+        sessions={sessions}
+        project={project}
+        api={api}
+      />
     </>
   );
 }

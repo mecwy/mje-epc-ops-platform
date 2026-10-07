@@ -47,6 +47,24 @@ async function scoped<T>(
 }
 const code = (error: unknown): string | undefined =>
   (error as { code?: string } | null)?.code;
+
+// pg Pool.end() can resolve before its idle sockets finish closing. A subsequent
+// DROP of this runner's own TEST database can then emit 57P01. Ignore only that
+// expected termination after this exact pool has begun end(); every live-pool
+// termination and every other error remains fatal, as in alpha-integration.
+function protectTestPoolShutdown(pool: Pool): Pool {
+  let closing = false;
+  const end = pool.end.bind(pool);
+  pool.end = () => {
+    closing = true;
+    return end();
+  };
+  pool.on('error', (error: unknown) => {
+    if (closing && code(error) === '57P01') return;
+    throw error;
+  });
+  return pool;
+}
 async function rejection(work: () => Promise<unknown>, expected: string) {
   await assert.rejects(work, (error: unknown) => code(error) === expected);
 }
@@ -125,7 +143,9 @@ if (process.argv.includes('--fresh-child')) {
         timeout: 180000,
       },
     );
-    owner = new Pool({ connectionString: url.toString(), max: 2 });
+    owner = protectTestPoolShutdown(
+      new Pool({ connectionString: url.toString(), max: 2 }),
+    );
     await admin.query(
       `CREATE ROLE "${login}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '${password}'`,
     );
@@ -134,8 +154,12 @@ if (process.argv.includes('--fresh-child')) {
     const appUrl = new URL(url);
     appUrl.username = login;
     appUrl.password = password;
-    first = new Pool({ connectionString: appUrl.toString(), max: 4 });
-    second = new Pool({ connectionString: appUrl.toString(), max: 4 });
+    first = protectTestPoolShutdown(
+      new Pool({ connectionString: appUrl.toString(), max: 4 }),
+    );
+    second = protectTestPoolShutdown(
+      new Pool({ connectionString: appUrl.toString(), max: 4 }),
+    );
     await owner.query(
       'INSERT INTO "Organization"(id,name,"updatedAt","updatedBy") VALUES($1,$3,now(),$4),($2,$3,now(),$4)',
       [orgA, orgB, 'TEST MET cache isolation', randomUUID()],
@@ -385,7 +409,15 @@ if (process.argv.includes('--fresh-child')) {
     );
     process.exitCode = 1;
   } finally {
-    await Promise.allSettled([first?.end(), second?.end(), owner?.end()]);
+    const shutdowns = await Promise.allSettled([
+      first?.end(),
+      second?.end(),
+      owner?.end(),
+    ]);
+    if (shutdowns.some((result) => result.status === 'rejected')) {
+      console.error('MET_CACHE_TEST_POOL_SHUTDOWN_FAILED');
+      process.exitCode = 1;
+    }
     try {
       if (databaseCreated)
         await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`);

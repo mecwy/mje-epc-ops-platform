@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   PM_PROXY_DAYS_MAX,
   RADIUS_MAX_M,
@@ -7,10 +7,11 @@ import {
 } from '@mje/contracts';
 import type { Project, ReportApi } from '../api.js';
 import { useI18n } from '../i18n.js';
+import { Sheet } from '../ui.js';
 import { ErrorText } from '../field/ErrorText.js';
 import type { OwnedCommands } from '../field/owned-commands.js';
 import type { FieldSession } from '../field/session.js';
-import { locate } from '../report/geo.js';
+import { acquirePosition, toFix } from '../report/geo.js';
 import {
   checkProxyDays,
   checkSite,
@@ -118,35 +119,15 @@ export function SettingsCards({
     void site.load();
     void settings.load();
   }, [site, settings]);
-  const siteSave = sessions.siteSave.current;
   const settingsSave = sessions.settingsSave.current;
   return (
     <>
-      {siteSave ? (
-        <OwnedSave
-          title={t('pm_siteTitle')}
-          commands={sessions.siteSave}
-          rows={[
-            [t('pm_lat'), siteSave.value.lat],
-            [t('pm_lon'), siteSave.value.lon],
-            [
-              t('pm_radius', { min: RADIUS_MIN_M, max: RADIUS_MAX_M }),
-              String(siteSave.value.radiusM),
-            ],
-          ]}
-        />
-      ) : site.data ? (
-        <SiteLocationCard
-          // Edited from this read; restarts from the latest read whenever a save ends.
-          key={`${site.data.siteReference?.n ?? 0}:${sessions.siteSave.generation}`}
-          api={api}
-          project={project}
-          commands={sessions.siteSave}
-          data={site.data}
-        />
-      ) : (
-        <Loading session={site} />
-      )}
+      <SiteLocationSummary
+        key={`site-location:${project.id}`}
+        api={api}
+        project={project}
+        sessions={sessions}
+      />
       {settingsSave ? (
         <OwnedSave
           title={t('pm_settingsTitle')}
@@ -164,7 +145,7 @@ export function SettingsCards({
         />
       ) : settings.data ? (
         <FieldSettingsCard
-          key={`${settings.data.settings.n}:${sessions.settingsSave.generation}`}
+          key={`field-settings:${project.id}:${settings.data.settings.n}:${sessions.settingsSave.generation}`}
           api={api}
           project={project}
           commands={sessions.settingsSave}
@@ -174,6 +155,172 @@ export function SettingsCards({
         <Loading session={settings} />
       )}
     </>
+  );
+}
+
+/** One stable summary identity: never share the settings card's revision/generation key. */
+function SiteLocationSummary({
+  api,
+  project,
+  sessions,
+}: {
+  api: ReportApi;
+  project: Project;
+  sessions: SiteSessions;
+}) {
+  const { t } = useI18n();
+  const session = sessions.site,
+    commands = sessions.siteSave;
+  const data = session.data,
+    ref = data?.siteReference;
+  const owner = commands.current;
+  // Opening freezes this read. Later background reads never rebind an editor's expectedN.
+  const [editing, setEditing] = useState<{
+    data: FieldSettingsDto;
+    generation: number;
+  } | null>(null);
+  const [showOwned, setShowOwned] = useState(false);
+  const openEditor =
+    editing !== null && editing.generation === commands.generation;
+  const isOpen = owner ? showOwned : openEditor;
+  const [verifiedRead, setVerifiedRead] = useState<{
+    data: FieldSettingsDto | null;
+    generation: number;
+  } | null>(null);
+  const stale =
+    session.readError !== null ||
+    (session.error === 'STALE' &&
+      !(
+        verifiedRead?.data === data &&
+        verifiedRead?.generation === commands.generation
+      ));
+  const reload = async () => {
+    if (await session.load())
+      setVerifiedRead({ data: session.data, generation: commands.generation });
+  };
+  const rows: [string, string][] = owner
+    ? [
+        [t('pm_lat'), owner.value.lat],
+        [t('pm_lon'), owner.value.lon],
+        [
+          t('pm_radius', { min: RADIUS_MIN_M, max: RADIUS_MAX_M }),
+          String(owner.value.radiusM),
+        ],
+      ]
+    : [];
+  const open = () => {
+    setShowOwned(true);
+    if (!owner && data) setEditing({ data, generation: commands.generation });
+  };
+  const close = () => {
+    setEditing(null);
+    setShowOwned(false);
+  };
+  return (
+    <section className="card noprint" data-site-location-summary>
+      <div className="blk-row">
+        <h2 className="blk">{t('pm_siteTitle')}</h2>
+        <button
+          type="button"
+          className="ghost"
+          onClick={open}
+          disabled={!owner && (!data || !commands.canStart)}
+        >
+          {owner
+            ? t('pm_siteReviewSave')
+            : ref
+              ? t('pm_siteEdit')
+              : t('pm_siteAdd')}
+        </button>
+      </div>
+      {owner ? (
+        <>
+          <p className="muted small" role="status">
+            {commands.unresolved ? t('pm_siteSavePending') : t('saving')}
+          </p>
+          {rows.map(([label, value]) => (
+            <div className="kv" key={label}>
+              <span>{label}</span>
+              <span className="num">{value}</span>
+            </div>
+          ))}
+        </>
+      ) : data ? (
+        <>
+          {stale && <p className="muted small">{t('pm_siteLastConfirmed')}</p>}
+          {ref ? (
+            stale ? (
+              <div className="kv">
+                <span className="num">
+                  {ref.lat}, {ref.lon}
+                </span>
+                <span>
+                  {t('pm_radius', { min: RADIUS_MIN_M, max: RADIUS_MAX_M })}:{' '}
+                  {ref.radiusM}
+                </span>
+              </div>
+            ) : (
+              <p className="muted small">
+                {t('pm_siteCurrent', { r: ref.radiusM })}{' '}
+                <span className="num">
+                  {ref.lat}, {ref.lon}
+                </span>
+              </p>
+            )
+          ) : stale ? (
+            <p className="muted small">{t('noSite')}</p>
+          ) : (
+            <div className="banner warn">{t('pm_siteMissing')}</div>
+          )}
+          <Refusal
+            code={commands.refusal}
+            uncertain={commands.refusalUncertain}
+          />
+        </>
+      ) : !session.readError ? (
+        <p className="muted">{t('loading')}</p>
+      ) : null}
+      {!owner && stale && (
+        <div className="banner err" role="alert">
+          <ErrorText code={session.readError ?? 'STALE'} />
+        </div>
+      )}
+      {!owner && (stale || !data) && (
+        <button type="button" className="ghost" onClick={() => void reload()}>
+          {t('pm_reload')}
+        </button>
+      )}
+      {isOpen && (
+        <Sheet
+          key={owner ? 'site-pending' : 'site-edit'}
+          title={
+            owner
+              ? t('pm_siteReviewSave')
+              : editing!.data.siteReference
+                ? t('pm_siteEdit')
+                : t('pm_siteAdd')
+          }
+          onClose={close}
+        >
+          <p className="muted small">{t('pm_siteSingleLimit')}</p>
+          {owner ? (
+            <OwnedSave
+              title={t('pm_siteSavePending')}
+              rows={rows}
+              commands={commands}
+            />
+          ) : (
+            <SiteLocationEditor
+              api={api}
+              project={project}
+              commands={commands}
+              data={editing!.data}
+              onClose={close}
+            />
+          )}
+        </Sheet>
+      )}
+    </section>
   );
 }
 
@@ -224,14 +371,16 @@ function Refusal({
  * is the save's expectedN). Coordinates are shown to the PM only and never logged. A new
  * reference applies to later check-ins; submitted days keep what they froze.
  */
-function SiteLocationCard({
+function SiteLocationEditor({
   api,
   project,
   commands,
   data,
+  onClose,
 }: {
   api: ReportApi;
   project: Project;
+  onClose: () => void;
   commands: OwnedCommands<FieldSettingsDto, FormSave<SiteValue>>;
   data: FieldSettingsDto;
 }) {
@@ -243,15 +392,36 @@ function SiteLocationCard({
   const [locating, setLocating] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [tried, setTried] = useState(false);
+  const fixTicket = useRef(0);
+  const geoAbort = useRef<AbortController | null>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (locating) cancelButton.current?.focus();
+  }, [locating]);
+  useEffect(
+    () => () => {
+      fixTicket.current++;
+      geoAbort.current?.abort();
+    },
+    [],
+  );
   const check = checkSite({ lat, lon, radius });
   const problems = check.ok ? {} : check.problems;
   const takeHere = async () => {
+    const ticket = ++fixTicket.current;
     setLocating(true);
     setNote(null);
-    const r = await locate(navigator.geolocation);
+    const controller = new AbortController();
+    geoAbort.current = controller;
+    const r = await acquirePosition(
+      navigator.geolocation,
+      (reading, now) => toFix(reading.coords, reading.timestamp, now),
+      undefined,
+      controller.signal,
+    );
+    if (ticket !== fixTicket.current || commands.owned) return;
     setLocating(false);
-    // A fix that arrives once a save owns the form is dropped (the form is not shown then).
-    if (commands.owned) return;
+    // Closed/replaced editors and owned saves cannot adopt a late device fix.
     if (!r.fix) {
       const key =
         r.reason === 'denied'
@@ -276,18 +446,7 @@ function SiteLocationCard({
     });
   };
   return (
-    <section className="card noprint">
-      <h2 className="blk">{t('pm_siteTitle')}</h2>
-      {ref ? (
-        <p className="muted small">
-          {t('pm_siteCurrent', { r: ref.radiusM })}{' '}
-          <span className="num">
-            {ref.lat}, {ref.lon}
-          </span>
-        </p>
-      ) : (
-        <div className="banner warn">{t('pm_siteMissing')}</div>
-      )}
+    <div data-site-location-editor>
       <div className="row2 wrap2">
         <label className="field">
           <span>{t('pm_lat')}</span>
@@ -337,15 +496,25 @@ function SiteLocationCard({
       </label>
       <p className="muted small">{t('pm_siteNote')}</p>
       <Refusal code={commands.refusal} uncertain={commands.refusalUncertain} />
-      <button
-        type="button"
-        className="primary"
-        disabled={locating || !commands.canStart}
-        onClick={() => void save()}
-      >
-        {t('save')}
-      </button>
-    </section>
+      <div className="row2">
+        <button
+          ref={cancelButton}
+          type="button"
+          className="ghost"
+          onClick={onClose}
+        >
+          {t('close')}
+        </button>
+        <button
+          type="button"
+          className="primary"
+          disabled={locating || !commands.canStart}
+          onClick={() => void save()}
+        >
+          {t('save')}
+        </button>
+      </div>
+    </div>
   );
 }
 

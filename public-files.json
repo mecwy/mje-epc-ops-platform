@@ -88,6 +88,7 @@
   "apps/web/src/executive/overview-workforce.ts",
   "apps/web/src/executive/overview.css",
   "apps/web/src/executive/project-group-title.test.ts",
+  "apps/web/src/executive/status-history-ux.test.ts",
   "apps/web/src/executive/status-session.test.ts",
   "apps/web/src/executive/status-session.ts",
   "apps/web/src/field/CheckInCard.tsx",

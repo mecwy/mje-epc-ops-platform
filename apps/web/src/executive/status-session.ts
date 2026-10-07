@@ -270,7 +270,7 @@ export class ProjectStatusSession {
     return this.activePayload ?? (this.draft ? payloadFrom(this.draft) : null);
   }
 
-  get unchangedForBusinessDay(): boolean {
+  get unchangedContent(): boolean {
     const draft = this.draft;
     const history = this.read.data;
     const latest = history?.updates[0];
@@ -283,8 +283,22 @@ export class ProjectStatusSession {
       latest.n !== history.currentN
     )
       return false;
-    // This is a UI duplicate guard, not a substitute for server version checks.
-    // An unchanged declaration on a new site business day is still meaningful.
+    return (
+      draft.status === latest.status &&
+      JSON.stringify([...draft.areas].sort()) ===
+        JSON.stringify([...latest.areas].sort()) &&
+      draft.situation === latest.situation &&
+      draft.recovery === latest.recovery &&
+      draft.expectedRecoveryDate === latest.expectedRecoveryDate &&
+      draft.expectedRecoveryUnknown === latest.expectedRecoveryUnknown &&
+      draft.needsSupport === latest.needsSupport &&
+      draft.supportNote === latest.supportNote
+    );
+  }
+
+  get unchangedForBusinessDay(): boolean {
+    const latest = this.read.data?.updates[0];
+    if (!this.unchangedContent || !latest) return false;
     let today: string;
     try {
       const parts = new Intl.DateTimeFormat('en-US', {
@@ -299,21 +313,41 @@ export class ProjectStatusSession {
     } catch {
       return false;
     }
-    return (
-      latest.businessDate === today &&
-      draft.status === latest.status &&
-      JSON.stringify([...draft.areas].sort()) ===
-        JSON.stringify([...latest.areas].sort()) &&
-      draft.situation === latest.situation &&
-      draft.recovery === latest.recovery &&
-      draft.expectedRecoveryDate === latest.expectedRecoveryDate &&
-      draft.expectedRecoveryUnknown === latest.expectedRecoveryUnknown &&
-      draft.needsSupport === latest.needsSupport &&
-      draft.supportNote === latest.supportNote
-    );
+    return latest.businessDate === today;
+  }
+
+  cancelEditing(): boolean {
+    if (
+      this.locked ||
+      !this.read.data ||
+      this.read.data.projectId !== this.projectId
+    )
+      return false;
+    this.draft = draftFrom(this.read.data);
+    this.serverRequiredFields = [];
+    if (
+      this.read.error === 'STATUS_FIELDS_REQUIRED' ||
+      this.read.error === 'VERSION_CONFLICT'
+    )
+      this.read.error = null;
+    this.emit();
+    return true;
   }
 
   async publish() {
+    // Updating unchanged content is a no-op, including across site business days.
+    if (this.unchangedContent) return;
+    await this.sendDeclaration();
+  }
+
+  async confirmUnchanged() {
+    // Reconfirmation is an explicit manager action, never a page-open or save effect.
+    // Preserve the existing declaration/freshness policy and idempotent command path.
+    if (!this.unchangedContent || this.unchangedForBusinessDay) return;
+    await this.sendDeclaration();
+  }
+
+  private async sendDeclaration() {
     const draft = this.draft;
     if (this.locked || !draft || draft.projectId !== this.projectId) return;
     if (this.unchangedForBusinessDay) return;
