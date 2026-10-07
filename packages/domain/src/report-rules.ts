@@ -4,7 +4,14 @@
  * server-side enforcement and client-side previews cannot drift.
  */
 import {
+  INSTALLATION_CUMULATIVE_ITEM_LIMIT,
   isRealTimestamp,
+  isRealDate,
+  parseInstallationCumulative,
+  InvalidReportInput,
+  type InstallationAnchor,
+  type InstallationCumulativeDto,
+  type InstallationTotal,
   type SourceReport,
   type WeatherFactsExtension,
 } from '@mje/contracts';
@@ -264,6 +271,220 @@ export function suggestCumulative(
   return base !== null && q !== null && inRange(base + q)
     ? { base: decText(base), qty: decText(q), sum: decText(base + q) }
     : null;
+}
+
+/** Re-evaluate today's actual only. The selected historical basis remains immutable. */
+export function installationToday(
+  prior: Omit<InstallationTotal, 'today' | 'state' | 'value' | 'knownSubtotal'>,
+  raw: Reported | undefined,
+): InstallationTotal {
+  const number = dec(raw);
+  const today =
+    number !== null
+      ? decText(number)
+      : raw === 'na'
+        ? 'na'
+        : raw === '' || raw === undefined
+          ? ''
+          : 'unknown';
+  const base = dec(prior.priorKnownSubtotal);
+  if (prior.priorState === 'overflow')
+    return {
+      ...prior,
+      today,
+      state: 'overflow',
+      value: null,
+      knownSubtotal: null,
+    };
+  if (today === 'na')
+    return {
+      ...prior,
+      today,
+      state: 'na',
+      value: null,
+      knownSubtotal: prior.priorKnownSubtotal,
+    };
+  if (number === null || base === null)
+    return {
+      ...prior,
+      today,
+      state: 'unknown',
+      value: null,
+      knownSubtotal: prior.priorKnownSubtotal,
+    };
+  if (!inRange(base + number))
+    return {
+      ...prior,
+      today,
+      state: 'overflow',
+      value: null,
+      knownSubtotal: null,
+    };
+  const knownSubtotal = decText(base + number);
+  const complete = prior.priorState === 'complete';
+  return {
+    ...prior,
+    today,
+    state: complete ? 'complete' : 'partial',
+    value: complete ? knownSubtotal : null,
+    knownSubtotal,
+  };
+}
+
+export interface InstallationHistoryInput {
+  projectId: string;
+  businessDate: string;
+  revisionId: string;
+  n: number;
+  qty: Record<string, Reported>;
+  cumulative: Record<string, Reported>;
+  units?: Record<string, string>;
+}
+/** No legacy value/asOf, date gap, missing row or plan establishes a complete baseline. */
+export function buildInstallationCumulative(input: {
+  projectId: string;
+  businessDate: string;
+  selectedAtUTC: string;
+  workKeys: readonly string[];
+  workUnits?: Readonly<Record<string, string>>;
+  history: readonly InstallationHistoryInput[];
+  todayQty: Readonly<Record<string, Reported>>;
+  /** Server-authoritative explicit baselines only. The current runtime has none. */
+  completeBaselines?: Readonly<Record<string, InstallationAnchor>>;
+}): InstallationCumulativeDto {
+  if (
+    !isRealDate(input.businessDate) ||
+    !isRealTimestamp(input.selectedAtUTC) ||
+    !input.selectedAtUTC.endsWith('Z') ||
+    input.history.length > 366 ||
+    input.workKeys.length > INSTALLATION_CUMULATIVE_ITEM_LIMIT ||
+    new Set(input.workKeys).size !== input.workKeys.length
+  )
+    throw new InvalidReportInput('installationCumulative.context');
+  const historyFrom = shiftDate(input.businessDate, -366);
+  const byDate = new Map<string, InstallationHistoryInput>();
+  const ids = new Map<string, string>();
+  for (const r of input.history) {
+    if (
+      r.projectId !== input.projectId ||
+      !isRealDate(r.businessDate) ||
+      r.businessDate < historyFrom ||
+      r.businessDate >= input.businessDate ||
+      !Number.isInteger(r.n) ||
+      r.n < 1
+    )
+      throw new InvalidReportInput('installationCumulative.history');
+    const previousDate = ids.get(r.revisionId);
+    if (previousDate && previousDate !== r.businessDate)
+      throw new InvalidReportInput('installationCumulative.history.identity');
+    ids.set(r.revisionId, r.businessDate);
+    const prior = byDate.get(r.businessDate);
+    if (prior && prior.n === r.n && prior.revisionId !== r.revisionId)
+      throw new InvalidReportInput('installationCumulative.history.version');
+    if (!prior || prior.n < r.n) byDate.set(r.businessDate, r);
+  }
+  const selected = [...byDate.values()].sort((a, b) =>
+    a.businessDate.localeCompare(b.businessDate),
+  );
+  const items: Record<string, InstallationTotal> = {};
+  for (const key of input.workKeys) {
+    let anchor: InstallationAnchor | null = null;
+    const explicit = input.completeBaselines?.[key];
+    const unit = input.workUnits?.[key] ?? explicit?.unit ?? '';
+    if (explicit) {
+      if (
+        explicit.unit !== unit ||
+        explicit.kind !== 'complete-baseline' ||
+        dec(explicit.value) === null ||
+        !isRealDate(explicit.asOf) ||
+        explicit.asOf < historyFrom ||
+        explicit.asOf >= input.businessDate
+      )
+        throw new InvalidReportInput('installationCumulative.baseline');
+      anchor = { ...explicit, value: decText(dec(explicit.value)!) };
+    } else {
+      // A direct original declaration supplies an evidenced partial anchor, not completeness.
+      const declared = selected.findLast(
+        (r) =>
+          dec(r.cumulative[key]) !== null &&
+          (input.workUnits === undefined || r.units?.[key] === unit),
+      );
+      if (declared)
+        anchor = {
+          kind: 'declared',
+          unit,
+          value: decText(dec(declared.cumulative[key])!),
+          asOf: declared.businessDate,
+          referenceId: declared.revisionId,
+        };
+    }
+    let total = anchor ? dec(anchor.value) : null;
+    let missingDays = 0,
+      unknownDays = 0;
+    if (anchor) {
+      for (
+        let d = shiftDate(anchor.asOf, 1);
+        d < input.businessDate;
+        d = shiftDate(d, 1)
+      ) {
+        const day = byDate.get(d);
+        if (!day) {
+          missingDays++;
+          continue;
+        }
+        const raw = day.qty[key];
+        const q = dec(raw);
+        // 'na' is explicit non-contribution; noWork never turns an absent quantity into zero.
+        if (input.workUnits !== undefined && day.units?.[key] !== unit) {
+          unknownDays++;
+          continue;
+        }
+        if (raw === 'na') continue;
+        if (q === null) {
+          unknownDays++;
+          continue;
+        }
+        if (total !== null) total = inRange(total + q) ? total + q : null;
+      }
+    }
+    const priorState = !anchor
+      ? 'unknown'
+      : total === null
+        ? 'overflow'
+        : anchor.kind === 'complete-baseline' &&
+            missingDays === 0 &&
+            unknownDays === 0
+          ? 'complete'
+          : 'partial';
+    items[key] = installationToday(
+      {
+        unit,
+        anchor,
+        priorKnownSubtotal: total === null ? null : decText(total),
+        priorState,
+        missingDays,
+        unknownDays,
+      },
+      input.todayQty[key],
+    );
+  }
+  return parseInstallationCumulative({
+    schemaVersion: 1,
+    policyVersion: 'installation-cumulative-v1',
+    projectId: input.projectId,
+    businessDate: input.businessDate,
+    selectedAtUTC: input.selectedAtUTC,
+    historyFrom,
+    lineage: selected.map((r) => ({
+      businessDate: r.businessDate,
+      revisionId: r.revisionId,
+      n: r.n,
+    })),
+    currentRevision: null,
+    historyLimitDays: 366,
+    historyBeforeWindow: 'not-evaluated',
+    items: Object.entries(items).map(([key, item]) => ({ key, ...item })),
+  });
 }
 // ---------- foreman quantity reports (A6 design §4) ----------
 /** One crew's report for a day: its latest revision `n` (a higher n supersedes a lower one). */

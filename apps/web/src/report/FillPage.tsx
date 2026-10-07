@@ -15,7 +15,7 @@ import {
   activeWork,
   byKind,
   cumulativeChecks,
-  cumulativeSuggestion,
+  installationPreview,
   target,
 } from './model.js';
 import type { DayHandle, SaveState } from './useDay.js';
@@ -28,6 +28,43 @@ import {
   QuantityEntrySheet,
   type QuantityEntryHandle,
 } from './QuantityEntrySheet.js';
+
+export function InstallationValue({
+  total,
+  unit = '',
+}: {
+  total: import('@mje/contracts').InstallationTotal | null;
+  unit?: string;
+}) {
+  const { t, locale } = useI18n();
+  if (!total) return null;
+  const key =
+    total.state === 'complete'
+      ? 'installationCalculatedCumulative'
+      : total.state === 'partial'
+        ? 'installationKnownSubtotal'
+        : total.state === 'na'
+          ? 'na'
+          : 'installationCumulativeUnknown';
+  const value =
+    total.state === 'complete'
+      ? total.value
+      : total.state === 'partial'
+        ? total.knownSubtotal
+        : null;
+  return (
+    <span className="muted small">
+      {t(key)}
+      {value !== null && (
+        <>
+          {' '}
+          {fmtNum(value, locale)}
+          {unit && ` ${unit}`}
+        </>
+      )}
+    </span>
+  );
+}
 
 const ROLE_LABEL = {
   manager: 'role_manager',
@@ -160,7 +197,7 @@ function RetainedCard({
   );
 }
 
-function QtyRow({
+export function QtyRow({
   it,
   h,
   day,
@@ -178,7 +215,7 @@ function QtyRow({
   const f = h.facts!;
   const b = target(day, it.key);
   const q = f.qty[it.key];
-  const sug = cumulativeSuggestion(day.cumulativeBase[it.key], q);
+  const calculated = installationPreview(day, f, it.key, it.unit);
   const cur = f.cumulative[it.key];
   const unit = it.unit ? label(`u_${it.unit}`).replace(/^u_/, '') : '';
   return (
@@ -238,50 +275,19 @@ function QtyRow({
         onConfirm={(value) => h.edit(`qty.${it.key}`, value)}
       />
       <ForemanLine itemKey={it.key} />
-      {!compact && (dec(q) !== null || cur) && (
-        <>
-          {/* The declared cumulative is always visible and editable; the suggestion sits apart. */}
-          <label className="calc">
-            <span className="grow">{t('cumulative')}</span>
-            <NumInput
-              id={`c-${it.key}`}
-              size="cum"
-              value={cur}
-              disabled={locked}
-              label={t('cumulative')}
-              onChange={(v) => h.edit(`cumulative.${it.key}`, v)}
-            />
-            {sug && cur === sug.sum && (
-              <span className="ok-t">
-                <Icon.check />
-              </span>
-            )}
-          </label>
-          {dec(q) !== null && dec(cur) !== null && dec(cur)! < dec(q)! && (
-            <p className="warn-t small">{t('cumBelowToday')}</p>
-          )}
-          {sug && cur !== sug.sum && (
-            <div className="calc">
-              <span className="grow">
-                {fmtNum(sug.base, locale)} + {fmtNum(sug.qty, locale)} ={' '}
-                <b className="num">{fmtNum(sug.sum, locale)}</b>
-                <span className="muted small">
-                  {' '}
-                  · {t('asOf', { d: fmtShort(sug.asOf, locale) })}
-                </span>
-              </span>
-              {!locked && (
-                <button
-                  type="button"
-                  className="ghost small"
-                  onClick={() => h.edit(`cumulative.${it.key}`, sug.sum)}
-                >
-                  {t('adopt')}
-                </button>
-              )}
-            </div>
-          )}
-        </>
+      {calculated && <InstallationValue total={calculated} unit={unit} />}
+      {!compact && (!calculated || cur) && (
+        <details className="small">
+          <summary>{t('installationDeclaredCumulative')}</summary>
+          <NumInput
+            id={`c-${it.key}`}
+            size="cum"
+            value={cur}
+            disabled={locked}
+            label={t('installationDeclaredCumulative')}
+            onChange={(v) => h.edit(`cumulative.${it.key}`, v)}
+          />
+        </details>
       )}
       {!compact && (
         <PhotoLine
@@ -386,158 +392,149 @@ export function CheckList({
   busy: boolean;
   panel?: boolean;
 }) {
-  const { t, label, locale } = useI18n();
+  const { t, label } = useI18n();
   const items = day.items;
   const name = (key?: string) => {
     const it = items.find((i) => i.kind === 'work' && i.key === key);
     return it ? label(it.label) : (key ?? '');
   };
   const correcting = day.state === 'correcting';
-  const rows = cov.missing.map((m, i) => {
-    const go = (id: string) => (
-      <button type="button" className="ghost small" onClick={() => onFocus(id)}>
-        {t('fill')}
-      </button>
-    );
-    const set = (path: string, v: string, text: string) => (
-      <button type="button" className="pill" onClick={() => h.edit(path, v)}>
-        {text}
-      </button>
-    );
-    let text = '';
-    let actions = null;
-    if (m.key === 'weather') [text, actions] = [t('weather'), go('f-weather')];
-    else if (m.key === 'qty')
-      [text, actions] = [
-        `${name(m.item)} · ${t('today')}`,
-        <>
-          {go(`q-${m.item}`)}
-          {set(`qty.${m.item}`, 'unknown', t('markUnknown'))}
-        </>,
-      ];
-    else if (m.key === 'cumulative') {
-      const s = cumulativeSuggestion(
-        day.cumulativeBase[m.item!],
-        h.facts!.qty[m.item!],
-      );
-      [text, actions] = [
-        `${name(m.item)} · ${t('cumulative')}`,
-        s ? (
-          set(
-            `cumulative.${m.item}`,
-            s.sum,
-            t('adoptN', { n: fmtNum(s.sum, locale) }),
-          )
-        ) : (
-          <>
-            {go(`c-${m.item}`)}
-            {set(`cumulative.${m.item}`, 'unknown', t('markUnknown'))}
-          </>
+  const rows = cov.missing
+    .filter(
+      (m) =>
+        m.key !== 'cumulative' ||
+        !installationPreview(
+          day,
+          h.facts!,
+          m.item!,
+          items.find((it) => it.kind === 'work' && it.key === m.item)?.unit,
         ),
-      ];
-    } else if (m.key === 'construction')
-      [text, actions] = [t('construction'), go('f-construction')];
-    else if (m.key === 'photo')
-      // A reminder only (rule 5): it never blocks, and nothing marks it done but a photo.
-      [text, actions] = [
-        `${name(m.item)} · ${t('photos')}`,
+    )
+    .map((m, i) => {
+      const go = (id: string) => (
         <button
           type="button"
           className="ghost small"
-          onClick={() => onFocus(`ph-${m.item}`)}
+          onClick={() => onFocus(id)}
         >
-          {t('takePhoto')}
-        </button>,
-      ];
-    else if (m.key === 'quality' || m.key === 'safety')
-      [text, actions] = [
-        t(m.key),
-        <>
-          {go(`f-${m.key}`)}
-          {set(`narrative.${m.key}`, CHECKED_NO_ISSUES, t('noCheckFound'))}
-        </>,
-      ];
-    else if (m.key === 'people')
-      [text, actions] = [t('people'), go('p-manager')];
-    else if (m.key === 'machinery')
-      [text, actions] = [
-        t('machineryN', { n: m.n ?? 0 }),
-        <button
-          type="button"
-          className="pill"
-          onClick={() =>
-            byKind(items, 'machinery').forEach(
-              (x) =>
-                !h.facts!.machinery[x.key] &&
-                h.edit(`machinery.${x.key}`, 'unknown'),
-            )
-          }
-        >
-          {t('markUnknown')}
-        </button>,
-      ];
-    else if (m.key === 'materials')
-      [text, actions] = [
-        t('materialsN', { n: m.n ?? 0 }),
-        <>
+          {t('fill')}
+        </button>
+      );
+      const set = (path: string, v: string, text: string) => (
+        <button type="button" className="pill" onClick={() => h.edit(path, v)}>
+          {text}
+        </button>
+      );
+      let text = '';
+      let actions = null;
+      if (m.key === 'weather')
+        [text, actions] = [t('weather'), go('f-weather')];
+      else if (m.key === 'qty')
+        [text, actions] = [
+          `${name(m.item)} · ${t('today')}`,
+          <>
+            {go(`q-${m.item}`)}
+            {set(`qty.${m.item}`, 'unknown', t('markUnknown'))}
+          </>,
+        ];
+      else if (m.key === 'cumulative') {
+        [text, actions] = [
+          `${name(m.item)} · ${t('installationDeclaredCumulative')}`,
+          go(`c-${m.item}`),
+        ];
+      } else if (m.key === 'construction')
+        [text, actions] = [t('construction'), go('f-construction')];
+      else if (m.key === 'photo')
+        // A reminder only (rule 5): it never blocks, and nothing marks it done but a photo.
+        [text, actions] = [
+          `${name(m.item)} · ${t('photos')}`,
           <button
             type="button"
-            className="pill"
-            onClick={() =>
-              byKind(items, 'material').forEach(
-                (x) =>
-                  !h.facts!.materials[x.key] &&
-                  h.edit(`materials.${x.key}`, '0'),
-              )
-            }
+            className="ghost small"
+            onClick={() => onFocus(`ph-${m.item}`)}
           >
-            {t('noArrival')}
-          </button>
+            {t('takePhoto')}
+          </button>,
+        ];
+      else if (m.key === 'quality' || m.key === 'safety')
+        [text, actions] = [
+          t(m.key),
+          <>
+            {go(`f-${m.key}`)}
+            {set(`narrative.${m.key}`, CHECKED_NO_ISSUES, t('noCheckFound'))}
+          </>,
+        ];
+      else if (m.key === 'people')
+        [text, actions] = [t('people'), go('p-manager')];
+      else if (m.key === 'machinery')
+        [text, actions] = [
+          t('machineryN', { n: m.n ?? 0 }),
           <button
             type="button"
             className="pill"
             onClick={() =>
-              byKind(items, 'material').forEach(
+              byKind(items, 'machinery').forEach(
                 (x) =>
-                  !h.facts!.materials[x.key] &&
-                  h.edit(`materials.${x.key}`, 'unknown'),
+                  !h.facts!.machinery[x.key] &&
+                  h.edit(`machinery.${x.key}`, 'unknown'),
               )
             }
           >
             {t('markUnknown')}
-          </button>
-        </>,
-      ];
-    return (
-      <div className="crow" key={`${m.key}:${m.item ?? i}`}>
-        <span className="grow">{text}</span>
-        <span className="chips">{actions}</span>
-      </div>
-    );
-  });
+          </button>,
+        ];
+      else if (m.key === 'materials')
+        [text, actions] = [
+          t('materialsN', { n: m.n ?? 0 }),
+          <>
+            <button
+              type="button"
+              className="pill"
+              onClick={() =>
+                byKind(items, 'material').forEach(
+                  (x) =>
+                    !h.facts!.materials[x.key] &&
+                    h.edit(`materials.${x.key}`, '0'),
+                )
+              }
+            >
+              {t('noArrival')}
+            </button>
+            <button
+              type="button"
+              className="pill"
+              onClick={() =>
+                byKind(items, 'material').forEach(
+                  (x) =>
+                    !h.facts!.materials[x.key] &&
+                    h.edit(`materials.${x.key}`, 'unknown'),
+                )
+              }
+            >
+              {t('markUnknown')}
+            </button>
+          </>,
+        ];
+      return (
+        <div className="crow" key={`${m.key}:${m.item ?? i}`}>
+          <span className="grow">{text}</span>
+          <span className="chips">{actions}</span>
+        </div>
+      );
+    });
   // Cumulatives that disagree with today's quantity: reminders, never a block.
   const checks = cumulativeChecks(
     { items, facts: h.facts! },
     day.cumulativeBase,
   );
-  const checkRows = checks.map((c) => (
-    <div className="crow" key={`check:${c.item}`}>
-      <span className="grow">
-        {name(c.item)} ·{' '}
-        {c.kind === 'belowToday'
-          ? t('cumBelowToday')
-          : t('cumNotSuggested', { n: fmtNum(c.sum, locale) })}
-      </span>
-      <span className="chips">
-        {c.kind === 'notSuggested' ? (
-          <button
-            type="button"
-            className="pill"
-            onClick={() => h.edit(`cumulative.${c.item}`, c.sum)}
-          >
-            {t('adoptN', { n: fmtNum(c.sum, locale) })}
-          </button>
-        ) : (
+  const checkRows = checks
+    .filter((c) => c.kind === 'belowToday')
+    .map((c) => (
+      <div className="crow" key={`check:${c.item}`}>
+        <span className="grow">
+          {name(c.item)} · {t('cumBelowToday')}
+        </span>
+        <span className="chips">
           <button
             type="button"
             className="ghost small"
@@ -545,10 +542,9 @@ export function CheckList({
           >
             {t('fill')}
           </button>
-        )}
-      </span>
-    </div>
-  ));
+        </span>
+      </div>
+    ));
   return (
     <section className="card">
       <h2 className={`blk${rows.length ? ' warn-t' : ''}`}>
@@ -1036,7 +1032,7 @@ export function CheckPage({
   busy: boolean;
   photos: PhotosHandle;
 }) {
-  const { t, locale } = useI18n();
+  const { t, label, locale } = useI18n();
   const f = h.facts!;
   return (
     <div className="entry-workspace entry-manager">
@@ -1058,6 +1054,51 @@ export function CheckPage({
         <ReviewFacts
           facts={f}
           items={day.items}
+          workSummary={
+            <>
+              {byKind(day.items, 'work').some(
+                (it) => f.qty[it.key] || f.cumulative[it.key],
+              ) ? (
+                <>
+                  {byKind(day.items, 'work')
+                    .filter((it) => f.qty[it.key] || f.cumulative[it.key])
+                    .map((it) => (
+                      <div className="qline" key={it.key}>
+                        <span className="grow">{label(it.label)}</span>
+                        <span>
+                          {t('today')}{' '}
+                          {f.qty[it.key] === 'unknown' || f.qty[it.key] === 'na'
+                            ? f.qty[it.key] === 'unknown'
+                              ? t('unknown')
+                              : t('na')
+                            : fmtNum(f.qty[it.key] || '—', locale)}
+                        </span>
+                        <InstallationValue
+                          total={installationPreview(day, f, it.key, it.unit)}
+                          unit={
+                            it.unit
+                              ? label(`u_${it.unit}`).replace(/^u_/, '')
+                              : ''
+                          }
+                        />
+                        {f.cumulative[it.key] && (
+                          <small>
+                            {t('installationDeclaredCumulative')}{' '}
+                            {f.cumulative[it.key] === 'unknown'
+                              ? t('unknown')
+                              : f.cumulative[it.key] === 'na'
+                                ? t('na')
+                                : fmtNum(f.cumulative[it.key], locale)}
+                          </small>
+                        )}
+                      </div>
+                    ))}
+                </>
+              ) : (
+                <span className="miss">{t('notFilled')}</span>
+              )}
+            </>
+          }
           projectName={projectName}
           roles={ROLE_KEYS.map((key) => {
             const roleLabel = ROLE_LABEL[key];

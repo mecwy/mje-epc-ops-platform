@@ -22,6 +22,7 @@ import { activeWork, byKind, photoPlacement, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
 import { PhotoStrip, ReportPhotos } from './Photos.js';
 import { FrozenWeatherReferences } from './WeatherLocation.js';
+import { InstallationValue } from './FillPage.js';
 import {
   SourceReport,
   SourceCell as SourceValue,
@@ -332,6 +333,12 @@ function Progress({
         const b = target(c, it.key);
         const p = pct(dec(q), dec(b));
         const cum = f.cumulative[it.key];
+        const calculated =
+          c.installationCumulative?.businessDate === c.businessDate
+            ? (c.installationCumulative.items.find(
+                (item) => item.key === it.key && item.unit === it.unit,
+              ) ?? null)
+            : null;
         const cp = pct(dec(cum), dec(it.designQty));
         return (
           <div key={it.key} className={`prog${n === 0 ? ' lead' : ''}`}>
@@ -357,7 +364,28 @@ function Progress({
                 />
               </div>
             )}
-            {cum && (
+            {calculated && (
+              <div>
+                <InstallationValue
+                  total={calculated}
+                  unit={unitOf(label, it)}
+                />
+                {calculated.state === 'complete' &&
+                  pct(dec(calculated.value), dec(it.designQty)) && (
+                    <span className="muted small">
+                      {' '}
+                      · {pct(dec(calculated.value), dec(it.designQty))}%
+                    </span>
+                  )}
+              </div>
+            )}
+            {cum && calculated && (
+              <details className="small">
+                <summary>{t('installationDeclaredCumulative')}</summary>
+                <Val raw={cum} />
+              </details>
+            )}
+            {cum && !calculated && (
               <div className="muted small">
                 {t('cumulative')} {fmtNum(cum, locale)}
                 {it.designQty ? ` / ${fmtNum(it.designQty, locale)}` : ''}
@@ -707,20 +735,36 @@ function BusinessSections({
             t('progress'),
             ...(workAreas ? [t('sourceReportedArea')] : []),
             t('today'),
-            `${t('cumulative')} · ${t('sourceCalculatedPercent')}`,
+            c.installationCumulative
+              ? t('cumulative')
+              : `${t('cumulative')} · ${t('sourceCalculatedPercent')}`,
             t('design'),
           ],
           workRows.map((it) => {
-            const completion = pct(
-              dec(c.facts.cumulative[it.key]),
-              dec(it.designQty),
-            );
+            const calculated =
+              c.installationCumulative?.businessDate === c.businessDate
+                ? (c.installationCumulative.items.find(
+                    (item) => item.key === it.key && item.unit === it.unit,
+                  ) ?? null)
+                : null;
+            const completion = calculated
+              ? calculated.state === 'complete'
+                ? pct(dec(calculated.value), dec(it.designQty))
+                : null
+              : pct(dec(c.facts.cumulative[it.key]), dec(it.designQty));
             return [
               label(it.label),
               ...(workAreas ? [raw(workAreas[it.key])] : []),
               <Val key="qty" raw={c.facts.qty[it.key]} />,
               <span key="cum" className="report-completion">
-                <Val raw={c.facts.cumulative[it.key]} />
+                {calculated ? (
+                  <InstallationValue
+                    total={calculated}
+                    unit={unitOf(label, it)}
+                  />
+                ) : (
+                  <Val raw={c.facts.cumulative[it.key]} />
+                )}
                 {completion !== null && (
                   <>
                     <span className="report-muted">{completion}%</span>

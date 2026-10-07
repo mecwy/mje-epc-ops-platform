@@ -163,6 +163,7 @@ export function readerNextPlan<T>(nextPlan: T): T {
 
 /** The fields of a submitted revision snapshot a day view is built from. */
 interface SubmittedSnapshot {
+  installationCumulative?: import('@mje/contracts').InstallationCumulativeDto;
   weatherReferences?: SafeFrozenWeatherReference[];
   facts: DayFacts;
   items: ReportItemDto[];
@@ -182,6 +183,7 @@ interface SubmittedSnapshot {
   photos?: PhotoAsOfDto[];
 }
 export interface ReaderContent {
+  installationCumulative?: import('@mje/contracts').InstallationCumulativeDto;
   managerReviewCut?: ManagerReviewSnapshotCut;
   weatherReferences?: SafeFrozenWeatherReference[];
   state: 'empty' | 'submitted';
@@ -238,6 +240,9 @@ export function readerContent(
       ? { weatherReferences: s.weatherReferences ?? [] }
       : {}),
     facts: s.facts,
+    ...(s.installationCumulative
+      ? { installationCumulative: s.installationCumulative }
+      : {}),
     items: s.items,
     // The day's plan status as the submission saw it: its frozen baseline, never a draft.
     planStatus: baseline
@@ -544,6 +549,9 @@ async function writerDay(
     nextPlan: snapshot.nextPlan,
     previousSubmittedDate: snapshot.previousSubmittedDate,
     cumulativeBase: snapshot.cumulativeBase,
+    ...(snapshot.installationCumulative
+      ? { installationCumulative: snapshot.installationCumulative }
+      : {}),
     materialsCumulative: snapshot.materialsCumulative,
     issues: snapshot.issues,
     photos,
@@ -638,6 +646,9 @@ async function readerDay(
     nextPlan: content.nextPlan,
     previousSubmittedDate: content.previousSubmittedDate,
     cumulativeBase: content.cumulativeBase,
+    ...(content.installationCumulative
+      ? { installationCumulative: content.installationCumulative }
+      : {}),
     materialsCumulative: content.materialsCumulative,
     issues: content.issues,
     photos: await frozenPhotos(

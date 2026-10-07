@@ -152,6 +152,8 @@ export interface LagView {
 
 /** What the report screens render: a live day or a frozen revision snapshot. */
 export interface ReportContent {
+  /** Optional in legacy snapshots; original declarations remain in facts.cumulative. */
+  installationCumulative?: import('@mje/contracts').InstallationCumulativeDto;
   /** Frozen safe references only; draft requests and personal coordinates never enter this view. */
   weatherReferences?: SafeFrozenWeatherReference[];
   businessDate: string;

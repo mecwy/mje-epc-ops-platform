@@ -25,7 +25,9 @@ export function ReviewFacts({
   items,
   projectName,
   roles,
+  workSummary,
 }: {
+  workSummary?: ReactNode;
   facts: DayFactsDto;
   items: ReportItemDto[];
   projectName: string;
@@ -120,26 +122,30 @@ export function ReviewFacts({
       {(!facts.noWork || work.length > 0) &&
         section(
           t('progress'),
-          work.length ? (
-            <dl>
-              {work.map((it) => (
-                <div className="review-facts-row" key={it.key}>
-                  <dt>{label(it.label)}</dt>
-                  <dd>
-                    <Value raw={facts.qty[it.key]} unit={unit(it)} />
-                    {entered(facts.cumulative[it.key]) && (
-                      <small>
-                        {t('cumulative')}{' '}
-                        <Value raw={facts.cumulative[it.key]} unit={unit(it)} />
-                      </small>
-                    )}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <span className="miss">{t('notFilled')}</span>
-          ),
+          workSummary ??
+            (work.length ? (
+              <dl>
+                {work.map((it) => (
+                  <div className="review-facts-row" key={it.key}>
+                    <dt>{label(it.label)}</dt>
+                    <dd>
+                      <Value raw={facts.qty[it.key]} unit={unit(it)} />
+                      {entered(facts.cumulative[it.key]) && (
+                        <small>
+                          {t('cumulative')}{' '}
+                          <Value
+                            raw={facts.cumulative[it.key]}
+                            unit={unit(it)}
+                          />
+                        </small>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <span className="miss">{t('notFilled')}</span>
+            )),
         )}
       {section(
         t('people'),

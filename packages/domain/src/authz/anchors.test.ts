@@ -74,6 +74,41 @@ const photoKeys = (prefix: string, exact: boolean) =>
     ...(exact ? ['capture.lat', 'capture.lon', 'file.gps'] : []),
   ].map((k) => `${prefix}${k}`);
 const DAY_KEYS = [
+  'installationCumulative',
+  'installationCumulative.schemaVersion',
+  'installationCumulative.policyVersion',
+  'installationCumulative.projectId',
+  'installationCumulative.businessDate',
+  'installationCumulative.selectedAtUTC',
+  'installationCumulative.historyFrom',
+  'installationCumulative.historyLimitDays',
+  'installationCumulative.historyBeforeWindow',
+  'installationCumulative.lineage',
+  'installationCumulative.lineage[].businessDate',
+  'installationCumulative.lineage[].revisionId',
+  'installationCumulative.lineage[].n',
+  'installationCumulative.currentRevision',
+  'installationCumulative.currentRevision.businessDate',
+  'installationCumulative.currentRevision.revisionId',
+  'installationCumulative.currentRevision.n',
+  'installationCumulative.items',
+  'installationCumulative.items[].key',
+  'installationCumulative.items[].unit',
+  'installationCumulative.items[].anchor',
+  'installationCumulative.items[].anchor.kind',
+  'installationCumulative.items[].anchor.unit',
+  'installationCumulative.items[].anchor.value',
+  'installationCumulative.items[].anchor.asOf',
+  'installationCumulative.items[].anchor.referenceId',
+  'installationCumulative.items[].priorKnownSubtotal',
+  'installationCumulative.items[].priorState',
+  'installationCumulative.items[].missingDays',
+  'installationCumulative.items[].unknownDays',
+  'installationCumulative.items[].today',
+  'installationCumulative.items[].state',
+  'installationCumulative.items[].value',
+  'installationCumulative.items[].knownSubtotal',
+
   'access',
   'projectId',
   'businessDate',
@@ -168,6 +203,39 @@ describe('ADR-0003 anchors (hand-written)', () => {
     expect(
       FIELDS['report.day.reader'].fields.facts.fields.siteLocation.layer,
     ).toBe('submitted');
+  });
+  it('N4 derived today stays draft for writers and frozen submitted for readers', () => {
+    const writer = FIELDS['report.day.writer'].fields.installationCumulative;
+    const reader = FIELDS['report.day.reader'].fields.installationCumulative;
+    expect(writer.layer).toBe('draft');
+    expect(reader.layer).toBe('submitted');
+    for (const field of ['today', 'state', 'value', 'knownSubtotal'] as const) {
+      expect(writer.fields.items.items[field].layer).toBe('draft');
+      expect(reader.fields.items.items[field].layer).toBe('submitted');
+    }
+    expect(writer.fields.lineage.layer).toBe('submitted');
+    expect(reader.fields.lineage.layer).toBe('submitted');
+    for (const scope of ['other-project', 'other-org'] as const) {
+      const decision = decide(
+        entry('GET /api/report/day'),
+        account(READER, scope),
+      );
+      expect(decision.allowed).toBe(false);
+      expect(decision.visibleKeys).toEqual([]);
+    }
+    const visible = decide(
+      entry('GET /api/report/day'),
+      account(READER),
+    ).visibleKeys;
+    expect(
+      visible.some(
+        (key) =>
+          key.includes('installationCumulative') &&
+          (key.includes('coordinates') ||
+            key.includes('sourceReport') ||
+            key.includes('draft')),
+      ),
+    ).toBe(false);
   });
   const cases: {
     name: string;
