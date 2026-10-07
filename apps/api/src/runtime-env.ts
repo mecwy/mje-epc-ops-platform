@@ -4,6 +4,7 @@ import { AzurePhotoBlobStore } from './photo-blobs.js';
 import {
   claimWeatherJob,
   createMetForecastCacheGate,
+  deferWeatherJob,
   failWeatherJob,
   finishWeatherJob,
 } from '@mje/domain';
@@ -83,6 +84,8 @@ export function weatherRuntimeFromEnv(
           enabled: true,
           jobs: {
             claim: () => claimWeatherJob(pool, orgId),
+            defer: (lease, retryAfterSeconds) =>
+              deferWeatherJob(pool, lease, retryAfterSeconds),
             finish: (lease, draft) =>
               finishWeatherJob(pool, lease, draft, {
                 adapterVersion: 'met-norway-locationforecast-v1',
@@ -185,7 +188,7 @@ export async function assertApplicationLogin(pool: Pool): Promise<void> {
   const roles = await pool.query<{
     unsafe: boolean;
   }>(`SELECT (r.rolsuper OR r.rolbypassrls OR EXISTS
-    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink','Person','Crew','CrewAssignment','ProjectRoster','FieldEntryCode','FieldDevice','FieldTokenHash','FieldConfirmChallenge','FieldPersonConfirm','FieldDeviceEvent','FieldThrottle','FieldThrottleSalt','ProjectSiteReference','ProjectFieldSetting','FieldDay','WorkerCheckIn','FieldSelfie','CheckInSelfie','ForemanReport','ForemanReportRevision','ForemanAdoption','WeatherLocationVersion','WeatherRequest','WeatherSnapshot','WeatherReference','ReportLocationRecord','OutboxEvent','MetForecastCache','MetForecastCooldown') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
+    (SELECT 1 FROM pg_class c WHERE c.relname IN ('DailyClose','Revision','AlphaDraft','DailyReportDraft','PlanVersion','AuditLog','Issue','IssueNote','PhotoEvidence','EvidenceLink','Person','Crew','CrewAssignment','ProjectRoster','FieldEntryCode','FieldDevice','FieldTokenHash','FieldConfirmChallenge','FieldPersonConfirm','FieldDeviceEvent','FieldThrottle','FieldThrottleSalt','ProjectSiteReference','ProjectFieldSetting','FieldDay','WorkerCheckIn','FieldSelfie','CheckInSelfie','ForemanReport','ForemanReportRevision','ForemanAdoption','WeatherLocationVersion','WeatherRequest','WeatherSnapshot','WeatherReportReference','ReportLocationRecord','OutboxEvent','MetForecastCache','MetForecastCooldown') AND pg_has_role(current_user,c.relowner,'USAGE'))) AS unsafe
     FROM pg_roles r WHERE r.rolname=current_user`);
   if (roles.rows[0]?.unsafe !== false)
     throw new ConfigError('UNSAFE_DATABASE_LOGIN');

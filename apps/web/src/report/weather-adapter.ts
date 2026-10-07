@@ -6,6 +6,7 @@ import {
   type ReportLocationCandidateDto,
   type SafeFrozenWeatherReference,
   type MetForecastDto,
+  type WeatherSnapshotDto,
 } from '@mje/contracts';
 import {
   acquirePosition,
@@ -169,21 +170,50 @@ export type ProviderWeatherReferenceView = Omit<
 export function weatherReferenceView(
   reference: SafeFrozenWeatherReference,
 ): ProviderWeatherReferenceView {
-  const data = reference.snapshot;
+  return snapshotToView({
+    id: reference.snapshotId,
+    data: reference.snapshot,
+    sourceLink: reference.sourceLink,
+    licenseLink: reference.licenseLink,
+  });
+}
+
+/** A current snapshot is not an adoption: never manufacture actor or reference fields. */
+export function snapshotToView(
+  snapshot: Pick<
+    WeatherSnapshotDto,
+    'id' | 'data' | 'sourceLink' | 'licenseLink'
+  >,
+  now?: number,
+): ProviderWeatherReferenceView {
+  if (!UUID.test(snapshot.id)) throw new Error('INVALID_WEATHER_RESPONSE');
+  const data = parseWeatherReferenceDraft(snapshot.data);
+  for (const link of [snapshot.sourceLink, snapshot.licenseLink]) {
+    if (
+      typeof link !== 'string' ||
+      link.length > 2000 ||
+      new URL(link).protocol !== 'https:'
+    )
+      throw new Error('INVALID_WEATHER_RESPONSE');
+  }
   const common = {
     projectId: data.query.projectId,
     businessDate: data.query.businessDate,
     timezone: data.query.timezone,
-    locationVersionId: reference.locationVersionId,
-    snapshotId: reference.snapshotId,
+    locationVersionId: data.query.locationVersionId,
+    snapshotId: snapshot.id,
     category: data.category,
     fetchedAt: data.fetchedAt,
     publishedAt: data.publishedAt,
     interval: structuredClone(data.query.interval),
     coverage: data.coverage,
-    stale: false,
-    sourceLink: reference.sourceLink,
-    licenseLink: reference.licenseLink,
+    stale:
+      now !== undefined &&
+      (now - Date.parse(data.fetchedAt) >= 3600000 ||
+        (data.provider === 'met-norway' &&
+          now >= Date.parse(data.forecast.coveredInterval.endAt))),
+    sourceLink: snapshot.sourceLink,
+    licenseLink: snapshot.licenseLink,
     values: WEATHER_METRICS.map((key) => {
       const metric = data.metrics[key];
       return {

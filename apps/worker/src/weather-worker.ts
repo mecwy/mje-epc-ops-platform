@@ -5,6 +5,7 @@ import {
   type WeatherProviderDependencies,
 } from './weather-provider.js';
 import { MetNorwayError } from './met-norway-provider.js';
+import { MetGateBusyError } from './met-norway-transport.js';
 export interface WeatherWorkerLease {
   requestId: string;
   query: OpenMeteoQuery;
@@ -17,9 +18,16 @@ export interface WeatherWorkerDependencies<T, L extends WeatherWorkerLease> {
     finish: (lease: L, draft: T) => Promise<boolean>;
     fail: (
       lease: L,
-      code: 'DISABLED' | 'UNAVAILABLE' | 'RATE_LIMITED' | 'NO_HISTORY',
+      code:
+        | 'DISABLED'
+        | 'UNAVAILABLE'
+        | 'RATE_LIMITED'
+        | 'NO_HISTORY'
+        | 'INVALID_RESPONSE',
       retryAfterSeconds?: number,
     ) => Promise<boolean>;
+    /** Return a pre-HTTP gate deferral without consuming this claim's supplier-attempt reservation. */
+    defer?: (lease: L, retryAfterSeconds: number) => Promise<boolean>;
   };
   provider?: WeatherProviderDependencies<T>;
   /** Provider adapter must settle on AbortSignal before a live runtime closes its pool. */
@@ -68,14 +76,27 @@ export async function runWeatherOnce<T, L extends WeatherWorkerLease>(
       requestId: lease.requestId,
     };
   } catch (e) {
+    if (e instanceof MetGateBusyError) {
+      if (!dependencies.jobs.defer)
+        throw new Error('WEATHER_DEFER_REQUIRED', { cause: e });
+      const delay = Number.isFinite(e.retryAfterSeconds)
+        ? Math.max(1, Math.min(86400, Math.ceil(e.retryAfterSeconds)))
+        : 60;
+      return {
+        state: (await dependencies.jobs.defer(lease, delay)) ? 'idle' : 'stale',
+        requestId: lease.requestId,
+      };
+    }
     const code =
       e instanceof MetNorwayError && e.code === 'NO_HISTORY'
         ? 'NO_HISTORY'
-        : (e instanceof MetNorwayError && e.code === 'RATE_LIMITED') ||
-            (e instanceof WeatherProviderError &&
-              e.code === 'WEATHER_RATE_LIMITED')
-          ? 'RATE_LIMITED'
-          : 'UNAVAILABLE';
+        : e instanceof MetNorwayError && e.code === 'INVALID_RESPONSE'
+          ? 'INVALID_RESPONSE'
+          : (e instanceof MetNorwayError && e.code === 'RATE_LIMITED') ||
+              (e instanceof WeatherProviderError &&
+                e.code === 'WEATHER_RATE_LIMITED')
+            ? 'RATE_LIMITED'
+            : 'UNAVAILABLE';
     const retry =
       e instanceof MetNorwayError &&
       e.retryAfterSeconds !== undefined &&

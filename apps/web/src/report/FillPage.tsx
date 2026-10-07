@@ -638,6 +638,7 @@ export function FillPage({
   canWrite,
   weatherControls,
   weatherControlsPending,
+  weatherControlsVisible = false,
 }: {
   h: DayHandle;
   day: DayView;
@@ -654,6 +655,7 @@ export function FillPage({
   canWrite: boolean;
   weatherControls?: ReactNode;
   weatherControlsPending?: boolean;
+  weatherControlsVisible?: boolean;
 }) {
   const { t, label, locale, lang } = useI18n();
   const [section, setSection] = useState<FillSection>('progress');
@@ -816,7 +818,8 @@ export function FillPage({
                     />
                   </label>
                 </div>
-                {weatherControls && (
+                {weatherControlsVisible && weatherControls}
+                {!weatherControlsVisible && weatherControls && (
                   <details
                     className="fill-guidance"
                     open={weatherControlsPending || locationControlsOpen}

@@ -1,8 +1,98 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createWeatherRuntime } from './weather-runtime.js';
+import {
+  runWeatherOnce,
+  type WeatherWorkerDependencies,
+  type WeatherWorkerLease,
+} from './weather-worker.js';
+import { createMetNorwayTransport } from './met-norway-transport.js';
 const org = '11111111-1111-4111-8111-111111111111';
 afterEach(() => vi.useRealTimers());
 describe('Dev embedded consumer lifecycle', () => {
+  it('repeated pre-HTTP deferrals resume automatically without spending supplier attempts or overlapping', async () => {
+    vi.useFakeTimers();
+    let nextAttempt = 0,
+      attempts = 0,
+      deferrals = 0,
+      executions = 0,
+      completed = false;
+    const fetch = vi.fn(async (): Promise<Response> => {
+      throw new Error('TEST gate must block HTTP');
+    });
+    const transport = createMetNorwayTransport({
+      userAgent: 'TEST https://example.invalid/contact',
+      now: () => '2026-10-06T10:00:00Z',
+      fetch,
+      gate: {
+        take: async () => ({ state: 'busy', retryAfterSeconds: 5 }),
+        commit: async () => false,
+        release: async () => {},
+        throttle: async () => {},
+      },
+    });
+    const lease: WeatherWorkerLease = {
+      requestId: 'TEST-runtime-gate',
+      query: {
+        projectId: org,
+        locationVersionId: org,
+        businessDate: '2026-10-06',
+        timezone: 'UTC',
+        point: { lat: '45', lon: '19' },
+        interval: {
+          startAt: '2026-10-06T00:00:00Z',
+          endAt: '2026-10-07T00:00:00Z',
+        },
+        product: 'forecast',
+        model: 'forecast',
+      },
+    };
+    const dependencies: WeatherWorkerDependencies<unknown, WeatherWorkerLease> =
+      {
+        enabled: true,
+        jobs: {
+          claim: async () => {
+            if (completed || Date.now() < nextAttempt) return null;
+            attempts++;
+            return lease;
+          },
+          defer: async (_, delay) => {
+            attempts--;
+            deferrals++;
+            nextAttempt = Date.now() + delay * 1000;
+            return true;
+          },
+          fail: vi.fn(async () => true),
+          finish: async () => {
+            completed = true;
+            return true;
+          },
+        },
+        execute: async (q, signal) => {
+          if (deferrals < 3) return transport(q, signal);
+          executions++;
+          return { TEST: 'neutral provider result' };
+        },
+      };
+    const r = createWeatherRuntime({
+      enabled: true,
+      deploymentEnvironment: 'dev',
+      businessOrgId: org,
+      runOnce: (_, signal) => runWeatherOnce(dependencies, signal),
+    });
+    r.start();
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(deferrals).toBe(3);
+    expect(attempts).toBe(0);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(attempts).toBe(1);
+    expect(executions).toBe(1);
+    expect(completed).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(dependencies.jobs.fail).not.toHaveBeenCalled();
+    await r.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('import/construction/default-off starts no work and cannot consume queued requests', async () => {
     vi.useFakeTimers();
     const runOnce = vi.fn(async () => {});

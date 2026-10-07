@@ -34,7 +34,7 @@ const missing: WeatherValueDto = {
 function forecast(): MetForecastDto {
   return {
     providerUpdatedAt: '2026-10-07T07:00:00Z',
-    outboundPoint: { lat: '45', lon: '19' },
+    outboundPoint: { lat: '45.0000', lon: '19.0000' },
     returnedPoint: { lat: '45', lon: '19' },
     coveredInterval: {
       startAt: '2026-10-07T08:00:00Z',
@@ -59,12 +59,12 @@ function forecast(): MetForecastDto {
 }
 function frozen(): SafeFrozenWeatherReference {
   return {
-    referenceId: 'TEST-reference',
-    snapshotId: 'TEST-snapshot',
-    locationVersionId: 'TEST-location',
+    referenceId: '00000000-0000-4000-8000-000000000001',
+    snapshotId: '00000000-0000-4000-8000-000000000002',
+    locationVersionId: '00000000-0000-4000-8000-000000000003',
     adoptedAt: '2026-10-07T10:00:00Z',
-    adoptedByAccountId: 'TEST-account',
-    adoptedByPersonId: 'TEST-person',
+    adoptedByAccountId: '00000000-0000-4000-8000-000000000004',
+    adoptedByPersonId: '00000000-0000-4000-8000-000000000005',
     adapterVersion: 'TEST-met-v1',
     responseHash: 'TEST-hash',
     sourceLink:
@@ -78,9 +78,9 @@ function frozen(): SafeFrozenWeatherReference {
       coverage: 'partial',
       grid: null,
       query: {
-        projectId: 'TEST-project',
+        projectId: '00000000-0000-4000-8000-000000000006',
         businessDate: '2026-10-07',
-        locationVersionId: 'TEST-location',
+        locationVersionId: '00000000-0000-4000-8000-000000000003',
         timezone: 'Europe/Belgrade',
         point: { lat: '45', lon: '19' },
         interval: {
@@ -186,8 +186,11 @@ describe('MET forecast presentation', () => {
       ...old,
       provider: 'open-meteo',
       category: 'reanalysis',
+      fetchedAt: '2026-10-08T00:00:00Z',
+      query: { ...old.query, product: 'historical-weather', model: 'era5' },
       metrics: { ...old.metrics, precipitation: number('0', 'mm') },
     };
+    reference.adoptedAt = '2026-10-08T00:30:00Z';
     const html = renderToStaticMarkup(
       createElement(FrozenWeatherReferences, { references: [reference] }),
     );
@@ -237,4 +240,58 @@ describe('MET forecast presentation', () => {
     expect(manual).not.toHaveBeenCalled();
     session.deactivate();
   });
+});
+
+describe('weather edit recovery across feature flags', () => {
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    'retains Retry and Detach (weather=%s, location=%s)',
+    (weatherEnabled, locationEnabled) => {
+      language = 'en';
+      const view = weatherReferenceView(frozen());
+      const session = new WeatherLocationSession(
+        {
+          ownerKey: 'TEST-owner',
+          projectId: view.projectId,
+          businessDate: view.businessDate,
+          timezone: view.timezone,
+          locationVersionId: view.locationVersionId,
+        },
+        {
+          loadWeather: async () => view,
+          locate: vi.fn(),
+          acceptLocation: () => {
+            throw new Error('TEST');
+          },
+          confirmLocation: () => false,
+          referenceWeather: () => false,
+        },
+        { writable: true, locked: false },
+      );
+      const retry = vi.fn(),
+        detach = vi.fn();
+      const html = renderToStaticMarkup(
+        createElement(WeatherLocation, {
+          session,
+          weatherEnabled,
+          locationEnabled,
+          pendingSave: true,
+          onRetrySave: retry,
+          onDetachWeather: detach,
+          savedSnapshotIds: [view.snapshotId],
+        }),
+      );
+      expect(html).toContain(translate('en', 'weatherLocation_pending'));
+      expect(html).toContain(translate('en', 'weatherLocation_retry'));
+      expect(html).toContain(translate('en', 'weatherLocation_detach'));
+      expect(html.match(/role="status"/g)?.length).toBeGreaterThanOrEqual(1);
+      expect(retry).not.toHaveBeenCalled();
+      expect(detach).not.toHaveBeenCalled();
+      session.deactivate();
+    },
+  );
 });

@@ -26,6 +26,8 @@ function setup(
     token?: string;
     absent?: boolean;
     updateCount?: number;
+    canonicalBytes?: number;
+    canonicalError?: string;
   } = {},
 ) {
   const row = {
@@ -52,6 +54,13 @@ function setup(
         };
       if (sql.startsWith('SELECT clock_timestamp'))
         return { rows: [{ at: new Date(options.clock ?? at) }], rowCount: 1 };
+      if (sql.startsWith('SELECT octet_length')) {
+        if (options.canonicalError) throw { code: options.canonicalError };
+        return {
+          rows: [{ bytes: options.canonicalBytes ?? 100 }],
+          rowCount: 1,
+        };
+      }
       if (sql.startsWith('UPDATE "MetForecastCache" SET "leaseToken"=$4')) {
         row.leaseToken = values[3] as string;
         row.leasedUntil = '2026-10-07T01:00:30.000Z';
@@ -150,14 +159,29 @@ describe('MET durable gate SQL contract (injected client only)', () => {
     });
     expect(s.mutations()).toHaveLength(0);
   });
-  it('checks provider cooldown even for a cached point, with a bounded retry', async () => {
+  it('returns fresh cache during provider cooldown without acquiring a supplier lease', async () => {
     const s = setup({ cached: true, cooldown: '2026-10-09T01:00:00Z' });
     expect(await s.gate.take(hash, at, signal())).toEqual({
-      state: 'busy',
-      retryAfterSeconds: 86400,
+      state: 'fresh',
+      entry: payload,
     });
     expect(s.mutations()).toHaveLength(0);
   });
+  it.each([false, true])(
+    'cooldown blocks missing or expired cache (%s)',
+    async (cached) => {
+      const s = setup({
+        cached,
+        clock: '2026-10-07T02:00:01Z',
+        cooldown: '2026-10-09T01:00:00Z',
+      });
+      expect(await s.gate.take(hash, at, signal())).toEqual({
+        state: 'busy',
+        retryAfterSeconds: 86400,
+      });
+      expect(s.mutations()).toHaveLength(0);
+    },
+  );
   it('commits one bounded body atomically and fences token/DB deadline/cooldown in SQL', async () => {
     const s = setup({ live: true });
     expect(await s.gate.commit(lease, payload, at)).toBe(true);
@@ -257,7 +281,7 @@ describe('MET durable gate SQL contract (injected client only)', () => {
       const s = setup({ live: true });
       await expect(
         s.gate.commit(lease, { ...payload, body }, at),
-      ).rejects.toThrow('INVALID_INPUT');
+      ).rejects.toThrow('INVALID_PAYLOAD');
       expect(s.connect).not.toHaveBeenCalled();
     },
   );
@@ -267,11 +291,48 @@ describe('MET durable gate SQL contract (injected client only)', () => {
     cycle['self'] = cycle;
     await expect(
       s.gate.commit(lease, { ...payload, body: cycle }, at),
-    ).rejects.toThrow('INVALID_INPUT');
+    ).rejects.toThrow('INVALID_PAYLOAD');
     await expect(
       s.gate.commit(lease, { ...payload, lastModified: 'a'.repeat(201) }, at),
     ).rejects.toThrow('INVALID_INPUT');
     expect(s.connect).not.toHaveBeenCalled();
+  });
+  it('accepts the inclusive PostgreSQL canonical body boundary', async () => {
+    const s = setup({ live: true, canonicalBytes: 2 * 1024 * 1024 });
+    expect(await s.gate.commit(lease, payload, at)).toBe(true);
+    const canonical = s.calls.findIndex((c) =>
+      c.sql.startsWith('SELECT octet_length'),
+    );
+    const update = s.calls.findIndex((c) => c.sql.startsWith('UPDATE'));
+    expect(canonical).toBeLessThan(update);
+    expect(s.calls[canonical]?.values).toEqual([JSON.stringify(payload.body)]);
+  });
+  it('rejects normalized oversize as terminal payload without executing a write', async () => {
+    const s = setup({ live: true, canonicalBytes: 2 * 1024 * 1024 + 1 });
+    await expect(s.gate.commit(lease, payload, at)).rejects.toEqual(
+      new MetForecastCacheError('INVALID_PAYLOAD'),
+    );
+    expect(s.mutations()).toHaveLength(0);
+    expect(s.calls.at(-1)?.sql).toBe('ROLLBACK');
+    expect(s.release).toHaveBeenCalledOnce();
+  });
+  it.each(['22P02', '22P05', '22003'])(
+    'classifies unrepresentable JSONB (%s) as terminal payload',
+    async (code) => {
+      const s = setup({ live: true, canonicalError: code });
+      await expect(s.gate.commit(lease, payload, at)).rejects.toEqual(
+        new MetForecastCacheError('INVALID_PAYLOAD'),
+      );
+      expect(s.mutations()).toHaveLength(0);
+      expect(s.calls.at(-1)?.sql).toBe('ROLLBACK');
+    },
+  );
+  it('keeps PostgreSQL connection failures retryable', async () => {
+    const s = setup({ live: true, canonicalError: '08006' });
+    await expect(s.gate.commit(lease, payload, at)).rejects.toEqual(
+      new MetForecastCacheError('UNAVAILABLE'),
+    );
+    expect(s.mutations()).toHaveLength(0);
   });
   it('sanitizes database failures and rolls back/releases', async () => {
     const s = setup(),

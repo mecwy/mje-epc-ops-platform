@@ -75,14 +75,14 @@ function setup() {
     leases = new Map<string, string>();
   const gate: MetSharedGate = {
     take: vi.fn(async (key, at) => {
+      const entry = entries.get(key);
+      if (entry && Date.parse(entry.expiresAt) > Date.parse(at))
+        return { state: 'fresh' as const, entry };
       if (cooldown > Date.parse(at))
         return {
           state: 'busy' as const,
           retryAfterSeconds: (cooldown - Date.parse(at)) / 1000,
         };
-      const entry = entries.get(key);
-      if (entry && Date.parse(entry.expiresAt) > Date.parse(at))
-        return { state: 'fresh' as const, entry };
       if (leases.has(key))
         return { state: 'busy' as const, retryAfterSeconds: 5 };
       const lease = { key, token: String(++token) };
@@ -203,7 +203,7 @@ describe('MET injected HTTP and shared gate protocol', () => {
         { ...query(), projectId: '33333333-3333-4333-8333-333333333333' },
         signal(),
       ),
-    ).rejects.toThrow('MET_RATE_LIMITED');
+    ).rejects.toThrow('MET_GATE_BUSY');
     expect(s.fetch).toHaveBeenCalledTimes(1);
     resolve(response());
     await first;
@@ -229,7 +229,7 @@ describe('MET injected HTTP and shared gate protocol', () => {
       await expect(
         request({ ...query(), point: { lat: '46', lon: '20' } }, signal()),
       ).rejects.toMatchObject({
-        code: 'RATE_LIMITED',
+        name: 'MetGateBusyError',
         retryAfterSeconds: delay,
       });
       expect(s.fetch).toHaveBeenCalledTimes(1);
@@ -310,6 +310,58 @@ describe('MET injected HTTP and shared gate protocol', () => {
     ).rejects.toThrow('MET_UNAVAILABLE');
     expect(s.entries.size).toBe(0);
     expect(s.leases.size).toBe(0);
+  });
+  it.each(['bad-json', 'oversize'])(
+    '%s is terminal INVALID_RESPONSE, not a supplier outage',
+    async (variant) => {
+      const s = setup();
+      s.fetch.mockResolvedValue(
+        new Response(
+          variant === 'bad-json' ? '{' : ' '.repeat(2 * 1024 * 1024 + 1),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              expires: 'Tue, 06 Oct 2026 11:00:00 GMT',
+            },
+          },
+        ),
+      );
+      await expect(
+        createMetNorwayTransport(s.deps)(query(), signal()),
+      ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+      expect(s.gate.commit).not.toHaveBeenCalled();
+      expect(s.leases.size).toBe(0);
+    },
+  );
+  it.each(['INVALID_PAYLOAD', 'INVALID_INPUT', 'UNAVAILABLE'])(
+    'cache commit %s retains the narrow error boundary',
+    async (code) => {
+      const s = setup();
+      s.gate.commit = vi.fn(async () => {
+        throw Object.assign(new Error('TEST raw payload'), {
+          name: 'MetForecastCacheError',
+          code,
+        });
+      });
+      await expect(
+        createMetNorwayTransport(s.deps)(query(), signal()),
+      ).rejects.toMatchObject({
+        code: code === 'INVALID_PAYLOAD' ? 'INVALID_RESPONSE' : 'UNAVAILABLE',
+      });
+      expect(s.leases.size).toBe(0);
+    },
+  );
+  it('fresh approved cache remains usable while another point has supplier cooldown', async () => {
+    const s = setup();
+    const r = createMetNorwayTransport(s.deps);
+    const original = await r(query(), signal());
+    s.fetch.mockResolvedValue(response(429, { 'retry-after': '120' }));
+    await expect(
+      r({ ...query(), point: { lat: '46', lon: '20' } }, signal()),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(await r(query(), signal())).toEqual(original);
+    expect(s.fetch).toHaveBeenCalledTimes(2);
   });
   it('rejects cancellation even during gate acquisition and still returns its lease', async () => {
     const s = setup(),
