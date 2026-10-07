@@ -154,6 +154,7 @@
   "apps/web/src/report/model.test.ts",
   "apps/web/src/report/model.ts",
   "apps/web/src/report/narrative-history.test.ts",
+  "apps/web/src/report/no-work-personnel.test.ts",
   "apps/web/src/report/personnel-metrics-session.test.ts",
   "apps/web/src/report/personnel-metrics-session.ts",
   "apps/web/src/report/photo-images.test.ts",

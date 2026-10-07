@@ -259,6 +259,41 @@ function Val({ raw }: { raw: string | undefined }) {
   if (s.kind === 'invalid') return <span className="miss">{s.raw}</span>;
   return <b className="num">{s.text}</b>;
 }
+
+function TodayPersonnel({ c }: { c: ReportContent }) {
+  const { t, label } = useI18n();
+  const roles = ROLE_KEYS.filter(
+    (key) => (c.facts.people[key] ?? '').trim() !== '',
+  );
+  if (!roles.length) return null;
+  const title = `${t('people')} · ${t('today')}`;
+  return (
+    <section className="card" aria-label={title}>
+      <h2 className="blk">{title}</h2>
+      <div className="report-table-scroll" tabIndex={0}>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">{t('people')}</th>
+              <th scope="col">{t('persons')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roles.map((key) => (
+              <tr key={key}>
+                <th scope="row">{label(`role_${key}`)}</th>
+                <td>
+                  <Val raw={c.facts.people[key]} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 const unitOf = (label: (s: string) => string, it?: ReportItemDto) =>
   it?.unit ? label(`u_${it.unit}`).replace(/^u_/, '') : '';
 
@@ -1130,6 +1165,7 @@ export function ReportBody({
               personnel={personnel}
             />
           )}
+          {f.noWork && <TodayPersonnel c={c} />}
           {f.noWork && personnel}
           {f.noWork && <NoWorkSources c={c} />}
         </div>
