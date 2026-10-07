@@ -286,7 +286,47 @@ function statusFields(body: string): StatusFieldName[] {
     return [];
   }
 }
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+const abortError = () => new DOMException('Request cancelled', 'AbortError');
+function checkAbort(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        if (signal.aborted) reject(abortError());
+        else resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(signal.aborted ? abortError() : error);
+      },
+    );
+  });
+}
+function retryWait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return wait(ms);
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 /**
  * One request. Writes carry Idempotency-Key = clientMutationId, so a write lost to the network
@@ -297,33 +337,49 @@ async function request<T>(
   token: string,
   command?: Command,
   onRetry?: () => void,
+  signal?: AbortSignal,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
+    checkAbort(signal);
     let response: Response;
     try {
-      response = await fetch(path, {
-        method: command ? 'POST' : 'GET',
-        cache: 'no-store',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...(command
-            ? {
-                'Content-Type': 'application/json',
-                'Idempotency-Key': command.clientMutationId,
-              }
-            : {}),
-        },
-        ...(command ? { body: JSON.stringify(command) } : {}),
-      });
+      response = await abortable(
+        fetch(path, {
+          method: command ? 'POST' : 'GET',
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(command
+              ? {
+                  'Content-Type': 'application/json',
+                  'Idempotency-Key': command.clientMutationId,
+                }
+              : {}),
+          },
+          ...(command ? { body: JSON.stringify(command) } : {}),
+          ...(signal ? { signal } : {}),
+        }),
+        signal,
+      );
     } catch (error) {
+      checkAbort(signal);
+      if (
+        signal &&
+        error instanceof DOMException &&
+        error.name === 'AbortError'
+      )
+        throw error;
       if (attempt >= 3) throw new ApiError('NETWORK', 0);
       onRetry?.();
-      await wait(800 * 2 ** attempt);
+      await retryWait(800 * 2 ** attempt, signal);
       void error;
       continue;
     }
     if (!response.ok) {
-      const body = await response.text().catch(() => '');
+      const body = await abortable(
+        response.text().catch(() => ''),
+        signal,
+      );
       throw new ApiError(
         responseCode(response.status, body),
         response.status,
@@ -331,7 +387,7 @@ async function request<T>(
         statusFields(body),
       );
     }
-    return (await response.json()) as T;
+    return (await abortable(response.json(), signal)) as T;
   }
 }
 
@@ -434,6 +490,22 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
   const apiGet = async <T>(path: string) => request<T>(path, await token());
   const apiPost = async <T>(path: string, command: Command) =>
     request<T>(path, await token(), command, onRetry);
+  const weatherRead = async <T>(path: string, signal?: AbortSignal) => {
+    checkAbort(signal);
+    const accessToken = await abortable(token(), signal);
+    checkAbort(signal);
+    return request<T>(path, accessToken, undefined, undefined, signal);
+  };
+  const weatherWrite = async <T>(
+    path: string,
+    command: Command,
+    signal?: AbortSignal,
+  ) => {
+    checkAbort(signal);
+    const accessToken = await abortable(token(), signal);
+    checkAbort(signal);
+    return request<T>(path, accessToken, command, onRetry, signal);
+  };
   return {
     projects: async () =>
       request<ProjectsResponse>('/api/report/projects', await token()),
@@ -541,20 +613,31 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
     plan: (projectId: string, targetBusinessDate: string) =>
       get<PlanView>('plan', { projectId, targetBusinessDate }),
     saveFacts: (c: SaveFactsCommand) => post<WriteResult>('facts', c),
-    weatherLocations: (projectId: string) =>
-      apiGet<WeatherLocationDto[]>(
+    weatherLocations: (projectId: string, signal?: AbortSignal) =>
+      weatherRead<WeatherLocationDto[]>(
         `/api/weather/locations?${qs({ projectId })}`,
+        signal,
       ),
-    weatherSnapshot: (projectId: string, snapshotId: string) =>
-      apiGet<WeatherSnapshotDto>(
+    weatherSnapshot: (
+      projectId: string,
+      snapshotId: string,
+      signal?: AbortSignal,
+    ) =>
+      weatherRead<WeatherSnapshotDto>(
         `/api/weather/snapshots?${qs({ projectId, snapshotId })}`,
+        signal,
       ),
-    weatherRequestStatus: (projectId: string, requestId: string) =>
-      apiGet<WeatherRequestDto>(
+    weatherRequestStatus: (
+      projectId: string,
+      requestId: string,
+      signal?: AbortSignal,
+    ) =>
+      weatherRead<WeatherRequestDto>(
         `/api/weather/requests?${qs({ projectId, requestId })}`,
+        signal,
       ),
-    requestWeather: (command: WeatherRequestCommand) =>
-      apiPost<WeatherRequestDto>('/api/weather/requests', command),
+    requestWeather: (command: WeatherRequestCommand, signal?: AbortSignal) =>
+      weatherWrite<WeatherRequestDto>('/api/weather/requests', command, signal),
     configureWeatherLocation: (command: ConfigureWeatherLocationCommand) =>
       apiPost<WeatherLocationDto>('/api/weather/locations', command),
     submit: (c: SubmitReportCommand) => post<WriteResult>('submit', c),

@@ -2,6 +2,8 @@ FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea41952009
 WORKDIR /app
 ARG VITE_REPORT_LOCATION_ENABLED=false
 ENV VITE_REPORT_LOCATION_ENABLED=$VITE_REPORT_LOCATION_ENABLED
+ARG VITE_WEATHER_REFERENCE_ENABLED=false
+ENV VITE_WEATHER_REFERENCE_ENABLED=$VITE_WEATHER_REFERENCE_ENABLED
 RUN npm install --global pnpm@10.34.5
 COPY . .
 RUN pnpm install --frozen-lockfile && pnpm build && pnpm --filter @mje/api deploy --prod --legacy /runtime

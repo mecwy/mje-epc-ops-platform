@@ -170,6 +170,7 @@ function inertModule(text: string) {
             '@mje/contracts',
             './weather-provider.js',
             './met-norway-provider.js',
+            './met-norway-transport.js',
           ].includes(s.moduleSpecifier.text) ||
           (s.moduleSpecifier.text === 'node:crypto' &&
             s.importClause.name === undefined &&

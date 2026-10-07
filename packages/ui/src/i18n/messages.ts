@@ -14,6 +14,78 @@ export const LOCALES: Record<Lang, string> = {
   es: 'es-ES',
 };
 export const MESSAGES = {
+  weatherLocation_directoryLoading: [
+    '正在核对已确认作业区',
+    'Checking confirmed work areas',
+    'Checking confirmed work areas',
+    'Checking confirmed work areas',
+  ],
+  weatherLocation_directoryNone: [
+    '未配置已确认天气地点',
+    'No confirmed weather location configured',
+    'No confirmed weather location configured',
+    'No confirmed weather location configured',
+  ],
+  weatherLocation_directoryChoose: [
+    '请选择作业区',
+    'Choose a work area',
+    'Choose a work area',
+    'Choose a work area',
+  ],
+  weatherLocation_directoryFailed: [
+    '无法核对已确认作业区，请重试',
+    'Could not verify confirmed work areas; retry',
+    'Could not verify confirmed work areas; retry',
+    'Could not verify confirmed work areas; retry',
+  ],
+  weatherLocation_directoryUpdated: [
+    '此作业区地点版本已更新，已重新查询',
+    'This work area has a newer location version; query restarted',
+    'This work area has a newer location version; query restarted',
+    'This work area has a newer location version; query restarted',
+  ],
+  weatherLocation_selectScope: [
+    '天气参考作业区（已确认地点）',
+    'Weather work area (confirmed location)',
+    'Weather work area (confirmed location)',
+    'Weather work area (confirmed location)',
+  ],
+  weatherLocation_queryPending: [
+    '仍在处理，可继续查询',
+    'Still processing; you can continue checking',
+    'Still processing; you can continue checking',
+    'Still processing; you can continue checking',
+  ],
+  weatherLocation_queryUnknown: [
+    '查询请求结果未知，重试将恢复同一请求',
+    'Query request outcome unknown; retry resumes the same request',
+    'Query request outcome unknown; retry resumes the same request',
+    'Query request outcome unknown; retry resumes the same request',
+  ],
+  weatherLocation_continue: [
+    '继续查询',
+    'Continue checking',
+    'Continue checking',
+    'Continue checking',
+  ],
+  weatherLocation_noHistory: [
+    '该日期无可用历史天气，继续人工填写',
+    'No historical weather for this date; continue manual entry',
+    'No historical weather for this date; continue manual entry',
+    'No historical weather for this date; continue manual entry',
+  ],
+  weatherLocation_rateLimited: [
+    '天气请求达到限制，请稍后重试',
+    'Weather requests limited; retry later',
+    'Weather requests limited; retry later',
+    'Weather requests limited; retry later',
+  ],
+  weatherLocation_disabled: [
+    '天气参考服务未启用，继续人工填写',
+    'Weather reference service disabled; continue manual entry',
+    'Weather reference service disabled; continue manual entry',
+    'Weather reference service disabled; continue manual entry',
+  ],
   metForecast_title: ['天气预报', 'Forecast', 'Forecast', 'Forecast'],
   metForecast_updated: [
     '供应商更新',

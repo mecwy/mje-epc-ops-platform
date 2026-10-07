@@ -10,6 +10,7 @@ import {
   parseFrozenWeatherReferences,
   reportLocationReading,
   weatherReferenceView,
+  snapshotToView,
 } from './weather-adapter.js';
 import { toFix, type GeoSource } from './geo.js';
 
@@ -138,6 +139,31 @@ describe('C03 raw decoding and bounded acquisition', () => {
   });
 });
 describe('frozen weather response boundary', () => {
+  it('projects a current canonical snapshot without fake adoption identity and applies the live expiry policy', () => {
+    const reference = frozen();
+    const snapshot = {
+      id: reference.snapshotId,
+      data: reference.snapshot,
+      sourceLink: reference.sourceLink,
+      licenseLink: reference.licenseLink,
+    };
+    const current = snapshotToView(
+      snapshot,
+      Date.parse('2026-10-06T10:30:00Z'),
+    );
+    expect(current.stale).toBe(false);
+    expect(current).not.toHaveProperty('adoptedAt');
+    expect(current).not.toHaveProperty('referenceId');
+    expect(
+      snapshotToView(snapshot, Date.parse('2026-10-06T11:00:00Z')).stale,
+    ).toBe(true);
+    expect(weatherReferenceView(reference).stale).toBe(false);
+    const invalid = {
+      ...snapshot,
+      data: { ...snapshot.data, fetchedAt: 'unknown' },
+    };
+    expect(() => snapshotToView(invalid)).toThrow();
+  });
   it('retains zero, missing and the exact frozen provenance', () => {
     const reference = frozen();
     expect(
@@ -239,6 +265,18 @@ describe('frozen weather response boundary', () => {
     };
     const parsed = parseFrozenWeatherReferences([reference])[0]!;
     const view = weatherReferenceView(parsed);
+    const live = snapshotToView(
+      {
+        id: parsed.snapshotId,
+        data: parsed.snapshot,
+        sourceLink: parsed.sourceLink,
+        licenseLink: parsed.licenseLink,
+      },
+      Date.parse('2026-10-05T01:00:00Z'),
+    );
+    expect(live.source).toBe('met-norway');
+    expect(live.sourceLink).toBe(parsed.sourceLink);
+    expect(live.licenseLink).toBe(parsed.licenseLink);
     expect(view.source).toBe('met-norway');
     expect(view.sourceLink).toBe(reference.sourceLink);
     expect(view.licenseLink).toBe(reference.licenseLink);
