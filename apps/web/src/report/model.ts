@@ -3,7 +3,9 @@ import type {
   PhotoAsOfDto,
   PhotoDto,
   ReportItemDto,
+  InstallationTotal,
 } from '@mje/contracts';
+import { parseInstallationCumulative } from '@mje/contracts';
 import {
   ROLE_KEYS,
   coverage,
@@ -11,6 +13,7 @@ import {
   decText,
   isReported,
   suggestCumulative,
+  installationToday,
   type Coverage,
   type PlanVersion,
 } from '@mje/domain/rules';
@@ -36,6 +39,33 @@ export function activeWork(
 }
 export const target = (content: Pick<ReportContent, 'baseline'>, key: string) =>
   content.baseline?.rows.find((r) => r.item === key)?.target;
+
+/** Pure preview of the current day's actual on the server-selected prior basis. */
+export function installationPreview(
+  day: Pick<
+    import('../api.js').DayView,
+    'projectId' | 'businessDate' | 'installationCumulative'
+  >,
+  facts: Pick<DayFactsDto, 'qty'>,
+  key: string,
+  unit?: string,
+): InstallationTotal | null {
+  if (!day.installationCumulative) return null;
+  try {
+    const projection = parseInstallationCumulative(day.installationCumulative);
+    if (
+      projection.projectId !== day.projectId ||
+      projection.businessDate !== day.businessDate
+    )
+      return null;
+    const prior = projection.items.find((item) => item.key === key);
+    return prior && (unit === undefined || prior.unit === unit)
+      ? installationToday(prior, facts.qty[key])
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Suggested cumulative = last declared cumulative + today; adopted only by the user. */
 export function cumulativeSuggestion(

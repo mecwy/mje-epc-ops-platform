@@ -6,7 +6,10 @@ import {
 } from './weather-store.js';
 import { managerReviewSnapshotCut } from './manager-review-reader.js';
 import { buildPersonnelWindow } from './personnel-metrics.js';
-import { InvalidReportInput } from '@mje/contracts';
+import {
+  InvalidReportInput,
+  INSTALLATION_CUMULATIVE_ITEM_LIMIT,
+} from '@mje/contracts';
 import type { Pool, PoolClient } from 'pg';
 import type {
   CancelCorrectionCommand,
@@ -39,6 +42,8 @@ import {
   shiftDate,
   carryCumulative,
   carryMaterial,
+  buildInstallationCumulative,
+  type InstallationHistoryInput,
   type CarriedCumulative,
   type Coverage,
   type DayFacts,
@@ -597,6 +602,18 @@ export class ReportStore {
         {
           ...snapshot,
           personnelSummary,
+          ...(snapshot.installationCumulative
+            ? {
+                installationCumulative: {
+                  ...snapshot.installationCumulative,
+                  currentRevision: {
+                    businessDate,
+                    revisionId,
+                    n: revisionNumber,
+                  },
+                },
+              }
+            : {}),
           weatherReferences,
           managerReviewCut,
           primaryWorkItemKey: project.primaryWorkItemKey,
@@ -1318,6 +1335,51 @@ function baselineOf(state: PlanState): PlanVersion | null {
   return state.versions.at(-1) ?? null;
 }
 
+/** Prior submitted originals only; draft corrections never replace their frozen predecessor. */
+export async function installationHistory(
+  client: PoolClient,
+  actor: Actor,
+  projectId: string,
+  businessDate: string,
+): Promise<InstallationHistoryInput[]> {
+  const result = await client.query<
+    InstallationHistoryInput & { sourceItems: ReportItemDto[] }
+  >(
+    `SELECT d."projectId" AS "projectId",d."businessDate"::text AS "businessDate",
+      r.id AS "revisionId",r."revisionNumber" AS n,
+      COALESCE(r.snapshot->'facts'->'qty','{}'::jsonb) AS qty,
+      COALESCE(r.snapshot->'facts'->'cumulative','{}'::jsonb) AS cumulative,
+      COALESCE(r.snapshot->'items','[]'::jsonb) AS "sourceItems"
+    FROM "DailyClose" d JOIN LATERAL (
+      SELECT r.id,r."revisionNumber",r.snapshot FROM "Revision" r
+      WHERE r."orgId"=d."orgId" AND r."dailyCloseId"=d.id
+        AND r."revisionNumber"<=d."currentRevisionNumber"
+        AND r.state='SUBMITTED' AND r."submittedAt"<=$6::timestamptz
+      ORDER BY r."revisionNumber" DESC LIMIT 1
+    ) r ON true
+    WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."scopeKey"=$3
+      AND d."businessDate"<$4::date AND d."businessDate">=$5::date
+      AND d."currentRevisionNumber">0
+    ORDER BY d."businessDate" ASC LIMIT 366`,
+    [
+      actor.orgId,
+      projectId,
+      REPORT_SCOPE,
+      businessDate,
+      shiftDate(businessDate, -366),
+      actor.decidedAt,
+    ],
+  );
+  return result.rows.map(({ sourceItems, ...row }) => ({
+    ...row,
+    units: Object.fromEntries(
+      (sourceItems ?? [])
+        .filter((item) => item.kind === 'work' && typeof item.unit === 'string')
+        .map((item) => [item.key, item.unit]),
+    ),
+  }));
+}
+
 // ---------- snapshot (what a submission freezes; rule 1 and 3) ----------
 export async function daySnapshot(
   client: PoolClient,
@@ -1353,6 +1415,30 @@ export async function daySnapshot(
     (previous?.snapshot['materialsCumulative'] as
       Record<string, MaterialCumulative> | undefined) ?? {};
   const materialsCumulative: Record<string, MaterialCumulative> = {};
+  const installationWork = items.filter((i) => i.kind === 'work' && i.active);
+  // An optional bounded projection must never reject previously valid masters or daily close.
+  // Larger projects retain original facts and the legacy read/submit path without a fabricated summary.
+  const installationCumulative =
+    installationWork.length > INSTALLATION_CUMULATIVE_ITEM_LIMIT
+      ? undefined
+      : buildInstallationCumulative({
+          projectId: project.id,
+          businessDate,
+          selectedAtUTC: new Date(actor.decidedAt).toISOString(),
+          workKeys: installationWork.map((i) => i.key),
+          workUnits: Object.fromEntries(
+            installationWork.map((i) => [i.key, i.unit]),
+          ),
+          history: await installationHistory(
+            client,
+            actor,
+            project.id,
+            businessDate,
+          ),
+          todayQty: facts.qty,
+          // Legacy openingCumulative/value/asOf lacks explicit completeness and an approved cutoff.
+          // Do not manufacture a complete baseline or accept one from SaveFacts commands.
+        });
   for (const m of items.filter((i) => i.kind === 'material')) {
     const opening = dec(m.openingCumulative);
     const base: MaterialCumulative = previous
@@ -1426,6 +1512,7 @@ export async function daySnapshot(
       previousSubmittedDate: previous?.businessDate ?? null,
       cumulativeBase: previousCumulative,
       cumulativeCarry,
+      ...(installationCumulative ? { installationCumulative } : {}),
       materialsCumulative,
       issues,
       photos: evidence.map(photoAsOf),

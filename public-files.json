@@ -436,6 +436,7 @@
   "packages/domain/src/reader-view.test.ts",
   "packages/domain/src/reader-view.ts",
   "packages/domain/src/report-commands.ts",
+  "packages/domain/src/report-cumulative-projection.test.ts",
   "packages/domain/src/report-exit.test.ts",
   "packages/domain/src/report-lookups.ts",
   "packages/domain/src/report-manager-review-integration.test.ts",

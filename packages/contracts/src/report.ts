@@ -79,6 +79,310 @@ export interface DayFactsDto extends WeatherFactsExtension {
   updated: Record<string, string>;
 }
 
+/** Separate read projection; never a replacement for the original declaration. */
+/** Projection capacity only; this does not restrict existing item masters or core daily close. */
+export const INSTALLATION_CUMULATIVE_ITEM_LIMIT = 100;
+
+export interface InstallationRevisionRef {
+  businessDate: string;
+  revisionId: string;
+  n: number;
+}
+export interface InstallationAnchor {
+  kind: 'declared' | 'complete-baseline';
+  unit: string;
+  value: string;
+  asOf: string;
+  referenceId: string;
+}
+export type InstallationTotalState =
+  'complete' | 'partial' | 'unknown' | 'overflow' | 'na';
+export interface InstallationTotal {
+  unit: string;
+  anchor: InstallationAnchor | null;
+  priorKnownSubtotal: string | null;
+  priorState: 'complete' | 'partial' | 'unknown' | 'overflow';
+  missingDays: number;
+  unknownDays: number;
+  today: Reported;
+  state: InstallationTotalState;
+  /** Only populated for a complete baseline and complete contributing coverage. */
+  value: string | null;
+  /** A partial sum is not a complete project total or a verified quantity. */
+  knownSubtotal: string | null;
+}
+export interface InstallationCumulativeDto {
+  schemaVersion: 1;
+  policyVersion: 'installation-cumulative-v1';
+  projectId: string;
+  businessDate: string;
+  selectedAtUTC: string;
+  historyFrom: string;
+  lineage: InstallationRevisionRef[];
+  currentRevision: InstallationRevisionRef | null;
+  historyLimitDays: 366;
+  historyBeforeWindow: 'not-evaluated';
+  items: Array<InstallationTotal & { key: string }>;
+}
+
+/** Strict bounded read parser; commands do not accept this projection as input. */
+export function parseInstallationCumulative(
+  value: unknown,
+): InstallationCumulativeDto {
+  const o = reportObject(
+    value,
+    [
+      'schemaVersion',
+      'policyVersion',
+      'projectId',
+      'businessDate',
+      'selectedAtUTC',
+      'historyFrom',
+      'lineage',
+      'currentRevision',
+      'historyLimitDays',
+      'historyBeforeWindow',
+      'items',
+    ],
+    'installationCumulative',
+  );
+  const fail = () => {
+    throw new InvalidReportInput('installationCumulative');
+  };
+  if (
+    o['schemaVersion'] !== 1 ||
+    o['policyVersion'] !== 'installation-cumulative-v1' ||
+    o['historyLimitDays'] !== 366 ||
+    o['historyBeforeWindow'] !== 'not-evaluated'
+  )
+    fail();
+  const projectId = id(o['projectId'], 'installationCumulative.projectId');
+  const businessDate = date(
+    o['businessDate'],
+    'installationCumulative.businessDate',
+  );
+  const historyFrom = date(
+    o['historyFrom'],
+    'installationCumulative.historyFrom',
+  );
+  const selectedAtUTC = str(
+    o['selectedAtUTC'],
+    'installationCumulative.selectedAtUTC',
+    40,
+  );
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(
+      selectedAtUTC,
+    ) ||
+    !isRealDate(selectedAtUTC.slice(0, 10)) ||
+    !Number.isFinite(Date.parse(selectedAtUTC)) ||
+    historyFrom >= businessDate
+  )
+    fail();
+  const numeric = (v: unknown): string => {
+    const s = str(v, 'installationCumulative.number', 28);
+    if (!/^(?:0|[1-9]\d{0,13})(?:\.\d{1,6})?$/.test(s)) fail();
+    return s;
+  };
+  const numberOrNull = (v: unknown) => (v === null ? null : numeric(v));
+  const ref = (v: unknown): InstallationRevisionRef => {
+    const r = reportObject(
+      v,
+      ['businessDate', 'revisionId', 'n'],
+      'installationCumulative.revision',
+    );
+    const n = version(r['n'], 'installationCumulative.revision.n');
+    if (n === 0) fail();
+    return {
+      businessDate: date(
+        r['businessDate'],
+        'installationCumulative.revision.date',
+      ),
+      revisionId: id(r['revisionId'], 'installationCumulative.revision.id'),
+      n,
+    };
+  };
+  const rawLineage = o['lineage'];
+  if (!Array.isArray(rawLineage) || rawLineage.length > 366) fail();
+  const lineage = (rawLineage as unknown[]).map(ref);
+  const dates = new Set<string>(),
+    ids = new Set<string>();
+  for (const r of lineage) {
+    if (
+      r.businessDate < historyFrom ||
+      r.businessDate >= businessDate ||
+      dates.has(r.businessDate) ||
+      ids.has(r.revisionId)
+    )
+      fail();
+    dates.add(r.businessDate);
+    ids.add(r.revisionId);
+  }
+  const currentRevision =
+    o['currentRevision'] === null ? null : ref(o['currentRevision']);
+  if (
+    currentRevision &&
+    (currentRevision.businessDate !== businessDate ||
+      ids.has(currentRevision.revisionId))
+  )
+    fail();
+  const rawItems = o['items'];
+  if (
+    !Array.isArray(rawItems) ||
+    rawItems.length > INSTALLATION_CUMULATIVE_ITEM_LIMIT
+  )
+    fail();
+  const items: Array<InstallationTotal & { key: string }> = [];
+  const itemKeys = new Set<string>();
+  for (const v of rawItems as unknown[]) {
+    const r = reportObject(
+      v,
+      [
+        'key',
+        'unit',
+        'anchor',
+        'priorKnownSubtotal',
+        'priorState',
+        'missingDays',
+        'unknownDays',
+        'today',
+        'state',
+        'value',
+        'knownSubtotal',
+      ],
+      'installationCumulative.item',
+    );
+    const key = str(r['key'], 'installationCumulative.item.key', 64);
+    if (!KEY.test(key) || itemKeys.has(key)) fail();
+    itemKeys.add(key);
+    const unit = str(r['unit'], 'installationCumulative.unit', 64);
+    let anchor: InstallationAnchor | null = null;
+    if (r['anchor'] !== null) {
+      const a = reportObject(
+        r['anchor'],
+        ['kind', 'unit', 'value', 'asOf', 'referenceId'],
+        'installationCumulative.anchor',
+      );
+      anchor = {
+        unit: str(a['unit'], 'installationCumulative.anchor.unit', 64),
+        kind: oneOf(
+          a['kind'],
+          ['declared', 'complete-baseline'] as const,
+          'installationCumulative.anchor.kind',
+        ),
+        value: numeric(a['value']),
+        asOf: date(a['asOf'], 'installationCumulative.anchor.asOf'),
+        referenceId: id(
+          a['referenceId'],
+          'installationCumulative.anchor.referenceId',
+        ),
+      };
+      if (
+        anchor.unit !== unit ||
+        anchor.asOf < historyFrom ||
+        anchor.asOf >= businessDate ||
+        (anchor.kind === 'declared' &&
+          !lineage.some(
+            (r) =>
+              r.businessDate === anchor!.asOf &&
+              r.revisionId === anchor!.referenceId,
+          ))
+      )
+        fail();
+    }
+    const priorState = oneOf(
+      r['priorState'],
+      ['complete', 'partial', 'unknown', 'overflow'] as const,
+      'installationCumulative.priorState',
+    );
+    const state = oneOf(
+      r['state'],
+      ['complete', 'partial', 'unknown', 'overflow', 'na'] as const,
+      'installationCumulative.state',
+    );
+    const missingDays = version(
+        r['missingDays'],
+        'installationCumulative.missingDays',
+      ),
+      unknownDays = version(
+        r['unknownDays'],
+        'installationCumulative.unknownDays',
+      );
+    if (missingDays > 366 || unknownDays > 366) fail();
+    const today = str(r['today'], 'installationCumulative.today', 28);
+    if (today !== '' && today !== 'unknown' && today !== 'na') numeric(today);
+    const priorKnownSubtotal = numberOrNull(r['priorKnownSubtotal']);
+    const total = numberOrNull(r['value']),
+      knownSubtotal = numberOrNull(r['knownSubtotal']);
+    if (
+      (state === 'complete') !== (total !== null) ||
+      (state === 'complete' &&
+        (priorState !== 'complete' ||
+          anchor?.kind !== 'complete-baseline' ||
+          missingDays ||
+          unknownDays ||
+          total !== knownSubtotal ||
+          priorKnownSubtotal === null ||
+          today === '' ||
+          today === 'unknown' ||
+          today === 'na')) ||
+      (priorState === 'complete' &&
+        (anchor?.kind !== 'complete-baseline' ||
+          missingDays ||
+          unknownDays ||
+          priorKnownSubtotal === null)) ||
+      ((priorState === 'overflow' || priorState === 'unknown') &&
+        priorKnownSubtotal !== null) ||
+      (priorState === 'partial' &&
+        (anchor === null || priorKnownSubtotal === null)) ||
+      (state === 'partial' &&
+        (knownSubtotal === null || priorKnownSubtotal === null)) ||
+      (state === 'overflow' && knownSubtotal !== null) ||
+      (state === 'na' && today !== 'na')
+    )
+      fail();
+    if (state === 'complete' || state === 'partial') {
+      const scaled = (s: string) => {
+        const [whole, fraction = ''] = s.split('.');
+        return BigInt(whole!) * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
+      };
+      if (
+        today === '' ||
+        today === 'unknown' ||
+        today === 'na' ||
+        scaled(priorKnownSubtotal!) + scaled(today) !== scaled(knownSubtotal!)
+      )
+        fail();
+    }
+    items.push({
+      key,
+      unit,
+      anchor,
+      priorKnownSubtotal,
+      priorState,
+      missingDays,
+      unknownDays,
+      today,
+      state,
+      value: total,
+      knownSubtotal,
+    });
+  }
+  return {
+    schemaVersion: 1,
+    policyVersion: 'installation-cumulative-v1',
+    projectId,
+    businessDate,
+    selectedAtUTC,
+    historyFrom,
+    lineage,
+    currentRevision,
+    historyLimitDays: 366,
+    historyBeforeWindow: 'not-evaluated',
+    items,
+  };
+}
+
 export interface SaveFactsCommand {
   projectId: string;
   businessDate: string;

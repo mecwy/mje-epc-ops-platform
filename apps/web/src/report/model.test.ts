@@ -1,13 +1,39 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createElement, type ReactNode } from 'react';
+import { PhotoHost } from './Photos.js';
+import type { PhotosHandle } from './usePhotos.js';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { translate, LOCALES, type Lang } from '@mje/ui';
+import { QtyRow, CheckList, CheckPage } from './FillPage.js';
+import { ReviewFacts } from './ReviewFacts.js';
+import type { DayView } from '../api.js';
+import type { DayHandle } from './useDay.js';
+let language: Lang = 'en';
+vi.mock('../i18n.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../i18n.js')>()),
+  useI18n: () => ({
+    lang: language,
+    locale: LOCALES[language],
+    label: (s: string) => s,
+    t: (
+      key: Parameters<typeof translate>[1],
+      vars?: Parameters<typeof translate>[2],
+    ) => translate(language, key, vars),
+  }),
+}));
 import type {
   DayFactsDto,
   PhotoAsOfDto,
   PhotoDto,
   ReportItemDto,
 } from '@mje/contracts';
-import { blankFacts as blankRuleFacts } from '@mje/domain/rules';
+import {
+  buildInstallationCumulative,
+  blankFacts as blankRuleFacts,
+} from '@mje/domain/rules';
 import {
   activeWork,
+  installationPreview,
   cumulativeChecks,
   cumulativeSuggestion,
   liveCoverage,
@@ -220,5 +246,316 @@ describe('report view model', () => {
     expect(
       cumulativeChecks({ items, facts: setFact(f, 'qty.support', '') }, base),
     ).toEqual([]);
+  });
+});
+
+describe('N4 scoped automatic cumulative draft preview', () => {
+  const projectId = '10000000-0000-4000-8000-000000000001';
+  const referenceId = '20000000-0000-4000-8000-000000000001';
+  const make = () =>
+    buildInstallationCumulative({
+      projectId,
+      businessDate: '2026-10-06',
+      selectedAtUTC: '2026-10-06T12:00:00Z',
+      workKeys: ['support'],
+      history: [],
+      todayQty: { support: '10' },
+      completeBaselines: {
+        support: {
+          kind: 'complete-baseline',
+          unit: '',
+          value: '100',
+          asOf: '2026-10-05',
+          referenceId,
+        },
+      },
+    });
+  it('updates with today edits, never copies plan target or changes raw cumulative', () => {
+    const facts = {
+      ...blankFacts(),
+      qty: { support: '10' },
+      cumulative: { support: '' },
+    };
+    const projection = make();
+    const original = structuredClone(projection);
+    const day = {
+      projectId,
+      businessDate: '2026-10-06',
+      installationCumulative: projection,
+    };
+    expect(installationPreview(day, facts, 'support')?.value).toBe('110');
+    facts.qty.support = '20';
+    expect(installationPreview(day, facts, 'support')?.value).toBe('120');
+    expect(facts.cumulative.support).toBe('');
+    expect(projection).toEqual(original);
+  });
+  it('ignores stale project/day and malformed metadata; never falls back to adding legacy carried values', () => {
+    const facts = { ...blankFacts(), qty: { support: '10' } };
+    const installationCumulative = make();
+    expect(
+      installationPreview(
+        {
+          projectId: '10000000-0000-4000-8000-000000000002',
+          businessDate: '2026-10-06',
+          installationCumulative,
+        },
+        facts,
+        'support',
+      ),
+    ).toBeNull();
+    expect(
+      installationPreview(
+        { projectId, businessDate: '2026-10-07', installationCumulative },
+        facts,
+        'support',
+      ),
+    ).toBeNull();
+    expect(
+      installationPreview(
+        { projectId, businessDate: '2026-10-06' },
+        facts,
+        'support',
+      ),
+    ).toBeNull();
+  });
+  it('preserves an explicit zero, and unknown/blank never produce the previous complete result', () => {
+    const day = {
+      projectId,
+      businessDate: '2026-10-06',
+      installationCumulative: make(),
+    };
+    expect(
+      installationPreview(day, { qty: { support: '0' } }, 'support')?.value,
+    ).toBe('100');
+    for (const qty of ['', 'unknown', 'bad'])
+      expect(
+        installationPreview(day, { qty: { support: qty } }, 'support')?.value,
+      ).toBeNull();
+  });
+});
+
+function renderWithPhotos(node: ReactNode) {
+  const handle = {
+    session: { linked: () => [], jobsFor: () => [] },
+    unlinked: 0,
+    error: null,
+    retryReason: null,
+    inputs: {
+      cameraRef: { current: null },
+      albumRef: { current: null },
+      onCamera: () => {},
+      onAlbum: () => {},
+    },
+  } as unknown as PhotosHandle;
+  return renderToStaticMarkup(
+    createElement(PhotoHost, {
+      env: {
+        handle,
+        items: [],
+        issues: [],
+        canWrite: false,
+        canUpload: false,
+        timeZone: 'UTC',
+      },
+      children: node,
+    }),
+  );
+}
+describe('N4 actual quantity row rendering', () => {
+  const projectId = '10000000-0000-4000-8000-000000000001';
+  const referenceId = '20000000-0000-4000-8000-000000000001';
+  function setup(complete: boolean) {
+    const facts = {
+      ...blankFacts(),
+      qty: { support: '10' },
+      cumulative: { support: '' },
+    };
+    const projection = buildInstallationCumulative({
+      projectId,
+      businessDate: '2026-10-06',
+      selectedAtUTC: '2026-10-06T12:00:00Z',
+      workKeys: ['support'],
+      todayQty: facts.qty,
+      history: complete
+        ? []
+        : [
+            {
+              projectId,
+              businessDate: '2026-10-05',
+              revisionId: referenceId,
+              n: 1,
+              qty: { support: '5' },
+              cumulative: { support: '100' },
+            },
+          ],
+      ...(complete
+        ? {
+            completeBaselines: {
+              support: {
+                kind: 'complete-baseline' as const,
+                unit: '',
+                value: '100',
+                asOf: '2026-10-05',
+                referenceId,
+              },
+            },
+          }
+        : {}),
+    });
+    const day = {
+      projectId,
+      businessDate: '2026-10-06',
+      installationCumulative: projection,
+      items,
+      baseline: { n: 1, rows: [{ item: 'support', target: '500' }] },
+      cumulativeBase: { support: { value: '100', asOf: '2026-10-05' } },
+      state: 'draft',
+    } as unknown as DayView;
+    const edit = vi.fn();
+    const h = { facts, edit } as unknown as DayHandle;
+    return { day, h, edit, facts };
+  }
+  it.each(['zh', 'en'] as const)(
+    'shows automatic complete110 with no Adopt or editable raw field in %s',
+    (lang) => {
+      language = lang;
+      const { day, h, edit, facts } = setup(true);
+      const html = renderWithPhotos(
+        createElement(QtyRow, { it: items[0]!, day, h, locked: false }),
+      );
+      expect(html).toContain('110');
+      expect(html).toContain(
+        translate(lang, 'installationCalculatedCumulative'),
+      );
+      expect(html).not.toContain(translate(lang, 'adopt'));
+      expect(html).not.toContain('id="c-support"');
+      expect(edit).not.toHaveBeenCalled();
+      expect(facts.cumulative.support).toBe('');
+    },
+  );
+  it('a partial110 shows subtotal only; unknown and readonly keep absence and locks', () => {
+    language = 'en';
+    const { day, h, edit } = setup(false);
+    let html = renderWithPhotos(
+      createElement(QtyRow, { it: items[0]!, day, h, locked: true }),
+    );
+    expect(html).toContain('Recorded subtotal');
+    expect(html).toContain('110');
+    expect(html).not.toContain('Calculated cumulative');
+    expect(edit).not.toHaveBeenCalled();
+    h.facts!.qty.support = 'unknown';
+    html = renderWithPhotos(
+      createElement(QtyRow, { it: items[0]!, day, h, locked: true }),
+    );
+    expect(html).toContain('Cumulative unknown');
+    expect(html).not.toContain('110');
+  });
+  it('confirmation keeps site, weather, temperature and personnel with one progress section', () => {
+    language = 'zh';
+    const { day, h } = setup(false);
+    h.facts!.siteLocation = 'TEST 施工一区';
+    h.facts!.weather = '晴';
+    h.facts!.temperature = '26 °C';
+    h.facts!.people = { installer: '8' };
+    const props = {
+      day,
+      h,
+      projectName: 'TEST N4',
+      cov: { missing: [], invalid: [] },
+      onBack: vi.fn(),
+      onFocus: vi.fn(),
+      onSubmit: vi.fn(),
+      busy: false,
+      photos: { counts: null } as unknown as PhotosHandle,
+    };
+    const html = renderWithPhotos(createElement(CheckPage, props));
+    for (const text of [
+      'TEST 施工一区',
+      '晴',
+      '26 °C',
+      '8',
+      '已记录小计',
+      '110',
+    ])
+      expect(html).toContain(text);
+    expect(html.match(/aria-label="进度"/g)).toHaveLength(1);
+    expect(html).not.toContain('采用');
+    h.facts!.qty.support = 'unknown';
+    const unknown = renderWithPhotos(createElement(CheckPage, props));
+    expect(unknown).toContain('累计未知');
+    expect(unknown).not.toContain('110');
+  });
+  it('confirmation shows an entered original cumulative separately from computed subtotal', () => {
+    language = 'en';
+    const { day, h } = setup(false);
+    h.facts!.cumulative.support = '99';
+    const html = renderWithPhotos(
+      createElement(CheckPage, {
+        day,
+        h,
+        projectName: 'TEST',
+        cov: { missing: [], invalid: [] },
+        onBack: vi.fn(),
+        onFocus: vi.fn(),
+        onSubmit: vi.fn(),
+        busy: false,
+        photos: { counts: null } as unknown as PhotosHandle,
+      }),
+    );
+    expect(html).toContain('Declared cumulative');
+    expect(html).toContain('99');
+    expect(html).toContain('Recorded subtotal');
+    expect(html).toContain('110');
+  });
+  it('ReviewFacts default behavior preserves the original work declaration without a slot', () => {
+    language = 'en';
+    const { facts } = setup(false);
+    facts.cumulative.support = '99';
+    const html = renderToStaticMarkup(
+      createElement(ReviewFacts, {
+        facts,
+        items,
+        projectName: 'TEST',
+        roles: [],
+      }),
+    );
+    expect(html).toContain('99');
+    expect(html.match(/aria-label="Progress"/g)).toHaveLength(1);
+  });
+  it('same-key non-work item cannot resurrect a missing original cumulative reminder', () => {
+    language = 'en';
+    const { day, h } = setup(true);
+    day.items = [{ ...items[2]!, key: 'support', unit: 'unit' }, ...items];
+    const focus = vi.fn();
+    const html = renderWithPhotos(
+      createElement(CheckList, {
+        day,
+        h,
+        cov: { missing: [{ key: 'cumulative', item: 'support' }], invalid: [] },
+        onFocus: focus,
+        onSubmit: vi.fn(),
+        busy: false,
+      }),
+    );
+    expect(html).not.toContain('Declared cumulative');
+    expect(html).not.toContain('c-support');
+    expect(focus).not.toHaveBeenCalled();
+  });
+  it('confirmation never requests per-item adoption or raw cumulative entry when projection exists', () => {
+    language = 'en';
+    const { day, h, edit } = setup(true);
+    const html = renderWithPhotos(
+      createElement(CheckList, {
+        day,
+        h,
+        cov: { missing: [{ key: 'cumulative', item: 'support' }], invalid: [] },
+        onFocus: vi.fn(),
+        onSubmit: vi.fn(),
+        busy: false,
+      }),
+    );
+    expect(html).not.toContain('Adopt');
+    expect(html).not.toContain('Declared cumulative');
+    expect(edit).not.toHaveBeenCalled();
   });
 });

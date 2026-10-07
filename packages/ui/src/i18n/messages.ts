@@ -14,6 +14,30 @@ export const LOCALES: Record<Lang, string> = {
   es: 'es-ES',
 };
 export const MESSAGES = {
+  installationCalculatedCumulative: [
+    '计算累计',
+    'Calculated cumulative',
+    'Calculated cumulative',
+    'Calculated cumulative',
+  ],
+  installationKnownSubtotal: [
+    '已记录小计',
+    'Recorded subtotal',
+    'Recorded subtotal',
+    'Recorded subtotal',
+  ],
+  installationCumulativeUnknown: [
+    '累计未知',
+    'Cumulative unknown',
+    'Cumulative unknown',
+    'Cumulative unknown',
+  ],
+  installationDeclaredCumulative: [
+    '原报累计',
+    'Declared cumulative',
+    'Declared cumulative',
+    'Declared cumulative',
+  ],
   weatherLocation_directoryLoading: [
     '正在核对已确认作业区',
     'Checking confirmed work areas',
