@@ -3,10 +3,13 @@ import type { FieldErrorCode } from '@mje/domain';
 import { MESSAGES, translate, type MessageKey } from '@mje/ui';
 import {
   FIELD_ERRORS,
+  UNKNOWN_OUTCOME,
   fieldErrorKey,
   outcomeKey,
   type KnownFieldCode,
 } from './errors.js';
+
+import { UNSETTLED } from './session.js';
 
 // Compile-time: every code the domain can throw has a message (tsc fails when one is added).
 const everyDomainCode: Record<FieldErrorCode, MessageKey> = FIELD_ERRORS;
@@ -18,6 +21,30 @@ const adoptCodes: KnownFieldCode[] = [
 ];
 
 describe('field error messages', () => {
+  it('every unsettled write keeps unknown-outcome guidance for either uncertainty state', () => {
+    for (const code of UNSETTLED) {
+      expect(Object.hasOwn(UNKNOWN_OUTCOME, code), code).toBe(true);
+      for (const uncertain of [false, true]) {
+        const key = outcomeKey(code, { write: true, uncertain });
+        expect(key, code).toMatch(/^fu_/);
+        expect(MESSAGES[key], code).toHaveLength(4);
+        for (const text of MESSAGES[key])
+          expect(text.trim(), code).not.toBe('');
+      }
+    }
+    expect(
+      outcomeKey('SOURCE_UNAVAILABLE', { write: true, uncertain: false }),
+    ).toBe('fu_server');
+    expect(
+      outcomeKey('SOURCE_UNAVAILABLE', { write: true, uncertain: true }),
+    ).toBe('fu_server');
+    expect(
+      outcomeKey('SOURCE_UNAVAILABLE', { write: false, uncertain: false }),
+    ).toBe(fieldErrorKey('SOURCE_UNAVAILABLE'));
+    expect(
+      outcomeKey('SOURCE_UNAVAILABLE', { write: false, uncertain: true }),
+    ).toBe(fieldErrorKey('SOURCE_UNAVAILABLE'));
+  });
   it('gives required status fields safe guidance without changing uncertain outcome priority', () => {
     expect(fieldErrorKey('STATUS_FIELDS_REQUIRED')).toBe(
       'fe_statusFieldsRequired',
