@@ -9,6 +9,7 @@ import { ReadFence } from '../read-fence.js';
 export const UNSETTLED = new Set([
   'NETWORK',
   'REQUEST_FAILED',
+  'SOURCE_UNAVAILABLE',
   'RETRY',
   'RATE_LIMITED',
 ]);
@@ -17,7 +18,7 @@ export const UNSETTLED = new Set([
  * Unsettled codes after which the request may have committed (no answer, or a 5xx that is
  * not RETRY): a later definite refusal of the same command may follow a stored success.
  */
-const AMBIGUOUS = new Set(['NETWORK', 'REQUEST_FAILED']);
+const AMBIGUOUS = new Set(['NETWORK', 'REQUEST_FAILED', 'SOURCE_UNAVAILABLE']);
 
 /** Codes by which the server says this device token is no longer a device. */
 export const ENDED = new Set(['DEVICE_ENDED', 'FIELD_AUTH_REQUIRED']);

@@ -142,6 +142,45 @@ export function transactionSignal(client: PoolClient): AbortSignal | undefined {
 }
 
 /**
+ * Creates a guarded view of this exact client for one awaited read scope. Only a client
+ * already registered by the transaction protocol can pass on its lifetime signal; an
+ * arbitrary object or prototype copy never gains one. Existing reads without a registered
+ * transaction keep their scope guard, but acquire no transaction authority. The child is
+ * revoked on either parent abort or scope completion, before a pooled client can be reused.
+ */
+export async function withTransactionClientScope<T>(
+  client: PoolClient,
+  use: (guarded: PoolClient) => Promise<T>,
+): Promise<T> {
+  const parent = signals.get(client);
+  const closed = () => new Error('REPORT_READ_CONTEXT_CLOSED');
+  if (parent?.aborted) throw closed();
+  const controller = new AbortController();
+  const guarded = Object.create(client, {
+    query: {
+      value: (...args: Parameters<PoolClient['query']>) => {
+        if (controller.signal.aborted) throw closed();
+        return Reflect.apply(client.query, client, args);
+      },
+    },
+  }) as PoolClient;
+  const revoke = () => {
+    controller.abort(parent?.reason ?? closed());
+    signals.delete(guarded);
+  };
+  if (parent) {
+    signals.set(guarded, controller.signal);
+    parent.addEventListener('abort', revoke, { once: true });
+  }
+  try {
+    return await use(guarded);
+  } finally {
+    revoke();
+    parent?.removeEventListener('abort', revoke);
+  }
+}
+
+/**
  * One transaction as the verified account (ADR-0003 D5): BEGIN, the time bounds, the session
  * identity, then the account row through app_account_for_identity() — the first lock, held FOR
  * SHARE until the transaction ends, so a grant or revocation (which updates that row) waits for

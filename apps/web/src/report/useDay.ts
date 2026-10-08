@@ -24,10 +24,14 @@ export function useDay(
   onConflict: () => void,
   /** Unsaved facts put aside before a sign-in redirect; each is reconciled on its first read. */
   recovery?: DraftRecovery,
+  /** Actor/project owner retained outside this React mount. */
+  existingStore?: DayStore,
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [store] = useState(() => new DayStore(api, rerender));
+  const [store] = useState(() => existingStore ?? new DayStore(api, () => {}));
   store.hooks = { conflict: onConflict, recovery };
+
+  useEffect(() => store.subscribe(rerender), [store]);
 
   useEffect(() => {
     store.cancelAutosave();

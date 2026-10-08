@@ -66,6 +66,13 @@ import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
+import {
+  BusinessEvidenceContext,
+  FieldEvidenceWorkspace,
+  FieldEvidenceRecovery,
+  fieldEvidenceServices,
+  type FieldEvidenceApi,
+} from './report/business-evidence-connection.js';
 import { Sheet } from './ui.js';
 import { ContractsWorkspace } from './contracts/ContractsWorkspace.js';
 import { OpportunitiesWorkspace } from './opportunities/OpportunitiesWorkspace.js';
@@ -197,6 +204,8 @@ function Workspace({
   resume,
   recoveryWorkspaces,
   pmRegistry,
+  fieldEvidenceOwner,
+  fieldEvidenceActor,
   onExecutiveHome,
   requestedDate,
   onDateChange,
@@ -215,6 +224,8 @@ function Workspace({
   resume: ResumeKeeper;
   recoveryWorkspaces: Map<string, WorkspaceDrafts>;
   pmRegistry: PmOwnerRegistry;
+  fieldEvidenceOwner: FieldEvidenceWorkspace;
+  fieldEvidenceActor: string | null;
   weatherPorts?: WeatherPresentationPorts;
   forecastEnabled?: boolean;
 }) {
@@ -293,6 +304,9 @@ function Workspace({
     date,
     () => say(t('conflictReloaded')),
     resume,
+    fieldEvidenceActor
+      ? fieldEvidenceOwner.dayStoreFor(fieldEvidenceActor, project.id, api)
+      : undefined,
   );
   const weatherSessions = useMemo(
     () => new Map<string, WeatherLocationSession>(),
@@ -463,6 +477,7 @@ function Workspace({
   // is made once per project against the workspace's day store: every lock and read goes to
   // that project's own day entry, never to whatever day the page shows later.
   pm.day ??= pmDayBinding(h.store, project.id);
+  fieldEvidenceOwner.dayStore(project.id, h.store);
   pm.adoptFor(date).workspaceRecovery = true;
   const pmField: PmField | null =
     canWrite && h.day
@@ -476,7 +491,25 @@ function Workspace({
         }
       : null;
   const withPmField = (node: ReactNode) => (
-    <PmFieldContext.Provider value={pmField}>{node}</PmFieldContext.Provider>
+    <PmFieldContext.Provider value={pmField}>
+      <BusinessEvidenceContext.Provider
+        value={
+          pmField && fieldEvidenceActor && viewing === null
+            ? {
+                owner: fieldEvidenceOwner,
+                actor: fieldEvidenceActor,
+                projectId: project.id,
+                businessDate: date,
+                submitted:
+                  h.day?.state === 'submitted' &&
+                  h.day.correctionReason === null,
+              }
+            : null
+        }
+      >
+        {node}
+      </BusinessEvidenceContext.Provider>
+    </PmFieldContext.Provider>
   );
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
@@ -1203,6 +1236,10 @@ function Root({
   const [visited, setVisited] = useState<string[]>([]);
   const reportDates = useRef(new Map<string, string>());
   const [projectsOwner, setProjectsOwner] = useState<Session | null>(null);
+  const [fieldEvidenceOwner] = useState(() => new FieldEvidenceWorkspace());
+  const [fieldEvidenceActor, setFieldEvidenceActor] = useState<string | null>(
+    null,
+  );
   useEffect(() => {
     const changed = () => setHash(window.location.hash);
     window.addEventListener('hashchange', changed);
@@ -1271,6 +1308,8 @@ function Root({
     let current = true;
     setProjects(null);
     setProjectsOwner(null);
+    setFieldEvidenceActor(null);
+    fieldEvidenceOwner.clearActor();
     setFailed(null);
     if (
       session &&
@@ -1284,6 +1323,14 @@ function Root({
               r.projects.filter((p) => p.access === 'write').map((p) => p.id),
             );
             setProjects(r.projects);
+            const services = fieldEvidenceServices(
+              reportApi(session.token) as Partial<FieldEvidenceApi>,
+            );
+            if (services) {
+              const actor = `${r.accountId}:${r.personId}`;
+              fieldEvidenceOwner.bind(actor, services);
+              setFieldEvidenceActor(actor);
+            }
             setProjectsOwner(session);
           }
         })
@@ -1294,7 +1341,7 @@ function Root({
     return () => {
       current = false;
     };
-  }, [session, resume]);
+  }, [session, resume, fieldEvidenceOwner]);
   useEffect(() => {
     if (selectedProjectId || !projects?.length) return;
     setSelectedProjectId(
@@ -1321,7 +1368,7 @@ function Root({
     reportRoute?.projectId,
     reportRoute?.businessDate,
   ]);
-  const ownedBars = pmRegistry
+  const adoptionBars = pmRegistry
     ?.all()
     .map((owners) => (
       <PmOwnedBar
@@ -1340,6 +1387,16 @@ function Root({
         adoptionOnly
       />
     ));
+  const ownedBars = (
+    <>
+      {adoptionBars}
+      <FieldEvidenceRecovery
+        owner={fieldEvidenceOwner}
+        actor={fieldEvidenceActor}
+        projectLabel={(id) => projects?.find((p) => p.id === id)?.name ?? '—'}
+      />
+    </>
+  );
 
   // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
   const renewing = Boolean(session?.renew && state.expired && !projects);
@@ -1448,6 +1505,8 @@ function Root({
               resume={resume}
               recoveryWorkspaces={recoveryWorkspaces}
               pmRegistry={pmRegistry!}
+              fieldEvidenceOwner={fieldEvidenceOwner}
+              fieldEvidenceActor={fieldEvidenceActor}
               forecastEnabled={forecastEnabled}
               {...(weatherPorts ? { weatherPorts } : {})}
               {...(reportRoute?.projectId === p.id

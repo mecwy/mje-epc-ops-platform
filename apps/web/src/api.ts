@@ -1,4 +1,12 @@
 import type {
+  ManagerReviewScopeDto,
+  ManagerReviewReadDto,
+  ManagerReviewWriteResultDto,
+  ReviewForemanCommand,
+  EvidenceTarget,
+  EvidenceWorkspace,
+  BusinessEvidenceCommand,
+  BusinessEvidenceReceipt,
   PeopleWindowSummaryDto,
   SafeFrozenWeatherReference,
   WeatherLocationDto,
@@ -528,6 +536,14 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
     return request<T>(path, accessToken, command, onRetry, signal);
   };
   return {
+    readManagerReview: (scope: ManagerReviewScopeDto) =>
+      get<ManagerReviewReadDto>('manager-review', { ...scope }),
+    writeManagerReview: (command: ReviewForemanCommand) =>
+      post<ManagerReviewWriteResultDto>('manager-review', command),
+    readBusinessEvidence: (target: EvidenceTarget) =>
+      get<EvidenceWorkspace>('business-evidence', { ...target }),
+    writeBusinessEvidence: (command: BusinessEvidenceCommand) =>
+      post<BusinessEvidenceReceipt>('business-evidence', command),
     projects: async () =>
       request<ProjectsResponse>('/api/report/projects', await token()),
     projectHome: (query: {

@@ -1,4 +1,12 @@
-import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
+import {
+  STATUS_FIELD_NAMES,
+  type StatusFieldName,
+  type BusinessEvidenceService,
+} from '@mje/contracts';
+import {
+  BusinessEvidenceController,
+  BUSINESS_EVIDENCE_SERVICE,
+} from './business-evidence.controller.js';
 import { ContractRegisterController } from './contract-register.controller.js';
 import { OpportunityController } from './opportunity.controller.js';
 import {
@@ -242,6 +250,7 @@ export interface AlphaRuntime {
   /** No title-based rights or fallback evidence; actual transaction adapters are explicit. */
   managerReviewStore?: ManagerReviewStore;
   managerReviewPorts?: ReviewServerPorts;
+  businessEvidenceService?: BusinessEvidenceService;
   projectStatusCommands?: ProjectStatusCommands;
   contractRegisterReader?: ContractRegisterReader;
   contractRegisterCommands?: ContractRegisterCommands;
@@ -348,6 +357,7 @@ export async function createApp(
       ...(alpha?.reportStore ? [ReportController] : []),
       ...(weatherApi ? [WeatherController] : []),
       ...(managerReviewService ? [ManagerReviewController] : []),
+      ...(alpha?.businessEvidenceService ? [BusinessEvidenceController] : []),
       ...(alpha?.projectStatusCommands && alpha.projectStatusReader
         ? [ProjectStatusController]
         : []),
@@ -406,6 +416,14 @@ export async function createApp(
                   {
                     provide: ContractRegisterReader,
                     useValue: alpha.contractRegisterReader,
+                  },
+                ]
+              : []),
+            ...(alpha.businessEvidenceService
+              ? [
+                  {
+                    provide: BUSINESS_EVIDENCE_SERVICE,
+                    useValue: alpha.businessEvidenceService,
                   },
                 ]
               : []),

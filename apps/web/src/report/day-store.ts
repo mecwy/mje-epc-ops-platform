@@ -98,6 +98,7 @@ export const ownerToken = (what: string) => `${what}:${++tokens}`;
  * safe: a throw frees the day or leaves it with its owner's Retry / Give up.
  */
 export class DayStore {
+  private readonly listeners = new Set<() => void>();
   private readonly entries = new Map<string, DayEntry>();
   private readonly weatherFlushes = new WeakMap<
     DayEntry,
@@ -112,8 +113,20 @@ export class DayStore {
 
   constructor(
     private readonly api: Pick<ReportApi, 'day' | 'revision' | 'saveFacts'>,
-    private readonly notify: () => void,
+    private readonly initialNotify: () => void,
   ) {}
+
+  /** Mounts and recovery surfaces observe the same canonical day owner. */
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+  private notify = () => {
+    this.initialNotify();
+    for (const listener of this.listeners) listener();
+  };
 
   entry(projectId: string, date: string): DayEntry {
     const k = `${projectId}:${date}`;

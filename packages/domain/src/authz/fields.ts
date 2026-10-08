@@ -198,6 +198,7 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 
 /** The DTO each layered projector produces. */
 export interface ProjectorDtos {
+  'report.businessEvidence': import('@mje/contracts').EvidenceWorkspace;
   'opportunity.list': { items: OpportunityItemDto[] };
   'opportunity.detail': OpportunityItemDto;
   'opportunity.history': OpportunityHistoryDto;
@@ -1134,6 +1135,40 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
   'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.businessEvidence': {
+    fields: {
+      target: {
+        layer: 'structure',
+        fields: {
+          projectId: S,
+          businessDate: S,
+          crewId: S,
+          foremanRevisionId: S,
+          itemKey: S,
+        },
+      },
+      revisionNumber: S,
+      declaration: {
+        layer: 'field-writer',
+        fields: { qty: FW, unit: S, scopeRef: S },
+      },
+      evidence: sub('field-writer'),
+      associationCoverage: {
+        layer: 'field-writer',
+        fields: { scopeRef: S, withinScopeRef: S, qty: FW, unit: S },
+      },
+      availablePhotos: {
+        layer: 'structure',
+        items: { photoId: S, photoVersion: S, label: S },
+      },
+      scopes: {
+        layer: 'structure',
+        items: { id: S, withinScopeRef: S, label: S },
+      },
+      history: sub('field-writer'),
+      canBind: S,
+    },
+  },
   'report.managerReview': {
     fields: {
       actorScopeKey: S,

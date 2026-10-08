@@ -31,6 +31,34 @@ const D1: Capability[] = [
 ];
 
 describe('surface.ts', () => {
+  it('C05 has its own strongly typed read projection and versioned write registration', () => {
+    const read = SURFACE.find(
+      (e) => e.entry === 'GET /api/report/business-evidence',
+    )!;
+    const write = SURFACE.find(
+      (e) => e.entry === 'POST /api/report/business-evidence',
+    )!;
+    expect(read.projector).toEqual({
+      'report.view': 'report.businessEvidence',
+      'report.view-submitted': 'report.businessEvidence',
+    });
+    expect(read.temporal).toEqual({
+      'report.view': 'live',
+      'report.view-submitted': 'frozen',
+    });
+    expect(FIELDS['report.businessEvidence'].fields.declaration).toEqual({
+      layer: 'field-writer',
+      fields: {
+        qty: { layer: 'field-writer' },
+        unit: { layer: 'structure' },
+        scopeRef: { layer: 'structure' },
+      },
+    });
+    expect(write.command).toBe('BusinessEvidenceStore.write');
+    expect(write.concurrency).toBe('cas');
+    expect(write.protects).toContain('BusinessEvidenceVersion.version');
+  });
+
   it('has one entry per route or process, direction explicit on contract entries', () => {
     const entries = SURFACE.map((e) => e.entry);
     expect(new Set(entries).size).toBe(entries.length);
@@ -97,7 +125,9 @@ describe('surface.ts', () => {
     const named = SURFACE.filter((e) => e.capability.includes('report.view'))
       .flatMap((e) => Object.values(e.projector ?? {}))
       .concat(['report.lagHistory', 'report.home']);
-    expect([...new Set(named)].sort()).toEqual([...REPORT_PROJECTORS].sort());
+    expect([...new Set(named)].sort()).toEqual(
+      [...REPORT_PROJECTORS, 'report.businessEvidence'].sort(),
+    );
   });
   it('every cas base is advanced by some writer (D4/D7)', () => {
     const advanced = new Set(SURFACE.flatMap((e) => e.advances));

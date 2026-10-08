@@ -1210,6 +1210,38 @@ const ENTRIES: readonly SurfaceEntry[] = [
     },
   ),
 
+  // C05 uses the existing project gates plus exact source/media/policy cuts; registration grants nothing.
+  read(
+    'GET /api/report/business-evidence',
+    'account',
+    ['report.view', 'report.view-submitted'],
+    'query.projectId',
+    {
+      'report.view': {
+        temporal: 'live',
+        layers: ['structure', 'field-writer'],
+        projector: 'report.businessEvidence',
+      },
+      'report.view-submitted': {
+        temporal: 'frozen',
+        layers: ['structure', 'field-writer'],
+        projector: 'report.businessEvidence',
+      },
+    },
+  ),
+  write(
+    'POST /api/report/business-evidence',
+    'account',
+    'report.write',
+    'body.target.projectId',
+    'BusinessEvidenceStore.write',
+    'cas',
+    {
+      protects: ['ForemanReportRevision.n', 'BusinessEvidenceVersion.version'],
+      advances: ['BusinessEvidenceVersion.version', 'FieldDay.seq'],
+    },
+  ),
+
   // ---------- Worker / CLI ----------
   {
     entry: 'worker:apps/worker/src/main.ts',

@@ -49,10 +49,7 @@ import {
   readReportLocationCoordinates,
   frozenWeatherReferences,
 } from './weather-store.js';
-import {
-  managerReviewReader,
-  type ManagerReviewSnapshotCut,
-} from './manager-review-reader.js';
+import { managerReviewReader } from './manager-review-reader.js';
 import {
   DENY_REVIEW_PORTS,
   type ReviewServerPorts,
@@ -184,7 +181,6 @@ interface SubmittedSnapshot {
 }
 export interface ReaderContent {
   installationCumulative?: import('@mje/contracts').InstallationCumulativeDto;
-  managerReviewCut?: ManagerReviewSnapshotCut;
   weatherReferences?: SafeFrozenWeatherReference[];
   state: 'empty' | 'submitted';
   facts: DayFacts;
@@ -229,13 +225,6 @@ export function readerContent(
   const baseline = s.baseline ?? null;
   return {
     state: 'submitted',
-    ...(Object.hasOwn(snapshot, 'managerReviewCut')
-      ? {
-          managerReviewCut: snapshot[
-            'managerReviewCut'
-          ] as ManagerReviewSnapshotCut,
-        }
-      : {}),
     ...(Object.hasOwn(s, 'weatherReferences')
       ? { weatherReferences: s.weatherReferences ?? [] }
       : {}),
@@ -272,10 +261,13 @@ export function readerSnapshot(
   const own = () => (rest === snapshot ? (rest = { ...snapshot }) : rest);
   // Check-ins, foreman reports and adoptions are writer data (A6.0): a reader never gets them,
   // frozen or live.
-  if ('field' in snapshot || 'foreman' in snapshot) {
-    delete own()['field'];
-    delete own()['foreman'];
-  }
+  for (const key of [
+    'field',
+    'foreman',
+    'managerReviewCut',
+    'businessEvidenceCut',
+  ])
+    if (key in snapshot) delete own()[key];
   const nextPlan = readerNextPlan(snapshot['nextPlan']);
   if (nextPlan !== snapshot['nextPlan']) own()['nextPlan'] = nextPlan;
   if (snapshot['personnelSummary'] != null)

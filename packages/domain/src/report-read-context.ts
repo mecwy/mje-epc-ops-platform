@@ -13,6 +13,7 @@
  */
 import type { PoolClient } from 'pg';
 import type { Actor } from './store-kit.js';
+import { withTransactionClientScope } from './store-kit.js';
 
 declare const brand: unique symbol;
 export interface ReportReadContext {
@@ -34,23 +35,14 @@ export async function withReportReadContext<T>(
   use: (ctx: ReportReadContext) => Promise<T>,
 ): Promise<T> {
   const ctx = Object.freeze(Object.create(null)) as ReportReadContext;
-  const closed = () => new Error('REPORT_READ_CONTEXT_CLOSED');
-  // Every statement passes this check, including those of a call started before the context
-  // ended; a statement already sent before COMMIT was queued still completes before COMMIT.
-  const guarded = Object.create(client, {
-    query: {
-      value: (...args: Parameters<PoolClient['query']>) => {
-        if (!live.has(ctx)) throw closed();
-        return Reflect.apply(client.query, client, args);
-      },
-    },
-  }) as PoolClient;
-  live.set(ctx, { client: guarded, actor });
-  try {
-    return await use(ctx);
-  } finally {
-    live.delete(ctx);
-  }
+  return withTransactionClientScope(client, async (guarded) => {
+    live.set(ctx, { client: guarded, actor });
+    try {
+      return await use(ctx);
+    } finally {
+      live.delete(ctx);
+    }
+  });
 }
 /** Report module only (report-reader.ts): the transaction behind a live context. */
 export function openReportReadContext(ctx: ReportReadContext): Open {

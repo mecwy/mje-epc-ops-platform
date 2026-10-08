@@ -25,6 +25,8 @@ import {
   ProjectHomeReader,
   WeatherStore,
   ManagerReviewStore,
+  businessEvidenceService,
+  businessEvidencePorts,
   reportReader,
   type ReportReadContext,
 } from '@mje/domain';
@@ -37,6 +39,8 @@ const IDENTITY = { tenantId: 'TEST-tenant', objectId: 'TEST-object' };
 const CTX = { TEST: 'context' } as unknown as ReportReadContext;
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 
+let evidenceService: ReturnType<typeof businessEvidenceService>;
+
 /** Stores are never called by enumeration; the report store hands the exit a TEST context. */
 function runtime(): AlphaRuntime {
   const reportStore = Object.create(ReportStore.prototype) as ReportStore;
@@ -44,7 +48,12 @@ function runtime(): AlphaRuntime {
     _identity: unknown,
     use: (ctx: ReportReadContext) => Promise<unknown>,
   ) => use(CTX)) as ReportStore['read'];
+  evidenceService = businessEvidenceService(
+    {} as never,
+    businessEvidencePorts(),
+  );
   return {
+    businessEvidenceService: evidenceService,
     opportunityCommands: Object.create(
       OpportunityCommands.prototype,
     ) as OpportunityCommands,
@@ -378,7 +387,10 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
   } as const;
   it('covers every report read entry of surface.ts', () => {
     const surfaced = SURFACE.filter(
-      (e) => e.kind === 'read' && e.capability.includes('report.view'),
+      (e) =>
+        e.kind === 'read' &&
+        e.capability.includes('report.view') &&
+        e.entry !== 'GET /api/report/business-evidence',
     ).map((e) => e.entry);
     expect(Object.keys(reads).sort()).toEqual(surfaced.sort());
   });
@@ -413,4 +425,43 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
         spy.mockRestore();
       }
     });
+});
+
+describe('C05 delegates to its own actually mounted service exit', () => {
+  it('parses exact target and verified identity without routing through ReportReader', async () => {
+    const target = {
+      projectId: PROJECT,
+      businessDate: '2026-09-01',
+      crewId: PROJECT,
+      foremanRevisionId: PROJECT,
+      itemKey: 'installation',
+    };
+    const value = {
+      target,
+      revisionNumber: 1,
+      declaration: { qty: '1', unit: null, scopeRef: null },
+      evidence: null,
+      associationCoverage: null,
+      availablePhotos: [],
+      scopes: [],
+      history: [],
+      canBind: false,
+    };
+    const own = vi.spyOn(evidenceService, 'read').mockResolvedValue(value);
+    const other = vi.spyOn(reportReader, 'forContext');
+    try {
+      const query = new URLSearchParams(target);
+      const response = await fetch(
+        (await app.getUrl()) + '/api/report/business-evidence?' + query,
+        { headers: { Authorization: 'Bearer TEST' } },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(value);
+      expect(own).toHaveBeenCalledExactlyOnceWith(IDENTITY, target);
+      expect(other).not.toHaveBeenCalled();
+    } finally {
+      own.mockRestore();
+      other.mockRestore();
+    }
+  });
 });

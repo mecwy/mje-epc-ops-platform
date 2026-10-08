@@ -51,6 +51,41 @@ const photo = (id: string, link: PhotoDto['link']): PhotoDto => ({
 });
 
 describe('reader view (OD18)', () => {
+  it.each([
+    {
+      managerReviewCut: {
+        asOfSeq: 7,
+        events: [{ eventId: 'TEST_private_review' }],
+      },
+    },
+    {
+      businessEvidenceCut: {
+        asOfSeq: 7,
+        manifests: [{ id: 'TEST_private_photo_association' }],
+      },
+    },
+    { managerReviewCut: null, businessEvidenceCut: null },
+  ])(
+    'withholds private cuts even without field/photos while retaining core report facts',
+    (cut) => {
+      const snapshot = {
+        ...cut,
+        facts: {
+          ...blankFacts(),
+          weather: 'TEST frozen weather',
+          siteLocation: 'TEST frozen address',
+        },
+        otherExtension: 'TEST retain',
+      };
+      const original = structuredClone(snapshot);
+      const shown = readerSnapshot(snapshot);
+      expect(shown).not.toHaveProperty('managerReviewCut');
+      expect(shown).not.toHaveProperty('businessEvidenceCut');
+      expect(shown['facts']).toEqual(snapshot.facts);
+      expect(shown['otherExtension']).toBe('TEST retain');
+      expect(snapshot).toEqual(original);
+    },
+  );
   it('lists only submitted days; an open correction is the last submission', () => {
     expect(readerDayState('empty')).toBe(null);
     expect(readerDayState('draft')).toBe(null);

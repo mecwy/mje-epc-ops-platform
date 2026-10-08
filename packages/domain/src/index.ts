@@ -109,3 +109,13 @@ export {
 export type { BusinessEvidencePorts } from './business-evidence-store.js';
 export { BusinessEvidenceReader } from './business-evidence-reader.js';
 export type { BusinessEvidenceReadPorts } from './business-evidence-reader.js';
+
+export {
+  businessEvidencePorts,
+  businessEvidenceService,
+} from './business-evidence-adapters.js';
+export {
+  businessEvidenceSnapshotCut,
+  frozenEvidenceManifest,
+} from './business-evidence-manifest.js';
+export type { BusinessEvidenceSnapshotCut } from './business-evidence-manifest.js';

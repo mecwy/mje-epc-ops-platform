@@ -15,6 +15,10 @@ import {
   ProjectStatusReader,
   ProjectHomeReader,
   WeatherStore,
+  ManagerReviewStore,
+  DENY_REVIEW_PORTS,
+  businessEvidencePorts,
+  businessEvidenceService,
 } from '@mje/domain';
 import { createApp, type AlphaRuntime } from './app.js';
 import { TokenVerifier } from './auth/token-verifier.js';
@@ -67,6 +71,14 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     issueStore: new IssueStore(pool),
     fieldStore: new FieldStore(pool),
     foremanStore: new ForemanStore(pool),
+    // Formal completion review is distinct from ordinary report-write membership.
+    // Current persisted policy exits are pending; do not manufacture grants at bootstrap.
+    managerReviewStore: new ManagerReviewStore(pool, DENY_REVIEW_PORTS),
+    managerReviewPorts: DENY_REVIEW_PORTS,
+    businessEvidenceService: businessEvidenceService(
+      pool,
+      businessEvidencePorts(),
+    ),
   };
   // Explicit opt-in after the weather migrations; transport and device capture stay separate.
   if (process.env['WEATHER_REFERENCE_ENABLED'] === 'true')

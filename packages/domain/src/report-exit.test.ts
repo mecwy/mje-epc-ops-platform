@@ -5,7 +5,7 @@
  * lives only inside its transaction (ADR-0003 D2, D5; PR #51 review 1 and 3).
  */
 import { describe, expect, it } from 'vitest';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { IssueStore } from './issue-store.js';
 import { ReportStore } from './report-store.js';
 import {
@@ -13,6 +13,8 @@ import {
   reportReader,
   type ReportReadContext,
 } from './report-reader.js';
+import { openReportReadContext } from './report-read-context.js';
+import { transactionSignal } from './store-kit.js';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PROJECT = '22222222-2222-4222-8222-222222222222';
@@ -187,6 +189,25 @@ describe('lag through reportReader.lagHistory', () => {
 });
 
 describe('report read context lives only inside its transaction', () => {
+  it('its guarded client carries the real transaction lifetime, then loses it when read completes', async () => {
+    const fake = fakePool();
+    let guarded: PoolClient | undefined;
+    let signal: AbortSignal | undefined;
+    await new ReportStore(fake.pool).read(identity, async (ctx) => {
+      guarded = openReportReadContext(ctx).client;
+      signal = transactionSignal(guarded);
+      expect(signal).toBeDefined();
+      expect(signal?.aborted).toBe(false);
+      return reportReader.forContext(ctx).items(PROJECT);
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(transactionSignal(guarded!)).toBeUndefined();
+    const queries = fake.log.length;
+    expect(() => guarded!.query('SELECT TEST_CLOSED_CONTEXT')).toThrow(
+      'REPORT_READ_CONTEXT_CLOSED',
+    );
+    expect(fake.log).toHaveLength(queries);
+  });
   it('a context or view captured inside read() is refused after it returns, without touching the released client', async () => {
     const fake = fakePool();
     const store = new ReportStore(fake.pool);

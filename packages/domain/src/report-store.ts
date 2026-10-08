@@ -97,6 +97,7 @@ import {
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
 import { fieldDayAsOf, nextSeq } from './checkin-store.js';
+import { businessEvidenceSnapshotCut } from './business-evidence-reader.js';
 import { FieldError, rosterLock } from './field-kit.js';
 import { foremanDayAsOf, recordForemanAdoption } from './foreman-store.js';
 import {
@@ -530,9 +531,15 @@ export class ReportStore {
       project.id,
       businessDate,
     );
-    // C04 events use nextSeq under this same gate. Freeze identity/basis only at the field cut;
-    // neither the C05 production adapter nor any retrospective snapshot rewrite is implied.
+    // Freeze C04/C05 identities at this same field cut. Older snapshots are never rewritten.
     const managerReviewCut = await managerReviewSnapshotCut(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+      field.seqBoundary,
+    );
+    const businessEvidenceCut = await businessEvidenceSnapshotCut(
       client,
       actor.orgId,
       project.id,
@@ -616,6 +623,7 @@ export class ReportStore {
             : {}),
           weatherReferences,
           managerReviewCut,
+          businessEvidenceCut,
           primaryWorkItemKey: project.primaryWorkItemKey,
           milestones: items
             .filter((i) => i.kind === 'milestone')

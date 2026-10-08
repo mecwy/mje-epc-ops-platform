@@ -432,13 +432,21 @@ for (const [name, spec] of Object.entries(MODULES) as [
   (typeof MODULES)[ModuleName],
 ][])
   for (const t of spec.tables) owner.set(t, name);
+const READ_ONLY_COMPOSITIONS = new Set([
+  'packages/domain/src/business-evidence-adapters.ts',
+  'packages/domain/src/business-evidence-manifest.ts',
+  'packages/domain/src/foreman-evidence-source.ts',
+]);
 export const moduleOf = (file: string) =>
-  (
-    Object.entries(MODULES) as [ModuleName, (typeof MODULES)[ModuleName]][]
-  ).find(
-    ([, m]) =>
-      m.files.includes(file) || (m.dirs ?? []).some((d) => file.startsWith(d)),
-  )?.[0];
+  READ_ONLY_COMPOSITIONS.has(file)
+    ? 'read-only-composition'
+    : (
+        Object.entries(MODULES) as [ModuleName, (typeof MODULES)[ModuleName]][]
+      ).find(
+        ([, m]) =>
+          m.files.includes(file) ||
+          (m.dirs ?? []).some((d) => file.startsWith(d)),
+      )?.[0];
 
 export interface Finding {
   file: string;
@@ -454,6 +462,10 @@ export function scan(files: Record<string, string>) {
     for (const value of stringsIn(file, text)) {
       // Constructor-only fragments must not evade the SQL-keyword prefilter.
       if (!SQL.test(value) && !IDENTIFIER_SPELLING.test(value)) continue;
+      if (module === 'read-only-composition') {
+        unresolved.push({ file, at: 'SQL forbidden in read-only composition' });
+        continue;
+      }
       const r = sqlTables(value);
       for (const at of r.unresolved) unresolved.push({ file, at });
       for (const u of r.uses)
@@ -485,6 +497,45 @@ const files = Object.fromEntries(
 );
 
 describe('SQL table scan (ADR-0003 D2.1)', () => {
+  it.each([...READ_ONLY_COMPOSITIONS])(
+    '%s stays recursively discovered but owns no SQL or tables',
+    (file) => {
+      expect(sources).toContain(file);
+      expect(moduleOf(file)).toBe('read-only-composition');
+      expect(
+        moduleOf('packages/domain/src/unknown-composition.ts'),
+      ).toBeUndefined();
+      expect(scan({ [file]: files[file]! })).toEqual({
+        foreign: [],
+        unresolved: [],
+      });
+      for (const sql of [
+        'SELECT 1',
+        ...[...models].flatMap((table) => [
+          `SELECT * FROM "${table}"`,
+          `INSERT INTO "${table}" DEFAULT VALUES`,
+          `UPDATE "${table}" SET "id" = 'TEST'`,
+          `DELETE FROM "${table}"`,
+        ]),
+      ]) {
+        expect(scan({ [file]: `q(${JSON.stringify(sql)});` })).toEqual({
+          foreign: [],
+          unresolved: [{ file, at: 'SQL forbidden in read-only composition' }],
+        });
+      }
+    },
+  );
+  it('composition registration gives no ownership to similarly named or nested new files', () => {
+    for (const file of [
+      'packages/domain/src/unknown-composition.ts',
+      'packages/domain/src/business-source-report-extra.ts',
+      'packages/domain/src/business-source-report/unregistered.ts',
+      'packages/domain/src/business-overview-extra.ts',
+    ]) {
+      expect(moduleOf(file)).toBeUndefined();
+      expect([file].filter((f) => !moduleOf(f))).toEqual([file]);
+    }
+  });
   it('discovers sources recursively; each belongs to one module; tables are models with one owner', () => {
     expect(sources.length).toBeGreaterThan(20);
     expect(sources.filter((f) => !moduleOf(f))).toEqual([]);
