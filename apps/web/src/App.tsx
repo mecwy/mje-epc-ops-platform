@@ -14,7 +14,7 @@ import { EntraAuth, devToken } from './auth.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
-import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
+import { CheckPage, FillPage } from './report/FillPage.js';
 import { dayCommandNotice } from './report/FillPage.js';
 import {
   liveCoverage,
@@ -40,7 +40,11 @@ import {
 import { parseReportLocationCandidate } from '@mje/contracts';
 import { createBrowserWeatherPorts } from './report/browser-weather-ports.js';
 import type { PersonnelRevisionLink } from './report/PersonnelMetrics.js';
-import { ReportBody, ReportView } from './report/ReportView.js';
+import {
+  FieldDayOverview,
+  ReportBody,
+  ReportView,
+} from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
@@ -874,17 +878,21 @@ function Workspace({
       />
     );
   else {
-    const locked = day.state === 'submitted' || !canWrite || busy;
     const today = (
-      <section className="card">
-        {day.state === 'submitted' && (
-          <div className="status-row">
-            <span className="chip ok">{t('submittedLocked')}</span>
-          </div>
-        )}
-        <h2 className="blk">{t('doingToday')}</h2>
-        <WorkRows h={h} day={day} locked={locked} compact />
-      </section>
+      <FieldDayOverview
+        day={day}
+        read={h.read}
+        canWrite={canWrite}
+        busy={busy}
+        photos={reportPhotos(day.state, h.read, photos.photos)}
+        onFill={() => setTask('fill')}
+        onReport={() => {
+          dispatchView({ type: 'close' });
+          setView('report');
+        }}
+        onCorrect={() => setSheet('correct')}
+        onNoWork={() => setSheet('noWork')}
+      />
     );
     const target = shift(date, 1);
     const plan = (

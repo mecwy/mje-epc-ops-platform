@@ -4739,6 +4739,12 @@ export const MESSAGES = {
     'Počni ispravku',
     'Iniciar corrección',
   ],
+  fieldFillToday: [
+    '填报今日施工',
+    "Record today's work",
+    'Unesi današnje radove',
+    'Registrar el trabajo de hoy',
+  ],
   startFill: ['开始填写', 'Start', 'Počni unos', 'Empezar'],
   submit: ['提交', 'Submit', 'Predaj', 'Entregar'],
   submitCorrect: [

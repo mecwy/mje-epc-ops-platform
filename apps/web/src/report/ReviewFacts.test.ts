@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DayFactsDto, ReportItemDto } from '@mje/contracts';
 import { ReviewFacts } from './ReviewFacts.js';
 import { FillPage } from './FillPage.js';
-import { ReportBody } from './ReportView.js';
+import { FieldDayOverview, ReportBody } from './ReportView.js';
 import type { DayView, ReportContent } from '../api.js';
 
 vi.mock('./Photos.js', () => ({
@@ -12,6 +12,7 @@ vi.mock('./Photos.js', () => ({
   PhotoLine: () => null,
   UnlinkedReminder: () => null,
   PhotoStrip: () => null,
+  PhotosRow: () => null,
   ReportPhotos: () => null,
 }));
 
@@ -29,6 +30,103 @@ vi.mock('../i18n.js', () => {
       label: (key: string) => key,
     }),
   };
+});
+
+describe('field entrance declarations', () => {
+  function overview(
+    read: ReportContent,
+    options: Partial<ComponentProps<typeof FieldDayOverview>> = {},
+  ) {
+    return renderToStaticMarkup(
+      createElement(FieldDayOverview, {
+        day: { state: 'draft' } as DayView,
+        read,
+        canWrite: true,
+        busy: false,
+        photos: [],
+        onFill: vi.fn(),
+        onReport: vi.fn(),
+        onCorrect: vi.fn(),
+        onNoWork: vi.fn(),
+        ...options,
+      }),
+    );
+  }
+
+  it('keeps empty categories visible without turning missing declarations into zeros', () => {
+    const html = overview(content(facts()), {
+      day: { state: 'empty' } as DayView,
+    });
+    for (const category of ['progress', 'materials', 'people', 'machinery'])
+      expect(html).toContain(`<dt>${category}</dt>`);
+    expect(html).toContain('siteLocation');
+    expect(html).toContain('weatherLocation_manual');
+    expect(html).toContain('fieldFillToday');
+    expect(html).toContain('Not filled');
+    expect(html).not.toContain('class="num"');
+  });
+
+  it('preserves zero, unknown, N/A, precision and text in a submitted read snapshot', () => {
+    const f = facts();
+    f.siteLocation = 'TEST <script>site</script>';
+    f.weather = 'TEST historical observation';
+    f.temperature = '12~20℃';
+    f.qty.steel = '9007199254740.125001';
+    f.materials.steel = '0';
+    f.people.manager = 'unknown';
+    f.people.installer = '1';
+    f.machinery.crane = 'na';
+    const c = content(f);
+    c.items = [
+      item('steel'),
+      item('steel', 'material'),
+      item('crane', 'machinery'),
+    ];
+    const before = structuredClone(c);
+    const html = overview(c, { day: { state: 'submitted' } as DayView });
+    expect(html).toContain('9,007,199,254,740.125001');
+    expect(html).toContain('>0</b>');
+    expect(html).toContain('Unknown');
+    expect(html).toContain('N/A');
+    expect(html).toContain('&lt;script&gt;site&lt;/script&gt;');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('TEST historical observation');
+    expect(html).toContain('12~20℃');
+    expect(html).toContain('submittedLocked');
+    expect(html).toContain('startCorrect');
+    expect(html).not.toContain('fieldFillToday');
+    expect(html).not.toContain('<input');
+    expect(html).not.toContain('sourceClassifiedTotal');
+    expect(c).toEqual(before);
+  });
+
+  it('does not expose unfinished facts to a reader or offer correction to a reader', () => {
+    const f = facts();
+    f.siteLocation = 'TEST unfinished secret';
+    const c = content(f);
+    const draft = overview(c, { canWrite: false });
+    expect(draft).toContain('notSubmitted');
+    expect(draft).not.toContain(f.siteLocation);
+    expect(draft).not.toContain('fieldFillToday');
+    const submitted = overview(c, {
+      canWrite: false,
+      day: { state: 'submitted' } as DayView,
+    });
+    expect(submitted).toContain('nav_report');
+    expect(submitted).not.toContain('startCorrect');
+  });
+
+  it('keeps no-work reasons and contradictory declarations visible, with busy actions disabled', () => {
+    const f = facts();
+    f.noWork = { reason: 'weather', note: 'TEST rain' };
+    f.qty.steel = '4';
+    const c = content(f);
+    c.items = [item('steel')];
+    const html = overview(c, { busy: true });
+    expect(html).toContain('TEST rain');
+    expect(html).toContain('>4</b>');
+    expect(html).toContain('disabled=""');
+  });
 });
 
 const roles = [

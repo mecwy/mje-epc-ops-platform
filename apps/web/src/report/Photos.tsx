@@ -444,15 +444,16 @@ export function PhotosCard() {
 }
 
 /** The report's photo row (current photos; opens the list where they are linked). */
-export function PhotosRow() {
+export function PhotosRow({ labelled = false }: { labelled?: boolean } = {}) {
   const { t } = useI18n();
   const env = usePhotoEnv();
   const { photos, unlinked, counts } = env.handle;
   // The list could not be read: say so with a retry rather than hide the photos.
   if (!photos)
-    return env.handle.loadFailed ? (
-      <section className="card">
-        <PhotoBanner />
+    return env.handle.loadFailed || labelled ? (
+      <section className="card" aria-label={labelled ? t('photos') : undefined}>
+        {labelled && <h2 className="blk">{t('photos')}</h2>}
+        {env.handle.loadFailed ? <PhotoBanner /> : <p>{t('loading')}</p>}
       </section>
     ) : null;
   return (
