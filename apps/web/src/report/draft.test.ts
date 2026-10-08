@@ -44,6 +44,86 @@ const session = (date: string, s: ReturnType<typeof server>, version = 1) =>
   );
 
 describe('draft session', () => {
+  it.each(['NETWORK', 'SOURCE_UNAVAILABLE', 'REQUEST_FAILED'])(
+    'keeps %s save outcome unknown and retries the exact owned command',
+    async (code) => {
+      const srv = server();
+      const s = session('2026-10-09', srv);
+      s.edit({ ...empty(), siteLocation: 'TEST own day' });
+      const first = s.flush();
+      await tick();
+      const sent = JSON.stringify(srv.calls[0]!.command);
+      srv.calls[0]!.settle(new ApiError(code, 503));
+      expect(await first).toBe('failed');
+      expect(s.saveOutcomeUnknown).toBe(true);
+      expect(s.facts.siteLocation).toBe('TEST own day');
+      const retry = s.flush();
+      await tick();
+      expect(JSON.stringify(srv.calls[1]!.command)).toBe(sent);
+      srv.ok(1, 2);
+      expect(await retry).toBe('ok');
+      expect(s.saveOutcomeUnknown).toBe(false);
+      expect(s.dirty).toBe(false);
+    },
+  );
+  it.each(['FORBIDDEN', 'READ_ONLY', 'INVALID_INPUT'])(
+    'keeps the definite %s refusal distinct from an unknown save',
+    async (code) => {
+      const srv = server();
+      const s = session('2026-10-09', srv);
+      s.edit(withQty('10'));
+      const first = s.flush();
+      await tick();
+      srv.calls[0]!.settle(new ApiError(code, 403));
+      expect(await first).toBe('failed');
+      expect(s.state).toBe('failed');
+      expect(s.saveOutcomeUnknown).toBe(false);
+      expect(await s.flush()).toBe('failed');
+      expect(srv.calls).toHaveLength(1);
+    },
+  );
+  it('clears uncertainty when a fresh read contains the committed facts', async () => {
+    const srv = server();
+    const s = session('2026-10-09', srv);
+    const committed = { ...empty(), siteLocation: 'TEST committed' };
+    s.edit(committed);
+    const first = s.flush();
+    await tick();
+    srv.calls[0]!.settle(new ApiError('SOURCE_UNAVAILABLE', 503));
+    await first;
+    expect(s.saveOutcomeUnknown).toBe(true);
+    s.reset(2, committed);
+    expect(s.saveOutcomeUnknown).toBe(false);
+    expect(s.dirty).toBe(false);
+    expect(s.facts.siteLocation).toBe('TEST committed');
+  });
+  it('keeps an uncertain save on its original project day and workspace owner', async () => {
+    const own = server();
+    const s = session('2026-10-09', own);
+    s.edit({ ...empty(), siteLocation: 'TEST own uncertain draft' });
+    const first = s.flush();
+    await tick();
+    own.calls[0]!.settle(new ApiError('SOURCE_UNAVAILABLE', 503));
+    await first;
+    const otherDay = session('2026-10-08', server());
+    const otherProject = new DraftSession(
+      'other',
+      '2026-10-09',
+      1,
+      empty(),
+      server().write,
+      () => {},
+    );
+    const otherOwner = session('2026-10-09', server());
+    for (const other of [otherDay, otherProject, otherOwner]) {
+      expect(other.saveOutcomeUnknown).toBe(false);
+      expect(other.facts.siteLocation).toBeUndefined();
+    }
+    expect(s.saveOutcomeUnknown).toBe(true);
+    expect(s.facts.siteLocation).toBe('TEST own uncertain draft');
+    expect(own.calls[0]!.command.projectId).toBe('p');
+    expect(own.calls[0]!.command.businessDate).toBe('2026-10-09');
+  });
   it('tracks optional site text and explicit empty separately without a default', () => {
     const blank = empty();
     expect(leaf(blank, 'siteLocation')).toBeUndefined();

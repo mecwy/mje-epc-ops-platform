@@ -134,6 +134,10 @@ export class DraftSession {
   get pendingLocationKind(): ReportLocationOperation['kind'] | null {
     return this.locationOperation?.kind ?? null;
   }
+  /** An unanswered save still owns its original command; a definite refusal does not. */
+  get saveOutcomeUnknown(): boolean {
+    return this.state === 'failed' && this.pending !== null;
+  }
   /** Same draft queue and command as manual facts; raw location never enters facts. */
   editWeather(
     facts: DayFactsDto,

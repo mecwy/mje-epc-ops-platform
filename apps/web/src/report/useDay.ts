@@ -75,6 +75,7 @@ export function useDay(
       : null,
     facts: ready ? s.facts : null,
     save: s.state,
+    saveOutcomeUnknown: s.saveOutcomeUnknown,
     /** The day's lock is held (a command runs or is unresolved): the page is read-only. */
     busy: e.lock !== null,
     /** The lock's post-write read failed: the day waits for `reloadLocked`. */

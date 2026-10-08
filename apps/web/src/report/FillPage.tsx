@@ -84,9 +84,19 @@ export function dayCommandNotice(code: string, uncertain: boolean): MessageKey {
     : key;
 }
 
-export function SaveBadge({ save }: { save: SaveState }) {
+export function SaveBadge({
+  save,
+  outcomeUnknown = false,
+}: {
+  save: SaveState;
+  outcomeUnknown?: boolean;
+}) {
   const { t } = useI18n();
   if (save === 'idle') return null;
+  const pending = save === 'failed' && outcomeUnknown;
+  const pendingKey = pending
+    ? outcomeKey('REQUEST_FAILED', { write: true, uncertain: true })
+    : null;
   const text =
     save === 'saving'
       ? t('saving')
@@ -94,11 +104,14 @@ export function SaveBadge({ save }: { save: SaveState }) {
         ? t('saved')
         : save === 'invalid'
           ? t('numberInvalid')
-          : t('saveFail');
+          : pending
+            ? t('pm_siteSavePending')
+            : t('saveFail');
   return (
     <span
       className={`saved${save === 'failed' || save === 'invalid' ? ' bad' : ''}`}
       role="status"
+      title={pendingKey ? t(pendingKey) : undefined}
     >
       {text}
     </span>
@@ -712,7 +725,7 @@ export function FillPage({
         <span className="bar-h">
           {t('reportOf', { d: fmtShort(day.businessDate, locale) })}
         </span>
-        <SaveBadge save={h.save} />
+        <SaveBadge save={h.save} outcomeUnknown={h.saveOutcomeUnknown} />
         <button
           type="button"
           className="ghost fill-save"
@@ -1048,7 +1061,7 @@ export function CheckPage({
         <span className="bar-h">
           {t('checkTitle', { d: fmtShort(day.businessDate, locale) })}
         </span>
-        <SaveBadge save={h.save} />
+        <SaveBadge save={h.save} outcomeUnknown={h.saveOutcomeUnknown} />
       </header>
       <main className="page">
         <ReviewFacts
