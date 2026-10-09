@@ -40,6 +40,7 @@ const GROUPS = [
 
 /** The string at a `setFact` path, or undefined where the facts have none. */
 export function leaf(facts: DayFactsDto, path: string): string | undefined {
+  if (path === 'activities') return JSON.stringify(facts.activities ?? []);
   const [head, key] = path.split('.');
   if (head === 'weather' || head === 'temperature' || head === 'siteLocation')
     return facts[head];
@@ -57,6 +58,7 @@ export function leaf(facts: DayFactsDto, path: string): string | undefined {
 /** The typed leaves whose value differs between two facts. */
 export function changedPaths(a: DayFactsDto, b: DayFactsDto): string[] {
   const out: string[] = [];
+  if (leaf(a, 'activities') !== leaf(b, 'activities')) out.push('activities');
   for (const k of TOP) if (a[k] !== b[k]) out.push(k);
   for (const k of NARRATIVE)
     if (a.narrative[k] !== b.narrative[k]) out.push(`narrative.${k}`);

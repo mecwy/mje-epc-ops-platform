@@ -19,6 +19,8 @@ import {
   target,
 } from './model.js';
 import type { DayHandle, SaveState } from './useDay.js';
+import { ActivityEntries, ActivitySummary } from './ActivityCard.js';
+import { activityText } from './activity-card-copy.js';
 import { leaf } from './draft.js';
 import { FillIssues } from './Issues.js';
 import type { IssuesHandle } from './useIssues.js';
@@ -357,7 +359,15 @@ export function WorkRows({
           it={it}
           h={h}
           day={day}
-          locked={locked}
+          locked={
+            locked ||
+            Boolean(
+              h.facts?.activities?.some(
+                (a) =>
+                  a.workItemKey === it.key && a.outputKind === 'installation',
+              ),
+            )
+          }
           compact={compact}
         />
       ))}
@@ -379,7 +389,15 @@ export function WorkRows({
             it={it}
             h={h}
             day={day}
-            locked={locked}
+            locked={
+              locked ||
+              Boolean(
+                h.facts?.activities?.some(
+                  (a) =>
+                    a.workItemKey === it.key && a.outputKind === 'installation',
+                ),
+              )
+            }
             compact={compact}
           />
         ))}
@@ -405,7 +423,7 @@ export function CheckList({
   busy: boolean;
   panel?: boolean;
 }) {
-  const { t, label } = useI18n();
+  const { t, label, lang } = useI18n();
   const items = day.items;
   const name = (key?: string) => {
     const it = items.find((i) => i.kind === 'work' && i.key === key);
@@ -579,6 +597,11 @@ export function CheckList({
         {rows}
       </fieldset>
       <UnlinkedReminder />
+      <ActivitySummary
+        activities={h.facts?.activities ?? []}
+        items={day.items}
+        confirmation
+      />
       {panel && (
         <button
           type="button"
@@ -586,7 +609,11 @@ export function CheckList({
           disabled={busy || cov.invalid.length > 0}
           onClick={onSubmit}
         >
-          {correcting ? t('submitCorrect') : t('submitReport')}
+          {h.facts?.activities?.length
+            ? activityText(lang).submit
+            : correcting
+              ? t('submitCorrect')
+              : t('submitReport')}
         </button>
       )}
     </section>
@@ -870,8 +897,13 @@ export function FillPage({
                 >
                   <h2 className="blk">{t('progress')}</h2>
                   <WorkRows h={h} day={day} locked={locked} />
+                  <ActivityEntries h={h} day={day} locked={locked} />
                   <label className="field">
-                    <span>{t('construction')}</span>
+                    <span>
+                      {f.activities?.length
+                        ? activityText(lang).supplement
+                        : t('construction')}
+                    </span>
                     <textarea
                       id="f-construction"
                       rows={3}
@@ -952,6 +984,13 @@ export function FillPage({
                   aria-label={t('materials')}
                 >
                   <h2 className="blk">{t('materials')}</h2>
+                  <ActivitySummary
+                    activities={f.activities ?? []}
+                    items={day.items}
+                  />
+                  {!!f.activities?.length && (
+                    <h3>{activityText(lang).delivery}</h3>
+                  )}
                   {byKind(day.items, 'material').map((m) => {
                     const total = day.materialsCumulative[m.key];
                     return (
@@ -1045,7 +1084,7 @@ export function CheckPage({
   busy: boolean;
   photos: PhotosHandle;
 }) {
-  const { t, label, locale } = useI18n();
+  const { t, label, locale, lang } = useI18n();
   const f = h.facts!;
   return (
     <div className="entry-workspace entry-manager">
@@ -1067,6 +1106,9 @@ export function CheckPage({
         <ReviewFacts
           facts={f}
           items={day.items}
+          {...(f.activities?.length
+            ? { materialTitle: activityText(lang).delivery }
+            : {})}
           workSummary={
             <>
               {byKind(day.items, 'work').some(
@@ -1151,7 +1193,11 @@ export function CheckPage({
           disabled={busy || cov.invalid.length > 0}
           onClick={onSubmit}
         >
-          {day.state === 'correcting' ? t('submitCorrect') : t('submitReport')}
+          {h.facts?.activities?.length
+            ? activityText(lang).submit
+            : day.state === 'correcting'
+              ? t('submitCorrect')
+              : t('submitReport')}
         </button>
       </div>
     </div>

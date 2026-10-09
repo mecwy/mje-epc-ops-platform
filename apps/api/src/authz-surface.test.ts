@@ -20,6 +20,7 @@ import {
   IssueStore,
   PhotoStore,
   ReportStore,
+  MaterialContinuityStore,
   ProjectStatusCommands,
   ProjectStatusReader,
   ProjectHomeReader,
@@ -40,14 +41,23 @@ const CTX = { TEST: 'context' } as unknown as ReportReadContext;
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 
 let evidenceService: ReturnType<typeof businessEvidenceService>;
+let materialStore: MaterialContinuityStore;
 
 /** Stores are never called by enumeration; the report store hands the exit a TEST context. */
 function runtime(): AlphaRuntime {
+  materialStore = Object.create(
+    MaterialContinuityStore.prototype,
+  ) as MaterialContinuityStore;
   const reportStore = Object.create(ReportStore.prototype) as ReportStore;
   reportStore.read = (async (
     _identity: unknown,
     use: (ctx: ReportReadContext) => Promise<unknown>,
   ) => use(CTX)) as ReportStore['read'];
+  reportStore.activityMappingsForContext = (ctx, projectId) => {
+    expect(ctx).toBe(CTX);
+    expect(projectId).toBe(PROJECT);
+    return [];
+  };
   evidenceService = businessEvidenceService(
     {} as never,
     businessEvidencePorts(),
@@ -65,6 +75,7 @@ function runtime(): AlphaRuntime {
     ) as ContractRegisterCommands,
     store: Object.create(AlphaStore.prototype) as AlphaStore,
     reportStore,
+    materialContinuityStore: materialStore,
     contractRegisterReader: Object.create(
       ContractRegisterReader.prototype,
     ) as ContractRegisterReader,
@@ -390,7 +401,8 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
       (e) =>
         e.kind === 'read' &&
         e.capability.includes('report.view') &&
-        e.entry !== 'GET /api/report/business-evidence',
+        e.entry !== 'GET /api/report/business-evidence' &&
+        e.entry !== 'GET /api/report/material-quantity',
     ).map((e) => e.entry);
     expect(Object.keys(reads).sort()).toEqual(surfaced.sort());
   });
@@ -418,7 +430,10 @@ describe('report read routes go through the report exit (ADR-0003 D2.2)', () => 
           headers: { Authorization: 'Bearer TEST' },
         });
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ TEST: method });
+        expect(await response.json()).toEqual({
+          TEST: method,
+          ...(method === 'day' ? { activityMappings: [] } : {}),
+        });
         expect(spy).toHaveBeenCalledTimes(1);
         expect(calls).toEqual([method]);
       } finally {
@@ -462,6 +477,68 @@ describe('C05 delegates to its own actually mounted service exit', () => {
     } finally {
       own.mockRestore();
       other.mockRestore();
+    }
+  });
+});
+
+describe('material quantities use their actually mounted service exit', () => {
+  it('passes verified identity, project, date and selected revision to the material service', async () => {
+    const spy = vi
+      .spyOn(materialStore, 'view')
+      .mockResolvedValue({ TEST: 'material' } as never);
+    try {
+      const response = await fetch(
+        (await app.getUrl()) +
+          `/api/report/material-quantity?projectId=${PROJECT}&businessDate=2031-01-01&revisionNumber=2`,
+        { headers: { Authorization: 'Bearer TEST' } },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ TEST: 'material' });
+      expect(spy).toHaveBeenCalledExactlyOnceWith(
+        IDENTITY,
+        PROJECT,
+        '2031-01-01',
+        2,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it('rejects a client quantity injection before the admission service executes', async () => {
+    const spy = vi.spyOn(materialStore, 'admit');
+    try {
+      const response = await fetch(
+        (await app.getUrl()) + '/api/report/material-quantity/admit',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer TEST',
+            'Content-Type': 'application/json',
+            'Idempotency-Key': PROJECT,
+          },
+          body: JSON.stringify({
+            projectId: PROJECT,
+            businessDate: '2031-01-01',
+            clientMutationId: PROJECT,
+            scopeId: PROJECT,
+            expectedVersion: 1,
+            quantity: '368',
+            records: [
+              {
+                sourceBusinessDate: '2031-01-01',
+                revisionNumber: 1,
+                useFactId: PROJECT,
+                issueId: null,
+                dueAt: null,
+              },
+            ],
+          }),
+        },
+      );
+      expect(response.status).toBe(400);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
     }
   });
 });

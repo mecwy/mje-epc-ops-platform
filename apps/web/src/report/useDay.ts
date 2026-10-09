@@ -102,8 +102,27 @@ export function useDay(
     refill: (path: string) => store.refill(e, path),
     dismiss: (path: string) => store.dismiss(e, path),
     reloadLocked: () => store.reloadLocked(e),
-    submit: () =>
-      store.act(e, (v) => api.submit({ ...base(), expectedVersion: v })),
+    submit: () => {
+      // Capture the visible set before holding/flushing; a conflict aborts the action.
+      const includedUseFactIds = (s.facts.activities ?? []).flatMap((a) =>
+        a.use && a.use.state !== 'pending' ? [a.use.id] : [],
+      );
+      const hasActivities = Boolean(s.facts.activities?.length);
+      return store.act(e, (v) =>
+        api.submit({
+          ...base(),
+          expectedVersion: v,
+          ...(hasActivities
+            ? {
+                activityUseConfirmation: {
+                  draftVersion: v,
+                  includedUseFactIds,
+                },
+              }
+            : {}),
+        }),
+      );
+    },
     noWork: (reason: NoWorkReason, note: string) =>
       store.act(e, (v) =>
         api.noWork({ ...base(), expectedVersion: v, reason, note }),

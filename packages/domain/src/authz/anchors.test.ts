@@ -74,6 +74,68 @@ const photoKeys = (prefix: string, exact: boolean) =>
     ...(exact ? ['capture.lat', 'capture.lon', 'file.gps'] : []),
   ].map((k) => `${prefix}${k}`);
 const DAY_KEYS = [
+  // Activity facts use the same submitted/draft layers as quantities; mappings are structure.
+  'activityMappings',
+  'activityMappings[].orgId',
+  'activityMappings[].projectId',
+  'activityMappings[].workItemId',
+  'activityMappings[].materialItemId',
+  'activityMappings[].validFrom',
+  'activityMappings[].basisRef',
+  'activityMappings[].workPackageId',
+  'activityMappings[].scopeVersion',
+  'activityMappings[].area',
+  'activityMappings[].workItemKey',
+  'activityMappings[].materialKey',
+  'activityMappings[].specification',
+  'activityMappings[].outputUnit',
+  'activityMappings[].materialUnit',
+  'activityMappings[].ruleId',
+  'activityMappings[].ruleVersion',
+  'activityMappings[].mappingVersion',
+  'activityMappings[].ratio',
+  'facts.activities',
+  'facts.activities[].operationId',
+  'facts.activities[].outputFactId',
+  'facts.activities[].workPackageId',
+  'facts.activities[].scopeVersion',
+  'facts.activities[].area',
+  'facts.activities[].process',
+  'facts.activities[].completion',
+  'facts.activities[].workItemKey',
+  'facts.activities[].workItemId',
+  'facts.activities[].outputUnit',
+  'facts.activities[].quantity',
+  'facts.activities[].outputKind',
+  'facts.activities[].use',
+  'facts.activities[].use.id',
+  'facts.activities[].use.materialKey',
+  'facts.activities[].use.materialItemId',
+  'facts.activities[].use.specification',
+  'facts.activities[].use.unit',
+  'facts.activities[].use.actualQuantity',
+  'facts.activities[].use.state',
+  'facts.activities[].use.origin',
+  'facts.activities[].use.differenceNote',
+  'facts.activities[].use.reviewRequired',
+  'facts.activities[].use.confirmation',
+  'facts.activities[].use.confirmation.accountId',
+  'facts.activities[].use.confirmation.personId',
+  'facts.activities[].use.confirmation.at',
+  'facts.activities[].use.estimate',
+  'facts.activities[].use.estimate.quantity',
+  'facts.activities[].use.estimate.ruleId',
+  'facts.activities[].use.estimate.ruleVersion',
+  'facts.activities[].use.estimate.mappingVersion',
+  'facts.activities[].use.estimate.scopeRef',
+  'facts.activities[].use.estimate.outputFactId',
+  'facts.activities[].use.estimate.outputQuantity',
+  'facts.activities[].use.estimate.workItemKey',
+  'facts.activities[].use.estimate.materialKey',
+  'facts.activities[].use.estimate.specification',
+  'facts.activities[].use.estimate.outputUnit',
+  'facts.activities[].use.estimate.materialUnit',
+  'facts.activities[].use.estimate.ratio',
   'installationCumulative',
   'installationCumulative.schemaVersion',
   'installationCumulative.policyVersion',
@@ -511,4 +573,43 @@ describe('ADR-0003 anchors (hand-written)', () => {
       expect(d.capability).toBe(c.capability);
       expect(sorted(d.visibleKeys)).toEqual(sorted(c.keys!));
     });
+});
+
+describe('material quantity surface preserves report membership and submitted facts', () => {
+  it('has a hand-written complete public field inventory for both report roles', () => {
+    const expected = [
+      'access',
+      'businessDate',
+      'frozen',
+      'projectId',
+      'scopes',
+    ];
+    for (const capabilities of [PM, READER]) {
+      const d = decide(
+        entry('GET /api/report/material-quantity'),
+        account(capabilities),
+      );
+      expect(d.allowed).toBe(true);
+      expect(sorted(d.visibleKeys)).toEqual(expected);
+    }
+    expect(
+      Object.keys(FIELDS['report.materialQuantities'].fields).sort(),
+    ).toEqual(expected);
+  });
+  it('rejects reader/device writes and other-project reads, and advances no report revision', () => {
+    for (const name of [
+      'POST /api/report/material-quantity/initialize',
+      'POST /api/report/material-quantity/admit',
+    ]) {
+      expect(decide(entry(name), account(READER)).allowed).toBe(false);
+      expect(decide(entry(name), DEVICE).allowed).toBe(false);
+      expect(entry(name).advances).toEqual(['MaterialQuantityScope.version']);
+    }
+    expect(
+      decide(
+        entry('GET /api/report/material-quantity'),
+        account(PM, 'other-project'),
+      ).allowed,
+    ).toBe(false);
+  });
 });

@@ -73,6 +73,8 @@ import {
   type ManagerReviewService,
 } from './manager-review.controller.js';
 import { IssueController } from './issue.controller.js';
+import { MaterialContinuityController } from './material-continuity.controller.js';
+import { MaterialContinuityStore } from '@mje/domain';
 import { PhotoController } from './photo.controller.js';
 import { FieldController, FieldTokenGuard } from './field.controller.js';
 import { FieldAdminController } from './field-admin.controller.js';
@@ -260,6 +262,7 @@ export interface AlphaRuntime {
   projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
   issueStore?: IssueStore;
+  materialContinuityStore?: MaterialContinuityStore;
   /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
   photoStore?: PhotoStore;
   /** Field roster, devices and entry (A6a); served only together with the report slice. */
@@ -362,6 +365,9 @@ export async function createApp(
         ? [ProjectStatusController]
         : []),
       ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
+      ...(alpha?.reportStore && alpha.materialContinuityStore
+        ? [MaterialContinuityController]
+        : []),
       ...(alpha?.reportStore &&
       alpha.projectHomeReader &&
       alpha.projectStatusReader &&
@@ -464,6 +470,14 @@ export async function createApp(
               : []),
             ...(alpha.reportStore && alpha.issueStore
               ? [{ provide: IssueStore, useValue: alpha.issueStore }]
+              : []),
+            ...(alpha.reportStore && alpha.materialContinuityStore
+              ? [
+                  {
+                    provide: MaterialContinuityStore,
+                    useValue: alpha.materialContinuityStore,
+                  },
+                ]
               : []),
             ...(alpha.reportStore && alpha.photoStore
               ? [{ provide: PhotoStore, useValue: alpha.photoStore }]

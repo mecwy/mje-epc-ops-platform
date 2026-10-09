@@ -198,6 +198,7 @@ export type ForemanDayView = ForemanDayDto & {
   expectedCrewsChanged: boolean | null;
 };
 export interface DayView extends Omit<ReportContent, 'photos'> {
+  activityMappings?: readonly import('@mje/contracts').ActivityMaterialMapping[];
   /** Writers only: the foreman claims beside the PM's facts (never merged into them). */
   foreman?: ForemanDayView;
   access: Access;
@@ -538,6 +539,26 @@ export function reportApi(token: () => Promise<string>, onRetry?: () => void) {
   return {
     readManagerReview: (scope: ManagerReviewScopeDto) =>
       get<ManagerReviewReadDto>('manager-review', { ...scope }),
+    readMaterialContinuity: (
+      projectId: string,
+      businessDate: string,
+      revisionNumber?: number,
+    ) =>
+      get<MaterialContinuityView>('material-quantity', {
+        projectId,
+        businessDate,
+        ...(revisionNumber === undefined ? {} : { revisionNumber }),
+      }),
+    initializeMaterialScope: (command: InitializeMaterialScopeCommand) =>
+      post<{ scopeId: string; version: number }>(
+        'material-quantity/initialize',
+        command,
+      ),
+    admitMaterialUse: (command: AdmitMaterialUseCommand) =>
+      post<{ scopeId: string; version: number }>(
+        'material-quantity/admit',
+        command,
+      ),
     writeManagerReview: (command: ReviewForemanCommand) =>
       post<ManagerReviewWriteResultDto>('manager-review', command),
     readBusinessEvidence: (target: EvidenceTarget) =>
@@ -855,3 +876,8 @@ export function opportunityApi(token: () => Promise<string>) {
       ),
   };
 }
+import type {
+  MaterialContinuityView,
+  InitializeMaterialScopeCommand,
+  AdmitMaterialUseCommand,
+} from '@mje/contracts';

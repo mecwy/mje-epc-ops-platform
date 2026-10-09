@@ -712,7 +712,7 @@ function Workspace({
       aria-label={t('mainNav')}
       // The column count applies to the phone's bottom bar only; wider screens use a sidebar.
       style={
-        task ? undefined : ({ '--tabs': views.length + 1 } as CSSProperties)
+        task ? undefined : ({ '--tabs': views.length + 2 } as CSSProperties)
       }
     >
       {views.map((v) => {
@@ -841,6 +841,12 @@ function Workspace({
           <div className="banner err">{t('loadFail')}</div>
         ) : viewing.rev ? (
           <ReportBody
+            materialSession={materialContinuitySession(
+              api,
+              h.store,
+              project.id,
+              date,
+            )}
             c={viewing.rev.snapshot}
             onOpenPersonnelRevision={openPersonnelRevision}
             version={meta ?? viewing.rev}
@@ -865,6 +871,12 @@ function Workspace({
   else if (view === 'report')
     body = (
       <ReportView
+        materialSession={materialContinuitySession(
+          api,
+          h.store,
+          project.id,
+          date,
+        )}
         day={day}
         personnelSession={personnelSession}
         onOpenPersonnelRevision={openPersonnelRevision}
@@ -1610,3 +1622,4 @@ export function App({
     </I18nProvider>
   );
 }
+import { materialContinuitySession } from './report/material-continuity-session.js';

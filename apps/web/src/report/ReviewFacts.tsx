@@ -26,8 +26,10 @@ export function ReviewFacts({
   projectName,
   roles,
   workSummary,
+  materialTitle,
 }: {
   workSummary?: ReactNode;
+  materialTitle?: string;
   facts: DayFactsDto;
   items: ReportItemDto[];
   projectName: string;
@@ -54,7 +56,7 @@ export function ReviewFacts({
     const rows = byKind(items, kind).filter((it) => entered(values[it.key]));
     if (!rows.length) return null;
     return section(
-      kind === 'material' ? t('materials') : t('machinery'),
+      kind === 'material' ? (materialTitle ?? t('materials')) : t('machinery'),
       <dl>
         {rows.map((it) => (
           <div className="review-facts-row" key={it.key}>

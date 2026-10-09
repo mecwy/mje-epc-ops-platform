@@ -126,7 +126,11 @@ describe('surface.ts', () => {
       .flatMap((e) => Object.values(e.projector ?? {}))
       .concat(['report.lagHistory', 'report.home']);
     expect([...new Set(named)].sort()).toEqual(
-      [...REPORT_PROJECTORS, 'report.businessEvidence'].sort(),
+      [
+        ...REPORT_PROJECTORS,
+        'report.businessEvidence',
+        'report.materialQuantities',
+      ].sort(),
     );
   });
   it('every cas base is advanced by some writer (D4/D7)', () => {

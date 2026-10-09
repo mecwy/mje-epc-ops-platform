@@ -9,6 +9,7 @@ import {
   FieldStore,
   ForemanStore,
   IssueStore,
+  MaterialContinuityStore,
   PhotoStore,
   ReportStore,
   ProjectStatusCommands,
@@ -46,6 +47,7 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
   const verifier = new TokenVerifier(auth);
   pool = databasePoolFromEnv();
   await assertApplicationLogin(pool);
+  const materialPool = pool;
   runtime = {
     auth,
     verifier,
@@ -69,6 +71,16 @@ if (process.env['ALPHA_ENABLED'] === 'true') {
     projectStatusReader: new ProjectStatusReader(pool),
     projectHomeReader: new ProjectHomeReader(pool),
     issueStore: new IssueStore(pool),
+    materialContinuityStore: new MaterialContinuityStore(
+      pool,
+      new IssueStore(pool),
+      async (identity, projectId) =>
+        Object.fromEntries(
+          (
+            await new FieldStore(materialPool).roster(identity, projectId)
+          ).assignments.map((a) => [a.personId, a.displayName]),
+        ),
+    ),
     fieldStore: new FieldStore(pool),
     foremanStore: new ForemanStore(pool),
     // Formal completion review is distinct from ordinary report-write membership.

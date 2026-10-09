@@ -23,6 +23,10 @@ import { Attention, IssueList } from './Issues.js';
 import { PhotoStrip, PhotosRow, ReportPhotos } from './Photos.js';
 import { FrozenWeatherReferences } from './WeatherLocation.js';
 import { InstallationValue } from './FillPage.js';
+import { ActivitySummary } from './ActivityCard.js';
+import { MaterialContinuity } from './MaterialContinuity.js';
+import { materialContinuityCopy } from './material-continuity-copy.js';
+import type { MaterialContinuitySession } from './material-continuity-session.js';
 import {
   SourceReport,
   SourceCell as SourceValue,
@@ -469,6 +473,7 @@ function Progress({
   return (
     <section className="card">
       <h2 className="blk">{t('progress')}</h2>
+      <ActivitySummary activities={f.activities ?? []} items={c.items} />
       {active.length === 0 && <p className="miss">{t('notFilled')}</p>}
       {active.map((it, n) => {
         const q = f.qty[it.key];
@@ -523,7 +528,11 @@ function Progress({
             )}
             {cum && calculated && (
               <details className="small">
-                <summary>{t('installationDeclaredCumulative')}</summary>
+                <summary>
+                  {t('installationDeclaredCumulative')} {fmtNum(cum, locale)}
+                  {it.designQty ? ` / ${fmtNum(it.designQty, locale)}` : ''}
+                  {cp ? ` · ${t('sourceCalculatedPercent')} ${cp}%` : ''}
+                </summary>
                 <Val raw={cum} />
               </details>
             )}
@@ -559,11 +568,12 @@ function Progress({
         </div>
       ))}
       <p className="para">
-        {f.narrative.construction.trim() || (
-          <span className="miss">
-            {t('construction')} · {t('notFilled')}
-          </span>
-        )}
+        {f.narrative.construction.trim() ||
+          (!f.activities?.length && (
+            <span className="miss">
+              {t('construction')} · {t('notFilled')}
+            </span>
+          ))}
       </p>
       <Kv label={t('tomorrowPlan')} top>
         {tomorrow.length ? (
@@ -784,17 +794,21 @@ function Issues({
 }
 
 function BusinessSections({
+  materialSession,
+  revisionNumber,
   c,
   photos,
   photoOnly,
   personnel,
 }: {
+  materialSession?: MaterialContinuitySession;
+  revisionNumber?: number;
   personnel: ReactNode;
   c: ReportContent;
   photos: PhotoAsOfDto[];
   photoOnly: ReportItemDto[];
 }) {
-  const { t, label, locale } = useI18n();
+  const { t, label, locale, lang } = useI18n();
   const source = c.facts.sourceReport;
   const extra =
     source?.schemaVersion === 4 || source?.schemaVersion === 5
@@ -939,12 +953,24 @@ function BusinessSections({
         )}
       </div>
       <div hidden={selected !== 'materials'} className="report-business-panel">
+        {materialSession && (
+          <MaterialContinuity
+            session={materialSession}
+            facts={c.facts}
+            issues={c.issues ?? []}
+            {...(revisionNumber === undefined ? {} : { revisionNumber })}
+          />
+        )}
+        <ActivitySummary
+          activities={c.facts.activities ?? []}
+          items={c.items}
+        />
         {table(
           [
             t('materials'),
             t('sourceToday'),
             t('sourceSystemUnit'),
-            t('sourceSystemCumulative'),
+            materialContinuityCopy(lang).cumulativeArrivals,
             t('sourceOriginalCumulative'),
             t('sourceOriginalPercent'),
           ],
@@ -1238,6 +1264,7 @@ function Details({ c }: { c: ReportContent }) {
 }
 
 export function ReportBody({
+  materialSession,
   personnelSession,
   onOpenPersonnelRevision,
   c,
@@ -1246,6 +1273,7 @@ export function ReportBody({
   onReply,
   photos,
 }: {
+  materialSession?: MaterialContinuitySession;
   personnelSession?: PersonnelMetricsSession;
   onOpenPersonnelRevision?: (target: PersonnelRevisionLink) => void;
   c: ReportContent;
@@ -1345,6 +1373,8 @@ export function ReportBody({
             </section>
           ) : (
             <BusinessSections
+              {...(materialSession ? { materialSession } : {})}
+              {...(version ? { revisionNumber: version.n } : {})}
               c={c}
               photos={photos}
               photoOnly={placed.photoOnlyItems}
@@ -1375,6 +1405,7 @@ export function ReportBody({
 
 /** The report tab: frozen revision when submitted, live content otherwise. */
 export function ReportView({
+  materialSession,
   personnelSession,
   onOpenPersonnelRevision,
   day,
@@ -1386,6 +1417,7 @@ export function ReportView({
   onReply,
   photos,
 }: {
+  materialSession?: MaterialContinuitySession;
   personnelSession: PersonnelMetricsSession;
   onOpenPersonnelRevision: (target: PersonnelRevisionLink) => void;
   day: DayView;
@@ -1401,6 +1433,7 @@ export function ReportView({
   if (day.state === 'submitted')
     return (
       <ReportBody
+        {...(materialSession ? { materialSession } : {})}
         c={read}
         personnelSession={personnelSession}
         onOpenPersonnelRevision={onOpenPersonnelRevision}
@@ -1465,6 +1498,7 @@ export function ReportView({
         </section>
       )}
       <ReportBody
+        {...(materialSession ? { materialSession } : {})}
         c={read}
         personnelSession={personnelSession}
         onOpenPersonnelRevision={onOpenPersonnelRevision}

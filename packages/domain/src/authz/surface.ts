@@ -781,6 +781,37 @@ const ENTRIES: readonly SurfaceEntry[] = [
     { writer: 'live', reader: 'live' },
     { writer: STRUCTURE, reader: STRUCTURE },
   ),
+  reportRead(
+    'material-quantity',
+    'query.projectId',
+    {
+      writer: 'report.materialQuantities',
+      reader: 'report.materialQuantities',
+    },
+    { writer: 'live', reader: 'submitted' },
+    { writer: ALL, reader: SUBMITTED },
+  ),
+  write(
+    'POST /api/report/material-quantity/initialize',
+    'account',
+    'report.write',
+    'body.projectId',
+    'MaterialContinuityStore.initialize',
+    'create',
+    { advances: ['MaterialQuantityScope.version'] },
+  ),
+  write(
+    'POST /api/report/material-quantity/admit',
+    'account',
+    'report.write',
+    'body.projectId',
+    'MaterialContinuityStore.admit',
+    'cas',
+    {
+      protects: ['MaterialQuantityScope.version'],
+      advances: ['MaterialQuantityScope.version'],
+    },
+  ),
   ...(
     [
       ['facts', 'ReportStore.saveFacts', 'cas'],

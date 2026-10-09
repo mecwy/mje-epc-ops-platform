@@ -1,7 +1,12 @@
 import type { PoolClient } from 'pg';
 import type { EscalationCategory } from './report-rules.js';
 import { CLOSED_STATES, ISSUE_KIND } from './issue-store.js';
-import { READ_ROLES, WRITE_ROLES, type Actor } from './store-kit.js';
+import {
+  READ_ROLES,
+  WRITE_ROLES,
+  projectAccess,
+  type Actor,
+} from './store-kit.js';
 
 declare const issueReadBrand: unique symbol;
 export interface IssueReadContext {
@@ -63,6 +68,28 @@ export function observeIssueHomeProjection(next: typeof issueHomeObserver) {
 export const issueReader = {
   forContext(ctx: IssueReadContext) {
     return {
+      /** Current issue authority, batched on the caller's transaction; no competing deadline. */
+      async materialFollowups(projectId: string, ids: string[]) {
+        const state = issueReadContexts.get(ctx);
+        if (!state) throw new Error('ISSUE_READ_CONTEXT_CLOSED');
+        const { client, actor } = state;
+        await projectAccess(client, actor, projectId);
+        return (
+          await client.query<{
+            id: string;
+            title: string;
+            workItemKey: string | null;
+            ownerPersonId: string | null;
+            dueOn: string | null;
+            closedOn: string | null;
+            state: string;
+          }>(
+            `SELECT id,summary AS title,"workItemKey","ownerPersonId","dueOn"::text AS "dueOn","closedOn"::text AS "closedOn",state::text AS state
+           FROM "Issue" WHERE "orgId"=$1 AND "projectId"=$2 AND kind=$3 AND id=ANY($4::uuid[]) ORDER BY id FOR SHARE`,
+            [actor.orgId, projectId, ISSUE_KIND, ids],
+          )
+        ).rows;
+      },
       async homeData(projectId?: string): Promise<IssueHomeDto> {
         const state =
           typeof ctx === 'object' && ctx !== null

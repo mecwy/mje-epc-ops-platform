@@ -86,6 +86,9 @@ enum RevisionState {
 }
 
 model Organization {
+  materialScopes                 MaterialQuantityScope[]
+  materialMovements              MaterialQuantityMovement[]
+  materialAdmissions             MaterialUseAdmission[]
   contractSourceIntakes          ContractSourceIntake[]       @relation("ContractSourceIntake_org")
   opportunitySourceIntakes       OpportunitySourceIntake[]    @relation("OpportunitySourceIntake_org")
   OpportunityRecord_org          OpportunityRecord[]          @relation("OpportunityRecord_org")
@@ -243,6 +246,7 @@ model Opportunity {
 }
 
 model Project {
+  materialScopes                          MaterialQuantityScope[]
   ContractGrant_project                   ContractGrant[]               @relation("ContractGrant_project")
   id                                      String                        @id @default(uuid()) @db.Uuid
   orgId                                   String                        @db.Uuid
@@ -410,13 +414,14 @@ model WorkPackage {
 }
 
 model Person {
-  OpportunityRecord_recordedByPersonId OpportunityRecord[]       @relation("OpportunityRecord_recordedByPersonId")
-  OpportunityRecordPerson_personId     OpportunityRecordPerson[] @relation("OpportunityRecordPerson_personId")
-  OpportunityGrant_personId            OpportunityGrant[]        @relation("OpportunityGrant_personId")
-  OpportunityGrant_representedPersonId OpportunityGrant[]        @relation("OpportunityGrant_representedPersonId")
-  ContractScopeVersion_actorPerson     ContractScopeVersion[]    @relation("ContractScopeVersion_actorPerson")
-  ContractAttention_causer             ContractAttention[]       @relation("ContractAttention_causer")
-  ContractAttentionRead_actorPerson    ContractAttentionRead[]   @relation("ContractAttentionRead_actorPerson")
+  materialMovements                    MaterialQuantityMovement[] @relation("MaterialMovement_person")
+  OpportunityRecord_recordedByPersonId OpportunityRecord[]        @relation("OpportunityRecord_recordedByPersonId")
+  OpportunityRecordPerson_personId     OpportunityRecordPerson[]  @relation("OpportunityRecordPerson_personId")
+  OpportunityGrant_personId            OpportunityGrant[]         @relation("OpportunityGrant_personId")
+  OpportunityGrant_representedPersonId OpportunityGrant[]         @relation("OpportunityGrant_representedPersonId")
+  ContractScopeVersion_actorPerson     ContractScopeVersion[]     @relation("ContractScopeVersion_actorPerson")
+  ContractAttention_causer             ContractAttention[]        @relation("ContractAttention_causer")
+  ContractAttentionRead_actorPerson    ContractAttentionRead[]    @relation("ContractAttentionRead_actorPerson")
 
   ContractGrant_person                  ContractGrant[]           @relation("ContractGrant_person")
   ContractGrant_represented             ContractGrant[]           @relation("ContractGrant_represented")
@@ -473,6 +478,9 @@ model Person {
 }
 
 model LoginAccount {
+  materialScopes                        MaterialQuantityScope[]      @relation("MaterialScope_actor")
+  materialMovements                     MaterialQuantityMovement[]   @relation("MaterialMovement_actor")
+  materialAdmissions                    MaterialUseAdmission[]       @relation("MaterialAdmission_actor")
   contractSourceIntakes                 ContractSourceIntake[]       @relation("ContractSourceIntake_registrar")
   opportunitySourceIntakes              OpportunitySourceIntake[]    @relation("OpportunitySourceIntake_registrar")
   OpportunityRecord_recordedByAccountId OpportunityRecord[]          @relation("OpportunityRecord_recordedByAccountId")
@@ -1010,45 +1018,46 @@ model EvidenceLink {
 }
 
 model Issue {
-  id            String            @id @default(uuid()) @db.Uuid
-  orgId         String            @db.Uuid
-  org           Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt     DateTime          @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime          @updatedAt @db.Timestamptz(6)
-  updatedBy     String            @db.Uuid
-  version       Int               @default(1)
-  kind          String
-  state         IssueState        @default(OPEN)
-  summary       String
-  dueAt         DateTime?         @db.Timestamptz(6)
-  resolution    String?
+  materialAdmissions MaterialUseAdmission[]
+  id                 String                 @id @default(uuid()) @db.Uuid
+  orgId              String                 @db.Uuid
+  org                Organization           @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt          DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime               @updatedAt @db.Timestamptz(6)
+  updatedBy          String                 @db.Uuid
+  version            Int                    @default(1)
+  kind               String
+  state              IssueState             @default(OPEN)
+  summary            String
+  dueAt              DateTime?              @db.Timestamptz(6)
+  resolution         String?
   // Signals never automatically imply fraud.
-  projectId     String?           @db.Uuid
-  project       Project?          @relation("Issue_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  taskId        String?           @db.Uuid
-  task          DailyTask?        @relation("Issue_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  sourceId      String?           @db.Uuid
-  source        SourceAssertion?  @relation("Issue_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  ownerPersonId String?           @db.Uuid
-  ownerPerson   Person?           @relation("Issue_ownerPersonId", fields: [orgId, ownerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  projectId          String?                @db.Uuid
+  project            Project?               @relation("Issue_projectId", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  taskId             String?                @db.Uuid
+  task               DailyTask?             @relation("Issue_taskId", fields: [orgId, taskId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceId           String?                @db.Uuid
+  source             SourceAssertion?       @relation("Issue_sourceId", fields: [orgId, sourceId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  ownerPersonId      String?                @db.Uuid
+  ownerPerson        Person?                @relation("Issue_ownerPersonId", fields: [orgId, ownerPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   /// One of the 8 escalation categories (CHECK constraint in SQL); escalate requires it.
-  category      String?
-  escalate      Boolean           @default(false)
-  escalatedAt   DateTime?         @db.Timestamptz(6)
+  category           String?
+  escalate           Boolean                @default(false)
+  escalatedAt        DateTime?              @db.Timestamptz(6)
   /// Needs expert confirmation; the project manager cannot close it.
-  controlled    Boolean           @default(false)
-  workItemKey   String?
+  controlled         Boolean                @default(false)
+  workItemKey        String?
   /// Site business dates.
-  createdOn     DateTime?         @db.Date
-  dueOn         DateTime?         @db.Date
-  closedOn      DateTime?         @db.Date
-  closedBy      String?           @db.Uuid
-  closer        LoginAccount?     @relation("Issue_closedBy", fields: [orgId, closedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  createdOn          DateTime?              @db.Date
+  dueOn              DateTime?              @db.Date
+  closedOn           DateTime?              @db.Date
+  closedBy           String?                @db.Uuid
+  closer             LoginAccount?          @relation("Issue_closedBy", fields: [orgId, closedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   /// Creation order (identity); never the clock.
-  seq           BigInt            @default(autoincrement())
-  notes         IssueNote[]       @relation("IssueNote_issue")
-  transitions   IssueTransition[] @relation("IssueTransition_issue")
-  photoLinks    EvidenceLink[]    @relation("EvidenceLink_issue")
+  seq                BigInt                 @default(autoincrement())
+  notes              IssueNote[]            @relation("IssueNote_issue")
+  transitions        IssueTransition[]      @relation("IssueTransition_issue")
+  photoLinks         EvidenceLink[]         @relation("EvidenceLink_issue")
 
   @@unique([orgId, id])
   @@index([orgId, projectId, createdOn, seq], map: "Issue_project_createdOn_idx")
@@ -1154,23 +1163,25 @@ model DailyClose {
 }
 
 model Revision {
-  id                       String          @id @default(uuid()) @db.Uuid
-  orgId                    String          @db.Uuid
-  org                      Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  createdAt                DateTime        @default(now()) @db.Timestamptz(6)
-  updatedAt                DateTime        @updatedAt @db.Timestamptz(6)
-  updatedBy                String          @db.Uuid
-  version                  Int             @default(1)
+  materialMovements        MaterialQuantityMovement[] @relation("MaterialMovement_source")
+  materialAdmissions       MaterialUseAdmission[]     @relation("MaterialAdmission_source")
+  id                       String                     @id @default(uuid()) @db.Uuid
+  orgId                    String                     @db.Uuid
+  org                      Organization               @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  createdAt                DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                   @updatedAt @db.Timestamptz(6)
+  updatedBy                String                     @db.Uuid
+  version                  Int                        @default(1)
   revisionNumber           Int
   baseRevisionNumber       Int?
-  state                    RevisionState   @default(DRAFT)
+  state                    RevisionState              @default(DRAFT)
   reason                   String
   snapshot                 Json
-  submittedAt              DateTime?       @db.Timestamptz(6)
-  dailyCloseId             String          @db.Uuid
-  dailyClose               DailyClose      @relation("Revision_dailyCloseId", fields: [orgId, dailyCloseId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
-  RevisionEvent_revisionId RevisionEvent[] @relation("RevisionEvent_revisionId")
-  DailyFactLink_revisionId DailyFactLink[] @relation("DailyFactLink_revisionId")
+  submittedAt              DateTime?                  @db.Timestamptz(6)
+  dailyCloseId             String                     @db.Uuid
+  dailyClose               DailyClose                 @relation("Revision_dailyCloseId", fields: [orgId, dailyCloseId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  RevisionEvent_revisionId RevisionEvent[]            @relation("RevisionEvent_revisionId")
+  DailyFactLink_revisionId DailyFactLink[]            @relation("DailyFactLink_revisionId")
 
   @@unique([orgId, id])
   @@unique([orgId, dailyCloseId, revisionNumber])
@@ -1367,24 +1378,25 @@ model PlanDraft {
 }
 
 model ReportItem {
-  id                String            @id @db.Uuid
-  orgId             String            @db.Uuid
-  org               Organization      @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  projectId         String            @db.Uuid
-  project           Project           @relation("ReportItem_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  materialScopes    MaterialQuantityScope[]
+  id                String                  @id @db.Uuid
+  orgId             String                  @db.Uuid
+  org               Organization            @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  projectId         String                  @db.Uuid
+  project           Project                 @relation("ReportItem_project", fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
   /// 'work' | 'machinery' | 'material' | 'milestone' (SQL CHECK)
   kind              String
   key               String
   label             String
-  unit              String            @default("")
-  designQty         String            @default("")
-  openingCumulative String            @default("")
-  sortOrder         Int               @default(0)
-  active            Boolean           @default(true)
-  updatedAt         DateTime          @default(now()) @db.Timestamptz(6)
-  updatedBy         String            @db.Uuid
-  foremanAdoptions  ForemanAdoption[] @relation("ForemanAdoption_item")
-  plannedDate       DateTime?         @db.Date
+  unit              String                  @default("")
+  designQty         String                  @default("")
+  openingCumulative String                  @default("")
+  sortOrder         Int                     @default(0)
+  active            Boolean                 @default(true)
+  updatedAt         DateTime                @default(now()) @db.Timestamptz(6)
+  updatedBy         String                  @db.Uuid
+  foremanAdoptions  ForemanAdoption[]       @relation("ForemanAdoption_item")
+  plannedDate       DateTime?               @db.Date
 
   @@unique([orgId, id])
   @@unique([orgId, projectId, kind, key])
@@ -2515,4 +2527,88 @@ model OpportunitySourceIntake {
 
   @@unique([orgId, id])
   @@unique([orgId, sourceDocumentId])
+}
+
+model MaterialQuantityScope {
+  id              String                     @id @db.Uuid
+  orgId           String                     @db.Uuid
+  projectId       String                     @db.Uuid
+  materialItemId  String                     @db.Uuid
+  materialKey     String
+  specification   String
+  unit            String
+  workPackageId   String
+  scopeVersion    String
+  ownership       String
+  custody         String
+  location        String
+  openingDate     DateTime                   @db.Date
+  openingCutoffAt DateTime                   @db.Timestamptz(6)
+  openingQuantity Decimal?                   @db.Decimal(20, 6)
+  openingBasis    String
+  version         Int                        @default(1)
+  createdAt       DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedBy       String                     @db.Uuid
+  org             Organization               @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  project         Project                    @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  material        ReportItem                 @relation(fields: [orgId, materialItemId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actor           LoginAccount               @relation("MaterialScope_actor", fields: [orgId, updatedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  movements       MaterialQuantityMovement[]
+  admissions      MaterialUseAdmission[]
+
+  @@unique([orgId, id])
+  @@unique([orgId, projectId, materialItemId, workPackageId, scopeVersion])
+}
+
+model MaterialQuantityMovement {
+  sequence         Int
+  id               String                     @id @db.Uuid
+  orgId            String                     @db.Uuid
+  scopeId          String                     @db.Uuid
+  kind             String
+  quantity         Decimal                    @db.Decimal(20, 6)
+  businessDate     DateTime                   @db.Date
+  sourceRevisionId String?                    @db.Uuid
+  useFactId        String?                    @db.Uuid
+  reversesId       String?                    @db.Uuid
+  basis            String
+  createdAt        DateTime                   @default(now()) @db.Timestamptz(6)
+  actorAccountId   String                     @db.Uuid
+  actorPersonId    String                     @db.Uuid
+  org              Organization               @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  scope            MaterialQuantityScope      @relation(fields: [orgId, scopeId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceRevision   Revision?                  @relation("MaterialMovement_source", fields: [orgId, sourceRevisionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  reverses         MaterialQuantityMovement?  @relation("MaterialMovement_reverses", fields: [orgId, reversesId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  reversedBy       MaterialQuantityMovement[] @relation("MaterialMovement_reverses")
+  actor            LoginAccount               @relation("MaterialMovement_actor", fields: [orgId, actorAccountId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  person           Person                     @relation("MaterialMovement_person", fields: [orgId, actorPersonId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  admissions       MaterialUseAdmission[]
+
+  @@unique([orgId, id])
+  @@unique([orgId, reversesId])
+  @@index([orgId, scopeId, businessDate])
+}
+
+model MaterialUseAdmission {
+  id                 String                   @id @db.Uuid
+  orgId              String                   @db.Uuid
+  scopeId            String                   @db.Uuid
+  useFactId          String                   @db.Uuid
+  sourceBusinessDate DateTime                 @db.Date
+  sourceRevisionId   String                   @db.Uuid
+  movementId         String                   @db.Uuid
+  issueId            String?                  @db.Uuid
+  dueAt              DateTime?                @db.Timestamptz(6)
+  updatedBy          String                   @db.Uuid
+  updatedAt          DateTime                 @default(now()) @db.Timestamptz(6)
+  version            Int                      @default(1)
+  org                Organization             @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  scope              MaterialQuantityScope    @relation(fields: [orgId, scopeId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  sourceRevision     Revision                 @relation("MaterialAdmission_source", fields: [orgId, sourceRevisionId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  movement           MaterialQuantityMovement @relation(fields: [orgId, movementId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  issue              Issue?                   @relation(fields: [orgId, issueId], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+  actor              LoginAccount             @relation("MaterialAdmission_actor", fields: [orgId, updatedBy], references: [orgId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([orgId, id])
+  @@unique([orgId, useFactId])
 }

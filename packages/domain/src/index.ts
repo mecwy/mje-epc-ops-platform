@@ -119,3 +119,4 @@ export {
   frozenEvidenceManifest,
 } from './business-evidence-manifest.js';
 export type { BusinessEvidenceSnapshotCut } from './business-evidence-manifest.js';
+export { MaterialContinuityStore } from './material-continuity-store.js';

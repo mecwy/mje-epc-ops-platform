@@ -14,6 +14,8 @@ import {
   type InstallationTotal,
   type SourceReport,
   type WeatherFactsExtension,
+  type ReportActivity,
+  parseReportActivities,
 } from '@mje/contracts';
 
 export const TOKENS = ['unknown', 'na'] as const;
@@ -110,6 +112,7 @@ export interface MilestoneFact {
   note: string;
 }
 export interface DayFacts extends WeatherFactsExtension {
+  activities?: ReportActivity[];
   sourceReport?: SourceReport;
   siteLocation?: string;
   weather: string;
@@ -143,6 +146,7 @@ export function blankFacts(): DayFacts {
 }
 export function hasFacts(f: DayFacts): boolean {
   return Boolean(
+    f.activities?.length ||
     f.siteLocation?.trim() ||
     f.weatherReferences?.length ||
     f.reportLocationRef ||
@@ -696,8 +700,23 @@ export function coverage(input: CoverageInput): Coverage {
     if ((dec(v) ?? 0n) > 0n && !input.photographedItems.has(id))
       missing.push({ key: 'photo', item: id });
   }
+  // Validate the payload even in the browser preview; a blank card is not work content.
+  let activityContent: boolean;
+  try {
+    activityContent = parseReportActivities(f.activities ?? []).some(
+      (a) =>
+        input.itemIds.includes(a.workItemKey) &&
+        a.workPackageId.trim() &&
+        a.scopeVersion.trim() &&
+        a.process.trim() &&
+        (a.completion.trim() || (dec(a.quantity) ?? 0n) > 0n),
+    );
+  } catch {
+    activityContent = false;
+  }
   for (const k of ['construction', 'quality', 'safety'] as const)
-    if (!f.narrative[k].trim()) missing.push({ key: k });
+    if (!f.narrative[k].trim() && !(k === 'construction' && activityContent))
+      missing.push({ key: k });
   if (ROLE_KEYS.every((r) => !f.people[r])) missing.push({ key: 'people' });
   const mach = input.machineryIds.filter((id) => !f.machinery[id]).length;
   if (mach) missing.push({ key: 'machinery', n: mach });
