@@ -180,3 +180,7 @@ try {
 } finally {
   await container.delete();
 }
+
+// The standard database gate also executes the existing isolated report harness and its
+// material continuity cases. Shared tenancy, low-privilege app role and cleanup are reused.
+await import('./report-integration.mjs');

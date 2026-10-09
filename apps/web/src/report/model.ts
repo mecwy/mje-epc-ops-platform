@@ -5,7 +5,11 @@ import type {
   ReportItemDto,
   InstallationTotal,
 } from '@mje/contracts';
-import { parseInstallationCumulative } from '@mje/contracts';
+import {
+  parseInstallationCumulative,
+  parseReportActivities,
+} from '@mje/contracts';
+import { withActivities } from './activity-model.js';
 import {
   ROLE_KEYS,
   coverage,
@@ -162,6 +166,11 @@ export function setFact(
   path: string,
   value: string,
 ): DayFactsDto {
+  if (path === 'activities')
+    return withActivities(
+      facts,
+      JSON.parse(value) as import('@mje/contracts').ReportActivity[],
+    );
   const [head, key] = path.split('.') as [
     keyof DayFactsDto,
     string | undefined,
@@ -172,6 +181,11 @@ export function setFact(
 }
 /** The draft can only be saved when every number is valid; invalid text stays local. */
 export function savable(facts: DayFactsDto): boolean {
+  try {
+    if (facts.activities) parseReportActivities(facts.activities);
+  } catch {
+    return false;
+  }
   const maps = [
     facts.qty,
     facts.cumulative,
@@ -179,7 +193,12 @@ export function savable(facts: DayFactsDto): boolean {
     facts.machinery,
     facts.materials,
   ];
-  return maps.every((m) => Object.values(m).every((v) => isReported(v)));
+  return (
+    maps.every((m) => Object.values(m).every((v) => isReported(v))) &&
+    (facts.activities ?? []).every(
+      (a) => a.use?.state !== 'edited' || dec(a.use.actualQuantity) !== null,
+    )
+  );
 }
 
 /**

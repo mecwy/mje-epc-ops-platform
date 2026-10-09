@@ -1,0 +1,72 @@
+.material-ledger {
+  border: 1px solid #dde5e2;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  min-width: 0;
+}
+.material-ledger h3 {
+  margin-top: 0;
+}
+.material-ledger-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.material-ledger-grid dt {
+  font-size: 0.85rem;
+  color: #64716d;
+}
+.material-ledger-grid dd {
+  margin: 4px 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.material-ledger-source {
+  border-top: 1px solid #e0e7e4;
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.material-ledger label {
+  display: block;
+  margin: 8px 0;
+}
+.material-ledger input:not([type='checkbox']),
+.material-ledger select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.material-ledger details {
+  margin-top: 12px;
+}
+.material-ledger-warning {
+  color: #8a531d;
+  background: #fff7e8;
+  padding: 10px;
+  border-radius: 8px;
+}
+.material-ledger-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.material-ledger-small {
+  color: #64716d;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .material-ledger input:not([type='checkbox']),
+  .material-ledger select,
+  .material-ledger button,
+  .material-ledger summary {
+    min-height: 44px;
+  }
+  .material-ledger button {
+    min-width: 44px;
+  }
+  .material-ledger-source label {
+    min-height: 44px;
+  }
+}

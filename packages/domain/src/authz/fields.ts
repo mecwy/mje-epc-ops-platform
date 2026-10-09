@@ -198,6 +198,8 @@ type PhotoGetDto = Awaited<ReturnType<PhotoStore['get']>>;
 
 /** The DTO each layered projector produces. */
 export interface ProjectorDtos {
+  'report.materialQuantities': import('@mje/contracts').MaterialContinuityView;
+  'report.businessEvidence': import('@mje/contracts').EvidenceWorkspace;
   'opportunity.list': { items: OpportunityItemDto[] };
   'opportunity.detail': OpportunityItemDto;
   'opportunity.history': OpportunityHistoryDto;
@@ -382,6 +384,79 @@ const weatherReferenceFields: FieldTable<SafeFrozenWeatherReference> = {
   sourceLink: SUB,
   licenseLink: SUB,
 };
+/** Same fact layer as qty/materials; enumerate nested fields instead of opaque JSON. */
+const activityFields = (layer: Layer) =>
+  ({
+    operationId: { layer },
+    outputFactId: { layer },
+    workPackageId: { layer },
+    scopeVersion: { layer },
+    area: { layer },
+    process: { layer },
+    completion: { layer },
+    workItemKey: { layer },
+    workItemId: { layer },
+    outputUnit: { layer },
+    quantity: { layer },
+    outputKind: { layer },
+    use: {
+      layer,
+      fields: {
+        id: { layer },
+        materialKey: { layer },
+        materialItemId: { layer },
+        specification: { layer },
+        unit: { layer },
+        actualQuantity: { layer },
+        state: { layer },
+        origin: { layer },
+        differenceNote: { layer },
+        reviewRequired: { layer },
+        confirmation: {
+          layer,
+          fields: { accountId: { layer }, personId: { layer }, at: { layer } },
+        },
+        estimate: {
+          layer,
+          fields: {
+            quantity: { layer },
+            ruleId: { layer },
+            ruleVersion: { layer },
+            mappingVersion: { layer },
+            scopeRef: { layer },
+            outputFactId: { layer },
+            outputQuantity: { layer },
+            workItemKey: { layer },
+            materialKey: { layer },
+            specification: { layer },
+            outputUnit: { layer },
+            materialUnit: { layer },
+            ratio: { layer },
+          },
+        },
+      },
+    },
+  }) as const;
+const activityMappingFields = {
+  orgId: S,
+  projectId: S,
+  workItemId: S,
+  materialItemId: S,
+  validFrom: S,
+  basisRef: S,
+  workPackageId: S,
+  scopeVersion: S,
+  area: S,
+  workItemKey: S,
+  materialKey: S,
+  specification: S,
+  outputUnit: S,
+  materialUnit: S,
+  ruleId: S,
+  ruleVersion: S,
+  mappingVersion: S,
+  ratio: S,
+} as const;
 const dayCommon = (content: Layer) =>
   ({
     access: S,
@@ -412,9 +487,11 @@ const dayCommon = (content: Layer) =>
         sourceReport: sub(content),
         weatherReferences: sub(content),
         reportLocationRef: sub(content),
+        activities: { layer: content, items: activityFields(content) },
       },
     },
     weatherReferences: { layer: content, items: weatherReferenceFields },
+    activityMappings: { layer: 'structure', items: activityMappingFields },
     managerReviewCut: sub(content),
     items: sub('structure'),
     planStatus: sub(content),
@@ -868,6 +945,15 @@ const OP_ITEM = {
 } satisfies FieldTable<OpportunityItemDto>;
 
 export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
+  'report.materialQuantities': {
+    fields: {
+      projectId: S,
+      businessDate: S,
+      access: S,
+      scopes: sub('submitted'),
+      frozen: sub('submitted'),
+    },
+  },
   'opportunity.list': {
     fields: { items: { layer: 'structure', items: OP_ITEM } },
   },
@@ -1134,6 +1220,40 @@ export const FIELDS: { [P in keyof ProjectorDtos]: Root<ProjectorDtos[P]> } = {
   'report.day.reader': { fields: dayCommon('submitted') },
   'report.revision.writer': revision('storedSnapshot', 'submitted'),
   'report.revision.reader': revision('readerSnapshot', 'submitted'),
+  'report.businessEvidence': {
+    fields: {
+      target: {
+        layer: 'structure',
+        fields: {
+          projectId: S,
+          businessDate: S,
+          crewId: S,
+          foremanRevisionId: S,
+          itemKey: S,
+        },
+      },
+      revisionNumber: S,
+      declaration: {
+        layer: 'field-writer',
+        fields: { qty: FW, unit: S, scopeRef: S },
+      },
+      evidence: sub('field-writer'),
+      associationCoverage: {
+        layer: 'field-writer',
+        fields: { scopeRef: S, withinScopeRef: S, qty: FW, unit: S },
+      },
+      availablePhotos: {
+        layer: 'structure',
+        items: { photoId: S, photoVersion: S, label: S },
+      },
+      scopes: {
+        layer: 'structure',
+        items: { id: S, withinScopeRef: S, label: S },
+      },
+      history: sub('field-writer'),
+      canBind: S,
+    },
+  },
   'report.managerReview': {
     fields: {
       actorScopeKey: S,

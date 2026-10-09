@@ -24,10 +24,14 @@ export function useDay(
   onConflict: () => void,
   /** Unsaved facts put aside before a sign-in redirect; each is reconciled on its first read. */
   recovery?: DraftRecovery,
+  /** Actor/project owner retained outside this React mount. */
+  existingStore?: DayStore,
 ) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [store] = useState(() => new DayStore(api, rerender));
+  const [store] = useState(() => existingStore ?? new DayStore(api, () => {}));
   store.hooks = { conflict: onConflict, recovery };
+
+  useEffect(() => store.subscribe(rerender), [store]);
 
   useEffect(() => {
     store.cancelAutosave();
@@ -71,6 +75,7 @@ export function useDay(
       : null,
     facts: ready ? s.facts : null,
     save: s.state,
+    saveOutcomeUnknown: s.saveOutcomeUnknown,
     /** The day's lock is held (a command runs or is unresolved): the page is read-only. */
     busy: e.lock !== null,
     /** The lock's post-write read failed: the day waits for `reloadLocked`. */
@@ -97,8 +102,27 @@ export function useDay(
     refill: (path: string) => store.refill(e, path),
     dismiss: (path: string) => store.dismiss(e, path),
     reloadLocked: () => store.reloadLocked(e),
-    submit: () =>
-      store.act(e, (v) => api.submit({ ...base(), expectedVersion: v })),
+    submit: () => {
+      // Capture the visible set before holding/flushing; a conflict aborts the action.
+      const includedUseFactIds = (s.facts.activities ?? []).flatMap((a) =>
+        a.use && a.use.state !== 'pending' ? [a.use.id] : [],
+      );
+      const hasActivities = Boolean(s.facts.activities?.length);
+      return store.act(e, (v) =>
+        api.submit({
+          ...base(),
+          expectedVersion: v,
+          ...(hasActivities
+            ? {
+                activityUseConfirmation: {
+                  draftVersion: v,
+                  includedUseFactIds,
+                },
+              }
+            : {}),
+        }),
+      );
+    },
     noWork: (reason: NoWorkReason, note: string) =>
       store.act(e, (v) =>
         api.noWork({ ...base(), expectedVersion: v, reason, note }),

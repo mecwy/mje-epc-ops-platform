@@ -14,7 +14,7 @@ import { EntraAuth, devToken } from './auth.js';
 import { I18nProvider, useI18n } from './i18n.js';
 import { Icon } from './icons.js';
 import { fmtDay, fmtNum, shift, siteToday } from './report/format.js';
-import { CheckPage, FillPage, WorkRows } from './report/FillPage.js';
+import { CheckPage, FillPage } from './report/FillPage.js';
 import { dayCommandNotice } from './report/FillPage.js';
 import {
   liveCoverage,
@@ -40,7 +40,11 @@ import {
 import { parseReportLocationCandidate } from '@mje/contracts';
 import { createBrowserWeatherPorts } from './report/browser-weather-ports.js';
 import type { PersonnelRevisionLink } from './report/PersonnelMetrics.js';
-import { ReportBody, ReportView } from './report/ReportView.js';
+import {
+  FieldDayOverview,
+  ReportBody,
+  ReportView,
+} from './report/ReportView.js';
 import { historyReducer } from './report/history-view.js';
 import { CorrectionSheet, MenuSheet, NoWorkSheet } from './report/Sheets.js';
 import { ActionAborted, useDay } from './report/useDay.js';
@@ -66,6 +70,13 @@ import { PmOwnerRegistry, pmDayBinding } from './site/pm-owners.js';
 import { PmOwnedBar } from './site/OwnedBar.js';
 import { useSessions } from './site/use-sessions.js';
 import { PmFieldContext, type PmField } from './report/CheckInsBeside.js';
+import {
+  BusinessEvidenceContext,
+  FieldEvidenceWorkspace,
+  FieldEvidenceRecovery,
+  fieldEvidenceServices,
+  type FieldEvidenceApi,
+} from './report/business-evidence-connection.js';
 import { Sheet } from './ui.js';
 import { ContractsWorkspace } from './contracts/ContractsWorkspace.js';
 import { OpportunitiesWorkspace } from './opportunities/OpportunitiesWorkspace.js';
@@ -197,6 +208,8 @@ function Workspace({
   resume,
   recoveryWorkspaces,
   pmRegistry,
+  fieldEvidenceOwner,
+  fieldEvidenceActor,
   onExecutiveHome,
   requestedDate,
   onDateChange,
@@ -215,6 +228,8 @@ function Workspace({
   resume: ResumeKeeper;
   recoveryWorkspaces: Map<string, WorkspaceDrafts>;
   pmRegistry: PmOwnerRegistry;
+  fieldEvidenceOwner: FieldEvidenceWorkspace;
+  fieldEvidenceActor: string | null;
   weatherPorts?: WeatherPresentationPorts;
   forecastEnabled?: boolean;
 }) {
@@ -293,6 +308,9 @@ function Workspace({
     date,
     () => say(t('conflictReloaded')),
     resume,
+    fieldEvidenceActor
+      ? fieldEvidenceOwner.dayStoreFor(fieldEvidenceActor, project.id, api)
+      : undefined,
   );
   const weatherSessions = useMemo(
     () => new Map<string, WeatherLocationSession>(),
@@ -463,6 +481,7 @@ function Workspace({
   // is made once per project against the workspace's day store: every lock and read goes to
   // that project's own day entry, never to whatever day the page shows later.
   pm.day ??= pmDayBinding(h.store, project.id);
+  fieldEvidenceOwner.dayStore(project.id, h.store);
   pm.adoptFor(date).workspaceRecovery = true;
   const pmField: PmField | null =
     canWrite && h.day
@@ -476,7 +495,25 @@ function Workspace({
         }
       : null;
   const withPmField = (node: ReactNode) => (
-    <PmFieldContext.Provider value={pmField}>{node}</PmFieldContext.Provider>
+    <PmFieldContext.Provider value={pmField}>
+      <BusinessEvidenceContext.Provider
+        value={
+          pmField && fieldEvidenceActor && viewing === null
+            ? {
+                owner: fieldEvidenceOwner,
+                actor: fieldEvidenceActor,
+                projectId: project.id,
+                businessDate: date,
+                submitted:
+                  h.day?.state === 'submitted' &&
+                  h.day.correctionReason === null,
+              }
+            : null
+        }
+      >
+        {node}
+      </BusinessEvidenceContext.Provider>
+    </PmFieldContext.Provider>
   );
   const wide = useMedia('(min-width: 1100px)');
   useEffect(() => setTask(null), [date]);
@@ -675,7 +712,7 @@ function Workspace({
       aria-label={t('mainNav')}
       // The column count applies to the phone's bottom bar only; wider screens use a sidebar.
       style={
-        task ? undefined : ({ '--tabs': views.length + 1 } as CSSProperties)
+        task ? undefined : ({ '--tabs': views.length + 2 } as CSSProperties)
       }
     >
       {views.map((v) => {
@@ -804,6 +841,12 @@ function Workspace({
           <div className="banner err">{t('loadFail')}</div>
         ) : viewing.rev ? (
           <ReportBody
+            materialSession={materialContinuitySession(
+              api,
+              h.store,
+              project.id,
+              date,
+            )}
             c={viewing.rev.snapshot}
             onOpenPersonnelRevision={openPersonnelRevision}
             version={meta ?? viewing.rev}
@@ -828,6 +871,12 @@ function Workspace({
   else if (view === 'report')
     body = (
       <ReportView
+        materialSession={materialContinuitySession(
+          api,
+          h.store,
+          project.id,
+          date,
+        )}
         day={day}
         personnelSession={personnelSession}
         onOpenPersonnelRevision={openPersonnelRevision}
@@ -841,17 +890,21 @@ function Workspace({
       />
     );
   else {
-    const locked = day.state === 'submitted' || !canWrite || busy;
     const today = (
-      <section className="card">
-        {day.state === 'submitted' && (
-          <div className="status-row">
-            <span className="chip ok">{t('submittedLocked')}</span>
-          </div>
-        )}
-        <h2 className="blk">{t('doingToday')}</h2>
-        <WorkRows h={h} day={day} locked={locked} compact />
-      </section>
+      <FieldDayOverview
+        day={day}
+        read={h.read}
+        canWrite={canWrite}
+        busy={busy}
+        photos={reportPhotos(day.state, h.read, photos.photos)}
+        onFill={() => setTask('fill')}
+        onReport={() => {
+          dispatchView({ type: 'close' });
+          setView('report');
+        }}
+        onCorrect={() => setSheet('correct')}
+        onNoWork={() => setSheet('noWork')}
+      />
     );
     const target = shift(date, 1);
     const plan = (
@@ -1203,6 +1256,10 @@ function Root({
   const [visited, setVisited] = useState<string[]>([]);
   const reportDates = useRef(new Map<string, string>());
   const [projectsOwner, setProjectsOwner] = useState<Session | null>(null);
+  const [fieldEvidenceOwner] = useState(() => new FieldEvidenceWorkspace());
+  const [fieldEvidenceActor, setFieldEvidenceActor] = useState<string | null>(
+    null,
+  );
   useEffect(() => {
     const changed = () => setHash(window.location.hash);
     window.addEventListener('hashchange', changed);
@@ -1271,6 +1328,8 @@ function Root({
     let current = true;
     setProjects(null);
     setProjectsOwner(null);
+    setFieldEvidenceActor(null);
+    fieldEvidenceOwner.clearActor();
     setFailed(null);
     if (
       session &&
@@ -1284,6 +1343,14 @@ function Root({
               r.projects.filter((p) => p.access === 'write').map((p) => p.id),
             );
             setProjects(r.projects);
+            const services = fieldEvidenceServices(
+              reportApi(session.token) as Partial<FieldEvidenceApi>,
+            );
+            if (services) {
+              const actor = `${r.accountId}:${r.personId}`;
+              fieldEvidenceOwner.bind(actor, services);
+              setFieldEvidenceActor(actor);
+            }
             setProjectsOwner(session);
           }
         })
@@ -1294,7 +1361,7 @@ function Root({
     return () => {
       current = false;
     };
-  }, [session, resume]);
+  }, [session, resume, fieldEvidenceOwner]);
   useEffect(() => {
     if (selectedProjectId || !projects?.length) return;
     setSelectedProjectId(
@@ -1321,7 +1388,7 @@ function Root({
     reportRoute?.projectId,
     reportRoute?.businessDate,
   ]);
-  const ownedBars = pmRegistry
+  const adoptionBars = pmRegistry
     ?.all()
     .map((owners) => (
       <PmOwnedBar
@@ -1340,6 +1407,16 @@ function Root({
         adoptionOnly
       />
     ));
+  const ownedBars = (
+    <>
+      {adoptionBars}
+      <FieldEvidenceRecovery
+        owner={fieldEvidenceOwner}
+        actor={fieldEvidenceActor}
+        projectLabel={(id) => projects?.find((p) => p.id === id)?.name ?? '—'}
+      />
+    </>
+  );
 
   // Signed out, or expired before the workspace opened: the sign-in screen, never a dead end.
   const renewing = Boolean(session?.renew && state.expired && !projects);
@@ -1448,6 +1525,8 @@ function Root({
               resume={resume}
               recoveryWorkspaces={recoveryWorkspaces}
               pmRegistry={pmRegistry!}
+              fieldEvidenceOwner={fieldEvidenceOwner}
+              fieldEvidenceActor={fieldEvidenceActor}
               forecastEnabled={forecastEnabled}
               {...(weatherPorts ? { weatherPorts } : {})}
               {...(reportRoute?.projectId === p.id
@@ -1543,3 +1622,4 @@ export function App({
     </I18nProvider>
   );
 }
+import { materialContinuitySession } from './report/material-continuity-session.js';

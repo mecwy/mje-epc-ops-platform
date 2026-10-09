@@ -1,12 +1,38 @@
 import { blankFacts } from '@mje/domain/rules';
 import type { DayFactsDto } from '@mje/contracts';
-import { dayCommandNotice, entryWork } from './FillPage.js';
-import { describe, expect, it } from 'vitest';
+import { dayCommandNotice, entryWork, SaveBadge } from './FillPage.js';
+import { describe, expect, it, vi } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { I18nProvider } from '../i18n.js';
 import type { ForemanAdoptCommand, ForemanBasisDto } from '@mje/contracts';
 import { ApiError, type ForemanDayView } from '../api.js';
 import { AdoptFlow, adoptBlock, itemView, sameBasis } from './foreman-adopt.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+it('renders the actual save badge with pending wording only for an unsettled failed save', () => {
+  vi.stubGlobal('navigator', { languages: ['en'] });
+  try {
+    const badge = (save: 'failed' | 'saved', outcomeUnknown: boolean) =>
+      renderToStaticMarkup(
+        createElement(I18nProvider, {
+          children: createElement(SaveBadge, { save, outcomeUnknown }),
+        }),
+      );
+    const pending = badge('failed', true);
+    expect(pending).toContain('Save result pending');
+    expect(pending).toContain('It may or may not have been recorded');
+    expect(pending).not.toContain('Save failed');
+    const refused = badge('failed', false);
+    expect(refused).toContain('Save failed');
+    expect(refused).not.toContain('Save result pending');
+    const recovered = badge('saved', true);
+    expect(recovered).toContain('Saved');
+    expect(recovered).not.toContain('Save result pending');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 const basis = (n: number | null, roster = 3): ForemanBasisDto => ({
   rosterVersion: roster,
   expectedCrews: ['cB', 'cA'],

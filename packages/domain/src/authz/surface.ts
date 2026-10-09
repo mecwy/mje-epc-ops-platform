@@ -781,6 +781,37 @@ const ENTRIES: readonly SurfaceEntry[] = [
     { writer: 'live', reader: 'live' },
     { writer: STRUCTURE, reader: STRUCTURE },
   ),
+  reportRead(
+    'material-quantity',
+    'query.projectId',
+    {
+      writer: 'report.materialQuantities',
+      reader: 'report.materialQuantities',
+    },
+    { writer: 'live', reader: 'submitted' },
+    { writer: ALL, reader: SUBMITTED },
+  ),
+  write(
+    'POST /api/report/material-quantity/initialize',
+    'account',
+    'report.write',
+    'body.projectId',
+    'MaterialContinuityStore.initialize',
+    'create',
+    { advances: ['MaterialQuantityScope.version'] },
+  ),
+  write(
+    'POST /api/report/material-quantity/admit',
+    'account',
+    'report.write',
+    'body.projectId',
+    'MaterialContinuityStore.admit',
+    'cas',
+    {
+      protects: ['MaterialQuantityScope.version'],
+      advances: ['MaterialQuantityScope.version'],
+    },
+  ),
   ...(
     [
       ['facts', 'ReportStore.saveFacts', 'cas'],
@@ -1207,6 +1238,38 @@ const ENTRIES: readonly SurfaceEntry[] = [
     {
       protects: ['ForemanReportRevision.n', 'ManagerReviewEvent.version'],
       advances: ['ManagerReviewEvent.version', 'FieldDay.seq'],
+    },
+  ),
+
+  // C05 uses the existing project gates plus exact source/media/policy cuts; registration grants nothing.
+  read(
+    'GET /api/report/business-evidence',
+    'account',
+    ['report.view', 'report.view-submitted'],
+    'query.projectId',
+    {
+      'report.view': {
+        temporal: 'live',
+        layers: ['structure', 'field-writer'],
+        projector: 'report.businessEvidence',
+      },
+      'report.view-submitted': {
+        temporal: 'frozen',
+        layers: ['structure', 'field-writer'],
+        projector: 'report.businessEvidence',
+      },
+    },
+  ),
+  write(
+    'POST /api/report/business-evidence',
+    'account',
+    'report.write',
+    'body.target.projectId',
+    'BusinessEvidenceStore.write',
+    'cas',
+    {
+      protects: ['ForemanReportRevision.n', 'BusinessEvidenceVersion.version'],
+      advances: ['BusinessEvidenceVersion.version', 'FieldDay.seq'],
     },
   ),
 

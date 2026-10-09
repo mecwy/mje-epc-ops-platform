@@ -6,13 +6,19 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { Pool } from 'pg';
 import { createRequire } from 'node:module';
-import { AlphaStore, ReportStore } from '../packages/domain/dist/index.js';
+import {
+  AlphaStore,
+  ReportStore,
+  IssueStore,
+  MaterialContinuityStore,
+} from '../packages/domain/dist/index.js';
 // Test hook of the report exit (ADR-0003 D2.2): which projector served a read. It installs only
 // in a test process; this runner is one.
 process.env.NODE_ENV = 'test';
 import { observeReportProjections } from '../packages/domain/dist/report-reader.js';
 import { createApp } from '../apps/api/dist/app.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
+import { materialContinuityChecks } from './material-continuity-integration.mjs';
 
 const requireApi = createRequire(
   new URL('../apps/api/package.json', import.meta.url),
@@ -196,11 +202,16 @@ try {
   };
   const auth = { tenantId, audience, clientId, scope: 'access_as_user' };
   const verifier = new TokenVerifier(auth, createLocalJWKSet({ keys: [key] }));
+  const activityMappings = [];
+  const reportStore = new ReportStore(appPool, { activityMappings });
+  const issueStore = new IssueStore(appPool);
   app = await createApp({
     auth,
     verifier,
     store: new AlphaStore(appPool),
-    reportStore: new ReportStore(appPool),
+    reportStore,
+    issueStore,
+    materialContinuityStore: new MaterialContinuityStore(appPool, issueStore),
   });
   await app.listen(0, '127.0.0.1');
   const base = await app.getUrl();
@@ -3221,6 +3232,31 @@ try {
       'site-only facts make a draft and survive a no-work submission without inventing progress or personnel',
     );
   }
+
+  await materialContinuityChecks({
+    owner,
+    appPool,
+    reportStore,
+    issueStore,
+    activityMappings,
+    waitForLockWaiters,
+    call,
+    expectStatus,
+    pass,
+    projectId: projectA,
+    otherProjectId: projectA2,
+    foreignProjectId: projectB,
+    orgId: orgA,
+    otherOrgId: orgB,
+    accountId: accountPm,
+    personId: personPm,
+    identity: { tenantId, objectId: objectPm },
+    otherIdentity: { tenantId, objectId: objectTwin },
+    pm,
+    reader: exec,
+    otherProjectToken: twin,
+    foreignToken: pmB,
+  });
 
   console.log(
     `Report HTTP/DB integration: ${checks} checks passed; synthetic TEST data only. Photos, issues, field devices and the web UI are later slices.`,

@@ -5,6 +5,7 @@ import { ErrorText } from '../field/ErrorText.js';
 import { fmtNum, fmtStamp } from './format.js';
 import { PmFieldContext } from './CheckInsBeside.js';
 import { adoptBlock, itemView } from './foreman-adopt.js';
+import { BusinessEvidenceConnection } from './business-evidence-connection.js';
 
 export { PmFieldContext, type PmField } from './CheckInsBeside.js';
 const usePmField = () => useContext(PmFieldContext);
@@ -25,7 +26,7 @@ const CREW_STATUS = {
  * automatically. After FOREMAN_TOTAL_CHANGED the new total is shown beside the one seen.
  */
 export function ForemanLine({ itemKey }: { itemKey: string }) {
-  const { t, locale } = useI18n();
+  const { t, locale, lang } = useI18n();
   const pm = usePmField();
   const [open, setOpen] = useState(false);
   // Only a failure before anything was sent (typed facts not saved, busy); an adoption's own
@@ -126,6 +127,21 @@ export function ForemanLine({ itemKey }: { itemKey: string }) {
                     ? fmtNum(c.qty, locale)
                     : t(key)}
                 </span>
+                {f?.revisions.find((r) => r.crewId === c.crewId) && (
+                  <details className="crew-evidence-details">
+                    <summary>
+                      {lang !== 'zh' ? 'Evidence and review' : '证据与复核'}
+                    </summary>
+                    <BusinessEvidenceConnection
+                      crewId={c.crewId}
+                      foremanRevisionId={
+                        f.revisions.find((r) => r.crewId === c.crewId)!
+                          .revisionId
+                      }
+                      itemKey={itemKey}
+                    />
+                  </details>
+                )}
               </li>
             );
           })}

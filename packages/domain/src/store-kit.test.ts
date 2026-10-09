@@ -12,6 +12,8 @@ import {
   idempotent,
   inTransaction,
   sha,
+  transactionSignal,
+  withTransactionClientScope,
 } from './store-kit.js';
 import { withBlobDeadline, BlobDeadlineError } from './photo-store.js';
 
@@ -122,6 +124,111 @@ describe('account transaction protocol (ADR-0003 D5)', () => {
     expect(f.log).not.toContain('ROLLBACK');
     expect(f.released).toEqual([terminated]);
     expect(f.client.listenerCount('error')).toBe(0);
+  });
+});
+
+describe('scoped transaction client lifetime', () => {
+  it('passes the actual transaction signal to its own child and revokes only the child when the scope closes', async () => {
+    const f = fake({});
+    let retained: PoolClient | undefined;
+    let childSignal: AbortSignal | undefined;
+    await inTransaction(f.pool, identity, async (raw) => {
+      const parent = transactionSignal(raw)!;
+      await withTransactionClientScope(raw, async (child) => {
+        retained = child;
+        childSignal = transactionSignal(child);
+        expect(childSignal).toBeDefined();
+        expect(childSignal).not.toBe(parent);
+        expect(childSignal?.aborted).toBe(false);
+        await child.query('SELECT TEST_SCOPED');
+      });
+      expect(childSignal?.aborted).toBe(true);
+      expect(transactionSignal(retained!)).toBeUndefined();
+      expect(parent.aborted).toBe(false);
+      const queries = f.log.length;
+      expect(() => retained!.query('SELECT TEST_CLOSED')).toThrow(
+        'REPORT_READ_CONTEXT_CLOSED',
+      );
+      expect(f.log).toHaveLength(queries);
+      await raw.query('SELECT TEST_PARENT_STILL_OPEN');
+    });
+    expect(f.log.at(-1)).toBe('COMMIT');
+    expect(
+      transactionSignal(f.client as unknown as PoolClient),
+    ).toBeUndefined();
+  });
+
+  it('revokes an unfinished child before the parent client is released', async () => {
+    const f = fake({});
+    let child: PoolClient | undefined;
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    let pending: Promise<void> | undefined;
+    await inTransaction(f.pool, identity, async (raw) => {
+      pending = withTransactionClientScope(raw, async (scoped) => {
+        child = scoped;
+        signal = transactionSignal(scoped);
+        await new Promise<void>((resolve) => (finish = resolve));
+      });
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(transactionSignal(child!)).toBeUndefined();
+    const queries = f.log.length;
+    expect(() => child!.query('SELECT TEST_AFTER_TRANSACTION')).toThrow(
+      'REPORT_READ_CONTEXT_CLOSED',
+    );
+    expect(f.log).toHaveLength(queries);
+    finish();
+    await pending;
+  });
+
+  it('connection loss aborts the child immediately and preserves the server SQLSTATE', async () => {
+    const f = fake({});
+    let child: PoolClient | undefined;
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => (started = resolve));
+    const pending = inTransaction(f.pool, identity, (raw) =>
+      withTransactionClientScope(raw, async (scoped) => {
+        child = scoped;
+        signal = transactionSignal(scoped);
+        started();
+        await new Promise<void>((resolve) => (finish = resolve));
+      }),
+    );
+    await ready;
+    const terminated = Object.assign(new Error('TEST connection ended'), {
+      code: '25P04',
+    });
+    f.client.emit('error', terminated);
+    expect(signal?.aborted).toBe(true);
+    expect(signal?.reason).toBe(terminated);
+    expect(transactionSignal(child!)).toBeUndefined();
+    const queries = f.log.length;
+    expect(() => child!.query('SELECT TEST_AFTER_DISCONNECT')).toThrow(
+      'REPORT_READ_CONTEXT_CLOSED',
+    );
+    expect(f.log).toHaveLength(queries);
+    await expect(pending).rejects.toBe(terminated);
+    finish();
+    expect(f.log).not.toContain('COMMIT');
+    expect(f.released).toEqual([terminated]);
+  });
+
+  it('a prototype copy or arbitrary client cannot borrow transaction authority', async () => {
+    const f = fake({});
+    await inTransaction(f.pool, identity, async (raw) => {
+      for (const forged of [
+        Object.create(raw) as PoolClient,
+        { query: raw.query.bind(raw) } as PoolClient,
+      ]) {
+        expect(transactionSignal(forged)).toBeUndefined();
+        await withTransactionClientScope(forged, async (scoped) => {
+          expect(transactionSignal(scoped)).toBeUndefined();
+        });
+      }
+    });
   });
 });
 

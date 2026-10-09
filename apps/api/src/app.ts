@@ -1,4 +1,12 @@
-import { STATUS_FIELD_NAMES, type StatusFieldName } from '@mje/contracts';
+import {
+  STATUS_FIELD_NAMES,
+  type StatusFieldName,
+  type BusinessEvidenceService,
+} from '@mje/contracts';
+import {
+  BusinessEvidenceController,
+  BUSINESS_EVIDENCE_SERVICE,
+} from './business-evidence.controller.js';
 import { ContractRegisterController } from './contract-register.controller.js';
 import { OpportunityController } from './opportunity.controller.js';
 import {
@@ -65,6 +73,8 @@ import {
   type ManagerReviewService,
 } from './manager-review.controller.js';
 import { IssueController } from './issue.controller.js';
+import { MaterialContinuityController } from './material-continuity.controller.js';
+import { MaterialContinuityStore } from '@mje/domain';
 import { PhotoController } from './photo.controller.js';
 import { FieldController, FieldTokenGuard } from './field.controller.js';
 import { FieldAdminController } from './field-admin.controller.js';
@@ -242,6 +252,7 @@ export interface AlphaRuntime {
   /** No title-based rights or fallback evidence; actual transaction adapters are explicit. */
   managerReviewStore?: ManagerReviewStore;
   managerReviewPorts?: ReviewServerPorts;
+  businessEvidenceService?: BusinessEvidenceService;
   projectStatusCommands?: ProjectStatusCommands;
   contractRegisterReader?: ContractRegisterReader;
   contractRegisterCommands?: ContractRegisterCommands;
@@ -251,6 +262,7 @@ export interface AlphaRuntime {
   projectHomeReader?: ProjectHomeReader;
   /** Issues and escalation (U2.1 rule 10); served only together with the report slice. */
   issueStore?: IssueStore;
+  materialContinuityStore?: MaterialContinuityStore;
   /** Photos (U2.1 rule 8); served only together with the report slice and a blob store. */
   photoStore?: PhotoStore;
   /** Field roster, devices and entry (A6a); served only together with the report slice. */
@@ -348,10 +360,14 @@ export async function createApp(
       ...(alpha?.reportStore ? [ReportController] : []),
       ...(weatherApi ? [WeatherController] : []),
       ...(managerReviewService ? [ManagerReviewController] : []),
+      ...(alpha?.businessEvidenceService ? [BusinessEvidenceController] : []),
       ...(alpha?.projectStatusCommands && alpha.projectStatusReader
         ? [ProjectStatusController]
         : []),
       ...(alpha?.reportStore && alpha.issueStore ? [IssueController] : []),
+      ...(alpha?.reportStore && alpha.materialContinuityStore
+        ? [MaterialContinuityController]
+        : []),
       ...(alpha?.reportStore &&
       alpha.projectHomeReader &&
       alpha.projectStatusReader &&
@@ -409,6 +425,14 @@ export async function createApp(
                   },
                 ]
               : []),
+            ...(alpha.businessEvidenceService
+              ? [
+                  {
+                    provide: BUSINESS_EVIDENCE_SERVICE,
+                    useValue: alpha.businessEvidenceService,
+                  },
+                ]
+              : []),
             ...(managerReviewService
               ? [
                   {
@@ -446,6 +470,14 @@ export async function createApp(
               : []),
             ...(alpha.reportStore && alpha.issueStore
               ? [{ provide: IssueStore, useValue: alpha.issueStore }]
+              : []),
+            ...(alpha.reportStore && alpha.materialContinuityStore
+              ? [
+                  {
+                    provide: MaterialContinuityStore,
+                    useValue: alpha.materialContinuityStore,
+                  },
+                ]
               : []),
             ...(alpha.reportStore && alpha.photoStore
               ? [{ provide: PhotoStore, useValue: alpha.photoStore }]

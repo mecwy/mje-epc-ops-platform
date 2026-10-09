@@ -52,6 +52,20 @@ function setup() {
   return { api, store, entry };
 }
 describe('C03 composes with the existing day lock', () => {
+  it('supports canonical owner subscriptions and removes a detached mount listener', () => {
+    const { store, entry } = setup();
+    const originalMount = vi.fn();
+    const remounted = vi.fn();
+    const unsubscribe = store.subscribe(originalMount);
+    store.acquire(entry, 'TEST_owner');
+    expect(originalMount).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    store.subscribe(remounted);
+    store.abandon(entry, 'TEST_owner');
+    expect(originalMount).toHaveBeenCalledTimes(1);
+    expect(remounted).toHaveBeenCalled();
+    expect(entry.lock).toBeNull();
+  });
   it('sends capture outside facts and keeps the lock until its post-write read applies', async () => {
     const { api, store, entry } = setup();
     await store.read(entry, false);

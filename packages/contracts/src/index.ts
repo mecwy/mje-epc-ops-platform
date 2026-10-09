@@ -4,6 +4,7 @@ export interface HealthResponse {
   phase: 'phase-0';
 }
 export * from './alpha.js';
+export * from './material-continuity.js';
 export * from './report.js';
 export * from './issue.js';
 export * from './photo.js';

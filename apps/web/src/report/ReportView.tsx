@@ -20,9 +20,13 @@ import { Chip, Kv } from '../ui.js';
 import { fmtNum, fmtTime, shown } from './format.js';
 import { activeWork, byKind, photoPlacement, target } from './model.js';
 import { Attention, IssueList } from './Issues.js';
-import { PhotoStrip, ReportPhotos } from './Photos.js';
+import { PhotoStrip, PhotosRow, ReportPhotos } from './Photos.js';
 import { FrozenWeatherReferences } from './WeatherLocation.js';
 import { InstallationValue } from './FillPage.js';
+import { ActivitySummary } from './ActivityCard.js';
+import { MaterialContinuity } from './MaterialContinuity.js';
+import { materialContinuityCopy } from './material-continuity-copy.js';
+import type { MaterialContinuitySession } from './material-continuity-session.js';
 import {
   SourceReport,
   SourceCell as SourceValue,
@@ -298,6 +302,148 @@ function TodayPersonnel({ c }: { c: ReportContent }) {
 const unitOf = (label: (s: string) => string, it?: ReportItemDto) =>
   it?.unit ? label(`u_${it.unit}`).replace(/^u_/, '') : '';
 
+/** A read-only entrance to the existing daily report and entry workflow. */
+export function FieldDayOverview({
+  day,
+  read,
+  canWrite,
+  busy,
+  photos,
+  onFill,
+  onReport,
+  onCorrect,
+  onNoWork,
+}: {
+  day: DayView;
+  read: ReportContent;
+  canWrite: boolean;
+  busy: boolean;
+  photos: PhotoAsOfDto[];
+  onFill: () => void;
+  onReport: () => void;
+  onCorrect: () => void;
+  onNoWork: () => void;
+}) {
+  const { t, label, lang } = useI18n();
+  const submitted = day.state === 'submitted';
+  // An unfinished declaration is not a submitted report for a reader.
+  if (!canWrite && !submitted)
+    return (
+      <section className="card empty">
+        <h2>{t('notSubmitted')}</h2>
+      </section>
+    );
+  const f = read.facts;
+  const entered = (raw: string | undefined) => (raw ?? '').trim() !== '';
+  const rows = (kind: 'work' | 'material' | 'machinery') => {
+    const values =
+      kind === 'work' ? f.qty : kind === 'material' ? f.materials : f.machinery;
+    const items = byKind(read.items, kind).filter((it) =>
+      entered(values[it.key]),
+    );
+    return items.length ? (
+      items.map((it) => (
+        <div key={it.key}>
+          {label(it.label)} <Val raw={values[it.key]} /> {unitOf(label, it)}
+        </div>
+      ))
+    ) : (
+      <span className="miss">{t('notFilled')}</span>
+    );
+  };
+  const roles = ROLE_KEYS.filter((key) => entered(f.people[key]));
+  const construction = narrativeText(f.narrative.construction, lang);
+  return (
+    <div className="report-redesign">
+      <section className="card">
+        <div className="status-row">
+          <Chip tone={submitted ? 'ok' : 'warn'}>
+            {submitted
+              ? t('submittedLocked')
+              : day.state === 'correcting'
+                ? t('correcting')
+                : day.state === 'empty'
+                  ? t('noRecord')
+                  : t('draft')}
+          </Chip>
+        </div>
+        <div className="row2">
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={submitted ? onReport : onFill}
+          >
+            {submitted ? t('nav_report') : t('fieldFillToday')}
+          </button>
+          {canWrite && (
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy}
+              onClick={submitted ? onCorrect : onNoWork}
+            >
+              {submitted ? t('startCorrect') : t('noWork')}
+            </button>
+          )}
+        </div>
+      </section>
+      <section className="card" aria-label={t('siteLocation')}>
+        <Kv label={t('siteLocation')}>
+          {f.siteLocation || <span className="miss">{t('notFilled')}</span>}
+        </Kv>
+        <Kv label={t('weatherLocation_manual')}>
+          {f.weather || <span className="miss">{t('notFilled')}</span>}
+          {' · '}
+          {f.temperature || <span className="miss">{t('notFilled')}</span>}
+        </Kv>
+      </section>
+      <section className="card review-facts" aria-label={t('doingToday')}>
+        <h2 className="blk">{t('doingToday')}</h2>
+        {f.noWork && (
+          <p>
+            {t('noWork')} · {label(`nw_${f.noWork.reason}`)}
+            {f.noWork.note && ` · ${f.noWork.note}`}
+          </p>
+        )}
+        <dl>
+          <div className="review-facts-row">
+            <dt>{t('progress')}</dt>
+            <dd>{rows('work')}</dd>
+          </div>
+          <div className="review-facts-row">
+            <dt>{t('materials')}</dt>
+            <dd>{rows('material')}</dd>
+          </div>
+          <div className="review-facts-row">
+            <dt>{t('people')}</dt>
+            <dd>
+              {roles.length ? (
+                roles.map((key) => (
+                  <div key={key}>
+                    {label(`role_${key}`)} <Val raw={f.people[key]} />{' '}
+                    {t('persons')}
+                  </div>
+                ))
+              ) : (
+                <span className="miss">{t('notFilled')}</span>
+              )}
+            </dd>
+          </div>
+          <div className="review-facts-row">
+            <dt>{t('machinery')}</dt>
+            <dd>{rows('machinery')}</dd>
+          </div>
+        </dl>
+        {construction.trim() && <p>{construction}</p>}
+      </section>
+      <PhotosRow labelled />
+      <Issues c={read} photos={photos} otherIssues={read.issues ?? []} />
+      <FrozenWeatherReferences references={read.weatherReferences ?? []} />
+    </div>
+  );
+}
+
 function Progress({
   c,
   photos,
@@ -327,6 +473,7 @@ function Progress({
   return (
     <section className="card">
       <h2 className="blk">{t('progress')}</h2>
+      <ActivitySummary activities={f.activities ?? []} items={c.items} />
       {active.length === 0 && <p className="miss">{t('notFilled')}</p>}
       {active.map((it, n) => {
         const q = f.qty[it.key];
@@ -381,7 +528,11 @@ function Progress({
             )}
             {cum && calculated && (
               <details className="small">
-                <summary>{t('installationDeclaredCumulative')}</summary>
+                <summary>
+                  {t('installationDeclaredCumulative')} {fmtNum(cum, locale)}
+                  {it.designQty ? ` / ${fmtNum(it.designQty, locale)}` : ''}
+                  {cp ? ` · ${t('sourceCalculatedPercent')} ${cp}%` : ''}
+                </summary>
                 <Val raw={cum} />
               </details>
             )}
@@ -417,11 +568,12 @@ function Progress({
         </div>
       ))}
       <p className="para">
-        {f.narrative.construction.trim() || (
-          <span className="miss">
-            {t('construction')} · {t('notFilled')}
-          </span>
-        )}
+        {f.narrative.construction.trim() ||
+          (!f.activities?.length && (
+            <span className="miss">
+              {t('construction')} · {t('notFilled')}
+            </span>
+          ))}
       </p>
       <Kv label={t('tomorrowPlan')} top>
         {tomorrow.length ? (
@@ -642,17 +794,21 @@ function Issues({
 }
 
 function BusinessSections({
+  materialSession,
+  revisionNumber,
   c,
   photos,
   photoOnly,
   personnel,
 }: {
+  materialSession?: MaterialContinuitySession;
+  revisionNumber?: number;
   personnel: ReactNode;
   c: ReportContent;
   photos: PhotoAsOfDto[];
   photoOnly: ReportItemDto[];
 }) {
-  const { t, label, locale } = useI18n();
+  const { t, label, locale, lang } = useI18n();
   const source = c.facts.sourceReport;
   const extra =
     source?.schemaVersion === 4 || source?.schemaVersion === 5
@@ -797,12 +953,24 @@ function BusinessSections({
         )}
       </div>
       <div hidden={selected !== 'materials'} className="report-business-panel">
+        {materialSession && (
+          <MaterialContinuity
+            session={materialSession}
+            facts={c.facts}
+            issues={c.issues ?? []}
+            {...(revisionNumber === undefined ? {} : { revisionNumber })}
+          />
+        )}
+        <ActivitySummary
+          activities={c.facts.activities ?? []}
+          items={c.items}
+        />
         {table(
           [
             t('materials'),
             t('sourceToday'),
             t('sourceSystemUnit'),
-            t('sourceSystemCumulative'),
+            materialContinuityCopy(lang).cumulativeArrivals,
             t('sourceOriginalCumulative'),
             t('sourceOriginalPercent'),
           ],
@@ -1096,6 +1264,7 @@ function Details({ c }: { c: ReportContent }) {
 }
 
 export function ReportBody({
+  materialSession,
   personnelSession,
   onOpenPersonnelRevision,
   c,
@@ -1104,6 +1273,7 @@ export function ReportBody({
   onReply,
   photos,
 }: {
+  materialSession?: MaterialContinuitySession;
   personnelSession?: PersonnelMetricsSession;
   onOpenPersonnelRevision?: (target: PersonnelRevisionLink) => void;
   c: ReportContent;
@@ -1203,6 +1373,8 @@ export function ReportBody({
             </section>
           ) : (
             <BusinessSections
+              {...(materialSession ? { materialSession } : {})}
+              {...(version ? { revisionNumber: version.n } : {})}
               c={c}
               photos={photos}
               photoOnly={placed.photoOnlyItems}
@@ -1233,6 +1405,7 @@ export function ReportBody({
 
 /** The report tab: frozen revision when submitted, live content otherwise. */
 export function ReportView({
+  materialSession,
   personnelSession,
   onOpenPersonnelRevision,
   day,
@@ -1244,6 +1417,7 @@ export function ReportView({
   onReply,
   photos,
 }: {
+  materialSession?: MaterialContinuitySession;
   personnelSession: PersonnelMetricsSession;
   onOpenPersonnelRevision: (target: PersonnelRevisionLink) => void;
   day: DayView;
@@ -1259,6 +1433,7 @@ export function ReportView({
   if (day.state === 'submitted')
     return (
       <ReportBody
+        {...(materialSession ? { materialSession } : {})}
         c={read}
         personnelSession={personnelSession}
         onOpenPersonnelRevision={onOpenPersonnelRevision}
@@ -1323,6 +1498,7 @@ export function ReportView({
         </section>
       )}
       <ReportBody
+        {...(materialSession ? { materialSession } : {})}
         c={read}
         personnelSession={personnelSession}
         onOpenPersonnelRevision={onOpenPersonnelRevision}

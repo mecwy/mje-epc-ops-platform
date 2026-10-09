@@ -38,6 +38,10 @@ import {
   BUSINESS_EVIDENCE_SERVICE,
 } from '../apps/api/dist/business-evidence.controller.js';
 import { TokenVerifier } from '../apps/api/dist/auth/token-verifier.js';
+import {
+  businessEvidencePorts,
+  businessEvidenceService,
+} from '../packages/domain/dist/business-evidence-adapters.js';
 
 const runtimePath = process.env['C05_RESOURCE_MANIFEST'];
 assert.ok(
@@ -58,12 +62,18 @@ interface Runtime {
   integration?: string;
 }
 const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as Runtime;
-assert.equal(runtime.id, 'C05-OWN-SYNTHETIC-PG-20261006');
+const fieldCloseout = runtime.id === 'A7-FIELD-CLOSEOUT-TEST-20261008';
+assert.ok(fieldCloseout || runtime.id === 'C05-OWN-SYNTHETIC-PG-20261006');
 assert.equal(runtime.host, '127.0.0.1');
 assert.ok(
-  runtime.database.startsWith('c05_') &&
-    runtime.ownerRole.startsWith('c05_') &&
-    runtime.appRole.startsWith('c05_'),
+  fieldCloseout
+    ? runtime.root === '/private/tmp/mje-a7-field-closeout-runtime-20261008' &&
+        /^mje_a7_fc_test_[0-9a-f]{12}$/.test(runtime.database) &&
+        runtime.ownerRole === 'postgres' &&
+        /^mje_a7_fc_role_[0-9a-f]{12}$/.test(runtime.appRole)
+    : runtime.database.startsWith('c05_') &&
+        runtime.ownerRole.startsWith('c05_') &&
+        runtime.appRole.startsWith('c05_'),
 );
 assert.ok(
   Number.isSafeInteger(runtime.port) &&
@@ -602,6 +612,29 @@ GRANT SELECT ON "TEST_C05_Fault" TO mje_alpha_app;`);
   // TEST envelope only; parent must register the C05 codes in its real safe filter.
   app.useGlobalFilters({
     catch(error, host) {
+      if (
+        error instanceof Error &&
+        'getStatus' in error &&
+        'getResponse' in error &&
+        typeof error.getStatus === 'function' &&
+        typeof error.getResponse === 'function'
+      ) {
+        const response = error.getResponse() as unknown;
+        if (
+          response &&
+          typeof response === 'object' &&
+          'code' in response &&
+          typeof response.code === 'string' &&
+          /^[A-Z_]{1,50}$/.test(response.code)
+        ) {
+          host
+            .switchToHttp()
+            .getResponse()
+            .status(error.getStatus() as number)
+            .json({ code: response.code });
+          return;
+        }
+      }
       const code =
         error instanceof BusinessEvidenceError || error instanceof ReportError
           ? error.code
@@ -683,6 +716,28 @@ GRANT SELECT ON "TEST_C05_Fault" TO mje_alpha_app;`);
   let latest!: BusinessEvidenceReceipt;
   let initial!: BusinessEvidenceReceipt;
   let first!: BusinessEvidenceCommand;
+  if (fieldCloseout)
+    await check(
+      'A7-actual-immutable-source-and-default-policy-ports',
+      async () => {
+        const concrete = businessEvidenceService(pool, businessEvidencePorts());
+        const identity = { tenantId, objectId };
+        const before = await count();
+        const view = await concrete.read(identity, target);
+        assert.equal(view.declaration.qty, '10');
+        assert.equal(view.declaration.unit, null);
+        assert.equal(view.declaration.scopeRef, null);
+        assert.equal(view.revisionNumber, 1);
+        assert.equal(view.canBind, false);
+        assert.deepEqual(view.availablePhotos, []);
+        await assert.rejects(
+          concrete.write(identity, bind(null)),
+          (e: unknown) =>
+            e instanceof BusinessEvidenceError && e.code === 'FORBIDDEN',
+        );
+        assert.deepEqual(await count(), before);
+      },
+    );
   await check(
     'B01-auth-strict-input-default-deny-cross-boundaries',
     async () => {

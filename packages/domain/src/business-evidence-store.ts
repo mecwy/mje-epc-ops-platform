@@ -1,3 +1,7 @@
+import type { BusinessEvidenceService } from '@mje/contracts';
+import { reportUploadDayState } from './report-lookups.js';
+import { nextSeq } from './checkin-store.js';
+import { inTransaction, lockReportDay } from './store-kit.js';
 /** C05 SQL owner. Foreign facts/media/day sequencing are explicit same-transaction exits. */
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
@@ -28,6 +32,8 @@ import type {
 import type { CompletionDeclaration } from './manager-review-rules.js';
 import { sameCompletionTarget } from './manager-review-rules.js';
 import {
+  BusinessEvidenceReader,
+  type BusinessEvidenceReadPorts,
   readEvidenceVersions,
   projectCurrentEvidence,
 } from './business-evidence-reader.js';
@@ -387,4 +393,48 @@ export class BusinessEvidenceStore {
       },
     );
   }
+}
+
+/** Parent day gate/sequence exits, kept in the existing SQL owner. Never opens a second transaction. */
+export const businessEvidenceDayGate: BusinessEvidencePorts['withDayGate'] =
+  async (client, actor, target, work) => {
+    await lockReportDay(
+      client,
+      actor.orgId,
+      target.projectId,
+      target.businessDate,
+    );
+    return work({
+      assertWritable: async () => {
+        const day = await reportUploadDayState(
+          client,
+          actor.orgId,
+          target.projectId,
+          target.businessDate,
+        );
+        if (day?.state === 'SUBMITTED' && day.correctionReason === null)
+          throw new BusinessEvidenceError('LOCKED');
+      },
+      nextSequence: () =>
+        nextSeq(client, actor.orgId, target.projectId, target.businessDate),
+    });
+  };
+export function createBusinessEvidenceService(
+  pool: Pool,
+  ports: BusinessEvidenceReadPorts,
+): BusinessEvidenceService {
+  const commands = new BusinessEvidenceStore(pool, ports);
+  return {
+    read: (identity, target) =>
+      inTransaction(pool, identity, async (client, actor) => {
+        await lockReportDay(
+          client,
+          actor.orgId,
+          target.projectId,
+          target.businessDate,
+        );
+        return BusinessEvidenceReader.read(client, actor, target, ports);
+      }),
+    write: (identity, command) => commands.write(identity, command),
+  };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PoolClient } from 'pg';
+import { EventEmitter } from 'node:events';
+import type { Pool, PoolClient } from 'pg';
 import type { ManagerReviewScopeDto } from '@mje/contracts';
 import {
   reportReader,
@@ -18,6 +19,9 @@ import {
 import { managerReviewSnapshotCut } from './manager-review-reader.js';
 import { blankFacts } from './report-rules.js';
 import type { Actor } from './store-kit.js';
+import { inTransaction, transactionSignal } from './store-kit.js';
+import { BusinessEvidenceReader } from './business-evidence-reader.js';
+import { deniedBusinessEvidencePorts } from './business-evidence-store.js';
 const scope: ManagerReviewScopeDto = {
   projectId: '10000000-0000-4000-8000-000000000001',
   businessDate: '2026-10-06',
@@ -51,6 +55,97 @@ function read(client: PoolClient, ports?: ReviewServerPorts) {
   );
 }
 describe('C04 parent report reader and frozen review cut', () => {
+  it('the C04 evidence port receives a live C05 transaction on the guarded report client, never on a prototype copy', async () => {
+    const { query } = fake('PROJECT_MANAGER');
+    const original = query.getMockImplementation()!;
+    query.mockImplementation(async (sql: string) =>
+      sql.includes('app_account_for_identity')
+        ? {
+            rows: [
+              {
+                orgId: actor.orgId,
+                id: actor.accountId,
+                personId: actor.personId,
+                authzVersion: actor.authzVersion,
+              },
+            ],
+          }
+        : sql.includes('clock_timestamp')
+          ? { rows: [{ decidedAt: actor.decidedAt }] }
+          : sql.includes('FROM "ForemanReport"')
+            ? {
+                rows: [
+                  {
+                    id: '30000000-0000-4000-8000-000000000001',
+                    reportId: 'TEST_report',
+                    n: 1,
+                    rows: [{ itemKey: scope.itemKey, qty: '100' }],
+                    byPersonId: 'TEST_reporter',
+                    siteTimezone: 'Europe/Belgrade',
+                    crewLabel: 'TEST crew',
+                  },
+                ],
+              }
+            : original(sql),
+    );
+    const raw = Object.assign(new EventEmitter(), { query, release: vi.fn() });
+    const pool = { connect: async () => raw } as unknown as Pool;
+    let childSignal: AbortSignal | undefined;
+    await inTransaction(
+      pool,
+      { tenantId: 'TEST_tenant', objectId: 'TEST_object' },
+      (client, a) =>
+        withReportReadContext(client, a, async (ctx) => {
+          const ports: ReviewServerPorts = {
+            ...DENY_REVIEW_PORTS,
+            resolveAuthority: async (c, who, s) => ({
+              ...(await DENY_REVIEW_PORTS.resolveAuthority(c, who, s)),
+              identityResolved: true,
+              policyRef: 'TEST_policy',
+              grants: [
+                {
+                  id: 'TEST_grant',
+                  orgId: who.orgId,
+                  projectId: s.projectId,
+                  crewId: s.crewId,
+                  itemKey: s.itemKey,
+                  actions: ['READ_REVIEW'],
+                  validFrom: '2026-10-01T00:00:00Z',
+                  validUntil: null,
+                },
+              ],
+            }),
+            evidenceFor: async (guarded, who, target) => {
+              childSignal = transactionSignal(guarded);
+              expect(childSignal?.aborted).toBe(false);
+              const calls = query.mock.calls.length;
+              await expect(
+                BusinessEvidenceReader.read(
+                  Object.create(guarded) as PoolClient,
+                  who,
+                  target,
+                  deniedBusinessEvidencePorts,
+                ),
+              ).rejects.toMatchObject({ code: 'INTEGRATION_REQUIRED' });
+              expect(query.mock.calls).toHaveLength(calls);
+              // The real reader now passes its lifetime check and reaches source resolution.
+              await expect(
+                BusinessEvidenceReader.read(
+                  guarded,
+                  who,
+                  target,
+                  deniedBusinessEvidencePorts,
+                ),
+              ).rejects.toMatchObject({ code: 'SOURCE_UNAVAILABLE' });
+              return null;
+            },
+          };
+          await reportReader.forContext(ctx).managerReview(scope, ports);
+        }),
+    );
+    expect(childSignal?.aborted).toBe(true);
+    expect(raw.release).toHaveBeenCalledOnce();
+  });
   it('refuses a forged context before any capability resolution', async () => {
     const ports = {
       ...DENY_REVIEW_PORTS,
@@ -253,7 +348,7 @@ describe('C04 parent report reader and frozen review cut', () => {
       expect(query).not.toHaveBeenCalled();
     },
   );
-  it('preserves the submitted cut and unrelated extensions without inventing a legacy cut', () => {
+  it('withholds writer cuts from reader projections without changing stored history', () => {
     const legacy = {
       facts: blankFacts(),
       items: [],
@@ -277,20 +372,23 @@ describe('C04 parent report reader and frozen review cut', () => {
     const snapshot = {
       ...legacy,
       managerReviewCut,
+      businessEvidenceCut: { asOfSeq: 7, manifests: [{ id: 'TEST_manifest' }] },
       weatherReferences: [],
       otherExtension: { value: 'TEST_retained' },
       field: { private: 'TEST_hidden' },
     };
     const original = structuredClone(snapshot);
-    expect(readerContent(snapshot, []).managerReviewCut).toEqual(
-      managerReviewCut,
+    expect(readerContent(snapshot, [])).not.toHaveProperty('managerReviewCut');
+    expect(readerContent(snapshot, [])).not.toHaveProperty(
+      'businessEvidenceCut',
     );
     expect(readerSnapshot(snapshot)).toMatchObject({
-      managerReviewCut,
       weatherReferences: [],
       otherExtension: { value: 'TEST_retained' },
     });
     expect(readerSnapshot(snapshot)).not.toHaveProperty('field');
+    expect(readerSnapshot(snapshot)).not.toHaveProperty('managerReviewCut');
+    expect(readerSnapshot(snapshot)).not.toHaveProperty('businessEvidenceCut');
     expect(snapshot).toEqual(original);
   });
 });

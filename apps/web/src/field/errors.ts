@@ -90,9 +90,12 @@ export const REFUSED_BEFORE_REPLAY = {
 export const UNKNOWN_OUTCOME = {
   NETWORK: 'fu_network',
   REQUEST_FAILED: 'fu_server',
+  SOURCE_UNAVAILABLE: 'fu_server',
   RETRY: 'fu_busy',
   RATE_LIMITED: 'fu_limited',
-} as const satisfies Partial<Record<KnownFieldCode, MessageKey>>;
+} as const satisfies Partial<
+  Record<KnownFieldCode | 'SOURCE_UNAVAILABLE', MessageKey>
+>;
 
 /**
  * The one mapping for a command's outcome on every field surface (AGENTS.md):

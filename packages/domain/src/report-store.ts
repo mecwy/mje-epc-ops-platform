@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import {
+  lockMaterialProject,
+  materialQuantitiesAsOf,
+} from './material-continuity-store.js';
+import {
+  admitActivities,
+  activityOutputQuantities,
+  confirmActivityUses,
+} from './report-activities.js';
+import {
   resolveWeatherFacts,
   writeReportLocation,
   frozenWeatherReferences,
@@ -28,6 +37,7 @@ import type {
   StartCorrectionCommand,
   SubmitReportCommand,
   WeatherFactsExtension,
+  ActivityMaterialMapping,
 } from '@mje/contracts';
 import {
   blankFacts,
@@ -97,6 +107,7 @@ import {
 } from './store-kit.js';
 import { issuesAsOf } from './issue-store.js';
 import { fieldDayAsOf, nextSeq } from './checkin-store.js';
+import { businessEvidenceSnapshotCut } from './business-evidence-reader.js';
 import { FieldError, rosterLock } from './field-kit.js';
 import { foremanDayAsOf, recordForemanAdoption } from './foreman-store.js';
 import {
@@ -107,6 +118,7 @@ import {
 } from './photo-store.js';
 import {
   withReportReadContext,
+  openReportReadContext,
   type ReportReadContext,
 } from './report-read-context.js';
 
@@ -163,8 +175,24 @@ export class ReportStore {
     private readonly options: {
       weatherReferenceEnabled?: boolean;
       reportLocationEnabled?: boolean;
+      activityMappings?: readonly ActivityMaterialMapping[];
     } = {},
   ) {}
+
+  /** Call only after the existing authorized project read. No new access path. */
+  activityMappingsFor(orgId: string, projectId: string) {
+    return structuredClone(
+      (this.options.activityMappings ?? []).filter(
+        (m) => m.orgId === orgId && m.projectId === projectId,
+      ),
+    );
+  }
+  activityMappingsForContext(ctx: ReportReadContext, projectId: string) {
+    return this.activityMappingsFor(
+      openReportReadContext(ctx).actor.orgId,
+      projectId,
+    );
+  }
 
   private transaction<T>(
     identity: Identity,
@@ -258,6 +286,13 @@ export class ReportStore {
     dailyCloseId: string,
     facts: DayFacts,
   ) {
+    if (facts.activities)
+      for (const [key, value] of Object.entries(
+        activityOutputQuantities(facts.activities),
+      )) {
+        if ((facts.qty[key] ?? '') !== value)
+          throw new InvalidReportInput('facts.activities.output');
+      }
     await client.query(
       `INSERT INTO "DailyReportDraft"(id,"orgId","dailyCloseId",facts,"updatedBy") VALUES($1,$2,$3,$4,$5)
       ON CONFLICT ("orgId","dailyCloseId") DO UPDATE SET facts=excluded.facts,"updatedAt"=now(),"updatedBy"=excluded."updatedBy"`,
@@ -319,6 +354,19 @@ export class ReportStore {
         command.clientMutationId,
         command,
         async () => {
+          // Daily fact identities span dates. Lock before the day row, in stable
+          // order, so concurrent dates cannot both pass the reuse check below.
+          const activityFactIds = new Set(
+            (command.facts.activities ?? []).flatMap((a) => [
+              a.outputFactId,
+              ...(a.use ? [a.use.id] : []),
+            ]),
+          );
+          for (const factId of [...activityFactIds].sort())
+            await client.query(
+              'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+              [`${actor.orgId}:report-activity-fact:${project.id}:${factId}`],
+            );
           const day = await this.dayForWrite(
             client,
             actor,
@@ -332,6 +380,10 @@ export class ReportStore {
           // Omission by an older client cannot erase source cells already on the locked draft.
           let facts: DayFacts = {
             ...command.facts,
+            ...(!Object.hasOwn(command.facts, 'activities') &&
+            before?.activities
+              ? { activities: before.activities }
+              : {}),
             ...(!Object.hasOwn(command.facts, 'siteLocation') &&
             before &&
             Object.hasOwn(before, 'siteLocation')
@@ -342,6 +394,44 @@ export class ReportStore {
               ? { sourceReport: before.sourceReport }
               : {}),
           };
+          if (facts.activities) {
+            const items = await itemRows(client, actor.orgId, project.id);
+            facts.activities = admitActivities(
+              facts.activities,
+              before?.activities ?? [],
+              items,
+              this.activityMappingsFor(actor.orgId, project.id).filter(
+                (m) => m.validFrom <= command.businessDate,
+              ),
+            );
+            const projected = activityOutputQuantities(facts.activities);
+            for (const [key, value] of Object.entries(projected)) {
+              if ((facts.qty[key] ?? '') !== value)
+                throw new InvalidReportInput('facts.activities.output');
+            }
+            // Daily increments have their own identities even when one operation spans dates.
+            const otherDays = await client.query<{ facts: DayFacts }>(
+              `SELECT f.facts FROM "DailyReportDraft" f JOIN "DailyClose" d ON d."orgId"=f."orgId" AND d.id=f."dailyCloseId"
+               WHERE d."orgId"=$1 AND d."projectId"=$2 AND d."businessDate"<>$3::date AND f.facts ? 'activities'`,
+              [actor.orgId, project.id, command.businessDate],
+            );
+            const factIds = new Set(
+              facts.activities.flatMap((a) => [
+                a.outputFactId,
+                ...(a.use ? [a.use.id] : []),
+              ]),
+            );
+            if (
+              otherDays.rows.some((d) =>
+                d.facts.activities?.some(
+                  (a) =>
+                    factIds.has(a.outputFactId) ||
+                    (a.use && factIds.has(a.use.id)),
+                ),
+              )
+            )
+              throw new InvalidReportInput('facts.activities.identity');
+          }
           if (command.facts.sourceReport) {
             const items = await itemRows(client, actor.orgId, project.id);
             const source = command.facts.sourceReport;
@@ -530,9 +620,15 @@ export class ReportStore {
       project.id,
       businessDate,
     );
-    // C04 events use nextSeq under this same gate. Freeze identity/basis only at the field cut;
-    // neither the C05 production adapter nor any retrospective snapshot rewrite is implied.
+    // Freeze C04/C05 identities at this same field cut. Older snapshots are never rewritten.
     const managerReviewCut = await managerReviewSnapshotCut(
+      client,
+      actor.orgId,
+      project.id,
+      businessDate,
+      field.seqBoundary,
+    );
+    const businessEvidenceCut = await businessEvidenceSnapshotCut(
       client,
       actor.orgId,
       project.id,
@@ -616,6 +712,7 @@ export class ReportStore {
             : {}),
           weatherReferences,
           managerReviewCut,
+          businessEvidenceCut,
           primaryWorkItemKey: project.primaryWorkItemKey,
           milestones: items
             .filter((i) => i.kind === 'milestone')
@@ -697,6 +794,7 @@ export class ReportStore {
             actor.orgId,
             command.projectId,
           );
+          await lockMaterialProject(client, actor.orgId, project.id);
           // Level 0 shared before the DailyClose row (level 3), never after (design §5).
           await rosterLock(client, actor.orgId, project.id, true);
           const day = await this.dayForWrite(
@@ -706,9 +804,24 @@ export class ReportStore {
             command.businessDate,
             command.expectedVersion,
           );
-          const facts =
+          let facts =
             (await draftFacts(client, actor.orgId, day.id)) ?? blankFacts();
-          if (!(await draftFacts(client, actor.orgId, day.id)))
+          if (facts.activities?.length) {
+            const clock = await client.query<{ at: Date }>(
+              'SELECT now() AS at',
+            );
+            facts = {
+              ...facts,
+              activities: confirmActivityUses(
+                facts.activities,
+                command.activityUseConfirmation,
+                command.expectedVersion,
+                actor,
+                clock.rows[0]!.at.toISOString(),
+              ),
+            };
+            await this.saveDraft(client, actor, day.id, facts);
+          } else if (!(await draftFacts(client, actor.orgId, day.id)))
             await this.saveDraft(client, actor, day.id, facts);
           return this.submitRevision(
             client,
@@ -742,6 +855,7 @@ export class ReportStore {
             actor.orgId,
             command.projectId,
           );
+          await lockMaterialProject(client, actor.orgId, project.id);
           // Level 0 shared before the DailyClose row (level 3), never after (design §5).
           await rosterLock(client, actor.orgId, project.id, true);
           const day = await this.dayForWrite(
@@ -758,6 +872,8 @@ export class ReportStore {
               blankFacts()),
             noWork: { reason: command.reason, note: command.note },
           };
+          if (facts.activities?.length)
+            throw new InvalidReportInput('facts.activities.noWork');
           await this.saveDraft(client, actor, day.id, facts);
           return this.submitRevision(
             client,
@@ -1491,6 +1607,13 @@ export async function daySnapshot(
     project.timezone,
     activeKeys(items, 'work'),
   );
+  const materialQuantities = await materialQuantitiesAsOf(
+    client,
+    actor,
+    project.id,
+    businessDate,
+    facts,
+  );
   return {
     coverage: cov,
     photos,
@@ -1518,6 +1641,7 @@ export async function daySnapshot(
       photos: evidence.map(photoAsOf),
       coverage: cov,
       foreman,
+      ...(materialQuantities.length ? { materialQuantities } : {}),
       actorAccountId: actor.accountId,
       actorPersonId: actor.personId,
     },

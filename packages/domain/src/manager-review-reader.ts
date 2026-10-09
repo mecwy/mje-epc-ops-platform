@@ -1,3 +1,5 @@
+import type { EvidenceTarget } from '@mje/contracts';
+import type { EvidenceDeclarationSource } from './business-evidence-store.js';
 import type { PoolClient } from 'pg';
 import type {
   ManagerReviewScopeDto,
@@ -17,6 +19,7 @@ import {
 } from './manager-review-rules.js';
 import { projectAccess, type Actor } from './store-kit.js';
 import {
+  DENY_REVIEW_PORTS,
   reviewReplayAdmission,
   type ReviewServerPorts,
 } from './manager-review-store.js';
@@ -282,4 +285,50 @@ export async function managerReviewSnapshotCut(
         : null,
     })),
   };
+}
+
+export async function readForemanEvidenceSource(
+  client: PoolClient,
+  actor: Actor,
+  target: EvidenceTarget,
+  sourceContextFor: ReviewServerPorts['sourceContextFor'] = DENY_REVIEW_PORTS.sourceContextFor,
+): Promise<EvidenceDeclarationSource | null> {
+  try {
+    const source = await reviewSource(
+      client,
+      actor,
+      target,
+      { ...DENY_REVIEW_PORTS, sourceContextFor },
+      target.foremanRevisionId,
+    );
+    const head = await client.query<{ currentN: number }>(
+      `SELECT "currentN" FROM "ForemanReport" WHERE "orgId"=$1 AND "projectId"=$2 AND id=$3 AND "crewId"=$4 AND "businessDate"=$5::date`,
+      [
+        actor.orgId,
+        target.projectId,
+        source.reportId,
+        target.crewId,
+        target.businessDate,
+      ],
+    );
+    const n = head.rows[0]?.currentN;
+    if (
+      head.rows.length !== 1 ||
+      !Number.isSafeInteger(n) ||
+      n! < source.declaration.revisionNumber
+    )
+      throw new ManagerReviewError('SOURCE_UNAVAILABLE');
+    return {
+      reportId: source.reportId,
+      declaration: source.declaration,
+      currentRevisionNumber: n!,
+    };
+  } catch (error) {
+    if (
+      error instanceof ManagerReviewError &&
+      (error.code === 'NOT_FOUND' || error.code === 'ITEM_NOT_FOUND')
+    )
+      return null;
+    throw error;
+  }
 }

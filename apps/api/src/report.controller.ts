@@ -101,9 +101,15 @@ export class ReportController {
     const identity = await this.identity(request);
     const project = id(projectId, 'projectId');
     const day = date(businessDate, 'businessDate');
-    return this.store.read(identity, (ctx) =>
-      reportReader.forContext(ctx).day(project, day),
-    );
+    return this.store.read(identity, async (ctx) => {
+      const result = await reportReader.forContext(ctx).day(project, day);
+      return {
+        ...result,
+        activityMappings: this.store
+          .activityMappingsForContext(ctx, project)
+          .filter((m) => m.validFrom <= day),
+      };
+    });
   }
   @Get('people-window')
   async peopleWindow(

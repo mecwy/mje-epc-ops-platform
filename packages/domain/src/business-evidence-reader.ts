@@ -1,3 +1,5 @@
+import type { BusinessEvidenceSnapshotCut } from './business-evidence-manifest.js';
+import { reportUploadDayState } from './report-lookups.js';
 /** C05 read exit. Parent supplies its verified report context and immutable FieldDay cut. */
 import type { PoolClient } from 'pg';
 import type {
@@ -274,4 +276,71 @@ export class BusinessEvidenceReader {
       canBind,
     };
   }
+}
+
+/** Only current draft/correction cut. The report owner supplies exact frozen manifest contexts. */
+export async function businessEvidenceCurrentCut(
+  client: PoolClient,
+  actor: Actor,
+  target: EvidenceTarget,
+): Promise<EvidenceReadCut> {
+  const day = await reportUploadDayState(
+    client,
+    actor.orgId,
+    target.projectId,
+    target.businessDate,
+  );
+  if (day?.state === 'SUBMITTED' && day.correctionReason === null)
+    throw new BusinessEvidenceError('INTEGRATION_REQUIRED');
+  return { kind: 'CURRENT', writable: true };
+}
+export async function businessEvidenceSnapshotCut(
+  client: PoolClient,
+  orgId: string,
+  projectId: string,
+  businessDate: string,
+  asOfSeq: number,
+): Promise<BusinessEvidenceSnapshotCut> {
+  if (!Number.isSafeInteger(asOfSeq) || asOfSeq < 0)
+    throw new BusinessEvidenceError('INTEGRATION_REQUIRED');
+  const result = await client.query<{
+    target: unknown;
+    id: unknown;
+    basis: unknown;
+    daySeq: string;
+  }>(
+    `SELECT DISTINCT ON (s.id) v.id, jsonb_build_object('projectId',s."projectId",'businessDate',s."businessDate"::text,'crewId',s."crewId",'foremanRevisionId',s."foremanRevisionId",'itemKey',s."itemKey") AS target,
+      jsonb_build_object('linkSetId',s.id,'version',v.version) AS basis,v."daySeq"::text AS "daySeq"
+      FROM "BusinessEvidenceSet" s JOIN "BusinessEvidenceVersion" v ON v."orgId"=s."orgId" AND v."projectId"=s."projectId" AND v."setId"=s.id
+      WHERE s."orgId"=$1 AND s."projectId"=$2 AND s."businessDate"=$3::date AND v."daySeq"<=$4 ORDER BY s.id,v.version DESC LIMIT 1001`,
+    [orgId, projectId, businessDate, asOfSeq],
+  );
+  if (result.rows.length > 1000)
+    throw new BusinessEvidenceError('INTEGRATION_REQUIRED');
+  const manifests = result.rows.map((row) => {
+    if (
+      !/^[1-9][0-9]*$/.test(row.daySeq) ||
+      BigInt(row.daySeq) > BigInt(asOfSeq)
+    )
+      throw new BusinessEvidenceError('INTEGRATION_REQUIRED');
+    const receipt = parseBusinessEvidenceReceipt({
+      target: row.target,
+      basis: row.basis,
+      manifestId: row.id,
+      daySeq: Number(row.daySeq),
+      changed: false,
+    });
+    if (
+      receipt.target.projectId !== projectId ||
+      receipt.target.businessDate !== businessDate
+    )
+      throw new BusinessEvidenceError('INTEGRATION_REQUIRED');
+    return {
+      target: receipt.target,
+      id: receipt.manifestId,
+      basis: receipt.basis,
+      daySeq: receipt.daySeq,
+    };
+  });
+  return { asOfSeq, manifests };
 }

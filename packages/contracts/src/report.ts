@@ -27,6 +27,23 @@ import {
   reportObject,
   type SourceReport,
 } from './report-source.js';
+import {
+  parseReportActivities,
+  parseActivityUseConfirmation,
+  type ReportActivity,
+  type ActivityUseConfirmation,
+} from './report-activities.js';
+export {
+  parseReportActivities,
+  parseActivityUseConfirmation,
+} from './report-activities.js';
+export type {
+  ReportActivity,
+  ActivityUse,
+  ActivityEstimate,
+  ActivityUseConfirmation,
+  ActivityMaterialMapping,
+} from './report-activities.js';
 export type {
   SourceCell,
   SourceReport,
@@ -61,6 +78,7 @@ export const ROLE_KEYS = [
 ] as const;
 
 export interface DayFactsDto extends WeatherFactsExtension {
+  activities?: ReportActivity[];
   sourceReport?: SourceReport;
   /** The day's declared site/address/work-area text; omission does not clear an existing value. */
   siteLocation?: string;
@@ -411,6 +429,7 @@ export interface SubmitReportCommand {
   businessDate: string;
   expectedVersion: number;
   clientMutationId: string;
+  activityUseConfirmation?: ActivityUseConfirmation;
 }
 export interface StartCorrectionCommand {
   projectId: string;
@@ -532,6 +551,7 @@ export function parseFacts(v: unknown): DayFactsDto {
       'sourceReport',
       'weatherReferences',
       'reportLocationRef',
+      'activities',
     ],
     'facts',
   );
@@ -606,6 +626,9 @@ export function parseFacts(v: unknown): DayFactsDto {
         ? { reportLocationRef: o['reportLocationRef'] }
         : {}),
     }),
+    ...(Object.hasOwn(o, 'activities')
+      ? { activities: parseReportActivities(o['activities']) }
+      : {}),
     ...(sourceReport ? { sourceReport } : {}),
     ...(Object.hasOwn(o, 'siteLocation')
       ? { siteLocation: str(o['siteLocation'], 'facts.siteLocation', 500) }
@@ -698,6 +721,13 @@ export function parseSubmitReportCommand(v: unknown): SubmitReportCommand {
     businessDate: date(o['businessDate'], 'businessDate'),
     expectedVersion: version(o['expectedVersion'], 'expectedVersion'),
     clientMutationId: id(o['clientMutationId'], 'clientMutationId'),
+    ...(Object.hasOwn(o, 'activityUseConfirmation')
+      ? {
+          activityUseConfirmation: parseActivityUseConfirmation(
+            o['activityUseConfirmation'],
+          ),
+        }
+      : {}),
   };
 }
 export function parseStartCorrectionCommand(
